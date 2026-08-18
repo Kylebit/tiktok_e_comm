@@ -91,16 +91,12 @@ app = Flask(__name__)
 
 
 def ozon_post(path, body):
-    url = "https://api-seller.ozon.ru" + path
-    cmd = [
-        "curl", "-s", "--noproxy", "*", "-X", "POST", url,
-        "-H", "Client-Id: " + CLIENT_ID,
-        "-H", "Api-Key: " + API_KEY,
-        "-H", "Content-Type: application/json",
-        "-d", json.dumps(body),
-    ]
-    out = subprocess.run(cmd, capture_output=True, text=True).stdout
-    return json.loads(out)
+    # Keep the embedded legacy UI on the same UTF-8, retrying API client used
+    # by the rest of Orbit. ``subprocess.run(text=True)`` decodes with the
+    # Windows locale (often GBK) and crashes as soon as Ozon returns Russian.
+    from modules.ozon.client import ozon_post as official_ozon_post
+
+    return official_ozon_post(path, body)
 
 
 def ozon_get(path):
@@ -111,19 +107,24 @@ def ozon_get(path):
         "-H", "Api-Key: " + API_KEY,
         "-H", "Content-Type: application/json",
     ]
-    out = subprocess.run(cmd, capture_output=True, text=True).stdout
-    return json.loads(out)
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode:
+        raise RuntimeError(
+            proc.stderr.decode("utf-8", errors="replace")[:400]
+            or f"Ozon GET failed with curl exit {proc.returncode}"
+        )
+    return json.loads(proc.stdout.decode("utf-8"))
 
 
 def load_json(path, default):
     if not os.path.exists(path):
         return default
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_json(path, data):
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
@@ -350,13 +351,19 @@ def api_draft(offer_id):
 @app.route("/api/process_images/<offer_id>", methods=["POST"])
 def api_process_images(offer_id):
     body = request.get_json()
-    src_urls = body.get("images", [])[:6]
+    try:
+        max_images = max(1, min(int(body.get("max_images", 6)), 15))
+    except (TypeError, ValueError):
+        max_images = 6
+    src_urls = body.get("images", [])[:max_images]
 
     seen_out = []
+    errors = []
     for i, url in enumerate(src_urls):
         src = os.path.join(TMP_DIR, f"src_{offer_id}_{i}.jpg")
         out = os.path.join(TMP_DIR, f"out_{offer_id}_{i}.jpg")
         ok = False
+        last_error = ""
         for attempt in range(5):
             try:
                 download(url, src)
@@ -366,13 +373,19 @@ def api_process_images(offer_id):
                     seen_out.append(new_url)
                 ok = True
                 break
-            except Exception:
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"[:500]
                 time.sleep(2 * (attempt + 1))
         if not ok:
-            pass
+            errors.append({
+                "index": i,
+                "url_host": str(url).split("/", 3)[2] if "://" in str(url) else "",
+                "attempts": 5,
+                "error": last_error,
+            })
         time.sleep(1.0)
 
-    return jsonify({"images": seen_out})
+    return jsonify({"images": seen_out, "errors": errors})
 
 
 @app.route("/api/migrate", methods=["POST"])
@@ -476,8 +489,11 @@ def api_migrate():
         log.append({"date": str(date.today()), "offer_id": offer_id, "title": p["title"]})
         save_json(MIGRATE_LOG_PATH, log)
         # 同步链接即直接填入富内容
-        rich_status = add_rich_content(offer_id, p["title"], p["description"])
-        if p.get("tk_category_id"):
+        if p.get("skip_rich_content"):
+            rich_status = "skipped_by_audited_release"
+        else:
+            rich_status = add_rich_content(offer_id, p["title"], p["description"])
+        if p.get("tk_category_id") and not p.get("skip_mapping_write"):
             record_mapping(
                 tk_category_id=str(p["tk_category_id"]),
                 tk_category_name=str(p.get("tk_category_leaf") or ""),

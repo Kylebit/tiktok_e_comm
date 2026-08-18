@@ -24,6 +24,11 @@ contracts are `ProductRecord`, `ApprovedProductPackage`, `ContentPackage`,
 They are immutable Python dataclasses and intentionally independent of SQLite
 rows, HTTP payloads, credentials, and channel clients.
 
+`FinancialFact` keeps `product_id`, `sku_id`, `channel`, and `region` as
+separate optional identities. Adapters must not put a SKU into `product_id` or
+a market region into `channel` merely because a source row lacks the other
+field.
+
 Existing table ownership is assigned as follows: product operations owns
 `products`; channel operations owns `shops`, `shopee_shops`,
 `shopee_products`, and `affiliate_invites`; supply-chain operations owns
@@ -59,6 +64,11 @@ integrator owns `shared_platform`, schema migration ordering, contract version
 approval, cross-domain dependency resolution, and final integration testing.
 No domain may change another domain's tables or public CLI/HTTP entry points
 without an approved adapter and an integrator review.
+
+The fixed thread assignments, Work Order lifecycle, single-writer rule, UI
+acceptance split, and external-write authority are normative in
+[`THREAD_OPERATING_MODEL.md`](THREAD_OPERATING_MODEL.md) and
+[`pm/DISPATCH_CONVENTION.md`](pm/DISPATCH_CONVENTION.md).
 
 The legacy A2A, EigenFlux, and multi-agent systems are retained as code for
 compatibility but are disabled by default for this architecture. They are not

@@ -57,9 +57,8 @@ def set_cost(sku_id: str, cost_cny: float, note: str = "") -> None:
 
 
 def list_costs(limit: int = 20) -> None:
-    from core.db import connect, init_db
-    init_db()
-    conn = connect()
+    from core.db import connect_readonly
+    conn = connect_readonly()
     rows = conn.execute(
         """SELECT c.sku_id, c.cost_cny, c.note, p.product_name
            FROM sku_costs c LEFT JOIN products p ON p.sku_id = c.sku_id

@@ -37,4 +37,39 @@ python -m PyInstaller `
     $EntryPoint
 
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# Runtime databases and browser profiles are local state, never distributable
+# application assets.  PyInstaller normally replaces the bundle, but older
+# builds have retained `_internal\data`; remove it only after verifying that
+# the resolved target is a child of this build's generated bundle.
+$BundleInternal = Join-Path $DistPath "OrbitDesktop\_internal"
+$PackagedData = Join-Path $BundleInternal "data"
+if (Test-Path -LiteralPath $PackagedData) {
+    $ResolvedInternal = (Resolve-Path -LiteralPath $BundleInternal).Path.TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar
+    )
+    $ResolvedData = (Resolve-Path -LiteralPath $PackagedData).Path
+    $ExpectedPrefix = $ResolvedInternal + [IO.Path]::DirectorySeparatorChar
+    if (-not $ResolvedData.StartsWith(
+        $ExpectedPrefix,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "Refusing to remove packaged data outside bundle: $ResolvedData"
+    }
+    Remove-Item -LiteralPath $ResolvedData -Recurse -Force
+    Write-Host "Removed runtime-only packaged data: $ResolvedData" -ForegroundColor Yellow
+}
+
+$ForbiddenRuntimeFiles = @(
+    Get-ChildItem -LiteralPath (Join-Path $DistPath "OrbitDesktop") -Recurse -File |
+        Where-Object {
+            $_.Name -in @("shop.db", "orbit_platform.db", "Cookies", "Login Data")
+        }
+)
+if ($ForbiddenRuntimeFiles.Count -gt 0) {
+    $Found = ($ForbiddenRuntimeFiles.FullName -join ", ")
+    throw "Build contains runtime database or browser credentials: $Found"
+}
+
 Write-Host "Build complete: $DistPath\OrbitDesktop\OrbitDesktop.exe" -ForegroundColor Green

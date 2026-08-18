@@ -79,3 +79,27 @@ agent_comms/stage3/*_state.json
 agent_comms/helper/.helper_seq.json
 agent_comms/helper/done/
 agent_comms/helper/outbox/
+
+# Local release/test execution artifacts (never source-controlled)
+/.authorized-oneclick-*
+/.codex-service-*
+/.direct-shopee-*
+/.formal-service-*
+/.operation-backups/
+/.pf*
+/.pt*
+/.pytest-*
+/.restart-*
+/.skill-*
+/.tmp-*
+/tmp_seaya_sdk/
+
+# Local Product Center services and immutable publication evidence
+/.auto-open-*.log
+/.persistent-*.log
+/.toapis-*.log
+/reports/product-publication/
+/reports/server-*.log
+
+# One-off local investigation helpers; production scripts use stable names
+/scripts/_*.py

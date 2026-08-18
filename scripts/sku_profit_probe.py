@@ -17,7 +17,9 @@ def main() -> int:
     ap.add_argument("--sku", default="", help="单个 SKU；批量用 --skus")
     ap.add_argument("--skus", default="", help="逗号/空格分隔多个 SKU")
     ap.add_argument("--platform", default="both", choices=["both", "tiktok", "shopee"])
-    ap.add_argument("--ad-rate", type=float, default=None, help="默认 0.22；可传 22 或 0.22")
+    ad_group = ap.add_mutually_exclusive_group()
+    ad_group.add_argument("--ad-rate", type=float, default=None, help="广告费率小数，范围 0..1；默认 0.22")
+    ad_group.add_argument("--ad-rate-percent", type=float, default=None, help="广告费率百分数，范围 0..100")
     ap.add_argument("--lookback-days", type=int, default=None)
     ap.add_argument("--sale", type=float, default=None, help="手动覆盖售价")
     ap.add_argument("--cost", type=float, default=None, help="手动覆盖货本 CNY")
@@ -44,6 +46,7 @@ def main() -> int:
             skus,
             platform=args.platform,
             ad_rate=args.ad_rate,
+            ad_rate_percent=args.ad_rate_percent,
             lookback_days=args.lookback_days,
             cost_override=args.cost,
         )
@@ -52,6 +55,7 @@ def main() -> int:
             skus[0],
             platform=args.platform,
             ad_rate=args.ad_rate,
+            ad_rate_percent=args.ad_rate_percent,
             lookback_days=args.lookback_days,
             sale_override=args.sale,
             cost_override=args.cost,

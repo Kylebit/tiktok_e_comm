@@ -6,11 +6,19 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from domains.content_operations.content_package_adapter import (
+    SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
+    source_only_final_approval_digest,
+    source_only_review_signature,
+)
 from modules.sourcing.image_review_package import create_model_suite_proposal
 from modules.sourcing.new_product_workbench import (
     _apply_suite_customization,
+    _content_strategy,
     _generated_review_images,
+    _product_workflow_summary,
     _safe_image_execution_plan,
+    prepare_content_package,
     prepare_suite_image_generations,
     propose_content_package_with_vision,
     save_generated_image_decision,
@@ -25,6 +33,144 @@ NODE = Path(r"C:\Users\Windows11\.cache\codex-runtimes\codex-primary-runtime\dep
 
 
 class NewProductImageWorkflowTests(unittest.TestCase):
+    def test_content_strategy_defaults_to_existing_ai_assisted_mode(self):
+        self.assertEqual(_content_strategy({}), "ai_assisted")
+        self.assertEqual(
+            _content_strategy({"content_strategy": "source_only"}),
+            "source_only",
+        )
+
+    def test_prepare_package_preserves_valid_current_identity_references(self):
+        reference = "https://img.example/current-reference.png"
+        removed = "https://img.example/removed-reference.png"
+        state = {
+            "content_package": {
+                "identity_reference_urls": [reference, removed],
+                "primary_identity_url": reference,
+                "fact_card_approved": True,
+                "planning_scope_approved": True,
+            },
+            "review": {
+                "image_actions": [
+                    {"url": reference, "action": "keep"},
+                    {"url": removed, "action": "remove"},
+                ],
+            },
+        }
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123",
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state",
+            return_value=state,
+        ), patch(
+            "modules.sourcing.new_product_workbench._source_summary",
+            return_value={
+                "images": [
+                    {"url": reference, "kind": "main"},
+                    {"url": removed, "kind": "detail"},
+                ],
+                "precollect": {},
+            },
+        ), patch(
+            "modules.sourcing.image_review_package.create_package_from_miaoshou",
+            return_value={"ok": True},
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state",
+        ), patch(
+            "modules.sourcing.new_product_workbench.content_package_summary",
+            side_effect=lambda _offer: dict(state["content_package"]),
+        ):
+            result = prepare_content_package("123", collect_box_id="123")
+
+        self.assertEqual(
+            result["content_package"]["identity_reference_urls"],
+            [reference],
+        )
+        self.assertEqual(
+            result["content_package"]["primary_identity_url"],
+            reference,
+        )
+        self.assertFalse(result["content_package"]["fact_card_approved"])
+        self.assertFalse(result["content_package"]["planning_scope_approved"])
+
+    def test_source_only_workflow_completes_without_ai_plan_or_generation(self):
+        source_url = "https://img.example/source.jpg"
+        source_review = {
+            "title": "English product title",
+            "cost_cny": 5,
+            "image_actions": [{"action": "keep", "url": source_url}],
+            "image_order": [source_url],
+            "video_action": "none",
+            "video_url": "",
+            "weight_kg": 0.1,
+            "package_cm": [1, 2, 3],
+            "selected_sites": ["TH"],
+        }
+        signature = source_only_review_signature(
+            source_review["image_actions"], source_review["image_order"]
+        )
+        workflow = _product_workflow_summary(
+            source={"title_source": "Product", "cost_cny": 5, "images": [source_url]},
+            review=source_review,
+            content={
+                "content_strategy": "source_only",
+                "package_found": True,
+                "fact_card_approved": True,
+                "planning_scope_approved": True,
+                "source_only_review_signature": signature,
+                "source_only_final_approval": {
+                    "schema_version": SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
+                    "status": "approved",
+                    "approved_by": "Kyle",
+                    "source_only_review_signature": signature,
+                    "video_action": "none",
+                    "video_identity_digest": (
+                        "sha256:e3b0c44298fc1c149afbf4c8996fb924"
+                        "27ae41e4649b934ca495991b7852b855"
+                    ),
+                    "approval_digest": source_only_final_approval_digest(
+                        review_signature=signature,
+                        video_action="none",
+                        video_url="",
+                    ),
+                    "approved_at": "2026-07-29T00:00:00+00:00",
+                },
+                "generated_review_images": [
+                    {"miaoshou_action": "keep", "url": "https://img.example/ai.jpg"}
+                ],
+            },
+            miaoshou_draft={},
+            tiktok_claim={},
+            site_drafts={},
+        )
+
+        self.assertTrue(workflow["content_ready"])
+        self.assertTrue(workflow["generation_ready"])
+        self.assertTrue(workflow["image_review_ready"])
+        self.assertEqual(workflow["requested_image_count"], 0)
+        self.assertEqual(workflow["kept_generated_image_count"], 0)
+
+    def test_source_only_rejects_ai_planning_before_any_model_call(self):
+        state = {
+            "content_package": {
+                "content_strategy": "source_only",
+                "fact_card_approved": True,
+                "planning_scope_approved": True,
+            }
+        }
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123",
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state",
+            return_value=state,
+        ):
+            with self.assertRaisesRegex(ValueError, "disabled"):
+                propose_content_package_with_vision(
+                    "123", reference_urls=["https://img.example/source.jpg"]
+                )
+
     def test_image_review_ui_uses_one_unified_draggable_miaoshou_board(self):
         html = (ROOT / "web" / "new_product.html").read_text(encoding="utf-8")
         self.assertIn('id="finalImageBoardHost"', html)
@@ -249,6 +395,52 @@ if (currentContentPackageDraft() !== null) process.exit(5);
         self.assertEqual(execution["suite"]["items"][0]["title"], "AI Reading Nook")
         self.assertEqual(execution["_meta"]["planning_source"], "ai")
 
+    def test_paid_execution_hydrates_legacy_partial_revision_translations(self):
+        package = {
+            "collect_box": {"source_title": "Floral wall decal"},
+            "fact_card": {"verified": []},
+            "model_proposal": {
+                "planning_source": "ai",
+                "planning_signature": "current-signature",
+                "model": "vision-model",
+                "candidate_items": [
+                    {
+                        "id": "sc1",
+                        "title_zh": "客厅应用场景",
+                        "focus_zh": "在客厅墙面展示同一款墙贴。",
+                    }
+                ],
+            },
+            "plan": {
+                "analysis": {"category": "wall decal"},
+                "_meta": {"category_profile": "wall_decal"},
+                "suite": {
+                    "items": [
+                        {
+                            "id": "sc1",
+                            "type": "scene",
+                            "title": "Living Space Application",
+                            "focus": "Preserve the approved composition.",
+                            "focus_zh": "保持已批准构图。",
+                            "selected": True,
+                        }
+                    ]
+                },
+            },
+        }
+
+        execution = _safe_image_execution_plan(
+            package,
+            suite_customization={"type_counts": {"scene": 1}},
+            required_planning_signature="current-signature",
+        )
+
+        item = execution["suite"]["items"][0]
+        self.assertEqual(item["title"], "Living Space Application")
+        self.assertEqual(item["focus"], "Preserve the approved composition.")
+        self.assertEqual(item["operator_title_zh"], "客厅应用场景")
+        self.assertEqual(item["operator_focus_zh"], "在客厅墙面展示同一款墙贴。")
+
     def test_ai_planning_receives_saved_local_constraints(self):
         state = {
             "content_package": {
@@ -335,6 +527,24 @@ if (currentContentPackageDraft() !== null) process.exit(5);
             (package / "review_package.json").write_text(
                 json.dumps(review_package), encoding="utf-8"
             )
+
+            def revise_storyboard(_package_dir, _refs, **kwargs):
+                updated = json.loads(
+                    (package / "review_package.json").read_text(encoding="utf-8")
+                )
+                updated["model_proposal"] = {
+                    "planning_source": "ai",
+                    "planning_signature": kwargs["planning_signature"],
+                }
+                (package / "review_package.json").write_text(
+                    json.dumps(updated),
+                    encoding="utf-8",
+                )
+                return {
+                    "vision_model_called": True,
+                    "revision_target_ids": ["sz1"],
+                }
+
             with patch(
                 "modules.sourcing.new_product_workbench.resolve_offer_key",
                 return_value="123",
@@ -346,10 +556,7 @@ if (currentContentPackageDraft() !== null) process.exit(5);
                 return_value=package,
             ), patch(
                 "modules.sourcing.image_review_package.create_model_suite_proposal",
-                return_value={
-                    "vision_model_called": True,
-                    "revision_target_ids": ["sz1"],
-                },
+                side_effect=revise_storyboard,
             ) as planner, patch(
                 "modules.sourcing.new_product_workbench.save_state"
             ), patch(
@@ -369,11 +576,12 @@ if (currentContentPackageDraft() !== null) process.exit(5);
         content = state["content_package"]
         self.assertEqual(content["pending_regeneration_shot_ids"], ["sz1"])
         self.assertEqual(
-            content["storyboard_reviews"]["sc1"]["decision"], "approved"
+            content["storyboard_reviews"]["sc1"]["decision"], "auto_adopted"
         )
         self.assertEqual(
-            content["storyboard_reviews"]["sz1"]["decision"], "pending"
+            content["storyboard_reviews"]["sz1"]["decision"], "auto_adopted"
         )
+        self.assertTrue(content["suite_approved"])
         self.assertNotIn("force_regenerate_all", content)
 
     def test_partial_planner_merge_keeps_non_target_storyboard_unchanged(self):
@@ -562,7 +770,7 @@ if (currentContentPackageDraft() !== null) process.exit(5);
             "WIDTH 34 cm  |  HEIGHT 58 cm",
         )
 
-    def test_storyboard_review_requires_every_ai_shot_to_pass(self):
+    def test_legacy_storyboard_review_values_do_not_create_an_approval_gate(self):
         state = {
             "content_package": {
                 "collect_box_id": "123",
@@ -617,19 +825,13 @@ if (currentContentPackageDraft() !== null) process.exit(5);
                 )
                 self.assertFalse(state["content_package"]["suite_approved"])
                 self.assertEqual(
-                    state["content_package"]["storyboard_reviews"]["sz1"]["decision"],
-                    "revise",
+                    state["content_package"]["planning_review_mode"],
+                    "experience_recipe_auto_v1",
                 )
-                save_content_package_review(
-                    "123",
-                    {
-                        "storyboard_reviews": {
-                            "sc1": {"decision": "approved", "note": ""},
-                            "sz1": {"decision": "approved", "note": ""},
-                        }
-                    },
+                self.assertEqual(
+                    state["content_package"]["storyboard_reviews"],
+                    {},
                 )
-        self.assertTrue(state["content_package"]["suite_approved"])
 
     def test_generated_review_shows_only_latest_verified_version_per_shot(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -731,6 +933,46 @@ if (currentContentPackageDraft() !== null) process.exit(5);
         self.assertEqual(len(state["content_package"]["image_generation_history"]), 1)
         thread_mock.return_value.start.assert_called_once()
 
+    def test_completed_batch_cannot_reuse_the_same_paid_preflight(self):
+        state = {"content_package": {
+            "suite_revision": 4,
+            "remaining_images_preflight": {
+                "status": "ready_for_explicit_paid_confirmation",
+                "suite_revision": 4,
+                "recipe_signature": "same",
+                "shots": [
+                    {"id": "sc1", "artifact_id": "sc1_r4"},
+                    {"id": "sp1", "artifact_id": "sp1_r4"},
+                ],
+            },
+            "remaining_images_generation": {
+                "status": "completed_waiting_human_review",
+                "items": [
+                    {
+                        "shot_id": "sc1",
+                        "artifact_id": "sc1_r4",
+                        "status": "completed_waiting_human_review",
+                    },
+                    {
+                        "shot_id": "sp1",
+                        "artifact_id": "sp1_r4",
+                        "status": "completed_waiting_human_review",
+                    },
+                ],
+            },
+        }}
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="completed-case",
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state", return_value=state
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_recipe_signature",
+            return_value="same",
+        ):
+            with self.assertRaisesRegex(ValueError, "already been consumed"):
+                start_remaining_image_generation("completed-case")
+
     def test_pending_storyboard_revision_only_prepares_targeted_nonpaid_preflight(self):
         state = {"content_package": {
             "fact_card_approved": True,
@@ -805,6 +1047,74 @@ if (currentContentPackageDraft() !== null) process.exit(5);
         self.assertNotIn("remaining_images_generation", state["content_package"])
         payload_mock.assert_called_once()
         save_mock.assert_called_once()
+
+    def test_fresh_suite_ignores_revision_marker_and_preflights_every_shot(self):
+        state = {"content_package": {
+            "fact_card_approved": True,
+            "suite_approved": True,
+            "suite_revision": 4,
+            "collect_box_id": "123",
+            "identity_reference_urls": ["https://img.example/reference.png"],
+            "pending_regeneration_shot_ids": ["sc1"],
+        }}
+        prompt_bundle = {
+            "shots": [
+                {
+                    "id": "sc1",
+                    "type": "scene",
+                    "title": "Scene",
+                    "focus": "Focus",
+                    "aspect_ratio": "1:1",
+                    "prompt": "Generate scene",
+                },
+                {
+                    "id": "sp1",
+                    "type": "selling_point",
+                    "title": "Detail",
+                    "focus": "Focus",
+                    "aspect_ratio": "1:1",
+                    "prompt": "Generate detail",
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key", return_value="123"
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state", return_value=state
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir", return_value=Path(tmp)
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_artifacts", return_value=[]
+        ), patch(
+            "modules.sourcing.new_product_workbench._load_json", return_value={}
+        ), patch(
+            "modules.sourcing.new_product_workbench._safe_image_execution_plan",
+            return_value={
+                "_meta": {"image_url": "https://img.example/reference.png"},
+                "suite": {"items": []},
+            },
+        ), patch(
+            "modules.sourcing.image_shot_prompts.build_shot_prompts",
+            return_value=prompt_bundle,
+        ), patch(
+            "modules.sourcing.toapis_client.build_generation_payload",
+            return_value={"model": "gpt-image-2"},
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_recipe_signature",
+            return_value="recipe-v4",
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state"
+        ), patch(
+            "modules.sourcing.new_product_workbench.content_package_summary",
+            return_value={},
+        ):
+            result = prepare_suite_image_generations("123")
+
+        self.assertEqual(
+            [row["id"] for row in result["preflight"]["shots"]],
+            ["sc1", "sp1"],
+        )
+        self.assertFalse(result["preflight"]["targeted_regeneration"])
 
     def test_chinese_dimension_input_becomes_english_overlay_copy(self):
         self.assertEqual(

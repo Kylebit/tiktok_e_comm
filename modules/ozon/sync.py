@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
 from typing import Callable
 
@@ -114,7 +116,41 @@ def fetch_product_info(product_ids: list[int]) -> dict[str, dict]:
 
 def _save_json(path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary_path = path.with_name(os.path.basename(temporary_name))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _snapshot_product_count(path) -> int | None:
+    if not path.is_file():
+        return 0
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    items = raw.get("result") if isinstance(raw, dict) else raw
+    return len(items) if isinstance(items, list) else None
 
 
 def _refresh_migrated_offers(data_dir, offer_ids: list[str]) -> None:
@@ -160,9 +196,19 @@ def sync_catalog(
     if on_fraction:
         on_fraction(0.05, "Ozon：拉取商品 ID…")
     product_ids = fetch_all_product_ids(on_progress, on_fraction)
+    previous_count = _snapshot_product_count(attrs_path)
+    if previous_count is None:
+        raise RuntimeError(
+            "existing Ozon snapshot is unreadable; refusing to replace it"
+        )
     if not product_ids:
+        if previous_count:
+            raise RuntimeError(
+                "Ozon returned an empty product list; "
+                f"refusing to replace {previous_count} existing snapshot rows"
+            )
         snapshot = {"result": [], "total": 0, "last_id": ""}
-        _save_json(data_dir / "all_products_attrs.json", snapshot)
+        _save_json(attrs_path, snapshot)
         return {"products": 0, "offers": 0}
 
     msg = f"Ozon：共 {len(product_ids)} 个，拉取属性…"
@@ -170,6 +216,15 @@ def sync_catalog(
     if on_fraction:
         on_fraction(0.38, msg)
     attrs = fetch_product_attributes(product_ids, on_progress, on_fraction)
+    if not attrs:
+        if previous_count:
+            raise RuntimeError(
+                "Ozon returned no product attributes; "
+                f"refusing to replace {previous_count} existing snapshot rows"
+            )
+        raise RuntimeError(
+            f"Ozon returned no product attributes for {len(product_ids)} product IDs"
+        )
 
     info_by_id = fetch_product_info(product_ids)
     for it in attrs:

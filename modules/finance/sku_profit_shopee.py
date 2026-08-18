@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from core.config import ROOT, get
-from core.db import connect, init_db
+from core.db import connect_readonly
 from modules.finance.sku_key import seller_sku_tail4, same_seller_sku, sku_variants_for_lookup
 from modules.finance.sku_profit_model import (
     DEFAULT_AD_RATE,
@@ -58,7 +58,10 @@ def _cost_from_weekly(seller_sku: str) -> float | None:
                 continue  # 多 SKU 行跳过
             if seller_sku_tail4(sku) != tail:
                 continue
-            pc = row.get("product_cost")
+            # Weekly snapshots now expose both unit and total line cost.  A
+            # SKU price estimate needs the unit cost; old snapshots retain
+            # product_cost as the compatible fallback.
+            pc = row.get("unit_cost_cny") or row.get("product_cost")
             if pc not in (None, "", 0, 0.0):
                 try:
                     vals.append(float(pc))
@@ -73,12 +76,39 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
     q = (sku_query or "").strip()
     if not q:
         return None
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
+    platform_id_query = q.startswith("item_") or (q.isdigit() and len(q) > 10)
     variants = sku_variants_for_lookup(q)
     tail = seller_sku_tail4(q)
     row = None
-    for v in variants:
+    if platform_id_query:
+        item_model_id = f"item_{q}" if q.isdigit() else q
+        exact_rows = conn.execute(
+            """
+            SELECT model_id, item_id, seller_sku, product_name, model_name, image_url, price, currency, status
+            FROM shopee_products
+            WHERE region = ? AND (model_id = ? OR model_id = ? OR item_id = ?)
+            ORDER BY
+                CASE WHEN model_id = ? THEN 0
+                     WHEN model_id = ? THEN 1
+                     WHEN item_id = ? THEN 2
+                     ELSE 3 END
+            """,
+            (REGION, q, item_model_id, q, q, item_model_id, q),
+        ).fetchall()
+        if len(exact_rows) == 1:
+            row = exact_rows[0]
+        elif len(exact_rows) > 1:
+            identities = {
+                (str(item["model_id"] or ""), str(item["item_id"] or ""))
+                for item in exact_rows
+            }
+            if len(identities) == 1:
+                row = exact_rows[0]
+        if row is None:
+            conn.close()
+            return None
+    for v in (() if platform_id_query else variants):
         row = conn.execute(
             """
             SELECT model_id, item_id, seller_sku, product_name, model_name, image_url, price, currency, status
@@ -178,6 +208,9 @@ def load_weekly_comps(
     same: list[dict[str, Any]] = []
     all_th: list[dict[str, Any]] = []
     all_th_unfiltered: list[dict[str, Any]] = []
+    latest_by_order_sku: dict[
+        tuple[str, str], tuple[tuple[str, str], date | None, str, dict[str, Any]]
+    ] = {}
     tail = seller_sku_tail4(seller_sku)
 
     for path in sorted(OUTPUT_DIR.glob(REPORT_GLOB), reverse=True):
@@ -188,7 +221,7 @@ def load_weekly_comps(
         order_idx = _header_index(headers, "Order SN")
         sku_idx = _header_index(headers, "SKU")
         release_idx = _header_index(headers, "Release Time")
-        for row in data.get("rows") or []:
+        for row_index, row in enumerate(data.get("rows") or []):
             if str(row.get("region") or "") != REGION:
                 continue
             cells = row.get("cells") or []
@@ -212,12 +245,25 @@ def load_weekly_comps(
                 ship_net_local=0.0,
                 source=f"weekly:{path.name}",
             )
-            all_th_unfiltered.append(rec)
-            if released and released < cutoff:
-                continue
-            all_th.append(rec)
-            if same_seller_sku(sku, seller_sku) or (tail and seller_sku_tail4(sku) == tail):
-                same.append(rec)
+            identity = (
+                (order_sn, sku)
+                if order_sn and sku
+                else (f"{path.name}:{row_index}", sku)
+            )
+            rank = (released.isoformat() if released else "", path.name)
+            previous = latest_by_order_sku.get(identity)
+            if previous is None or rank >= previous[0]:
+                latest_by_order_sku[identity] = (rank, released, sku, rec)
+
+    for _, released, sku, rec in latest_by_order_sku.values():
+        all_th_unfiltered.append(rec)
+        if released and released < cutoff:
+            continue
+        all_th.append(rec)
+        if same_seller_sku(sku, seller_sku) or (
+            tail and seller_sku_tail4(sku) == tail
+        ):
+            same.append(rec)
 
     # 窗口内为空时，退回未过滤 TH 池做弱先验
     if not all_th and all_th_unfiltered:
@@ -262,6 +308,7 @@ def _weak_prior_from_pool(
         ),
         "est_settlement_local": round(settle, 2),
         "median_settle_ratio": round(ratio, 4),
+        "evidence_basis": "inferred_settlement_ratio",
         "note": "Shopee 弱先验：用 TH 周报结算比分位近似（非完整费率栈）",
     }
 
@@ -327,7 +374,8 @@ def estimate(
     prior_with = _weak_prior_from_pool(sale, cost, fx, all_th or same, ad_rate, low_ratio=True)
     prior_no = _weak_prior_from_pool(sale, cost, fx, all_th or same, ad_rate, low_ratio=False)
 
-    comps = same if len([c for c in same if not c.get("outlier")]) >= 3 else all_th[:40]
+    # 全店样本只用于弱先验，绝不能冒充这个 SKU 的后验样本。
+    comps = same
     scenarios = build_three_scenarios(
         sale_local=sale,
         cost_cny=cost,
@@ -360,6 +408,7 @@ def estimate(
             "profit_local": p.get("profit_local"),
             "margin_pct": p.get("margin_pct"),
             "est_settlement_local": p.get("est_settlement_local"),
+            "evidence_basis": p.get("evidence_basis"),
         }
 
     price_views = [
@@ -438,7 +487,7 @@ def estimate(
             "comps_same_sku": len(same),
             "comps_th_pool": len(all_th),
             "min_samples_for_posterior": MIN_POSTERIOR_SAMPLES,
-            "recent_comps": (same or all_th)[:20],
+            "recent_comps": same,
             "sale_stats": summarize_nums(usable_sales),
             "affiliate_note": "周报未拆达人佣金，has_affiliate 为结算比中位分档近似",
         },

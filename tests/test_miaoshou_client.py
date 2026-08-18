@@ -4,7 +4,14 @@ import unittest
 from typing import Optional
 from unittest.mock import patch
 
-from modules.miaoshou.client import request_web, web_claim_to_shop
+from modules.miaoshou import client as miaoshou_client
+from modules.miaoshou.client import (
+    MiaoshouBusinessRejectedError,
+    post_open,
+    request_web,
+    web_batch_set_tiktok_price,
+    web_claim_to_shop,
+)
 
 
 class _FakeResponse:
@@ -24,6 +31,51 @@ class _FakeResponse:
 
 
 class MiaoshouClientTests(unittest.TestCase):
+    def test_signed_open_calls_are_spaced_below_account_rate_limit(self):
+        clock = {"now": 20.0}
+        sleeps = []
+
+        def monotonic():
+            return clock["now"]
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock["now"] += seconds
+
+        with patch.object(miaoshou_client.time, "monotonic", side_effect=monotonic), patch.object(
+            miaoshou_client.time, "sleep", side_effect=sleep
+        ):
+            miaoshou_client._last_open_request_at = 0.0
+            miaoshou_client._wait_for_open_slot()
+            miaoshou_client._wait_for_open_slot()
+
+        self.assertEqual(len(sleeps), 1)
+        self.assertGreaterEqual(
+            sleeps[0], miaoshou_client.OPEN_REQUEST_INTERVAL_SECONDS
+        )
+
+    def test_open_business_rejection_is_distinct_from_transport_unknown(self):
+        def fake_urlopen(_req, timeout=0):
+            return _FakeResponse(
+                {
+                    "result": "fail",
+                    "code": "optimistic_lock_conflict",
+                    "message": "product data changed",
+                }
+            )
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(MiaoshouBusinessRejectedError) as ctx:
+                post_open(
+                    "/open/v1/test",
+                    {"detailId": 123},
+                    cfg={"app_id": "app", "app_secret": "secret"},
+                )
+
+        self.assertEqual(ctx.exception.code, "optimistic_lock_conflict")
+        self.assertTrue(ctx.exception.business_rejected)
+        self.assertIn("product data changed", str(ctx.exception))
+
     def test_request_web_posts_form_urlencoded(self):
         seen = {}
 
@@ -64,6 +116,25 @@ class MiaoshouClientTests(unittest.TestCase):
 
         self.assertIn("session expired", str(ctx.exception))
 
+    def test_request_web_business_rejection_is_typed_not_unknown(self):
+        def fake_urlopen(_req, timeout=0):
+            return _FakeResponse(
+                {
+                    "success": False,
+                    "code": "PRICE_REJECTED",
+                    "message": "price was rejected",
+                }
+            )
+
+        with patch("modules.miaoshou.client._load_config", return_value={}), patch(
+            "urllib.request.urlopen", side_effect=fake_urlopen
+        ):
+            with self.assertRaises(MiaoshouBusinessRejectedError) as ctx:
+                request_web("POST", "/api/example", form="{}")
+
+        self.assertEqual(ctx.exception.code, "PRICE_REJECTED")
+        self.assertTrue(ctx.exception.business_rejected)
+
     def test_web_claim_to_shop_uses_indexed_fields(self):
         seen = {}
 
@@ -89,6 +160,41 @@ class MiaoshouClientTests(unittest.TestCase):
                 ("shopIds[1]", 15173238),
             ],
         )
+
+    def test_web_batch_set_tiktok_price_posts_exact_json_contract(self):
+        seen = {}
+        payload = {
+            "collectBoxDetailIds": [77],
+            "site": "GB",
+            "priceConfig": {
+                "price": {
+                    "modifyMode": "newValue",
+                    "newValue": 15,
+                }
+            },
+        }
+
+        def fake_request_web(method, path, **kwargs):
+            seen.update(method=method, path=path, **kwargs)
+            return {"success": True}
+
+        with patch(
+            "modules.miaoshou.client.request_web",
+            side_effect=fake_request_web,
+        ):
+            result = web_batch_set_tiktok_price(payload)
+
+        self.assertIs(result["success"], True)
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(
+            seen["path"],
+            "/api/platform/tiktok/move/collect_box/batchSetPrice",
+        )
+        self.assertEqual(
+            seen["headers"],
+            {"Content-Type": "application/json;charset=UTF-8"},
+        )
+        self.assertEqual(json.loads(seen["form"]), payload)
 
 
 if __name__ == "__main__":

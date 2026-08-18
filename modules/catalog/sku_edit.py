@@ -264,7 +264,15 @@ def _leaf_category(detail: dict) -> tuple[str, str]:
     return str(cat.get("id") or ""), str(cat.get("category_version") or "v1")
 
 
-def _build_local_product_edit_body(detail: dict, sku_id: str, seller_sku: str) -> dict:
+def _build_local_product_edit_body(
+    detail: dict,
+    sku_id: str,
+    seller_sku: str,
+    *,
+    include_commerce_fields: bool = False,
+) -> dict:
+    """Build a content edit without silently rewriting live price or stock."""
+
     cat_id, cat_ver = _leaf_category(detail)
     skus: list[dict] = []
     for s in detail.get("skus") or []:
@@ -287,21 +295,22 @@ def _build_local_product_edit_body(detail: dict, sku_id: str, seller_sku: str) -
             attrs.append(sa)
         if attrs:
             item["sales_attributes"] = attrs
-        price = s.get("price") or {}
-        amount = price.get("sale_price") or price.get("amount")
-        currency = price.get("currency")
-        if amount and currency:
-            item["price"] = {"amount": str(amount), "currency": currency}
-        inv = s.get("inventory") or []
-        if inv:
-            item["inventory"] = [
-                {
-                    "warehouse_id": i.get("warehouse_id"),
-                    "quantity": i.get("quantity"),
-                }
-                for i in inv
-                if i.get("warehouse_id") is not None
-            ]
+        if include_commerce_fields:
+            price = s.get("price") or {}
+            amount = price.get("sale_price") or price.get("amount")
+            currency = price.get("currency")
+            if amount and currency:
+                item["price"] = {"amount": str(amount), "currency": currency}
+            inv = s.get("inventory") or []
+            if inv:
+                item["inventory"] = [
+                    {
+                        "warehouse_id": i.get("warehouse_id"),
+                        "quantity": i.get("quantity"),
+                    }
+                    for i in inv
+                    if i.get("warehouse_id") is not None
+                ]
         skus.append(item)
 
     body: dict = {

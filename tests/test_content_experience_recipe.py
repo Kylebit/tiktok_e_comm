@@ -1,0 +1,719 @@
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+
+from domains.content_operations.content_package_adapter import (
+    EXPERIENCE_RECIPE_REVIEW_MODE,
+    build_workbench_content_package_handoff,
+)
+from modules.sourcing import new_product_workbench as workbench
+
+
+def _audit(url: str) -> dict:
+    return {
+        "shot_id": "sc1",
+        "audit_id": "audit:sc1_r1",
+        "download_verified": True,
+        "final_response": {"result": {"data": [{"url": url}]}},
+    }
+
+
+def _review_package(content: dict) -> dict:
+    return {
+        "collect_box": {
+            "image_urls": ["https://assets.example/source.jpg"],
+        },
+        "model_proposal": {
+            "planning_source": "ai",
+            "planning_signature": workbench._planning_recipe_signature(content),
+        },
+        "plan": {
+            "suite": {
+                "items": [
+                    {"id": "sc1", "type": "scene", "selected": True},
+                ]
+            }
+        },
+    }
+
+
+def test_saving_ai_content_adopts_current_storyboard_without_per_shot_review(
+    tmp_path,
+    monkeypatch,
+):
+    content = {
+        "content_strategy": "ai_assisted",
+        "collect_box_id": "3828540231",
+        "fact_card_approved": True,
+        "planning_scope_approved": False,
+        "suite_approved": False,
+        "identity_reference_urls": ["https://assets.example/source.jpg"],
+        "primary_identity_url": "https://assets.example/source.jpg",
+    }
+    workbench._enable_experience_recipe_review(content)
+    package = _review_package(content)
+    (tmp_path / "review_package.json").write_text(
+        json.dumps(package),
+        encoding="utf-8",
+    )
+    state = {
+        "offer_id": "3828540231",
+        "_revision": 3,
+        "content_package": {
+            **content,
+            "planning_scope_approved": False,
+            "suite_approved": False,
+            "planning_review_mode": "",
+        },
+    }
+    saved_states: list[dict] = []
+
+    monkeypatch.setattr(
+        workbench,
+        "resolve_offer_key",
+        lambda _value: "3828540231",
+    )
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(
+        workbench,
+        "_content_package_dir",
+        lambda _collect_box: Path(tmp_path),
+    )
+    monkeypatch.setattr(
+        workbench,
+        "save_state",
+        lambda _offer, value: saved_states.append(copy.deepcopy(value)) or value,
+    )
+    monkeypatch.setattr(
+        workbench,
+        "content_package_summary",
+        lambda _offer: {"ok": True},
+    )
+
+    workbench.save_content_package_review(
+        "3828540231",
+        {
+            "planning_scope_approved": True,
+            "storyboard_reviews": {
+                "sc1": {"decision": "pending", "note": "legacy UI value"},
+            }
+        },
+    )
+
+    adopted = state["content_package"]
+    assert adopted["planning_review_mode"] == EXPERIENCE_RECIPE_REVIEW_MODE
+    assert adopted["planning_scope_approved"] is True
+    assert adopted["suite_approved"] is True
+    assert adopted["storyboard_reviews"]["sc1"]["decision"] == "auto_adopted"
+    assert adopted.get("asset_decisions") in (None, {})
+    assert len(saved_states) == 1
+
+
+def test_source_decisions_and_identity_references_save_atomically_with_revision(
+    tmp_path, monkeypatch
+):
+    first = "https://assets.example/source.jpg"
+    second = "https://assets.example/alternate.jpg"
+    state = {
+        "offer_id": "3828540231",
+        "_revision": 8,
+        "review": {"image_actions": []},
+        "content_package": {
+            "content_strategy": "ai_assisted",
+            "collect_box_id": "3828540231",
+            "fact_card_approved": True,
+            "planning_scope_approved": True,
+        },
+    }
+    package = _review_package(state["content_package"])
+    # The live source review can exist before an AI package has copied its
+    # images into collect_box. Identity persistence must use the current
+    # source rows, not silently drop the references in this state.
+    package["collect_box"]["image_urls"] = []
+    (tmp_path / "review_package.json").write_text(json.dumps(package), encoding="utf-8")
+    saves = []
+    monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3828540231")
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(workbench, "_content_package_dir", lambda _id: tmp_path)
+    video = "https://assets.example/source.mp4"
+    monkeypatch.setattr(workbench, "_source_summary", lambda _offer: {
+        "images": [
+            {"url": first, "kind": "main"},
+            {"url": second, "kind": "detail"},
+        ],
+        "video": {"url": video, "action": "keep"},
+    })
+    monkeypatch.setattr(workbench, "save_state", lambda _offer, value: saves.append(copy.deepcopy(value)) or value)
+    monkeypatch.setattr(workbench, "content_package_summary", lambda _offer: {"ok": True})
+
+    workbench.save_content_package_review("3828540231", {
+        "expected_revision": 8,
+        "identity_reference_urls": [first, second],
+        "primary_identity_url": second,
+        "image_actions": [
+            {"url": first, "action": "keep"}, {"url": second, "action": "keep"},
+        ],
+        "image_order": [second, first],
+        "video_action": "remove",
+        "video_url": video,
+    })
+
+    assert state["content_package"]["identity_reference_urls"] == [first, second]
+    assert state["content_package"]["primary_identity_url"] == second
+    assert state["review"]["image_order"] == [second, first]
+    assert state["review"]["video_action"] == "remove"
+    assert state["review"]["video_url"] == video
+    assert len(saves) == 1
+    with pytest.raises(ValueError, match="stale"):
+        workbench.save_content_package_review("3828540231", {"expected_revision": 7})
+
+    invalid_reviews = [
+        {"expected_revision": 8.9},
+        {"expected_revision": "8"},
+        {"expected_revision": True},
+        {"expected_revision": 8, "identity_reference_urls": first},
+        {"expected_revision": 8, "identity_reference_urls": [1]},
+        {"expected_revision": 8, "identity_reference_urls": [first, first]},
+        {"expected_revision": 8, "identity_reference_urls": [
+            "https://assets.example/not-current.jpg",
+        ]},
+        {"expected_revision": 8, "image_actions": [
+            {"url": first, "action": "keep"}, {"url": first, "action": "remove"},
+        ]},
+        {"expected_revision": 8, "identity_reference_urls": [first],
+         "primary_identity_url": first, "image_actions": [
+             {"url": first, "action": "remove"}, {"url": second, "action": "keep"},
+         ]},
+        {"expected_revision": 8, "identity_reference_urls": [first],
+         "primary_identity_url": second, "image_actions": [
+             {"url": first, "action": "keep"}, {"url": second, "action": "keep"},
+         ]},
+        {"expected_revision": 8, "video_action": True, "video_url": video},
+        {"expected_revision": 8, "video_action": "keep",
+         "video_url": "https://assets.example/not-current.mp4"},
+    ]
+    for invalid in invalid_reviews:
+        before_saves = len(saves)
+        with pytest.raises(ValueError):
+            workbench.save_content_package_review("3828540231", invalid)
+        assert len(saves) == before_saves
+
+
+def test_content_summary_restores_identity_from_current_source_without_package_images(
+    monkeypatch,
+):
+    current = "https://assets.example/current-source.jpg"
+    stale_package = "https://assets.example/stale-package.jpg"
+    state = {
+        "offer_id": "3828540231",
+        "_revision": 9,
+        "review": {
+            "image_actions": [
+                {"url": current, "kind": "main", "action": "keep", "note": ""},
+            ],
+        },
+        "content_package": {
+            "content_strategy": "ai_assisted",
+            "collect_box_id": "3828540231",
+            "identity_reference_urls": [current],
+            "primary_identity_url": current,
+        },
+    }
+    monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3828540231")
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(
+        workbench,
+        "_source_summary",
+        lambda _offer: {
+            "images": [{"url": current, "kind": "main"}],
+            "precollect": {},
+        },
+    )
+    monkeypatch.setattr(
+        workbench,
+        "_content_package_dir",
+        lambda _id: Path("unused-package"),
+    )
+    monkeypatch.setattr(
+        workbench,
+        "_load_json",
+        lambda _path: {
+            "collect_box": {
+                "image_urls": [stale_package],
+                "primary_identity_image": stale_package,
+            },
+        },
+    )
+    monkeypatch.setattr(workbench, "_content_artifacts", lambda *_args: [])
+    monkeypatch.setattr(
+        workbench,
+        "_generated_review_images",
+        lambda *_args: [],
+    )
+
+    summary = workbench.content_package_summary("3828540231")
+
+    assert summary["source_snapshot"]["image_urls"] == [current]
+    assert summary["source_snapshot"]["identity_reference_urls"] == [current]
+    assert summary["source_snapshot"]["primary_identity_image"] == current
+
+
+def test_auto_adopted_storyboard_does_not_approve_generated_image():
+    image_url = "https://assets.example/generated.png"
+    state = {
+        "content_package": {
+            "content_strategy": "ai_assisted",
+            "planning_review_mode": EXPERIENCE_RECIPE_REVIEW_MODE,
+            "fact_card_approved": True,
+            "planning_scope_approved": True,
+            "suite_approved": True,
+            "storyboard_reviews": {
+                "sc1": {"decision": "auto_adopted"},
+            },
+        },
+        "review": {
+            "image_actions": [],
+            "image_order": [image_url],
+        },
+    }
+    suite = {"suite": {"items": [{"id": "sc1", "selected": True}]}}
+
+    pending = build_workbench_content_package_handoff(
+        product_id="3828540231",
+        state=state,
+        suite_plan=suite,
+        generation_audits={"sc1_r1": _audit(image_url)},
+        copy={"en": "Source-supported product copy"},
+    )
+
+    assert pending.content_package.approval.status == "pending"
+    assert pending.missing_shot_ids == ("sc1",)
+    assert "lacks final content approval" in " ".join(pending.blockers)
+
+    approved_state = copy.deepcopy(state)
+    approved_state["content_package"]["asset_decisions"] = {
+        "sc1_r1": {"decision": "approved"},
+    }
+    approved = build_workbench_content_package_handoff(
+        product_id="3828540231",
+        state=approved_state,
+        suite_plan=suite,
+        generation_audits={"sc1_r1": _audit(image_url)},
+        copy={"en": "Source-supported product copy"},
+    )
+
+    assert approved.content_package.approval.status == "approved"
+    assert approved.content_package.image_urls == (image_url,)
+    assert approved.asset_lineage[0].decision_source == "asset_decisions.approved"
+
+
+def _legacy_migration_fixture(tmp_path: Path, monkeypatch):
+    first = "https://assets.example/source.jpg"
+    second = "https://assets.example/alternate.jpg"
+    content = {
+        "content_strategy": "ai_assisted",
+        "collect_box_id": "3828540231",
+        "fact_card_approved": True,
+        "planning_scope_approved": True,
+        "suite_approved": False,
+        "identity_reference_urls": [first],
+        "primary_identity_url": first,
+        "suite_customization": {
+            "type_counts": {"scene": 1},
+            "size_card": {
+                "enabled": False,
+                "dimensions": "",
+                "confirmed": False,
+            },
+        },
+    }
+    package = {
+        "collect_box": {
+            "source_title": "Watercolour floral wall decal",
+            "primary_identity_image": first,
+            "image_urls": [first, second],
+        },
+        "fact_card": {
+            "verified": [{"field": "material", "value": "PVC"}],
+        },
+        "model_proposal": {
+            "planning_source": "ai",
+            "planning_signature": workbench._planning_recipe_signature(content),
+            "model": "legacy-planner",
+        },
+        "plan": {
+            "analysis": {
+                "subject": "Watercolour floral wall decal",
+                "category": "wall decal",
+                "style_lock": "Preserve the exact printed pattern.",
+            },
+            "_meta": {"category_profile": "wall_decal"},
+            "suite": {
+                "items": [
+                    {
+                        "id": "sc1",
+                        "type": "scene",
+                        "title": "Living Room Application",
+                        "focus": "Show the exact decal on a living-room wall.",
+                        "selected": True,
+                    }
+                ]
+            },
+        },
+    }
+    package_path = tmp_path / "review_package.json"
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    state = {
+        "offer_id": "3828540231",
+        "_revision": 13,
+        "content_package": copy.deepcopy(content),
+    }
+    saved_states: list[dict] = []
+    monkeypatch.setattr(
+        workbench,
+        "resolve_offer_key",
+        lambda _value: "3828540231",
+    )
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(
+        workbench,
+        "_content_package_dir",
+        lambda _collect_box: tmp_path,
+    )
+    monkeypatch.setattr(
+        workbench,
+        "_source_summary",
+        lambda _offer: {
+            "images": [
+                {"url": first, "kind": "main"},
+                {"url": second, "kind": "detail"},
+            ],
+            "video": {},
+        },
+    )
+    monkeypatch.setattr(
+        workbench,
+        "save_state",
+        lambda _offer, value: saved_states.append(copy.deepcopy(value)) or value,
+    )
+    monkeypatch.setattr(
+        workbench,
+        "content_package_summary",
+        lambda _offer: {"ok": True},
+    )
+    return state, package_path, saved_states, first, second
+
+
+@pytest.mark.parametrize(
+    "review_update",
+    [
+        {
+            "suite_customization": {
+                "type_counts": {"scene": 2},
+                "size_card": {
+                    "enabled": False,
+                    "dimensions": "",
+                    "confirmed": False,
+                },
+            }
+        },
+        {
+            "identity_reference_urls": ["https://assets.example/alternate.jpg"],
+            "primary_identity_url": "https://assets.example/alternate.jpg",
+        },
+        {"fact_card_approved": False},
+    ],
+    ids=("recipe_changed", "reference_changed", "fact_changed"),
+)
+def test_legacy_proposal_migration_rejects_recipe_reference_or_fact_drift(
+    tmp_path,
+    monkeypatch,
+    review_update,
+):
+    state, _package_path, _saved, _first, _second = _legacy_migration_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+
+    workbench.save_content_package_review("3828540231", review_update)
+
+    content = state["content_package"]
+    assert content["planning_review_mode"] == EXPERIENCE_RECIPE_REVIEW_MODE
+    assert content["suite_approved"] is False
+    assert content["storyboard_reviews"] == {}
+    assert "storyboard_recipe_signature" not in content
+
+
+def test_matching_legacy_proposal_migrates_then_builds_local_suite_preflight_only(
+    tmp_path,
+    monkeypatch,
+):
+    state, package_path, saved, _first, _second = _legacy_migration_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    before_package = package_path.read_bytes()
+
+    workbench.save_content_package_review("3828540231", {})
+
+    content = state["content_package"]
+    assert content["planning_review_mode"] == EXPERIENCE_RECIPE_REVIEW_MODE
+    assert content["suite_approved"] is True
+    assert content["storyboard_reviews"]["sc1"]["decision"] == "auto_adopted"
+
+    thread_calls: list[tuple] = []
+    subprocess_calls: list[tuple] = []
+    monkeypatch.setattr(
+        workbench.threading,
+        "Thread",
+        lambda *args, **kwargs: thread_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        workbench.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess_calls.append((args, kwargs)),
+    )
+    from modules.sourcing import toapis_client
+
+    payload_calls: list[dict] = []
+    monkeypatch.setattr(
+        toapis_client,
+        "build_generation_payload",
+        lambda **kwargs: payload_calls.append(dict(kwargs))
+        or {
+            "model": kwargs["model"],
+            "prompt": kwargs["prompt"],
+            "reference_images": kwargs["reference_images"],
+        },
+    )
+
+    result = workbench.prepare_suite_image_generations("3828540231")
+
+    assert result["ok"] is True
+    assert result["preflight"]["status"] == "ready_for_explicit_paid_confirmation"
+    assert [row["id"] for row in result["preflight"]["shots"]] == ["sc1"]
+    assert len(payload_calls) == 1
+    assert "remaining_images_preflight" in content
+    assert "remaining_images_generation" not in content
+    assert thread_calls == []
+    assert subprocess_calls == []
+    assert package_path.read_bytes() == before_package
+    assert len(saved) == 2
+
+
+def test_completed_ai_image_review_can_be_finalized_as_the_content_approval(
+    monkeypatch,
+):
+    """The user's final approval must close stage 02 without regenerating images."""
+
+    state = {
+        "offer_id": "3838619319",
+        "_revision": 86,
+        "content_package": {
+            "content_strategy": "ai_assisted",
+            "fact_card_approved": True,
+            "planning_scope_approved": True,
+            "planning_review_mode": EXPERIENCE_RECIPE_REVIEW_MODE,
+            "suite_approved": False,
+            "asset_decisions": {
+                "sc1_r3": {"decision": "approved"},
+                "sp1_r3": {"decision": "rejected"},
+            },
+            "generated_image_miaoshou_decisions": {
+                "sc1_r3": {
+                    "action": "keep",
+                    "status": "reviewed_locally",
+                },
+                "sp1_r3": {
+                    "action": "remove",
+                    "status": "reviewed_locally",
+                },
+            },
+            "suite_revision": 1,
+            "miaoshou_ordered_images_write": {
+                "status": "verified",
+                "ordered_image_urls": [
+                    "https://assets.example/source.jpg",
+                    "https://assets.example/sc1.png",
+                ],
+                "written_image_count": 2,
+                "checks": {
+                    "main_images_exact_order": True,
+                    "detail_images_exact_order": True,
+                },
+                "suite_revision": 1,
+                "recipe_signature": "current",
+            },
+        },
+        "review": {
+            "image_actions": [
+                {"url": "https://assets.example/source.jpg", "action": "keep"},
+            ],
+            "image_order": [
+                "https://assets.example/source.jpg",
+                "https://assets.example/sc1.png",
+            ],
+            "video_action": "none",
+        },
+    }
+    saved: list[dict] = []
+    monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3838619319")
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(workbench, "_content_recipe_signature", lambda _content: "current")
+    monkeypatch.setattr(
+        workbench,
+        "content_package_summary",
+        lambda _offer: {
+            "content_strategy": "ai_assisted",
+            "final_content_approval_ready": True,
+            "completed_ai_suite_evidence": True,
+            "content_approved": bool(
+                state["content_package"].get("suite_approved")
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        workbench,
+        "save_state",
+        lambda _offer, value: saved.append(copy.deepcopy(value)) or value,
+    )
+
+    result = workbench.finalize_content_package_review(
+        "3838619319",
+        {
+            "expected_revision": 86,
+            "approved_by": "Kyle",
+        },
+    )
+
+    assert result["content_approved"] is True
+    assert state["content_package"]["suite_approved"] is True
+    assert state["content_package"]["final_content_approval"]["status"] == "approved"
+    assert state["content_package"]["final_content_approval"]["approved_by"] == "Kyle"
+    assert saved
+
+
+def test_final_approval_uses_verified_miaoshou_images_not_pending_candidates(monkeypatch):
+    state = {
+        "offer_id": "3890899011", "_revision": 9,
+        "review": {"image_order": ["https://img.example/final-1.jpg", "https://img.example/final-2.jpg"], "video_action": "none"},
+        "content_package": {
+            "content_strategy": "ai_assisted", "fact_card_approved": True,
+            "planning_scope_approved": True, "suite_approved": True,
+            "suite_revision": 3,
+            "remaining_images_generation": {"items": [{"artifact_id": "sc1", "miaoshou_action": "review"}, {"artifact_id": "sc2", "miaoshou_action": "review"}]},
+            "miaoshou_ordered_images_write": {
+                "status": "verified", "ordered_image_urls": ["https://img.example/final-1.jpg", "https://img.example/final-2.jpg"],
+                "written_image_count": 2, "checks": {"main_images_exact_order": True, "detail_images_exact_order": True},
+                "suite_revision": 3, "recipe_signature": "current",
+            },
+        },
+    }
+    monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3890899011")
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(workbench, "_content_recipe_signature", lambda _content: "current")
+    monkeypatch.setattr(workbench, "save_state", lambda _offer, value: value)
+
+    workbench.finalize_content_package_review("3890899011", {"expected_revision": 9, "approved_by": "Kyle"})
+
+    assert state["content_package"]["final_content_approval"]["status"] == "approved"
+    assert state["content_package"]["final_content_approval"]["miaoshou_ordered_image_urls"] == state["review"]["image_order"]
+
+
+def test_final_approval_rejects_missing_or_drifted_miaoshou_evidence(monkeypatch):
+    state = {"offer_id": "3890899011", "_revision": 9, "review": {"image_order": ["a"], "video_action": "none"}, "content_package": {"content_strategy": "ai_assisted", "fact_card_approved": True, "planning_scope_approved": True, "suite_approved": True, "suite_revision": 3, "miaoshou_ordered_images_write": {"status": "verified", "ordered_image_urls": ["b"], "written_image_count": 1, "checks": {"main_images_exact_order": True, "detail_images_exact_order": True}, "suite_revision": 3, "recipe_signature": "current"}}}
+    monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3890899011")
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(workbench, "_content_recipe_signature", lambda _content: "current")
+    monkeypatch.setattr(workbench, "save_state", lambda *_args: (_ for _ in ()).throw(AssertionError("must fail before write")))
+
+    with pytest.raises(ValueError, match="Miaoshou"):
+        workbench.finalize_content_package_review("3890899011", {"expected_revision": 9, "approved_by": "Kyle"})
+
+
+def test_valid_ai_final_approval_closes_the_content_workflow_stage() -> None:
+    review = {
+        "title": "Waterproof PVC Floor Sticker",
+        "image_actions": [
+            {"url": "https://assets.example/source.jpg", "action": "keep"},
+        ],
+        "image_order": [
+            "https://assets.example/source.jpg",
+            "https://assets.example/generated.png",
+        ],
+        "video_action": "none",
+        "weight_kg": 1,
+        "package_cm": [10, 10, 10],
+        "selected_sites": ["tiktok:PH"],
+        "cost_cny": 10,
+    }
+    content = {
+        "content_strategy": "ai_assisted",
+        "package_found": True,
+        "fact_card_approved": True,
+        "planning_scope_approved": True,
+        "suite_approved": True,
+        "suite_revision": 1,
+        "asset_decisions": {
+            "sc1": {"decision": "approved"},
+        },
+        "generated_image_miaoshou_decisions": {
+            "sc1": {"action": "keep", "status": "reviewed_locally"},
+        },
+        "miaoshou_ordered_images_write": {
+            "status": "verified",
+            "ordered_image_urls": list(review["image_order"]),
+            "written_image_count": 2,
+            "checks": {
+                "main_images_exact_order": True,
+                "detail_images_exact_order": True,
+            },
+            "suite_revision": 1,
+        },
+    }
+    approval_payload = {
+        "schema_version": "ai-assisted-final-content-approval/v1",
+        "status": "approved",
+        "approved_by": "Kyle",
+        "image_order": list(review["image_order"]),
+        "miaoshou_ordered_image_urls": list(review["image_order"]),
+        "video_action": "none",
+        "asset_decisions": content["asset_decisions"],
+        "generated_image_decisions": content[
+            "generated_image_miaoshou_decisions"
+        ],
+    }
+    content["final_content_approval"] = {
+        **approval_payload,
+        "approval_digest": hashlib.sha256(
+            json.dumps(
+                approval_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        "approved_at": "2026-08-04T00:00:00+00:00",
+    }
+    content["miaoshou_ordered_images_write"]["recipe_signature"] = workbench._content_recipe_signature(content)
+
+    workflow = workbench._product_workflow_summary(
+        source={
+            "title_source": "PVC Floor Sticker",
+            "images": ["https://assets.example/source.jpg"],
+            "cost_cny": 10,
+        },
+        review=review,
+        content=content,
+        miaoshou_draft={},
+        tiktok_claim={},
+        site_drafts={},
+    )
+
+    assert workflow["content_ready"] is True
+    assert workflow["current_stage"] != "content"

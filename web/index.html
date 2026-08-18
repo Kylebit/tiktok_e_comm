@@ -1,135 +1,212 @@
-﻿<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orbit OS 总控台</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#123c35">
+  <title>Orbit · CEO 工作台</title>
+  <link rel="stylesheet" href="/static/orbit_product.css">
+  <script src="/static/orbit_product.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/">Orbit OS 总控台</a>
-    <nav class="nav">
-      <a href="/" class="active">首页</a>
-      <a href="/catalog">商品目录</a>
-      <a href="/settlement">结算中心</a>
-      <a href="/sku-profit">SKU利润探针</a>
-      <a href="/billing">结算账单</a>
-      <a href="/costs">成本中心</a>
-      <a href="/titles">标题优化</a>
-      <a href="/images">主图优化</a>
-      <a href="/sourcing">选品中心</a>
-      <a href="http://127.0.0.1:8767/">Orbit Rus 俄罗斯台</a>
-      <a href="/mx">MX 审批</a>
-      <a href="/uk">UK 审批</a>
-      <a href="/analytics">数据分析</a>
-      <a href="/deactivate">下架巡检</a>
-      <a href="/promotions">促销活动</a>
-    </nav>
-  </header>
-  <main class="container">
-    <h1>Orbit OS 总控台</h1>
-    <p class="hint">本地总控台，集中处理商品目录、结算、选品、优化和日常运营。</p>
-    <div id="statusBar" class="status-bar">正在加载状态...</div>
-    <div class="grid">
-      <a class="card link-card" href="/titles">
-        <h2>标题优化</h2>
-        <p>查看分析信号并批量推进标题优化。</p>
-        <span class="badge" id="titleBadge">--</span>
-      </a>
-      <a class="card link-card" href="/images">
-        <h2>主图优化</h2>
-        <p>查看图片优化候选与主图提升任务。</p>
-        <span class="badge" id="imageBadge">--</span>
-      </a>
-      <a class="card link-card" href="/analytics">
-        <h2>数据分析</h2>
-        <p>查看商品分层与表现分桶。</p>
-      </a>
-      <a class="card link-card" href="/deactivate">
-        <h2>下架巡检</h2>
-        <p>把低表现商品加入下架复核队列。</p>
-        <span class="badge" id="deactBadge">--</span>
-      </a>
-      <a class="card link-card" href="/promotions">
-        <h2>促销活动</h2>
-        <p>管理折扣、活动扫描与优惠券流程。</p>
-        <span class="badge" id="promoBadge">--</span>
-      </a>
-      <a class="card link-card" href="/sourcing">
-        <h2>选品中心</h2>
-        <p>处理 1688 选品、素材准备和下游流转。</p>
-        <span class="badge">运行中</span>
-      </a>
-      <a class="card link-card" href="http://127.0.0.1:8766/">
-        <h2>Orbit Treasury 新品发布台</h2>
-        <p>独立新品上架与审核工作台。</p>
-        <span class="badge">运行中</span>
-      </a>
-      <a class="card link-card" href="http://127.0.0.1:8767/">
-        <h2>Orbit Rus 俄罗斯台</h2>
-        <p>独立俄罗斯与 Ozon 运营台。</p>
-      </a>
-      <a class="card link-card" href="/mx">
-        <h2>MX 墨西哥上架审批</h2>
-        <p>飞书派单候选 → POP 定价 → 本地 Web 批准发布（不在群内审批）</p>
-        <span class="badge" id="mxBadge">—</span>
-      </a>
-      <a class="card link-card" href="/uk">
-        <h2>UK 英国上架审批</h2>
-        <p>4PL 价卡 POP → Web 批准发布到 GB 店（满 £10 包邮 · 25% 折扣）</p>
-        <span class="badge" id="ukBadge">—</span>
-      </a>
-      <a class="card link-card" href="/catalog">
-        <h2>商品目录</h2>
-        <p>浏览并同步共享商品目录。</p>
-      </a>
-      <a class="card link-card" href="/costs">
-        <h2>成本中心</h2>
-        <p>维护定价与利润计算使用的 SKU 成本。</p>
-      </a>
-      <a class="card link-card" href="/settlement">
-        <h2>结算中心</h2>
-        <p>查看 TikTok 财务导入与利润汇总。</p>
-      </a>
-      <a class="card link-card" href="/sku-profit">
-        <h2>SKU 利润探针</h2>
-        <p>TH 试验：按当前售价估算 TK/Shopee 利润。</p>
-      </a>
-      <div class="card muted-card">
-        <h2>Ads</h2>
-        <p>Reserved for future marketing and ads integrations.</p>
-        <span class="badge soon">Soon</span>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Orbit 导航">
+      <div class="sidebar-head">
+        <a class="brand" href="/" aria-label="返回 Orbit 首页">
+          <span class="brand-mark" aria-hidden="true">O</span>
+          <span><strong>Orbit</strong><small>CEO 工作台</small></span>
+        </a>
+        <button
+          id="navToggle"
+          class="nav-toggle"
+          type="button"
+          aria-controls="orbitNav"
+          aria-expanded="false"
+        >
+          <span aria-hidden="true"></span>
+          <span class="sr-only">打开导航</span>
+        </button>
       </div>
-    </div>
-  </main>
-  <script>
-    fetch('/api/status').then(function(r) { return r.json(); }).then(function(s) {
-      var el = document.getElementById('statusBar');
-      if (!s.ok) {
-        el.innerHTML = 'Auth required or local service unavailable';
-        el.className = 'status-bar warn';
-        return;
-      }
-      var parts = ['Seller <b>' + (s.seller_name || '?') + '</b>'];
-      if (s.access_expires) parts.push('Access token until ' + s.access_expires.slice(0, 16).replace('T', ' '));
-      el.innerHTML = parts.join(' | ');
-      el.className = 'status-bar ok';
-      var b = document.getElementById('titleBadge');
-      if (b) b.textContent = (s.pending_titles || 0) + ' pending';
-      var pb = document.getElementById('promoBadge');
-      if (pb) pb.textContent = (s.pending_promos || 0) + ' pending';
-      var db = document.getElementById('deactBadge');
-      if (db) db.textContent = (s.pending_deactivate || 0) + ' pending';
-      var ib = document.getElementById('imageBadge');
-      if (ib) ib.textContent = (s.pending_images || 0) + ' 条待处理';
-      var mx = document.getElementById('mxBadge');
-      if (mx) mx.textContent = (s.pending_mx || 0) + ' 条待审';
-      var uk = document.getElementById('ukBadge');
-      if (uk) uk.textContent = (s.pending_uk || 0) + ' 条待审';
-    }).catch(function() {
-      document.getElementById('statusBar').textContent = 'Unable to reach local service';
-    });
-  </script>
+
+      <nav id="orbitNav" class="main-nav" aria-label="主导航">
+        <span class="nav-loading">正在加载业务入口…</span>
+      </nav>
+
+      <div class="sidebar-foot">
+        <span class="live-dot" aria-hidden="true"></span>
+        <div><strong id="sidebarServiceState">本地状态检查中</strong><small>Orbit Shared Platform</small></div>
+      </div>
+    </aside>
+
+    <div id="navBackdrop" class="nav-backdrop" hidden></div>
+
+    <main id="main" class="main">
+      <header class="topbar">
+        <div>
+          <span class="eyebrow">ORBIT · LOCAL OPERATIONS</span>
+          <strong id="headerTitle">今天的运营</strong>
+        </div>
+        <div class="topbar-meta">
+          <span id="serviceState" class="status-chip neutral">检查中</span>
+          <span id="updatedAt">尚未更新</span>
+        </div>
+      </header>
+
+      <section id="overviewView" class="page">
+        <div class="welcome">
+          <div>
+            <span id="todayLabel" class="eyebrow">TODAY</span>
+            <h1>Kyle，今天先把两件事做完。</h1>
+            <p>上新品，查利润。其他运营能力仍按五个业务域保留在下面。</p>
+          </div>
+          <a class="quiet-link" href="/?view=tasks">查看任务与通知 <span aria-hidden="true">→</span></a>
+        </div>
+
+        <section class="focus-grid" aria-label="今日主任务">
+          <article class="focus-card focus-product">
+            <div class="focus-card-top">
+              <span class="focus-number">01</span>
+              <span class="focus-tag">上品主路径</span>
+            </div>
+            <div class="focus-copy">
+              <span class="eyebrow">PRODUCT · CONTENT · CHANNEL</span>
+              <h2>自动上品</h2>
+              <p>从采集箱开始，完成商品资料、AI 商品图片、人工确认与渠道草稿。</p>
+            </div>
+            <ol class="flow" aria-label="自动上品步骤">
+              <li>采集箱</li>
+              <li>商品资料</li>
+              <li>AI 图片</li>
+              <li>人工确认</li>
+              <li>渠道草稿</li>
+            </ol>
+            <div class="focus-actions">
+              <a class="primary-button" href="/new-product">开始或继续上品 <span aria-hidden="true">→</span></a>
+              <small>打开工作台不会自动上传商品；真实写入仍需再次确认。</small>
+            </div>
+          </article>
+
+          <article class="focus-card focus-profit">
+            <div class="focus-card-top">
+              <span class="focus-number">02</span>
+              <span id="profitPulse" class="focus-tag neutral">利润状态读取中</span>
+            </div>
+            <div class="focus-copy">
+              <span class="eyebrow">DATA OPERATIONS</span>
+              <h2>利润中心</h2>
+              <p>查看最新周报、数据质量与负利润 SKU，也可以按 Seller SKU 或平台 SKU ID 查询。</p>
+            </div>
+            <div class="profit-preview" aria-live="polite">
+              <div>
+                <span>最近周报</span>
+                <strong id="profitReportState">正在读取</strong>
+              </div>
+              <div>
+                <span>需要复核</span>
+                <strong id="profitReviewCount">—</strong>
+              </div>
+              <div>
+                <span>报告期间</span>
+                <strong id="profitPeriod">—</strong>
+              </div>
+            </div>
+            <div class="focus-actions">
+              <a class="primary-button dark" href="/profit">进入利润中心 <span aria-hidden="true">→</span></a>
+              <small>数据不完整时只展示证据，不把初步结果标成可决策利润。</small>
+            </div>
+          </article>
+        </section>
+
+        <section class="pulse-section" aria-labelledby="pulseTitle">
+          <div class="section-head">
+            <div><span class="eyebrow">OPERATING PULSE</span><h2 id="pulseTitle">运营脉搏</h2></div>
+            <span class="section-note">只展示已接入的本地信号</span>
+          </div>
+          <div class="metrics">
+            <article class="metric-card">
+              <span>待我审批</span>
+              <strong id="approvalMetric">—</strong>
+              <small id="approvalDetail">正在读取审批队列</small>
+            </article>
+            <article class="metric-card">
+              <span>本地警告</span>
+              <strong id="exceptionMetric">—</strong>
+              <small id="exceptionDetail">未接入的域不计为零</small>
+            </article>
+            <article class="metric-card">
+              <span>未读通知</span>
+              <strong id="runMetric">—</strong>
+              <small id="runDetail">正在读取本地收件箱</small>
+            </article>
+            <article class="metric-card">
+              <span>跨域数据新鲜度</span>
+              <strong>未知</strong>
+              <small>统一新鲜度接口尚未建设</small>
+            </article>
+          </div>
+        </section>
+
+        <div class="overview-grid">
+          <section class="panel" aria-labelledby="domainsTitle">
+            <div class="section-head compact">
+              <div><span class="eyebrow">BUSINESS DOMAINS</span><h2 id="domainsTitle">五个运营域</h2></div>
+              <span class="section-note">业务边界保持清晰</span>
+            </div>
+            <div id="domainCards" class="domain-grid">
+              <p class="empty-copy">正在加载业务域…</p>
+            </div>
+          </section>
+
+          <div class="panel-stack">
+            <section class="panel" aria-labelledby="approvalTitle">
+              <div class="section-head compact">
+                <div><span class="eyebrow">APPROVALS</span><h2 id="approvalTitle">待我审批</h2></div>
+                <a class="quiet-link" href="/?view=approvals">全部</a>
+              </div>
+              <div id="approvalList" class="list" aria-live="polite">
+                <p class="empty-copy">正在读取审批队列…</p>
+              </div>
+            </section>
+            <section class="panel" aria-labelledby="runsTitle">
+              <div class="section-head compact">
+                <div><span class="eyebrow">RECENT</span><h2 id="runsTitle">最近任务</h2></div>
+                <a class="quiet-link" href="/?view=tasks">任务与通知</a>
+              </div>
+              <div id="recentRunList" class="list" aria-live="polite">
+                <p class="empty-copy">正在读取本地收件箱…</p>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section id="workspaceView" class="page hidden">
+        <div class="workspace-hero">
+          <div>
+            <span id="workspaceEyebrow" class="eyebrow">BUSINESS DOMAIN</span>
+            <h1 id="workspaceTitle">业务域</h1>
+            <p id="workspaceDescription"></p>
+          </div>
+          <a class="quiet-link" href="/">返回今日运营 <span aria-hidden="true">→</span></a>
+        </div>
+        <div id="workspaceLinks" class="workspace-grid"></div>
+        <section id="internalToolsSection" class="internal-tools hidden" aria-labelledby="internalToolsTitle">
+          <div class="section-head compact">
+            <div>
+              <span class="eyebrow">INTERNAL ONLY</span>
+              <h2 id="internalToolsTitle">内部工具</h2>
+            </div>
+            <span class="status-chip warning">非日常业务入口</span>
+          </div>
+          <div id="internalToolLinks" class="workspace-grid"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div id="pageAlert" class="sr-only" role="status" aria-live="polite"></div>
 </body>
 </html>

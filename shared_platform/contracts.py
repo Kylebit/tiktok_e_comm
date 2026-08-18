@@ -79,6 +79,8 @@ class FinancialFact:
     occurred_at: datetime
     product_id: str | None = None
     channel: str | None = None
+    sku_id: str | None = None
+    region: str | None = None
 
 
 def _payload_value(value: Any) -> Any:

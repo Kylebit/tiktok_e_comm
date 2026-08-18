@@ -1,0 +1,1818 @@
+"""Independent Shopee global-to-regional execution boundary for the Skill.
+
+The module intentionally separates the provider write from official readback:
+
+* dispatch never mutates ``global_sku_map``;
+* every selected region is attempted independently;
+* an unselected region is never touched;
+* only exact official item/model/linkage readback records a shop item and
+  therefore expands ``published_regions``.
+
+The orchestration functions accept an injectable runtime so their state
+semantics can be tested without credentials, network calls, or platform
+writes.  ``OfficialShopeeRegionRuntime`` is the thin live adapter used by the
+Skill CLI when the operator explicitly authorizes execution.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+import hashlib
+import json
+import re
+import time
+from typing import Any, Mapping, Protocol
+from domains.product_operations import publication_images_for_target
+from modules.shopee.global_copy import localized_semantic_line_matches
+
+from modules.shopee.global_copy import contains_vietnamese_language_features
+
+
+REGIONAL_CURRENCIES = {
+    "PH": "PHP",
+    "MY": "MYR",
+    "TH": "THB",
+    "VN": "VND",
+}
+REGIONAL_TARGETS = tuple(f"shopee:{region}" for region in REGIONAL_CURRENCIES)
+CREATE_TASK_PATH = "/api/v2/global_product/create_publish_task"
+TASK_RESULT_PATH = "/api/v2/global_product/get_publish_task_result"
+
+
+class ShopeeRegionContractError(ValueError):
+    """The frozen snapshot cannot produce an exact regional command."""
+
+
+@dataclass(frozen=True)
+class RegionContext:
+    region: str
+    shop_id: int
+    merchant_id: int
+    shop_token: str
+    merchant_token: str
+
+
+class ShopeeRegionRuntime(Protocol):
+    def context(self, region: str) -> RegionContext: ...
+
+    def global_models(
+        self, context: RegionContext, global_item_id: str
+    ) -> list[Mapping[str, object]]: ...
+
+    def compatible_logistics(
+        self,
+        context: RegionContext,
+        *,
+        weight_kg: float,
+        dimensions_cm: tuple[float, float, float],
+    ) -> list[int]: ...
+
+    def create_publish_task(
+        self, context: RegionContext, body: Mapping[str, object]
+    ) -> object: ...
+
+    def existing_regional_item(
+        self, context: RegionContext, global_item_id: str
+    ) -> str | None: ...
+
+    def discover_existing_regional_item(
+        self,
+        context: RegionContext,
+        global_item_id: str,
+        model_skus: tuple[str, ...],
+    ) -> str | None: ...
+
+    def publish_task_result(
+        self, context: RegionContext, task_id: str
+    ) -> object: ...
+
+    def regional_item(
+        self, context: RegionContext, item_id: str
+    ) -> Mapping[str, object] | None: ...
+
+    def list_item(self, context: RegionContext, item_id: str) -> None: ...
+
+    def enable_applicable_logistics(
+        self, context: RegionContext, item_id: str
+    ) -> Mapping[str, object]: ...
+
+    def localize_regional_copy(
+        self,
+        context: RegionContext,
+        *,
+        english_title: str,
+        english_description: str,
+    ) -> Mapping[str, object]: ...
+
+    def update_regional_copy(
+        self,
+        context: RegionContext,
+        item_id: str,
+        *,
+        title: str,
+        description: str,
+    ) -> Mapping[str, object]: ...
+
+    def existing_regional_image_binding(
+        self, context: RegionContext, global_item_id: str
+    ) -> Mapping[str, object] | None: ...
+
+    def upload_regional_images(
+        self, context: RegionContext, image_urls: tuple[str, ...]
+    ) -> Mapping[str, object]: ...
+
+    def update_regional_images(
+        self,
+        context: RegionContext,
+        item_id: str,
+        *,
+        image_ids: tuple[str, ...],
+    ) -> Mapping[str, object]: ...
+
+    def regional_models(
+        self, context: RegionContext, item_id: str
+    ) -> list[Mapping[str, object]]: ...
+
+    def resolved_global_item_id(
+        self, context: RegionContext, item_id: str
+    ) -> str: ...
+
+    def record_verified_item(
+        self,
+        *,
+        global_item_id: str,
+        region: str,
+        shop_id: int,
+        item_id: str,
+        model_id: str,
+        image_route_digest: str = "",
+        image_ids: tuple[str, ...] = (),
+    ) -> None: ...
+
+
+def selected_region_targets(snapshot: Mapping[str, object]) -> list[str]:
+    """Return only explicitly approved Shopee regional targets.
+
+    ``shopee:GLOBAL`` is deliberately excluded.  Global-only approval must
+    produce an empty list and cannot be interpreted as four regional shops.
+    """
+
+    candidates: list[object] = []
+    publication_targets = snapshot.get("publication_targets")
+    if isinstance(publication_targets, list):
+        for row in publication_targets:
+            if isinstance(row, Mapping):
+                candidates.append(row.get("target_label"))
+    platforms = snapshot.get("platforms")
+    shopee = platforms.get("shopee") if isinstance(platforms, Mapping) else None
+    if isinstance(shopee, Mapping):
+        rows = shopee.get("targets")
+        if isinstance(rows, list):
+            candidates.extend(rows)
+
+    selected: list[str] = []
+    for candidate in candidates:
+        target = str(candidate or "").strip()
+        if target not in REGIONAL_TARGETS or target in selected:
+            continue
+        selected.append(target)
+    return selected
+
+
+def dispatch_selected_regions(
+    snapshot: Mapping[str, object],
+    *,
+    global_item_id: str,
+    runtime: ShopeeRegionRuntime,
+) -> dict[str, object]:
+    """Submit one independent official publish task per selected region."""
+
+    global_id = _positive_identity(global_item_id, "global item identity")
+    targets = selected_region_targets(snapshot)
+    results: list[dict[str, object]] = []
+    for target in targets:
+        region = target.split(":", 1)[1]
+        try:
+            approved_models = _approved_models(snapshot, target)
+            approved_item_sku = _expected_item_sku(snapshot)
+            parcel = _parcel_envelope(snapshot)
+            context = runtime.context(region)
+            official_models = runtime.global_models(context, global_id)
+            tiers = _exact_global_tiers(official_models, approved_models)
+            logistics = sorted(
+                {
+                    int(value)
+                    for value in runtime.compatible_logistics(
+                        context,
+                        weight_kg=parcel[0],
+                        dimensions_cm=parcel[1],
+                    )
+                    if type(value) is int and value > 0
+                }
+            )
+            if not logistics:
+                raise ShopeeRegionContractError(
+                    "no official logistics channel supports the approved parcel"
+                )
+            body = _publish_body(
+                region=region,
+                shop_id=context.shop_id,
+                global_item_id=global_id,
+                approved_models=approved_models,
+                tiers=tiers,
+                logistics=logistics,
+                item_sku=approved_item_sku,
+            )
+            existing_item_id = runtime.existing_regional_item(
+                context, global_id
+            )
+            if not existing_item_id:
+                existing_item_id = runtime.discover_existing_regional_item(
+                    context,
+                    global_id,
+                    tuple(sorted(row["model_sku"] for row in approved_models)),
+                )
+        except Exception as error:
+            results.append(
+                _target_fact(
+                    target,
+                    attempted=False,
+                    accepted=False,
+                    outcome="NOT_ATTEMPTED",
+                    message=str(error),
+                )
+            )
+            continue
+
+        if existing_item_id:
+            results.append(
+                {
+                    **_target_fact(
+                        target,
+                        attempted=False,
+                        accepted=True,
+                        outcome="ACCEPTED",
+                        message="existing regional identity requires official readback",
+                    ),
+                    "existing_item_id": existing_item_id,
+                    "shop_id": context.shop_id,
+                    "expected_model_count": len(approved_models),
+                    "selected_logistics_ids": logistics,
+                    "price_lineage_digest": _digest({"models": approved_models}),
+                    "external_write_count": 0,
+                }
+            )
+            continue
+
+        try:
+            response = runtime.create_publish_task(context, body)
+        except Exception as error:
+            # An exception raised by the write transport cannot prove whether
+            # the provider received the request.
+            results.append(
+                _target_fact(
+                    target,
+                    attempted=True,
+                    accepted=False,
+                    outcome="UNKNOWN",
+                    message=type(error).__name__,
+                )
+            )
+            continue
+        error_code, error_message = _provider_error(response)
+        if error_code:
+            results.append(
+                _target_fact(
+                    target,
+                    attempted=True,
+                    accepted=False,
+                    outcome="REJECTED",
+                    provider_code=error_code,
+                    message=error_message,
+                )
+            )
+            continue
+        task_id = _publish_task_id(response)
+        if not task_id:
+            results.append(
+                _target_fact(
+                    target,
+                    attempted=True,
+                    accepted=False,
+                    outcome="UNKNOWN",
+                    message="official response did not contain publish_task_id",
+                )
+            )
+            continue
+        results.append(
+            {
+                **_target_fact(
+                    target,
+                    attempted=True,
+                    accepted=True,
+                    outcome="ACCEPTED",
+                ),
+                "provider_task_id": task_id,
+                "shop_id": context.shop_id,
+                "command_digest": _digest(body),
+                "expected_model_count": len(approved_models),
+                "selected_logistics_ids": logistics,
+                "price_lineage_digest": _digest({"models": approved_models}),
+                "external_write_count": 1,
+            }
+        )
+    return _dispatch_envelope(global_id, targets, results)
+
+
+def readback_dispatched_regions(
+    snapshot: Mapping[str, object],
+    dispatch: Mapping[str, object],
+    *,
+    global_item_id: str,
+    runtime: ShopeeRegionRuntime,
+    poll_attempts: int = 3,
+) -> dict[str, object]:
+    """Verify accepted tasks from official shop facts, target by target."""
+
+    global_id = _positive_identity(global_item_id, "global item identity")
+    attempts = max(1, min(int(poll_attempts), 10))
+    dispatch_rows = {
+        str(row.get("target_label") or ""): row
+        for row in dispatch.get("targets") or []
+        if isinstance(row, Mapping)
+    }
+    results: list[dict[str, object]] = []
+    for target in selected_region_targets(snapshot):
+        source = dispatch_rows.get(target)
+        if not isinstance(source, Mapping) or source.get("accepted") is not True:
+            results.append(
+                _target_fact(
+                    target,
+                    attempted=False,
+                    accepted=False,
+                    outcome="NOT_DISPATCHED",
+                    message="no accepted official regional task exists",
+                )
+            )
+            continue
+        task_id = str(source.get("provider_task_id") or "").strip()
+        existing_item_id = str(source.get("existing_item_id") or "").strip()
+        is_existing_identity = bool(existing_item_id)
+        region = target.split(":", 1)[1]
+        try:
+            if not task_id and not existing_item_id:
+                raise ShopeeRegionContractError("publish task identity is missing")
+            approved_models = _approved_models(snapshot, target)
+            context = runtime.context(region)
+            expected_tiers = _exact_global_tiers(
+                runtime.global_models(context, global_id), approved_models
+            )
+            if existing_item_id:
+                item_id = existing_item_id
+            else:
+                task = _poll_task(runtime, context, task_id, attempts)
+                status = str(task.get("publish_status") or "").strip().lower()
+                if status not in {"success", "failed"}:
+                    results.append(
+                        {
+                            **_target_fact(
+                                target,
+                                attempted=True,
+                                accepted=True,
+                                outcome="PROCESSING",
+                                message="official publish task is still processing",
+                            ),
+                            "provider_task_id": task_id,
+                            "external_write_count": 0,
+                        }
+                    )
+                    continue
+                if status == "failed":
+                    results.append(
+                        {
+                            **_target_fact(
+                                target,
+                                attempted=True,
+                                accepted=True,
+                                outcome="FAILED",
+                                message="official publish task failed",
+                            ),
+                            "provider_task_id": task_id,
+                            "external_write_count": 0,
+                        }
+                    )
+                    continue
+                item_id = _task_item_id(task)
+                if not item_id:
+                    raise ShopeeRegionContractError(
+                        "successful publish task did not identify a shop item"
+                    )
+            item = runtime.regional_item(context, item_id)
+            base_images = tuple(_approved_images(snapshot))
+            target_images = tuple(publication_images_for_target(snapshot, target))
+            if len(target_images) != len(base_images):
+                raise ShopeeRegionContractError(
+                    "localized regional image count conflicts with the global master"
+                )
+            localized_image_route = target_images != base_images
+            image_route_digest = (
+                _digest({"ordered_images": list(target_images)})
+                if localized_image_route
+                else ""
+            )
+            expected_image_ids: tuple[str, ...] | None = None
+            image_attempted = False
+            image_error_type = ""
+            image_write_count: int | None = 0
+            if localized_image_route:
+                stored_binding = runtime.existing_regional_image_binding(
+                    context, global_id
+                )
+                if stored_binding is not None:
+                    stored_digest = str(
+                        stored_binding.get("image_route_digest") or ""
+                    ).strip()
+                    stored_ids = _image_ids(
+                        stored_binding.get("image_ids"),
+                        "stored regional image binding",
+                    )
+                    if stored_digest != image_route_digest:
+                        raise ShopeeRegionContractError(
+                            "stored regional image route conflicts with the approved route"
+                        )
+                    expected_image_ids = tuple(stored_ids)
+                else:
+                    identity_models = runtime.regional_models(context, item_id)
+                    identity_linkage = runtime.resolved_global_item_id(
+                        context, item_id
+                    )
+                    if not _regional_identity_safe_for_image_update(
+                        item=item,
+                        models=identity_models,
+                        resolved_global_item_id=identity_linkage,
+                        expected_global_item_id=global_id,
+                        expected_models=approved_models,
+                        expected_item_sku=_expected_item_sku(snapshot),
+                        expected_category_id=_expected_category_id(snapshot, target),
+                        item_id=item_id,
+                    ):
+                        raise ShopeeRegionContractError(
+                            "regional identity is not exact enough for an image update"
+                        )
+                    image_attempted = True
+                    upload_receipt = runtime.upload_regional_images(
+                        context, target_images
+                    )
+                    uploaded_ids = _image_ids(
+                        upload_receipt.get("image_ids"),
+                        "regional image upload receipt",
+                    )
+                    if len(uploaded_ids) != len(target_images):
+                        raise ShopeeRegionContractError(
+                            "regional image upload coverage is incomplete"
+                        )
+                    upload_write_count = _nonnegative_write_count(
+                        upload_receipt.get("external_write_count"),
+                        "regional image upload write count",
+                    )
+                    expected_image_ids = tuple(uploaded_ids)
+                    try:
+                        update_receipt = runtime.update_regional_images(
+                            context,
+                            item_id,
+                            image_ids=expected_image_ids,
+                        )
+                        update_write_count = _nonnegative_write_count(
+                            update_receipt.get("external_write_count"),
+                            "regional image update write count",
+                        )
+                        image_write_count = upload_write_count + update_write_count
+                    except Exception as error:
+                        image_error_type = type(error).__name__
+                        image_write_count = None
+                    item = runtime.regional_item(context, item_id)
+                    if _official_image_ids(item) == expected_image_ids:
+                        image_write_count = upload_write_count + 1
+            listing_attempted = False
+            listing_error_type = ""
+            listing_write_count: int | None = 0
+            should_list = (
+                isinstance(item, Mapping)
+                and str(item.get("item_status") or "").strip().upper()
+                == "UNLIST"
+            )
+            logistics_attempted = False
+            logistics_error_type = ""
+            logistics_write_count: int | None = 0
+            expected_title, expected_description = _approved_copy(snapshot)
+            copy_repair_attempted = False
+            copy_repair_error_type = ""
+            copy_write_count: int | None = 0
+            repaired_copy: tuple[str, str] | None = None
+            if region in {"TH", "VN"} and not _regional_copy_matches(
+                item,
+                region=region,
+                english_title=expected_title,
+                english_description=expected_description,
+            ):
+                copy_repair_attempted = True
+                try:
+                    localized = runtime.localize_regional_copy(
+                        context,
+                        english_title=expected_title,
+                        english_description=expected_description,
+                    )
+                    localized_title = str(localized.get("title") or "").strip()
+                    localized_description = str(
+                        localized.get("description") or ""
+                    ).strip()
+                    if not _localized_copy_matches(
+                        localized_title,
+                        localized_description,
+                        region=region,
+                    ):
+                        raise ShopeeRegionContractError(
+                            "localized regional copy failed language validation"
+                        )
+                except Exception as error:
+                    copy_repair_error_type = type(error).__name__
+                else:
+                    repaired_copy = (localized_title, localized_description)
+                    try:
+                        repair_receipt = runtime.update_regional_copy(
+                            context,
+                            item_id,
+                            title=localized_title,
+                            description=localized_description,
+                        )
+                        copy_write_count = _nonnegative_write_count(
+                            repair_receipt.get("external_write_count"),
+                            "copy repair write count",
+                        )
+                    except Exception as error:
+                        # The update transport may have lost its response after
+                        # Shopee accepted the change. Never retry blindly;
+                        # official readback below is authoritative.
+                        copy_repair_error_type = type(error).__name__
+                        copy_write_count = None
+                    item = runtime.regional_item(context, item_id)
+            if should_list and is_existing_identity:
+                # An existing UNLIST item has no provider task identity to
+                # rescue us from a wrong candidate.  Prove every immutable
+                # commercial and copy fact before making the one listing
+                # write; only the expected NORMAL status is deferred.
+                prelisting_models = runtime.regional_models(context, item_id)
+                prelisting_linkage = runtime.resolved_global_item_id(
+                    context, item_id
+                )
+                prelisting_checks = _official_readback_checks(
+                    item=item,
+                    models=prelisting_models,
+                    resolved_global_item_id=prelisting_linkage,
+                    expected_global_item_id=global_id,
+                    expected_models=approved_models,
+                    expected_tiers=expected_tiers,
+                    expected_logistics=_positive_int_list(
+                        source.get("selected_logistics_ids"),
+                        "selected logistics",
+                    ),
+                    expected_image_count=_approved_image_count(snapshot),
+                    expected_item_sku=_expected_item_sku(snapshot),
+                    expected_category_id=_expected_category_id(snapshot, target),
+                    expected_title=expected_title,
+                    expected_description=expected_description,
+                    expected_region=region,
+                    repaired_copy=repaired_copy,
+                    expected_image_ids=expected_image_ids,
+                    item_id=item_id,
+                )
+                if not all(
+                    value
+                    for name, value in prelisting_checks.items()
+                    if name != "normal_status_exact"
+                ):
+                    raise ShopeeRegionContractError(
+                        "existing UNLIST regional item does not match approved facts"
+                    )
+            if should_list:
+                listing_attempted = True
+                try:
+                    runtime.list_item(context, item_id)
+                    listing_write_count = 1
+                except Exception as error:
+                    # A listing transport exception cannot prove that the
+                    # provider rejected the write.  Always read the item again
+                    # and let the official item status determine the result.
+                    listing_error_type = type(error).__name__
+                    listing_write_count = None
+                item = runtime.regional_item(context, item_id)
+            models = runtime.regional_models(context, item_id)
+            linkage = runtime.resolved_global_item_id(context, item_id)
+            checks = _official_readback_checks(
+                item=item,
+                models=models,
+                resolved_global_item_id=linkage,
+                expected_global_item_id=global_id,
+                expected_models=approved_models,
+                expected_tiers=expected_tiers,
+                expected_logistics=_positive_int_list(
+                    source.get("selected_logistics_ids"),
+                    "selected logistics",
+                ),
+                expected_image_count=_approved_image_count(snapshot),
+                expected_item_sku=_expected_item_sku(snapshot),
+                expected_category_id=_expected_category_id(snapshot, target),
+                expected_title=expected_title,
+                expected_description=expected_description,
+                expected_region=region,
+                repaired_copy=repaired_copy,
+                expected_image_ids=expected_image_ids,
+                item_id=item_id,
+            )
+            verified = all(checks.values())
+            if verified:
+                model_ids = sorted(
+                    str(row.get("model_id") or "")
+                    for row in models
+                    if isinstance(row, Mapping)
+                    and str(row.get("model_id") or "").strip()
+                )
+                record_facts: dict[str, object] = {
+                    "global_item_id": global_id,
+                    "region": region,
+                    "shop_id": context.shop_id,
+                    "item_id": item_id,
+                    "model_id": model_ids[0] if model_ids else "",
+                }
+                if expected_image_ids is not None:
+                    record_facts.update(
+                        image_route_digest=image_route_digest,
+                        image_ids=expected_image_ids,
+                    )
+                runtime.record_verified_item(**record_facts)
+            results.append(
+                {
+                    **_target_fact(
+                        target,
+                        attempted=True,
+                        accepted=True,
+                        outcome="PUBLISHED" if verified else "MISMATCH",
+                        message=(
+                            "official regional item verified"
+                            if verified
+                            else "official regional item does not match approved facts"
+                        ),
+                    ),
+                    "provider_task_id": task_id,
+                    "item_id": item_id,
+                    "checks": checks,
+                    "verified": verified,
+                    "listing_attempted": listing_attempted,
+                    "listing_error_type": listing_error_type,
+                    "logistics_attempted": logistics_attempted,
+                    "logistics_error_type": logistics_error_type,
+                    "copy_repair_attempted": copy_repair_attempted,
+                    "copy_repair_error_type": copy_repair_error_type,
+                    "image_update_attempted": image_attempted,
+                    "image_update_error_type": image_error_type,
+                    "external_write_count": (
+                        None
+                        if listing_write_count is None
+                        or logistics_write_count is None
+                        or copy_write_count is None
+                        or image_write_count is None
+                        else (
+                            listing_write_count
+                            + logistics_write_count
+                            + copy_write_count
+                            + image_write_count
+                        )
+                    ),
+                }
+            )
+        except Exception as error:
+            results.append(
+                {
+                    **_target_fact(
+                        target,
+                        attempted=True,
+                        accepted=True,
+                        outcome="UNKNOWN",
+                        message=str(error),
+                    ),
+                    "provider_task_id": task_id,
+                }
+            )
+    verified_count = sum(row.get("verified") is True for row in results)
+    return {
+        "schema_version": "shopee-regional-readback/v1",
+        "platform": "shopee",
+        "global_item_id": global_id,
+        "target_count": len(results),
+        "verified_target_count": verified_count,
+        "complete": bool(results) and verified_count == len(results),
+        "targets": results,
+    }
+
+
+class OfficialShopeeRegionRuntime:
+    """Thin adapter over the repository's audited official Shopee clients."""
+
+    def context(self, region: str) -> RegionContext:
+        from modules.shopee.auth import ensure_shop_token
+        from modules.shopee.publish import _merchant_token, _shop_meta
+        from modules.shopee.shops import sync_shop_ids
+
+        clean = _region(region)
+        shop_id = int(sync_shop_ids().get(clean) or 0)
+        if shop_id <= 0:
+            raise RuntimeError(f"official Shopee shop mapping is unavailable for {clean}")
+        shop_token = ensure_shop_token(shop_id)
+        merchant_id = int(_shop_meta(shop_id, shop_token).get("merchant_id") or 0)
+        if merchant_id <= 0:
+            raise RuntimeError("official Shopee merchant identity is unavailable")
+        return RegionContext(
+            region=clean,
+            shop_id=shop_id,
+            merchant_id=merchant_id,
+            shop_token=shop_token,
+            merchant_token=_merchant_token(shop_id, shop_token),
+        )
+
+    def global_models(
+        self, context: RegionContext, global_item_id: str
+    ) -> list[Mapping[str, object]]:
+        from modules.shopee.client import merchant_get
+
+        response = merchant_get(
+            "/api/v2/global_product/get_global_model_list",
+            context.merchant_id,
+            context.merchant_token,
+            {"global_item_id": int(global_item_id)},
+        )
+        _raise_provider_error(response, "official global model read")
+        rows = (response.get("response") or {}).get("global_model") or []
+        if not isinstance(rows, list):
+            raise RuntimeError("official global model response is malformed")
+        return [row for row in rows if isinstance(row, Mapping)]
+
+    def compatible_logistics(
+        self,
+        context: RegionContext,
+        *,
+        weight_kg: float,
+        dimensions_cm: tuple[float, float, float],
+    ) -> list[int]:
+        from modules.shopee.publish import _logistic_info
+
+        rows = _logistic_info(
+            context.shop_id,
+            context.shop_token,
+            None,
+            region=context.region,
+            weight_kg=weight_kg,
+            dimensions_cm=dimensions_cm,
+        )
+        return [
+            int(row["logistic_id"])
+            for row in rows
+            if isinstance(row, Mapping)
+            and type(row.get("logistic_id")) is int
+            and row["logistic_id"] > 0
+        ]
+
+    def create_publish_task(
+        self, context: RegionContext, body: Mapping[str, object]
+    ) -> object:
+        from modules.shopee.client import merchant_post
+
+        return merchant_post(
+            CREATE_TASK_PATH,
+            context.merchant_id,
+            context.merchant_token,
+            dict(body),
+        )
+
+    def existing_regional_item(
+        self, context: RegionContext, global_item_id: str
+    ) -> str | None:
+        from modules.shopee.global_sku_map import load_map
+
+        entry = load_map().get(str(global_item_id))
+        if not isinstance(entry, Mapping):
+            return None
+        shop_items = entry.get("shop_items")
+        row = (
+            shop_items.get(context.region)
+            if isinstance(shop_items, Mapping)
+            else None
+        )
+        if not isinstance(row, Mapping):
+            return None
+        if int(row.get("shop_id") or 0) != context.shop_id:
+            raise ShopeeRegionContractError(
+                "stored regional item belongs to a different shop"
+            )
+        item_id = str(row.get("item_id") or "").strip()
+        if not item_id.isdigit() or int(item_id) <= 0:
+            raise ShopeeRegionContractError(
+                "stored regional item identity is invalid"
+            )
+        return item_id
+
+    def discover_existing_regional_item(
+        self,
+        context: RegionContext,
+        global_item_id: str,
+        model_skus: tuple[str, ...],
+    ) -> str | None:
+        """Bounded, read-only recovery for an absent local shop-item mapping."""
+        from modules.shopee.client import shop_get
+
+        expected_skus = set(model_skus)
+        if not expected_skus or len(expected_skus) != len(model_skus):
+            raise ShopeeRegionContractError("approved regional Model-SKU set is invalid")
+        candidate_ids: list[str] = []
+        # Existing regional work may have stopped after Shopee created the
+        # exact item as UNLIST. Recover it safely, but never discover/revive a
+        # BANNED identity. Each status has its own bounded official listing.
+        for status in ("NORMAL", "UNLIST"):
+            offset = 0
+            for _page in range(10):
+                response = shop_get(
+                    "/api/v2/product/get_item_list",
+                    context.shop_id,
+                    context.shop_token,
+                    {"offset": offset, "page_size": 100, "item_status": status},
+                )
+                _raise_provider_error(response, "official regional item discovery")
+                payload = response.get("response") or {}
+                rows = payload.get("item")
+                if (
+                    rows is None
+                    and type(payload.get("total_count")) is int
+                    and payload["total_count"] == 0
+                    and payload.get("has_next_page") is False
+                ):
+                    rows = []
+                if not isinstance(rows, list):
+                    raise RuntimeError("official regional item discovery is malformed")
+                page_ids = [
+                    str(row.get("item_id") or "").strip()
+                    for row in rows
+                    if isinstance(row, Mapping)
+                ]
+                if len(page_ids) != len(rows) or any(not item_id.isdigit() for item_id in page_ids):
+                    raise RuntimeError("official regional item discovery identities are malformed")
+                for item_id in page_ids:
+                    models = self.regional_models(context, item_id)
+                    observed_skus = {
+                        str(row.get("model_sku") or "").strip()
+                        for row in models
+                        if str(row.get("model_sku") or "").strip()
+                    }
+                    if observed_skus != expected_skus or len(models) != len(expected_skus):
+                        continue
+                    linkage = self.resolved_global_item_id(context, item_id)
+                    if linkage != global_item_id:
+                        raise ShopeeRegionContractError(
+                            "regional Model-SKU candidate belongs to a different global item"
+                        )
+                    candidate_ids.append(item_id)
+                if payload.get("has_next_page") is not True:
+                    break
+                next_offset = payload.get("next_offset")
+                if type(next_offset) is not int or next_offset <= offset:
+                    raise RuntimeError("official regional item discovery pagination is invalid")
+                offset = next_offset
+            else:
+                raise RuntimeError("official regional item discovery exceeded page bound")
+        unique_ids = sorted(set(candidate_ids))
+        if len(unique_ids) > 1:
+            raise ShopeeRegionContractError("regional item discovery is ambiguous")
+        return unique_ids[0] if unique_ids else None
+
+    def publish_task_result(
+        self, context: RegionContext, task_id: str
+    ) -> object:
+        from modules.shopee.client import merchant_get
+
+        return merchant_get(
+            TASK_RESULT_PATH,
+            context.merchant_id,
+            context.merchant_token,
+            {"publish_task_id": int(task_id)},
+        )
+
+    def regional_item(
+        self, context: RegionContext, item_id: str
+    ) -> Mapping[str, object] | None:
+        from modules.shopee.client import shop_get
+
+        response = shop_get(
+            "/api/v2/product/get_item_base_info",
+            context.shop_id,
+            context.shop_token,
+            {"item_id_list": item_id},
+        )
+        _raise_provider_error(response, "official regional item read")
+        rows = (response.get("response") or {}).get("item_list") or []
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, Mapping)
+            and str(row.get("item_id") or "") == item_id
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def list_item(self, context: RegionContext, item_id: str) -> None:
+        from modules.shopee.client import shop_post
+
+        response = shop_post(
+            "/api/v2/product/unlist_item",
+            context.shop_id,
+            context.shop_token,
+            {"item_list": [{"item_id": int(item_id), "unlist": False}]},
+        )
+        _raise_provider_error(response, "official regional item listing")
+        rows = (response.get("response") or {}).get("success_list") or []
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, Mapping)
+            and str(row.get("item_id") or "") == str(item_id)
+            and row.get("unlist") is False
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "official regional item listing response did not confirm the item"
+            )
+
+    def enable_applicable_logistics(
+        self, context: RegionContext, item_id: str
+    ) -> Mapping[str, object]:
+        from modules.shopee.publish import enable_all_applicable_logistics
+
+        receipt = enable_all_applicable_logistics(
+            context.shop_id, context.shop_token, item_id
+        )
+        if receipt.get("verified") is not True:
+            raise RuntimeError("official regional logistics were not verified")
+        attempts = len(receipt.get("newly_enabled_logistic_ids") or []) + len(
+            receipt.get("rejected_logistics") or []
+        )
+        return {
+            "external_write_count": attempts,
+            "enabled_logistic_ids": receipt.get("enabled_logistic_ids") or [],
+        }
+
+    def localize_regional_copy(
+        self,
+        context: RegionContext,
+        *,
+        english_title: str,
+        english_description: str,
+    ) -> Mapping[str, object]:
+        from modules.shopee.global_copy import localize_shopee_copy
+
+        return localize_shopee_copy(
+            english_title=english_title,
+            english_description=english_description,
+            region=context.region,
+        )
+
+    def update_regional_copy(
+        self,
+        context: RegionContext,
+        item_id: str,
+        *,
+        title: str,
+        description: str,
+    ) -> Mapping[str, object]:
+        from modules.shopee.publish import update_local_listing_copy
+
+        receipt = update_local_listing_copy(
+            shop_id=context.shop_id,
+            token=context.shop_token,
+            item_id=int(item_id),
+            title=title,
+            description=description,
+        )
+        logistics = receipt.get("logistics")
+        newly_enabled = (
+            logistics.get("newly_enabled_logistic_ids")
+            if isinstance(logistics, Mapping)
+            else []
+        )
+        rejected = (
+            logistics.get("rejected_logistics")
+            if isinstance(logistics, Mapping)
+            else []
+        )
+        return {
+            "external_write_count": (
+                1 + len(newly_enabled or []) + len(rejected or [])
+            ),
+            "verified": receipt.get("verified") is True,
+        }
+
+    def existing_regional_image_binding(
+        self, context: RegionContext, global_item_id: str
+    ) -> Mapping[str, object] | None:
+        from modules.shopee.global_sku_map import load_map
+
+        entry = load_map().get(str(global_item_id))
+        shop_items = entry.get("shop_items") if isinstance(entry, Mapping) else None
+        row = shop_items.get(context.region) if isinstance(shop_items, Mapping) else None
+        binding = row.get("localized_images") if isinstance(row, Mapping) else None
+        return dict(binding) if isinstance(binding, Mapping) else None
+
+    def upload_regional_images(
+        self, context: RegionContext, image_urls: tuple[str, ...]
+    ) -> Mapping[str, object]:
+        del context
+        from modules.shopee.publish import _upload_images_exact
+
+        image_ids = _upload_images_exact(list(image_urls), max_images=9)
+        return {
+            "image_ids": image_ids,
+            "external_write_count": len(image_ids),
+        }
+
+    def update_regional_images(
+        self,
+        context: RegionContext,
+        item_id: str,
+        *,
+        image_ids: tuple[str, ...],
+    ) -> Mapping[str, object]:
+        from modules.shopee.client import shop_post
+
+        clean_ids = _image_ids(image_ids, "regional image update")
+        response = shop_post(
+            "/api/v2/product/update_item",
+            context.shop_id,
+            context.shop_token,
+            {
+                "item_id": int(item_id),
+                "image": {"image_id_list": clean_ids},
+            },
+        )
+        _raise_provider_error(response, "official regional image update")
+        return {"external_write_count": 1}
+
+    def regional_models(
+        self, context: RegionContext, item_id: str
+    ) -> list[Mapping[str, object]]:
+        from modules.shopee.client import shop_get
+
+        response = shop_get(
+            "/api/v2/product/get_model_list",
+            context.shop_id,
+            context.shop_token,
+            {"item_id": int(item_id)},
+        )
+        _raise_provider_error(response, "official regional model read")
+        rows = (response.get("response") or {}).get("model") or []
+        if not isinstance(rows, list):
+            raise RuntimeError("official regional model response is malformed")
+        return [row for row in rows if isinstance(row, Mapping)]
+
+    def resolved_global_item_id(
+        self, context: RegionContext, item_id: str
+    ) -> str:
+        from modules.shopee.client import resolve_global_item_id
+
+        return str(
+            resolve_global_item_id(
+                context.shop_id,
+                context.merchant_id,
+                context.merchant_token,
+                item_id,
+            )
+            or ""
+        )
+
+    def record_verified_item(
+        self,
+        *,
+        global_item_id: str,
+        region: str,
+        shop_id: int,
+        item_id: str,
+        model_id: str,
+        image_route_digest: str = "",
+        image_ids: tuple[str, ...] = (),
+    ) -> None:
+        from modules.shopee.global_sku_map import record_shop_item
+
+        record_shop_item(
+            global_item_id,
+            region,
+            shop_id=shop_id,
+            item_id=item_id,
+            model_id=model_id,
+            image_route_digest=image_route_digest,
+            image_ids=list(image_ids),
+        )
+
+
+def _approved_models(
+    snapshot: Mapping[str, object], target: str
+) -> list[dict[str, str]]:
+    rows = snapshot.get("skus")
+    if not isinstance(rows, list) or not rows:
+        raise ShopeeRegionContractError("approved SKU rows are unavailable")
+    expected_currency = REGIONAL_CURRENCIES[target.split(":", 1)[1]]
+    models: list[dict[str, str]] = []
+    seen: set[str] = set()
+    top_prices = snapshot.get("prices")
+    target_prices = (
+        top_prices.get(target) if isinstance(top_prices, Mapping) else None
+    )
+    sku_prices = (
+        target_prices.get("sku_prices")
+        if isinstance(target_prices, Mapping)
+        else None
+    )
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ShopeeRegionContractError("approved SKU row is malformed")
+        model_sku = str(
+            row.get("model_sku") or row.get("seller_sku") or ""
+        ).strip()
+        if not model_sku or model_sku in seen:
+            raise ShopeeRegionContractError(
+                "approved regional model SKU identity is incomplete"
+            )
+        seen.add(model_sku)
+        amount: object = None
+        currency: object = None
+        global_price_cny: object = None
+        prices = row.get("prices")
+        price = prices.get(target) if isinstance(prices, Mapping) else None
+        if isinstance(price, Mapping):
+            amount = price.get("amount", price.get("local_original_price"))
+            currency = price.get("currency")
+            global_price_cny = price.get("global_original_price_cny")
+        if amount is None and isinstance(sku_prices, Mapping):
+            facts = sku_prices.get(model_sku)
+            if not isinstance(facts, Mapping):
+                facts = sku_prices.get(str(row.get("seller_sku") or ""))
+            if isinstance(facts, Mapping):
+                amount = facts.get("local_original_price")
+                global_price_cny = facts.get(
+                    "global_original_price_cny", facts.get("list_price")
+                )
+                currency = facts.get("currency") or (
+                    target_prices.get("currency")
+                    if isinstance(target_prices, Mapping)
+                    else None
+                )
+        if (
+            amount is None
+            and len(rows) == 1
+            and isinstance(target_prices, Mapping)
+        ):
+            amount = target_prices.get("local_original_price")
+            currency = target_prices.get("currency")
+            global_price_cny = target_prices.get("global_original_price_cny")
+        if amount is None:
+            raise ShopeeRegionContractError(
+                f"{target} requires exact {expected_currency} model prices"
+            )
+        if global_price_cny is None:
+            raise ShopeeRegionContractError(
+                f"{target} requires exact per-SKU CNSC CNY price lineage"
+            )
+        clean_currency = str(currency or "").strip().upper()
+        if clean_currency != expected_currency:
+            raise ShopeeRegionContractError(
+                f"{target} requires exact {expected_currency} model prices"
+            )
+        models.append(
+            {
+                "model_sku": model_sku,
+                "price": str(_positive_decimal(amount, "regional model price")),
+                "currency": clean_currency,
+                "global_price_cny": str(
+                    _positive_decimal(
+                        global_price_cny, "CNSC global model price lineage"
+                    )
+                ),
+            }
+        )
+    return models
+
+
+def _parcel_envelope(
+    snapshot: Mapping[str, object],
+) -> tuple[float, tuple[float, float, float]]:
+    rows = snapshot.get("skus")
+    if not isinstance(rows, list) or not rows:
+        raise ShopeeRegionContractError("approved SKU parcel facts are unavailable")
+    weights: list[float] = []
+    dimensions: list[tuple[float, float, float]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ShopeeRegionContractError("approved SKU parcel row is malformed")
+        parcel = row.get("parcel")
+        if isinstance(parcel, Mapping):
+            weight = parcel.get("weight_kg")
+            dims = parcel.get("package_cm")
+            if isinstance(dims, Mapping):
+                dims = [dims.get("length"), dims.get("width"), dims.get("height")]
+        else:
+            weight = row.get("weight_kg")
+            dims = row.get("package_cm")
+        if not isinstance(dims, (list, tuple)) or len(dims) != 3:
+            raise ShopeeRegionContractError("approved SKU dimensions are incomplete")
+        clean_weight = float(_positive_decimal(weight, "SKU weight"))
+        clean_dims = tuple(
+            float(_positive_decimal(value, "SKU dimension")) for value in dims
+        )
+        weights.append(clean_weight)
+        dimensions.append(clean_dims)
+    return (
+        max(weights),
+        tuple(max(row[index] for row in dimensions) for index in range(3)),
+    )
+
+
+def _approved_images(snapshot: Mapping[str, object]) -> list[str]:
+    product = snapshot.get("product")
+    if isinstance(product, Mapping) and isinstance(product.get("images"), list):
+        return [str(value).strip() for value in product["images"]]
+    content = snapshot.get("content")
+    if isinstance(content, Mapping) and isinstance(content.get("images"), list):
+        return [str(value).strip() for value in content["images"]]
+    return []
+
+
+def _approved_image_count(snapshot: Mapping[str, object]) -> int:
+    return len(_approved_images(snapshot))
+
+
+def _approved_copy(snapshot: Mapping[str, object]) -> tuple[str, str]:
+    product = snapshot.get("product")
+    content = snapshot.get("content")
+    title = (
+        product.get("title")
+        if isinstance(product, Mapping)
+        else None
+    )
+    description = (
+        product.get("description")
+        if isinstance(product, Mapping)
+        else None
+    )
+    if not str(title or "").strip() and isinstance(content, Mapping):
+        title = content.get("title")
+    if not str(description or "").strip() and isinstance(content, Mapping):
+        description = content.get("description")
+    clean_title = str(title or "").strip()
+    clean_description = str(description or "").strip()
+    if not clean_title or not clean_description:
+        raise ShopeeRegionContractError(
+            "approved regional title and description are required"
+        )
+    return clean_title, clean_description
+
+
+def _expected_item_sku(snapshot: Mapping[str, object]) -> str:
+    rows = snapshot.get("skus")
+    values = {
+        str(row.get("seller_sku") or "").strip()
+        for row in rows or []
+        if isinstance(row, Mapping) and str(row.get("seller_sku") or "").strip()
+    }
+    if len(values) != 1:
+        raise ShopeeRegionContractError(
+            "approved regional item SKU identity is incomplete"
+        )
+    return next(iter(values))
+
+
+def _expected_category_id(
+    snapshot: Mapping[str, object], target: str
+) -> str:
+    rows = snapshot.get("categories_by_target")
+    row = rows.get(target) if isinstance(rows, Mapping) else None
+    category = row.get("category") if isinstance(row, Mapping) else None
+    return str(category.get("id") or "").strip() if isinstance(category, Mapping) else ""
+
+
+def _positive_int_list(value: object, label: str) -> list[int]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(type(row) is not int or row <= 0 for row in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ShopeeRegionContractError(f"{label} are invalid")
+    return list(value)
+
+
+def _nonnegative_write_count(value: object, label: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ShopeeRegionContractError(f"{label} is invalid")
+    return value
+
+
+def _has_disabled_logistics(item: Mapping[str, object] | None) -> bool:
+    rows = item.get("logistic_info") if isinstance(item, Mapping) else None
+    return isinstance(rows, list) and any(
+        isinstance(row, Mapping) and row.get("enabled") is False
+        for row in rows
+    )
+
+
+def _exact_global_tiers(
+    official_rows: list[Mapping[str, object]],
+    approved_models: list[Mapping[str, str]],
+) -> dict[str, list[int]]:
+    by_sku: dict[str, list[list[int]]] = {}
+    for row in official_rows:
+        sku = str(row.get("global_model_sku") or "").strip()
+        tier = row.get("tier_index")
+        if (
+            not sku
+            or not isinstance(tier, list)
+            or not tier
+            or any(type(value) is not int or value < 0 for value in tier)
+        ):
+            continue
+        by_sku.setdefault(sku, []).append(list(tier))
+    expected = {row["model_sku"] for row in approved_models}
+    if set(by_sku) != expected or any(len(by_sku[sku]) != 1 for sku in expected):
+        raise ShopeeRegionContractError(
+            "official global model set does not match the approved SKU set"
+        )
+    tiers = {sku: by_sku[sku][0] for sku in sorted(expected)}
+    if len({tuple(value) for value in tiers.values()}) != len(tiers):
+        raise ShopeeRegionContractError("official global model tiers are ambiguous")
+    return tiers
+
+
+def _publish_body(
+    *,
+    region: str,
+    shop_id: int,
+    global_item_id: str,
+    approved_models: list[Mapping[str, str]],
+    tiers: Mapping[str, list[int]],
+    logistics: list[int],
+    item_sku: str,
+) -> dict[str, object]:
+    prices = [Decimal(row["price"]) for row in approved_models]
+    return {
+        "global_item_id": int(global_item_id),
+        "shop_id": int(shop_id),
+        "shop_region": region,
+        "item": {
+            # This merchant rejects a regional create task that requests
+            # NORMAL directly.  Create an exact UNLIST item, wait for the
+            # task, then list it through the official shop endpoint.
+            # Do not send regional copy. Shopee derives it from the approved
+            # English Global master and applies the destination language.
+            # Supplying English here overrides that provider translation.
+            "item_status": "UNLIST",
+            "item_sku": item_sku,
+            "original_price": _provider_price(min(prices)),
+            "logistic": [
+                {"logistic_id": value, "enabled": True}
+                for value in logistics
+            ],
+            "model": [
+                {
+                    "tier_index": list(tiers[row["model_sku"]]),
+                    "original_price": _provider_price(
+                        Decimal(row["price"])
+                    ),
+                }
+                for row in approved_models
+            ],
+        },
+    }
+
+
+def _provider_price(value: Decimal) -> int | float:
+    """Return a JSON number; Shopee rejects numeric price strings."""
+
+    if value == value.to_integral_value():
+        return int(value)
+    return float(value)
+
+
+def _official_readback_checks(
+    *,
+    item: Mapping[str, object] | None,
+    models: list[Mapping[str, object]],
+    resolved_global_item_id: str,
+    expected_global_item_id: str,
+    expected_models: list[Mapping[str, str]],
+    expected_tiers: Mapping[str, list[int]],
+    expected_logistics: list[int],
+    expected_image_count: int,
+    expected_item_sku: str,
+    expected_category_id: str,
+    expected_title: str,
+    expected_description: str,
+    expected_region: str,
+    repaired_copy: tuple[str, str] | None,
+    expected_image_ids: tuple[str, ...] | None,
+    item_id: str,
+) -> dict[str, bool]:
+    expected = {row["model_sku"]: row for row in expected_models}
+    observed = {
+        str(row.get("model_sku") or "").strip(): row
+        for row in models
+        if isinstance(row, Mapping) and str(row.get("model_sku") or "").strip()
+    }
+    model_prices_exact = set(observed) == set(expected)
+    model_ids_present = set(observed) == set(expected)
+    model_tiers_exact = set(observed) == set(expected)
+    if model_prices_exact:
+        for sku, facts in expected.items():
+            price = _regional_model_price(observed[sku], facts["currency"])
+            model_prices_exact = model_prices_exact and price == Decimal(
+                facts["price"]
+            )
+            model_ids_present = model_ids_present and bool(
+                str(observed[sku].get("model_id") or "").strip()
+            )
+            model_tiers_exact = model_tiers_exact and (
+                observed[sku].get("tier_index") == expected_tiers.get(sku)
+            )
+    image_urls = []
+    if isinstance(item, Mapping):
+        image = item.get("image")
+        if isinstance(image, Mapping):
+            image_urls = image.get("image_url_list") or image.get("image_id_list") or []
+    observed_image_ids = _official_image_ids(item)
+    logistic_rows = (
+        item.get("logistic_info")
+        if isinstance(item, Mapping)
+        and isinstance(item.get("logistic_info"), list)
+        else []
+    )
+    logistic_rows_valid = bool(logistic_rows) and all(
+        isinstance(row, Mapping)
+        and type(row.get("logistic_id")) is int
+        and row["logistic_id"] > 0
+        and type(row.get("enabled")) is bool
+        for row in logistic_rows
+    )
+    applicable_logistic_ids = {
+        int(row["logistic_id"])
+        for row in logistic_rows
+        if isinstance(row, Mapping)
+        and type(row.get("logistic_id")) is int
+        and row["logistic_id"] > 0
+    }
+    enabled_logistics = {
+        int(row["logistic_id"])
+        for row in logistic_rows
+        if isinstance(row, Mapping)
+        and row.get("enabled") is True
+        and type(row.get("logistic_id")) is int
+        and row["logistic_id"] > 0
+    }
+    observed_category_id = (
+        str(item.get("category_id") or "").strip()
+        if isinstance(item, Mapping)
+        else ""
+    )
+    observed_title = (
+        str(item.get("item_name") or "").strip()
+        if isinstance(item, Mapping)
+        else ""
+    )
+    observed_description = (
+        str(item.get("description") or "").strip()
+        if isinstance(item, Mapping)
+        else ""
+    )
+    copy_exact = (
+        observed_title == repaired_copy[0]
+        and observed_description == repaired_copy[1]
+        if repaired_copy is not None
+        else _regional_copy_matches(
+            item,
+            region=expected_region,
+            english_title=expected_title,
+            english_description=expected_description,
+        )
+    )
+    return {
+        "item_identity_exact": (
+            isinstance(item, Mapping)
+            and str(item.get("item_id") or "") == item_id
+        ),
+        "normal_status_exact": (
+            isinstance(item, Mapping)
+            and str(item.get("item_status") or "").upper() == "NORMAL"
+        ),
+        "global_linkage_exact": (
+            str(resolved_global_item_id or "") == expected_global_item_id
+        ),
+        "model_sku_set_exact": set(observed) == set(expected),
+        "model_ids_present": model_ids_present,
+        "model_tiers_exact": model_tiers_exact,
+        "model_prices_exact": model_prices_exact,
+        "item_sku_exact": (
+            isinstance(item, Mapping)
+            and (
+                str(item.get("item_sku") or "").strip() == expected_item_sku
+                or (
+                    item.get("has_model") is True
+                    and not str(item.get("item_sku") or "").strip()
+                    and set(observed) == set(expected)
+                )
+            )
+        ),
+        "applicable_logistics_enabled": (
+            logistic_rows_valid
+            and bool(enabled_logistics)
+        ),
+        "category_exact_when_returned": (
+            not observed_category_id
+            or not expected_category_id
+            or observed_category_id == expected_category_id
+        ),
+        "copy_exact": copy_exact,
+        "images_present": (
+            isinstance(image_urls, list)
+            and len(image_urls) >= max(1, expected_image_count)
+        ),
+        "localized_images_exact": (
+            expected_image_ids is None
+            or observed_image_ids == expected_image_ids
+        ),
+    }
+
+
+def _regional_identity_safe_for_image_update(
+    *,
+    item: Mapping[str, object] | None,
+    models: list[Mapping[str, object]],
+    resolved_global_item_id: str,
+    expected_global_item_id: str,
+    expected_models: list[Mapping[str, str]],
+    expected_item_sku: str,
+    expected_category_id: str,
+    item_id: str,
+) -> bool:
+    if not isinstance(item, Mapping) or str(item.get("item_id") or "") != item_id:
+        return False
+    if str(resolved_global_item_id or "") != expected_global_item_id:
+        return False
+    expected_skus = {row["model_sku"] for row in expected_models}
+    observed_skus = {
+        str(row.get("model_sku") or "").strip()
+        for row in models
+        if isinstance(row, Mapping) and str(row.get("model_sku") or "").strip()
+    }
+    if observed_skus != expected_skus:
+        return False
+    item_sku = str(item.get("item_sku") or "").strip()
+    if item_sku != expected_item_sku and not (
+        item.get("has_model") is True and not item_sku
+    ):
+        return False
+    category_id = str(item.get("category_id") or "").strip()
+    return not category_id or not expected_category_id or category_id == expected_category_id
+
+
+def _official_image_ids(item: Mapping[str, object] | None) -> tuple[str, ...]:
+    image = item.get("image") if isinstance(item, Mapping) else None
+    values = image.get("image_id_list") if isinstance(image, Mapping) else None
+    if not isinstance(values, list):
+        return ()
+    return tuple(str(value or "").strip() for value in values)
+
+
+def _image_ids(value: object, label: str) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        raise ShopeeRegionContractError(f"{label} is invalid")
+    clean = [str(row or "").strip() for row in value]
+    if not clean or any(not row for row in clean) or len(set(clean)) != len(clean):
+        raise ShopeeRegionContractError(f"{label} is invalid")
+    return clean
+
+
+def _regional_copy_matches(
+    item: Mapping[str, object] | None,
+    *,
+    region: str,
+    english_title: str,
+    english_description: str,
+) -> bool:
+    if not isinstance(item, Mapping):
+        return False
+    title = str(item.get("item_name") or "").strip()
+    description = str(item.get("description") or "").strip()
+    if region in {"PH", "MY"}:
+        return title == english_title and description == english_description
+    return _localized_copy_matches(title, description, region=region)
+
+
+def _localized_copy_matches(title: str, description: str, *, region: str) -> bool:
+    if not title or not description:
+        return False
+    if region == "TH":
+        return _contains_thai(title) and _localized_description_matches(
+            description, region=region
+        )
+    if region == "VN":
+        return _contains_vietnamese(title) and _localized_description_matches(
+            description, region=region
+        )
+    return False
+
+
+_SEMANTIC_LINE_SPLIT_RE = re.compile(r"(?:\r?\n|[\u2022\u25cf\u25aa\u25e6])+")
+
+
+def _localized_description_matches(description: str, *, region: str) -> bool:
+    """Require every meaningful description line to be localized."""
+
+    lines = [
+        line.strip()
+        for line in _SEMANTIC_LINE_SPLIT_RE.split(description)
+        if line.strip()
+    ]
+    if not lines:
+        return False
+    return all(
+        localized_semantic_line_matches(line, site=region) for line in lines
+    )
+
+
+def _contains_thai(value: str) -> bool:
+    return any("\u0e00" <= char <= "\u0e7f" for char in value)
+
+
+def _contains_vietnamese(value: str) -> bool:
+    return contains_vietnamese_language_features(value)
+
+
+def _regional_model_price(row: Mapping[str, object], currency: str) -> Decimal | None:
+    prices = row.get("price_info")
+    if isinstance(prices, Mapping):
+        prices = [prices]
+    if not isinstance(prices, list):
+        value = row.get("original_price")
+        return _optional_decimal(value)
+    matches = [
+        facts
+        for facts in prices
+        if isinstance(facts, Mapping)
+        and str(facts.get("currency") or "").upper() == currency
+    ]
+    if len(matches) != 1:
+        return None
+    return _optional_decimal(matches[0].get("original_price"))
+
+
+def _poll_task(
+    runtime: ShopeeRegionRuntime,
+    context: RegionContext,
+    task_id: str,
+    attempts: int,
+) -> Mapping[str, object]:
+    last: Mapping[str, object] = {}
+    for attempt in range(attempts):
+        raw = runtime.publish_task_result(context, task_id)
+        code, message = _provider_error(raw)
+        if code:
+            raise RuntimeError(message or code)
+        if not isinstance(raw, Mapping):
+            raise RuntimeError("official publish task response is malformed")
+        response = raw.get("response")
+        if not isinstance(response, Mapping):
+            raise RuntimeError("official publish task result is unavailable")
+        last = response
+        if str(response.get("publish_status") or "").lower() in {
+            "success",
+            "failed",
+        }:
+            return response
+        if attempt + 1 < attempts:
+            time.sleep(1)
+    return last
+
+
+def _dispatch_envelope(
+    global_item_id: str,
+    targets: list[str],
+    results: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "schema_version": "shopee-regional-dispatch/v1",
+        "platform": "shopee",
+        "global_item_id": global_item_id,
+        "target_count": len(targets),
+        "accepted_target_count": sum(row.get("accepted") is True for row in results),
+        "rejected_target_count": sum(row.get("outcome") == "REJECTED" for row in results),
+        "unknown_target_count": sum(row.get("outcome") == "UNKNOWN" for row in results),
+        "not_attempted_target_count": sum(row.get("outcome") == "NOT_ATTEMPTED" for row in results),
+        "targets": results,
+    }
+
+
+def _target_fact(
+    target: str,
+    *,
+    attempted: bool,
+    accepted: bool,
+    outcome: str,
+    provider_code: str = "",
+    message: str = "",
+) -> dict[str, object]:
+    return {
+        "target_label": target,
+        "attempted": attempted,
+        "accepted": accepted,
+        "outcome": outcome,
+        "provider_code": _safe_text(provider_code, 80),
+        "message": _safe_text(message, 300),
+    }
+
+
+def _provider_error(response: object) -> tuple[str, str]:
+    if not isinstance(response, Mapping):
+        return "MALFORMED_RESPONSE", "official response is malformed"
+    code = str(response.get("error") or "").strip()
+    if code and code != "-":
+        return code, str(response.get("message") or code)
+    return "", ""
+
+
+def _raise_provider_error(response: object, operation: str) -> None:
+    code, message = _provider_error(response)
+    if code:
+        raise RuntimeError(f"{operation} failed: {_safe_text(message)}")
+
+
+def _publish_task_id(response: object) -> str:
+    if not isinstance(response, Mapping):
+        return ""
+    body = response.get("response")
+    value = body.get("publish_task_id") if isinstance(body, Mapping) else None
+    return str(value or "").strip()
+
+
+def _task_item_id(task: Mapping[str, object]) -> str:
+    value = task.get("item_id")
+    success = task.get("success")
+    if value is None and isinstance(success, Mapping):
+        value = success.get("item_id")
+    return str(value or "").strip()
+
+
+def _positive_identity(value: object, label: str) -> str:
+    clean = str(value or "").strip()
+    if not clean.isdigit() or int(clean) <= 0:
+        raise ShopeeRegionContractError(f"{label} is invalid")
+    return clean
+
+
+def _region(value: object) -> str:
+    clean = str(value or "").strip().upper()
+    if clean not in REGIONAL_CURRENCIES:
+        raise ShopeeRegionContractError("unsupported Shopee region")
+    return clean
+
+
+def _positive_decimal(value: object, label: str) -> Decimal:
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as error:
+        raise ShopeeRegionContractError(f"{label} is invalid") from error
+    if not number.is_finite() or number <= 0:
+        raise ShopeeRegionContractError(f"{label} is invalid")
+    return number
+
+
+def _optional_decimal(value: object) -> Decimal | None:
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return number if number.is_finite() else None
+
+
+def _digest(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(
+        dict(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _safe_text(value: object, limit: int = 300) -> str:
+    text = " ".join(str(value or "").split())
+    for marker in ("access_token", "refresh_token", "partner_key", "secret"):
+        if marker in text.casefold():
+            return "provider detail redacted"
+    return text[:limit]

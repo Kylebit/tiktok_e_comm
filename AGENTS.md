@@ -65,6 +65,33 @@ Web 页面：`/`、`/catalog`、`/ozon`、`/settlement`、`/titles`、`/images`�
 - 最小 diff；匹配现有命名与模块边界
 - 勿提交 token、settings.json、*.db
 - Ozon 集成优先走 `modules/ozon/`，避免在 webapp 写死本机绝对路径
+- 所有 Bug 修复必须遵守
+  [docs/TESTING_GOVERNANCE.md](docs/TESTING_GOVERNANCE.md) 的
+  “先失败、后修复”门禁：先稳定复现并运行新增失败测试，再修改生产代码；
+  无法稳定复现时禁止猜测性修改。
+
+## Codex 线程与交付治理
+
+- 线程职责、Work Order 状态和 Git 隔离规则见
+  [docs/THREAD_OPERATING_MODEL.md](docs/THREAD_OPERATING_MODEL.md)。
+- CEO 默认负责拆分、审查、集成和发布；业务实现交给固定的
+  `01`–`05` 领域线程，共享平台实现交给固定 `00` 线程。
+- 涉及两个以上业务域的任务必须分派到对应固定线程。临时子 Agent
+  只能做有界辅助，不能取代领域责任人。
+- 正式 UI 改动由所属域实现，`00` 使用真实浏览器独立验收。
+- 任何外部平台写入只允许 `03 渠道运营` 单线执行，并由 CEO 监督；
+  未明确授权时一律只读或 dry-run。
+- 长期代码或文档交付必须 commit；push 只有在 Kyle 或正式发布流程
+  明确授权时才允许。派发字段与回执格式见
+  [docs/pm/DISPATCH_CONVENTION.md](docs/pm/DISPATCH_CONVENTION.md)。
+- 业务授权与系统/宿主工具审批是两个独立维度。固定 `00`–`05` 线程执行
+  本地工程、测试和只读验收时默认 `host_approval_policy=never`、
+  `no_escalation=true`：不得请求宿主 escalation；可能触发审批的命令必须
+  改用非升级、非破坏的等价路径。
+- 测试使用当前独立 worktree 内的专用 `basetemp`。临时测试目录不需要为
+  提交而删除；精确暂存交付文件并忽略或保留临时目录，禁止为了“干净”
+  递归删除。`waitingOnApproval` 不是业务 `BLOCKED`，应取消或放弃该命令，
+  继续所有可安全完成的步骤。
 
 ## TikTok MX（妙手 / LivelyHiveMX）
 
@@ -72,7 +99,8 @@ Web 页面：`/`、`/catalog`、`/ozon`、`/settlement`、`/titles`、`/images`�
 - POP 定价：`scripts/mx_pop_pricing.py`；妙手只写 **ceil(折前原价)** 到 `price`/`priceIncludeVat`；折扣在 TikTok 后台自设；POP 折后价仅测算/确认用
 - 重量用四国物流实测 **中位数**；**包裹尺寸用 TikTok 原链接 `package_dimensions`**（不用物流外箱实测）；手动覆盖见 `KNOWN_BY_MATCH_KEY`
 - **已上架 SKU 勿 re-publish 改价**；改价走妙手 save 草稿 + 手动同步
-- **每次 publish 前必须用户确认**（对话框展示卡片；飞书 webhook 打通后同步推送）
+- **每次 publish 前必须用户确认**（对话框展示卡片；通知集成可选，
+  不构成审批前置条件或事实来源）
 - 确认逻辑：`modules/miaoshou/mx_confirm.py`；继续上架 `--confirm-token TOKEN --user-approved`
 - 批量搬运：`scripts/migrate_mx_batch.py`（`--dry-run` 仅测算；默认逐个出卡片后退出等待确认）
 - **同链接多 SKU（单 product_id 多规格）**：必须 **一张审批卡 + 一次 publish**，禁止拆成多个链接。索引见 `modules/catalog/tk_sku_groups.py`；派单自动合并见 `modules/miaoshou/migrate_dispatch.py`；MX 整组脚本 `scripts/migrate_mx_group.py`
@@ -82,7 +110,9 @@ Web 页面：`/`、`/catalog`、`/ozon`、`/settlement`、`/titles`、`/images`�
 - 店 `shopId=10204699`（probe 脚本确认）；货号 = seller_sku **后四位**
 - POP 定价：`scripts/uk_pop_pricing.py` + `config/uk_4pl_pricing.json`；默认 **卖家包邮**（全额 4PL）；店铺 **25%** 卖家折扣；目标利润 **17%**；低于 £10 包邮线自动抬价
 - Web 审批：`http://127.0.0.1:8765/uk`；模块 `modules/miaoshou/uk_*`
-- 派单入队：`scripts/feishu_uk_dispatch.py` / `scripts/orbit_send_uk_approval.py` / `scripts/uk_redispatch_fast.py`
+- 兼容派单脚本：`scripts/feishu_uk_dispatch.py` /
+  `scripts/orbit_send_uk_approval.py` / `scripts/uk_redispatch_fast.py`
+  （保留兼容，不是 Codex 线程治理的必需依赖）
 - dry-run：`scripts/orbit_uk_migrate_prep.py`
 - 妙手只写 **ceil(折前原价 GBP)**；无西语翻译，保留 PH 母版英文标题
 - **每次 publish 前必须 Web 批准**（同 MX 流程）
@@ -92,5 +122,7 @@ Web 页面：`/`、`/catalog`、`/ozon`、`/settlement`、`/titles`、`/images`�
 
 - 业务代码仓库：`Kylebit/tiktok_e_comm`，分支 **`master`**
 - 详细步骤（Codex / Cursor 通用）：[docs/GIT_SYNC_MX_UK.md](docs/GIT_SYNC_MX_UK.md)
-- 协作规则与飞书广播模板：`../orbit-hive-agent-ops/README_FOR_AGENTS.md`（兄弟目录）或 GitHub `Kylebit/orbit-hive-agent-ops`
+- 本仓库协作规则以 [docs/THREAD_OPERATING_MODEL.md](docs/THREAD_OPERATING_MODEL.md)
+  和 [docs/pm/DISPATCH_CONVENTION.md](docs/pm/DISPATCH_CONVENTION.md) 为准；
+  外部通知或广播系统均为可选集成
 - **勿提交**：token、`config/settings.json`、`config/*.local.json`、`*.db`（除文档允许的 `data/weight_overrides.json`）

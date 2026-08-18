@@ -24,6 +24,8 @@ import requests
 
 BASE_URL = "https://toapis.com"
 API_KEY_ENV = "KEY"
+PROXY_ENV = "TOAPIS_PROXY_URL"
+DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:10808"
 DEFAULT_MODEL = "gemini-2.5-flash-image-preview"
 TASK_MODELS = {
     "background_concept": "gemini-2.5-flash-image-preview",
@@ -143,12 +145,26 @@ class ToAPIsClient:
         opener: Callable | None = None,
         session=None,
         timeout: float = 90,
+        proxy_url: str | None = None,
     ):
         self._api_key = (api_key or os.environ.get(API_KEY_ENV) or "").strip()
         self._opener = opener
         self._session = session or requests.Session()
         if session is None:
             self._session.trust_env = False
+            configured_proxy = (
+                os.environ.get(PROXY_ENV, DEFAULT_LOCAL_PROXY_URL)
+                if proxy_url is None
+                else proxy_url
+            )
+            configured_proxy = str(configured_proxy or "").strip()
+            if configured_proxy:
+                parsed_proxy = urllib.parse.urlparse(configured_proxy)
+                if parsed_proxy.scheme not in {"http", "https"} or not parsed_proxy.netloc:
+                    raise ValueError("ToAPIs proxy URL is invalid")
+                self._session.proxies.update(
+                    {"http": configured_proxy, "https": configured_proxy}
+                )
         self._timeout = timeout
 
     def _require_key(self) -> None:
@@ -299,8 +315,17 @@ class ToAPIsClient:
         try:
             response = self._session.get(url, timeout=self._timeout)
             response.raise_for_status()
-        except requests.RequestException as exc:
-            raise ToAPIsClientError(f"ToAPIs image download failed: {exc}") from exc
+        except requests.RequestException as direct_error:
+            try:
+                # Result URLs are public and contain no API credentials. A local
+                # proxy fallback is safe here and avoids Windows direct-connect
+                # resets without changing the paid POST transport.
+                response = requests.get(url, timeout=self._timeout)
+                response.raise_for_status()
+            except requests.RequestException as fallback_error:
+                raise ToAPIsClientError(
+                    f"ToAPIs image download failed: {fallback_error}"
+                ) from fallback_error
         path = Path(destination)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(response.content)

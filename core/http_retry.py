@@ -148,6 +148,7 @@ def urlopen(
     context: ssl.SSLContext | None = None,
     attempts: int = 4,
     backoff: tuple[float, ...] = (1.0, 2.0, 4.0),
+    allow_curl_fallback: bool = True,
 ):
     """urllib 优先；SSL/EOF 失败时自动改用 curl（与 ozon/webapp 一致）。"""
     ctx = context or DEFAULT_SSL_CTX
@@ -164,7 +165,7 @@ def urlopen(
             delay = backoff[min(i, len(backoff) - 1)]
             time.sleep(delay)
 
-    if last_err and _curl_fallback_error(last_err):
+    if last_err and allow_curl_fallback and _curl_fallback_error(last_err):
         return _curl_urlopen(req, timeout)
     if last_err:
         raise last_err

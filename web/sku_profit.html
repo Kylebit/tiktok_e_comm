@@ -277,7 +277,7 @@
     const q = new URLSearchParams({
       sku: $('sku').value.trim(),
       platform: $('platform').value,
-      ad_rate: String($('adRate').value || '22'),
+      ad_rate_percent: String($('adRate').value || '22'),
       lookback_days: String($('lookback').value || '14'),
     });
     const sale = $('sale').value.trim();
@@ -330,7 +330,7 @@
         body: JSON.stringify({
           skus,
           platform: $('platform').value,
-          ad_rate: Number($('adRate').value || 22),
+          ad_rate_percent: Number($('adRate').value || 22),
           lookback_days: Number($('lookback').value || 14),
           cost_override: $('cost').value.trim() ? Number($('cost').value) : null,
         }),

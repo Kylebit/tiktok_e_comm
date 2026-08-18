@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>商品上架流程与发布 Skill 中文审核</title>
+  <style>
+    :root {
+      --ink:#173b36; --muted:#657874; --paper:#f7f3ea; --card:#fffdf8;
+      --line:#c9ddd7; --green:#207e70; --orange:#ef6c3f; --amber:#f4ddb0;
+      --red:#b94235; --blue:#276b94; --legacy:#756a84;
+    }
+    *{box-sizing:border-box} body{margin:0;background:var(--paper);color:var(--ink);font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif;line-height:1.65}
+    main{max-width:1240px;margin:auto;padding:32px 26px 80px} h1,h2,h3{font-family:Georgia,"STSong",serif;line-height:1.2}
+    h1{font-size:38px;margin:8px 0 12px} h2{font-size:27px;margin:45px 0 18px;border-bottom:2px solid var(--line);padding-bottom:10px}
+    h3{font-size:21px;margin:27px 0 12px} p{margin:8px 0 13px} a{color:var(--green)} code{background:#edf2ef;padding:2px 5px;border-radius:5px}
+    .eyebrow{letter-spacing:.16em;color:var(--green);font-weight:800;font-size:13px}.lead{font-size:18px;max-width:980px;color:#3f5752}
+    .meta,.callout,.finding,.card,.diagram,.stage,.platform,.result{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
+    .meta{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;padding:0;overflow:hidden;background:var(--line)}
+    .meta>div{background:var(--ink);color:white;padding:17px}.meta small{display:block;opacity:.7}.meta strong{font-size:15px;word-break:break-word}
+    nav{position:sticky;top:0;z-index:3;background:rgba(247,243,234,.96);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin:24px 0;backdrop-filter:blur(8px)}
+    nav a{display:inline-block;margin:4px 13px 4px 0;text-decoration:none;font-weight:700;font-size:14px}
+    .summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}.summary .card strong{display:block;font-size:20px;margin-bottom:5px}
+    .badge{display:inline-block;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:800;background:#e4f1ed;color:var(--green)}
+    .badge.warn{background:#fff0d4;color:#8c5b12}.badge.bad{background:#fae1dc;color:var(--red)}.badge.legacy{background:#ede8f2;color:var(--legacy)}
+    .flow{display:flex;align-items:stretch;gap:8px;overflow-x:auto;padding:8px 2px 13px}.node{min-width:155px;max-width:210px;background:white;border:1px solid var(--line);border-radius:13px;padding:13px;text-align:center;font-weight:700}.node small{display:block;font-weight:400;color:var(--muted);margin-top:5px}.arrow{align-self:center;font-size:22px;color:var(--green);font-weight:900}.node.orange{border-color:#efb9a5;background:#fff1eb}.node.green{border-color:#94c9be;background:#eef8f5}.node.red{border-color:#e3aaa1;background:#fff0ed}.node.blue{border-color:#a8c9dd;background:#eff8fc}
+    .stages{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}.stage{padding:13px;min-height:145px}.stage .num{font:italic 25px Georgia;color:var(--orange)}.stage h3{font:700 16px "Microsoft YaHei";margin:4px 0}.stage p{font-size:13px;color:var(--muted)}.stage.skill{background:#fff4df;border-color:#dfbd73}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:15px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.platform h3,.result h3{margin-top:0}.platform.tiktok{border-top:6px solid #111}.platform.shopee{border-top:6px solid var(--orange)}.platform.ozon{border-top:6px solid var(--blue)}
+    table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;font-size:14px} th{background:#eaf3ef;text-align:left} th,td{padding:11px 12px;border-bottom:1px solid #dde8e4;vertical-align:top} tr:last-child td{border-bottom:0}.nowrap{white-space:nowrap}
+    ul,ol{padding-left:22px}.compact li{margin:4px 0}.callout{border-left:6px solid var(--orange);background:#fff7ed}.callout.good{border-color:var(--green);background:#f0f8f5}.callout.bad{border-color:var(--red);background:#fff0ed}
+    .buttons{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.button-demo{border:0;border-radius:15px;background:var(--orange);color:#fff;padding:19px;font-size:18px;font-weight:800;text-align:center;box-shadow:0 10px 24px rgba(239,108,63,.18)}
+    .finding{display:grid;grid-template-columns:75px 1.1fr 1.5fr 1.4fr;gap:12px;margin:10px 0;align-items:start}.priority{font-weight:900;font-size:20px}.p0{color:var(--red)}.p1{color:#a96510}.p2{color:var(--blue)}
+    .truth{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}.truth div{background:white;border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center}.truth b{display:block;color:var(--green)}
+    .source{font-size:13px;color:var(--muted);word-break:break-all}.footer{margin-top:55px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+    @media(max-width:900px){.meta,.summary,.grid2,.grid3,.buttons{grid-template-columns:1fr}.stages{grid-template-columns:1fr 1fr}.finding{grid-template-columns:60px 1fr}.finding>div:nth-child(n+3){grid-column:2}.truth{grid-template-columns:1fr 1fr}nav{position:static}}
+    @media print{nav{position:static}.flow{overflow:visible}.node{min-width:0}.finding{break-inside:avoid}body{background:white}main{max-width:none}}
+  </style>
+</head>
+<body><main>
+  <div class="eyebrow">PRODUCT CENTER · SKILL · ARCHITECTURE AUDIT</div>
+  <h1>商品上架流程与发布 Skill 中文审核</h1>
+  <p class="lead">这份文档把“商品从进入发布中心，到 TikTok、Shopee、Ozon 完成发布与回读”的完整过程放在一处说明。它同时区分<strong>当前代码实际行为</strong>、<strong>已经设计的 Skill 行为</strong>和<strong>建议收敛后的目标行为</strong>，用于产品、开发和测试共同审核。</p>
+
+  <section class="meta">
+    <div><small>审计日期</small><strong>2026-08-09</strong></div>
+    <div><small>代码基线</small><strong>d38ccf107366…</strong></div>
+    <div><small>Skill</small><strong>publish-approved-product</strong></div>
+    <div><small>审计性质</small><strong>只读分析；未修改生产逻辑</strong></div>
+  </section>
+
+  <nav>
+    <a href="#summary">结论</a><a href="#journey">七阶段</a><a href="#buttons">按钮</a><a href="#snapshot">快照</a>
+    <a href="#skill">Skill</a><a href="#platforms">三平台</a><a href="#readback">回读</a><a href="#states">状态</a>
+    <a href="#tests">测试</a><a href="#audit">审计发现</a><a href="#roadmap">整改路线</a><a href="#sources">证据索引</a>
+  </nav>
+
+  <section id="summary">
+    <h2>一、先看结论</h2>
+    <div class="summary">
+      <div class="card"><span class="badge">正确方向</span><strong>01–04 在发布中心</strong>你负责校对事实、内容、SKU 和发布选择，最终生成不可变的“已批准商品快照”。</div>
+      <div class="card"><span class="badge warn">需要收敛</span><strong>05–07 由 Skill 负责</strong>Skill 应分别执行 TikTok、Shopee、Ozon，回读平台事实，处理已确认故障并输出一份报告。</div>
+      <div class="card"><span class="badge bad">当前核心矛盾</span><strong>两套执行入口并存</strong>网页按钮目前直接调用服务端发布接口，并没有调用 Skill。Skill 另有自己的 CLI、报告和判断。</div>
+    </div>
+    <div class="callout bad" style="margin-top:16px"><strong>最重要的审计结论：</strong>现在不是“Skill 已完全接管 05–07”，而是“网页直发”和“Skill 编排”同时存在。两者使用不同状态、不同报告、不同回读深度，这正是界面与后台结果经常不一致的结构性原因。</div>
+  </section>
+
+  <section id="journey">
+    <h2>二、商品上架七阶段</h2>
+    <div class="stages">
+      <div class="stage"><div class="num">01</div><h3>商品事实</h3><p>读取来源商品，建立 SKU、规格、成本、重量、包装和来源身份。</p></div>
+      <div class="stage"><div class="num">02</div><h3>内容审批</h3><p>确认标题、描述、图片、视频和内容顺序。</p></div>
+      <div class="stage"><div class="num">03</div><h3>商品审批</h3><p>确认 Seller SKU、变体关系和每 SKU 商业资料。</p></div>
+      <div class="stage"><div class="num">04</div><h3>发布计划</h3><p>确认平台、店铺、价格、类目和本轮选择，并冻结快照。</p></div>
+      <div class="stage skill"><div class="num">05</div><h3>准备发布</h3><p>Skill 读取快照，为每个平台生成独立任务与确定性命令。</p></div>
+      <div class="stage skill"><div class="num">06</div><h3>渠道执行</h3><p>分别调用妙手、Shopee、Ozon；平台之间不互相阻塞。</p></div>
+      <div class="stage skill"><div class="num">07</div><h3>回读对账</h3><p>从权威来源回读，核对商品、SKU、价格、图片和状态。</p></div>
+    </div>
+
+    <h3>01–04 应如何交接给 05–07</h3>
+    <div class="flow">
+      <div class="node">来源商品<small>Offer / collect box</small></div><div class="arrow">→</div>
+      <div class="node">事实与内容<small>逐 SKU + 已审图片</small></div><div class="arrow">→</div>
+      <div class="node">批准发布计划<small>平台、店铺、价格、类目</small></div><div class="arrow">→</div>
+      <div class="node green">不可变快照<small>唯一共享输入</small></div><div class="arrow">→</div>
+      <div class="node orange">发布 Skill<small>三个独立任务</small></div>
+    </div>
+
+    <table>
+      <thead><tr><th>阶段</th><th>输入</th><th>主要动作</th><th>完成标准</th><th>可以阻断的事情</th></tr></thead>
+      <tbody>
+        <tr><td>01 商品事实</td><td>来源 Offer 与妙手采集事实</td><td>建立 canonical offer identity；识别所有 SKU；逐 SKU 录入成本、重量、包装</td><td>来源身份唯一，SKU 不缺失、不冲突</td><td>来源身份缺失或冲突；SKU 无法唯一识别</td></tr>
+        <tr><td>02 内容审批</td><td>文案、图片、视频候选</td><td>决定最终标题、描述、图片顺序和视频</td><td>点击完成内容与图片审核后生成内容包</td><td>平台必填内容确实为空；不是技术 digest 变化</td></tr>
+        <tr><td>03 商品审批</td><td>SKU 与商业资料</td><td>分配/继承 Seller SKU；确认规格名称和值；逐 SKU 确认资料</td><td>每一个销售变体都有独立且稳定的身份</td><td>SKU 重复、缺失或跨商品冲突</td></tr>
+        <tr><td>04 发布计划</td><td>平台候选、店铺、定价和类目</td><td>确认本轮发布目标；确认主类目和站点映射；批准计划</td><td>形成不可变、可审计的批准快照</td><td>请求平台真正无法接受的必填字段缺失</td></tr>
+        <tr><td>05 准备发布</td><td>批准快照</td><td>仅校验提供商硬要求；生成各平台命令；不做外部写入</td><td>三个任务各自 READY 或给出平台本身的阻断原因</td><td>只阻断对应平台/店铺，不阻断其他任务</td></tr>
+        <tr><td>06 渠道执行</td><td>平台命令</td><td>TikTok 走妙手；Shopee 走全球商品/区域店；Ozon 走官方 API</td><td>保存每一次外部写入证据和外部 ID</td><td>某平台失败不得阻断其他平台</td></tr>
+        <tr><td>07 回读对账</td><td>外部 ID 与批准快照</td><td>官方或最权威来源回读；核对多 SKU、价格、内容、图片和状态</td><td>输出四种简明结果与详细证据报告</td><td>不把“请求被接受”误报为“发布成功”</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="buttons">
+    <h2>三、当前页面三个发布按钮</h2>
+    <div class="buttons"><div class="button-demo">发布 TikTok</div><div class="button-demo">发布 Shopee 全球商品</div><div class="button-demo">发布 Ozon</div></div>
+    <p class="callout"><strong>当前代码事实：</strong>这三个按钮调用三个服务端 HTTP 入口；它们不会启动 <code>publish-approved-product</code> Skill。按钮得到 HTTP 结果后，只在当前浏览器内存中显示成功或失败。</p>
+    <table>
+      <thead><tr><th>按钮</th><th>当前服务端入口</th><th>当前实际执行</th><th>当前完成判断</th><th>目标行为</th></tr></thead>
+      <tbody>
+        <tr><td class="nowrap">发布 TikTok</td><td><code>/api/product-workspace/publish-tiktok</code></td><td>建立 TikTok 快照，调用妙手独立发布器</td><td>服务端投影的发布结果；不等同 TikTok 店铺官方上架</td><td>调用同一 Skill TikTok 任务，并把 Skill 报告持久化到页面</td></tr>
+        <tr><td>发布 Shopee 全球商品</td><td><code>/api/product-workspace/publish-shopee-global</code></td><td>创建/更新 CNSC 全球商品</td><td>全球商品发布器结果；区域店铺不在此按钮范围</td><td>先全球商品官方回读；若用户选择区域，再按站点独立发布和回读</td></tr>
+        <tr><td>发布 Ozon</td><td><code>/api/product-workspace/publish-ozon</code></td><td>逐批准变体调用 Ozon official importer</td><td>接口接受与局部投影</td><td>所有 SKU 写入后，按 Ozon 官方商品逐项回读再分类</td></tr>
+      </tbody>
+    </table>
+    <div class="callout good"><strong>产品建议：</strong>页面仍可保留三个按钮，但按钮背后必须调用与人工使用完全相同的 Skill 平台任务。这样“页面测试”和“Agent 执行”才是同一条链路，而不是两套近似实现。</div>
+  </section>
+
+  <section id="snapshot">
+    <h2>四、已批准商品快照：三个平台唯一共享输入</h2>
+    <div class="flow">
+      <div class="node green">商品身份<small>offer / revision / plan digest</small></div><div class="arrow">+</div>
+      <div class="node green">逐 SKU<small>SKU、规格、成本、重量、包装</small></div><div class="arrow">+</div>
+      <div class="node green">内容<small>标题、描述、图片、视频</small></div><div class="arrow">+</div>
+      <div class="node green">平台计划<small>目标、价格、类目、物流</small></div><div class="arrow">=</div>
+      <div class="node orange">approved snapshot v3</div>
+    </div>
+    <div class="grid2">
+      <div class="card"><h3>每个 SKU 必须独立保存</h3><ul class="compact"><li>Seller SKU 与 model SKU</li><li>规格组名称与规格值</li><li>采购成本</li><li>商品重量</li><li>包装长、宽、高</li><li>变体图片</li><li>平台价格或定价输入</li></ul></div>
+      <div class="card"><h3>每个平台计划必须自包含</h3><ul class="compact"><li>本次选择的平台与精确店铺</li><li>每个站点的目标类目候选</li><li>平台/站点币种与每 SKU 价格</li><li>平台文案、图片和物流策略</li><li>执行所需 ID，不在执行时再依赖另一个平台</li></ul></div>
+    </div>
+    <p class="callout"><strong>边界原则：</strong>允许在 01–04 阶段利用其他平台历史或回读事实帮助定价，但一旦批准，TikTok、Shopee、Ozon 的命令必须各自完整。执行时 Shopee 不能等待 TikTok，Ozon 也不能依赖妙手草稿。</p>
+  </section>
+
+  <section id="skill">
+    <h2>五、publish-approved-product Skill 的设计与当前实现</h2>
+    <div class="flow">
+      <div class="node green">inspect_snapshot.py<small>只读批准快照</small></div><div class="arrow">→</div>
+      <div class="node">生成三项任务<small>平台互不依赖</small></div><div class="arrow">→</div>
+      <div class="node orange">dispatch_*.py<small>确定性外部写入</small></div><div class="arrow">→</div>
+      <div class="node blue">readback_*.py<small>权威回读</small></div><div class="arrow">→</div>
+      <div class="node green">统一报告<small>分类、证据、重试建议</small></div>
+    </div>
+
+    <h3>固定 Python 与 Agent 的责任分界</h3>
+    <table>
+      <thead><tr><th>工作</th><th>固定 Python 脚本负责</th><th>Skill / Agent 负责</th></tr></thead>
+      <tbody>
+        <tr><td>读取</td><td>按固定 schema 读取 approved snapshot；隐藏凭据；输出安全摘要</td><td>判断本轮用户要执行哪些平台，并向用户展示执行计划</td></tr>
+        <tr><td>准备</td><td>序列化请求；校验类型、必填字段、SKU 数量和币种</td><td>只把真正的平台拒绝条件当阻断；选择已批准的类目候选</td></tr>
+        <tr><td>写入</td><td>调用 API；保存响应摘要、外部 ID、写入次数和未知结果</td><td>控制三个任务的顺序/并行；某平台失败时继续其他平台</td></tr>
+        <tr><td>回读</td><td>按外部 ID 调官方/权威查询，输出字段事实</td><td>将回读事实与批准快照逐项对比；决定成功、处理中、部分成功或失败</td></tr>
+        <tr><td>故障处理</td><td>执行明确且可重复的修复动作，例如退休已删除映射</td><td>只应用 references 中已确认的 incident 规则；新故障先取证再沉淀</td></tr>
+        <tr><td>报告</td><td>生成结构化 JSON 证据</td><td>用简单中文给用户解释；指出已写入、未写入和下一步</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Skill 当前已有的脚本边界</h3>
+    <table>
+      <thead><tr><th>脚本</th><th>作用</th><th>是否覆盖最终目标</th></tr></thead>
+      <tbody>
+        <tr><td><code>inspect_snapshot.py</code></td><td>读取 approved-publication-snapshot/v3，输出逐 SKU 与平台计划</td><td><span class="badge">基本覆盖</span></td></tr>
+        <tr><td><code>dispatch_tiktok.py</code> / <code>readback_tiktok.py</code></td><td>妙手草稿/发布任务写入与妙手侧回读</td><td><span class="badge warn">回读权威有限</span> 妙手接受不等于 TikTok 店铺上架</td></tr>
+        <tr><td><code>dispatch_shopee.py</code> / <code>readback_shopee.py</code></td><td>创建 Shopee 全球商品并用官方 API 回读 global item/model</td><td><span class="badge warn">只覆盖全球商品</span> 尚无正式的区域四站脚本</td></tr>
+        <tr><td><code>dispatch_ozon.py</code> / <code>readback_ozon.py</code></td><td>Ozon 官方写入与官方回读</td><td><span class="badge">已按多 SKU 收敛</span> 仍需集成后的真实 canary 验收</td></tr>
+        <tr><td><code>publish_approved_product.py</code></td><td>三个任务独立执行，汇总四类结果</td><td><span class="badge warn">CLI 完成</span> 尚未成为网页按钮唯一执行权威</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="platforms">
+    <h2>六、三个平台的详细流程</h2>
+    <div class="grid3">
+      <article class="platform tiktok"><h3>TikTok · 妙手</h3><ol><li>按用户选择建立精确目标列表。</li><li>每个店铺独立取得并保存 detail_id。</li><li>写入逐 SKU 规格、价格、包裹、类目与图片。</li><li>回读草稿，逐 SKU 校验。</li><li>调用妙手正式发布任务。</li><li>保存妙手接受事实；有官方回读才判最终成功。</li></ol></article>
+      <article class="platform shopee"><h3>Shopee · 全球与区域</h3><ol><li>创建/更新 CNSC 全球商品。</li><li>官方回读 global_item_id、model、图片、描述。</li><li>按用户选择逐区域发布。</li><li>每个站点使用本地价格、物流与币种。</li><li>官方回读区域 item 与 global linkage。</li><li>各站点独立分类，不互相阻断。</li></ol></article>
+      <article class="platform ozon"><h3>Ozon · 官方 API</h3><ol><li>枚举所有批准 SKU。</li><li>为每个 SKU 生成独立 offer payload。</li><li>调用官方 import。</li><li>按 offer/id 轮询官方状态。</li><li>核对标题、价格、图片与所有 SKU。</li><li>部分接受不得报告整品成功。</li></ol></article>
+    </div>
+
+    <h3>TikTok 每店铺独立线路</h3>
+    <div class="flow"><div class="node">目标店铺<small>不固定为六个</small></div><div class="arrow">→</div><div class="node">绑定 detail_id</div><div class="arrow">→</div><div class="node">写入并回读草稿</div><div class="arrow">→</div><div class="node orange">save_move_collect_task</div><div class="arrow">→</div><div class="node blue">状态分类</div></div>
+    <ul>
+      <li>一个站点失败只影响该站点；PH 被取消或新增 HomeBloom，不应改变其他店铺的任务。</li>
+      <li>一个链接的多个 SKU 必须完整写入；价格、包裹、规格、变体图片均按 SKU 处理。</li>
+      <li>类目从官方树选择。桌布优先 600204；当目标站点官方禁用且用户已批准时，可使用最接近的 600009“节庆装饰”，但不得把旧 fallback 静默当精确类目。</li>
+      <li>妙手草稿/任务接受只能证明妙手侧状态；没有 TikTok 官方店铺回读时，应显示“平台处理中”，而非“发布成功”。</li>
+    </ul>
+
+    <h3>Shopee 全球商品到区域店铺</h3>
+    <div class="flow"><div class="node orange">发布全球商品</div><div class="arrow">→</div><div class="node blue">官方回读 global item</div><div class="arrow">→</div><div class="node">选择区域站点</div><div class="arrow">→</div><div class="node orange">逐站点发布</div><div class="arrow">→</div><div class="node blue">区域官方回读</div></div>
+    <ul>
+      <li>全球商品完成并不表示 PH/MY/TH/VN 已上架。</li>
+      <li>全球商品要核对完整描述、主图、所有变体、变体图片和全球价格。</li>
+      <li>区域发布要核对 global linkage、每 SKU 本地价格、物流、文案和图片。</li>
+      <li>当前 Skill 只有全球商品脚本；最近对 Offer 3838608018 的区域发布由 Agent 临时编排生产 helper 完成，不是 Skill 的可重复正式边界。</li>
+    </ul>
+
+    <h3>Ozon 多 SKU</h3>
+    <div class="flow"><div class="node">批准 SKU 列表</div><div class="arrow">→</div><div class="node">N 个官方 payload</div><div class="arrow">→</div><div class="node orange">逐 SKU import</div><div class="arrow">→</div><div class="node blue">逐 offer 回读</div><div class="arrow">→</div><div class="node green">整品汇总</div></div>
+    <ul><li>身份使用官方返回的 <code>id</code>，状态读取 <code>statuses</code>，不能继续使用旧字段猜测。</li><li>只上传一个 SKU、只核对第一个 SKU 或部分接受，都不能算整品成功。</li><li>桌旗/桌布文案不得沿用贴纸模板；规格展示尺寸不能误用包裹尺寸。</li></ul>
+  </section>
+
+  <section id="readback">
+    <h2>七、回读、结果分类与重试</h2>
+    <div class="grid2">
+      <div class="diagram"><h3>发布后的最小证据链</h3><div class="flow"><div class="node orange">请求已发送</div><div class="arrow">→</div><div class="node">API 已接受</div><div class="arrow">→</div><div class="node">取得外部 ID</div><div class="arrow">→</div><div class="node blue">官方回读</div></div></div>
+      <div class="diagram"><h3>禁止的短路判断</h3><div class="flow"><div class="node red">HTTP 200</div><div class="arrow">≠</div><div class="node red">任务接受</div><div class="arrow">≠</div><div class="node green">发布成功</div></div></div>
+    </div>
+    <div class="grid2" style="margin-top:15px">
+      <div class="result"><h3>发布成功</h3><p>官方或最高权威来源能读到目标；所有预期 SKU 与关键字段一致。</p></div>
+      <div class="result"><h3>平台处理中</h3><p>平台已接受任务，但官方最终商品尚未可读；可以继续有界轮询。</p></div>
+      <div class="result"><h3>部分成功</h3><p>部分店铺/SKU 已成功，其他目标失败或未知。已成功目标不重发。</p></div>
+      <div class="result"><h3>发布失败</h3><p>请求明确被拒绝，或官方回读确认商品不存在/内容错误且无法自动修复。</p></div>
+    </div>
+    <table style="margin-top:15px">
+      <thead><tr><th>证据</th><th>内部记录</th><th>给用户显示</th><th>能否重试</th></tr></thead>
+      <tbody>
+        <tr><td>写入前校验失败，0 次外部写入</td><td>PRE_DISPATCH_FAILURE</td><td>发布失败 + 明确缺失字段</td><td>修正后可安全重试</td></tr>
+        <tr><td>API 明确拒绝</td><td>REJECTED + 安全错误摘要</td><td>发布失败 + 平台原因</td><td>解决原因后重试</td></tr>
+        <tr><td>写入已发出但响应不确定</td><td>UNKNOWN_WRITE + 写入类别</td><td>平台处理中</td><td>先回读，不盲目重发</td></tr>
+        <tr><td>平台接受、等待物化</td><td>ACCEPTED + task/external id</td><td>平台处理中</td><td>有界回读</td></tr>
+        <tr><td>部分店铺/SKU 可读</td><td>逐目标结果</td><td>部分成功</td><td>只重试未成功目标</td></tr>
+        <tr><td>官方读回且完全一致</td><td>VERIFIED + proof digest</td><td>发布成功</td><td>无需重试</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="states">
+    <h2>八、当前有多少种“状态真相”</h2>
+    <div class="truth">
+      <div><b>浏览器内存</b>按钮本轮结果，刷新可丢失</div><div><b>release_v1</b>发布计划和目标账本</div><div><b>oneclick store</b>durable job/target/outcome</div><div><b>Skill 报告</b>CLI JSON 结果</div><div><b>平台事实</b>妙手/Shopee/Ozon 回读</div>
+    </div>
+    <p class="callout bad"><strong>当前不合理：</strong>这五类状态没有统一的优先级和报告 ID。网页可能显示失败但 Ozon 后台已成功；网页可能显示 Shopee 成功但后台找不到商品；Skill 也可能有独立报告却没有回写产品中心。</p>
+    <h3>建议的唯一优先级</h3>
+    <div class="flow"><div class="node blue">平台官方回读</div><div class="arrow">优先于</div><div class="node">Skill 证据报告</div><div class="arrow">优先于</div><div class="node">服务端任务账</div><div class="arrow">优先于</div><div class="node red">浏览器临时状态</div></div>
+    <p>界面应显示 Skill 报告投影，并提供 report_id。浏览器只负责展示，不能自己成为发布结果的事实源。</p>
+  </section>
+
+  <section id="tests">
+    <h2>九、测试与验收应该怎么做</h2>
+    <div class="grid3">
+      <div class="card"><span class="badge">L1</span><h3>确定性红测/回归</h3><p>请求字段、多 SKU、价格、类目、状态分类、错误边界。无外部写入，运行快。</p></div>
+      <div class="card"><span class="badge warn">L2</span><h3>真实只读预检</h3><p>真实凭据加载、类目树、店铺映射、旧商品状态和 API schema；不发布。</p></div>
+      <div class="card"><span class="badge bad">L3</span><h3>授权 Offer 实写</h3><p>用明确授权 Offer 点击真实按钮，写入平台，官方回读，并保存真实前端截图。</p></div>
+    </div>
+    <h3>每个改动必须保留的最小测试路径</h3>
+    <ol>
+      <li>先用最小失败测试证明问题确实存在；记录修改前失败证据。</li>
+      <li>修复后运行该红测和平台相关回归，不必每次跑全仓所有无关测试。</li>
+      <li>凡是发布链路或页面按钮改变，必须运行一次真实浏览器点击测试。</li>
+      <li>凡是结果分类改变，必须使用授权 Offer 做平台回读，不以 mock 的 HTTP 200 代替。</li>
+      <li>输出：请求是否发出、外部写入次数、外部 ID、官方回读、截图、修改前后对比。</li>
+    </ol>
+    <p class="callout"><strong>当前缺口：</strong>没有一个集成测试能完整证明“真实页面点击 → 与 Skill 相同的工作流 → 官方回读 → durable 报告 → 页面显示”在三个平台都成立。Shopee 区域多 SKU 流程也没有进入 Skill 脚本的固定回归矩阵。</p>
+  </section>
+
+  <section id="audit">
+    <h2>十、审计发现：不合理、矛盾与改进点</h2>
+    <div class="finding"><div class="priority p0">P0</div><div><strong>两套执行权威</strong></div><div>网页按钮直接调用服务端发布接口；Skill 是独立 CLI。相同业务由两套编排、两套状态和两套回读执行。</div><div><strong>改进：</strong>网页三个按钮调用 Skill 平台任务，或服务端复用同一个 Skill runtime；禁止复制一套近似逻辑。</div></div>
+    <div class="finding"><div class="priority p0">P0</div><div><strong>Shopee 区域能力未进入 Skill</strong></div><div>Skill 只包含全球商品 dispatch/readback。3838608018 的四区域发布是 Agent 临时调用生产 helper 完成。</div><div><strong>改进：</strong>新增 <code>dispatch_shopee_regions.py</code> 与 <code>readback_shopee_regions.py</code>；一个站点一个结果。</div></div>
+    <div class="finding"><div class="priority p0">P0</div><div><strong>区域状态可被错误预填</strong></div><div><code>upsert_global_entry</code> 使用 <code>published_regions or [MY,TH,PH,VN]</code>；传空列表也会被写成四站已发布，即使没有任何 shop_item。</div><div><strong>改进：</strong>空列表必须保持空；只有官方取得区域 item_id 后，<code>record_shop_item</code> 才能添加地区。</div></div>
+    <div class="finding"><div class="priority p0">P0</div><div><strong>状态真相分裂</strong></div><div>浏览器、release_v1、oneclick、Skill 报告和平台回读可能互相矛盾，因此出现“后台成功、界面失败”或反向误报。</div><div><strong>改进：</strong>平台回读最高优先；Skill 生成 durable report_id；页面只投影报告，不自判成功。</div></div>
+    <div class="finding"><div class="priority p1">P1</div><div><strong>Shopee 全球价格身份不清</strong></div><div>一个 CNSC global model 只有一个全球价格，但快照中存在多个目标价格来源。没有明确 master CNY price 和区域 local price 的边界。</div><div><strong>改进：</strong>快照显式保存 <code>shopee_global_price_cny</code>；区域站点另存逐 SKU 本地币价格。</div></div>
+    <div class="finding"><div class="priority p1">P1</div><div><strong>TikTok 回读不足以证明店铺成功</strong></div><div>当前主要证明妙手草稿、任务或账本状态；对于缺官方回读的站点，妙手接受仍可能被理解成发布成功。</div><div><strong>改进：</strong>无官方店铺回读时统一为“平台处理中”；只有权威商品事实可读才升级成功。</div></div>
+    <div class="finding"><div class="priority p1">P1</div><div><strong>报告不一定持久化</strong></div><div>Skill 未显式指定 <code>--report</code> 时可能只生成临时输出，产品中心无法关联这次执行。</div><div><strong>改进：</strong>每次执行固定保存到 offer/revision/run 目录；数据库保存 report_id、路径和摘要。</div></div>
+    <div class="finding"><div class="priority p1">P1</div><div><strong>执行依赖与输入血缘混淆</strong></div><div>定价阶段可参考 TikTok 历史，但批准后 Shopee/Ozon 不应运行时依赖 TikTok。旧 oneclick/COMMON 规则仍容易造成错误阻断。</div><div><strong>改进：</strong>明确“共享只读输入允许、运行时依赖禁止”；批准快照必须自包含。</div></div>
+    <div class="finding"><div class="priority p1">P1</div><div><strong>05–07 产品定位矛盾</strong></div><div>用户已决定 05–07 Skill 化，但产品中心仍保留自己的完整发布状态机和直发按钮逻辑。</div><div><strong>改进：</strong>产品中心 05–07 改成“交接给 Skill / 查看 Skill 报告”，或真正内嵌同一个 Skill；只能选一种。</div></div>
+    <div class="finding"><div class="priority p2">P2</div><div><strong>全量扫描导致超时</strong></div><div>正常发布期间扫描所有店铺/所有 SKU 会放大延迟和网络不确定性。</div><div><strong>改进：</strong>常规路径使用批准时保存的 exact identity 直接读回；全量 reconciliation 另做异步工具。</div></div>
+    <div class="finding"><div class="priority p2">P2</div><div><strong>阻断与提醒过多</strong></div><div>digest、旧文案血缘或已经人工确认的技术状态曾反复阻止继续，虽然不一定导致平台拒绝。</div><div><strong>改进：</strong>只把平台硬必填、身份冲突、SKU 不完整列为 blocker；其余在批准前提示一次。</div></div>
+    <div class="finding"><div class="priority p2">P2</div><div><strong>旧架构资料仍混在当前语义中</strong></div><div>COMMON、legacy oneclick、固定目标集合与当前“三平台独立 Skill”同时存在，维护者容易走错路径。</div><div><strong>改进：</strong>加 deprecated 标记与迁移截止点；把旧文档移入 archive，测试禁止新代码引用旧入口。</div></div>
+  </section>
+
+  <section id="roadmap">
+    <h2>十一、建议的收敛路线</h2>
+    <h3>第一批：先统一事实与入口</h3>
+    <ol>
+      <li>修正 Shopee <code>published_regions</code> 空列表被默认四国的问题，并加失败测试。</li>
+      <li>为 Skill 增加 durable report_id 和固定报告存储；定义平台回读为最高结果权威。</li>
+      <li>让页面三个按钮调用 Skill 的三个独立任务；按钮保留，旧直发编排停止扩展。</li>
+      <li>页面显示四种简单结果，详细证据放“查看执行报告”。</li>
+    </ol>
+    <h3>第二批：补齐平台边界</h3>
+    <ol>
+      <li>Shopee 增加全球 → 区域的正式脚本，区域站点独立、逐 SKU、逐站回读。</li>
+      <li>明确 Shopee master CNY price 与站点 local price 的数据模型。</li>
+      <li>TikTok 将“妙手接受”和“店铺成功”分开；固化 detail_id、站点、SKU 和类别证据。</li>
+      <li>Ozon 把多 SKU 官方回读与页面报告完全接通。</li>
+    </ol>
+    <h3>第三批：建立真实验收闭环</h3>
+    <ol>
+      <li>保留红测，但只跑平台相关集，不用每次跑所有无关测试。</li>
+      <li>为明确授权 Offer 建立三平台 canary：真实按钮、真实写入、官方回读、真实截图。</li>
+      <li>将每次确认根因写入平台 reference；网络偶发和猜测不得成为永久规则。</li>
+      <li>删除/冻结旧 COMMON 与重复 oneclick 执行入口，避免未来再次分叉。</li>
+    </ol>
+    <div class="callout good"><strong>最终验收定义：</strong>同一批准快照能独立启动任一平台；失败只影响该平台/站点；每个 SKU 的规格、价格、包裹、图片和类目可追溯；页面结果来自 Skill 的官方回读报告；重复点击能明确区分“安全重试、先回读、无需重试”。</div>
+  </section>
+
+  <section id="sources">
+    <h2>十二、代码与规则证据索引</h2>
+    <table>
+      <thead><tr><th>证据</th><th>位置</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td>发布 Skill 主说明</td><td class="source">C:\Users\Windows11\.codex\skills\publish-approved-product\SKILL.md</td><td>阶段 05–07、三平台独立、脚本与 Agent 分工</td></tr>
+        <tr><td>平台规则</td><td class="source">...\references\tiktok.md / shopee.md / ozon.md</td><td>已确认平台故障、回读与修复顺序</td></tr>
+        <tr><td>分类与事故规则</td><td class="source">...\references\result-classification.md / incident-patterns.md</td><td>四类结果、知识沉淀门槛</td></tr>
+        <tr><td>Skill 脚本</td><td class="source">...\scripts\inspect_snapshot.py / dispatch_*.py / readback_*.py / publish_approved_product.py</td><td>当前可执行边界</td></tr>
+        <tr><td>产品中心前端</td><td class="source">web\product_workspace.html / web\static\product_workspace.js</td><td>七阶段、三个按钮、浏览器状态</td></tr>
+        <tr><td>产品中心服务端</td><td class="source">modules\products\server.py</td><td>三个 HTTP 发布入口与当前平台调用</td></tr>
+        <tr><td>Shopee 映射</td><td class="source">modules\shopee\global_sku_map.py</td><td>全球商品和区域发布状态</td></tr>
+        <tr><td>旧完整流程审计</td><td class="source">docs\release_v2\PRODUCT_CENTER_DETAILED_FLOW_AUDIT.html</td><td>兼容路径、旧 oneclick/COMMON 结构</td></tr>
+        <tr><td>两周代码审计</td><td class="source">docs\audits\AUTO_LISTING_CODE_AUDIT_431d868_2026-08-03.md</td><td>历史问题、耦合与测试缺口</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <div class="footer">本文档为 2026-08-09 的代码与 Skill 审核快照。它没有执行任何平台写入，也没有修改生产发布逻辑。后续生产行为变更应同步更新本文档和 Skill references。</div>
+</main></body></html>

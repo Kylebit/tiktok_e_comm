@@ -1,0 +1,4330 @@
+"""Regression contract for the unified Miaoshou direct-store adapter.
+
+These tests intentionally describe the public 03 boundary before the
+implementation.  They must fail on the old split TikTok/Shopee/Ozon registry.
+"""
+
+from copy import deepcopy
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from domains.channel_operations.oneclick_release_adapters import (
+    prepare_oneclick_target,
+    production_adapter_registry,
+)
+from modules.miaoshou import oneclick_release as miaoshou
+
+
+EXPECTED_STOREFRONTS = {
+    "tiktok:LH_PH": ("tiktok", "PH", 7676267),
+    "tiktok:LH_MY": ("tiktok", "MY", 13295169),
+    "tiktok:LH_TH": ("tiktok", "TH", 13295228),
+    "tiktok:LH_VN": ("tiktok", "VN", 13295291),
+    "tiktok:MX": ("tiktok", "MX", 16265910),
+    "tiktok:GB": ("tiktok", "GB", 10204699),
+    "tiktok:HB_PH": ("tiktok", "PH", 15173238),
+    "tiktok:HB_MY": ("tiktok", "MY", 16770639),
+    "tiktok:HB_TH": ("tiktok", "TH", 16770557),
+    "tiktok:HB_VN": ("tiktok", "VN", 16783702),
+    "shopee:PH": ("shopee", "PH", 7808255),
+    "shopee:MY": ("shopee", "MY", 13295318),
+    "shopee:TH": ("shopee", "TH", 13295319),
+    "shopee:VN": ("shopee", "VN", 13295320),
+    "ozon:RU": ("ozon", "OZON", 16075432),
+}
+
+
+@pytest.fixture(autouse=True)
+def _reset_miaoshou_factories():
+    miaoshou.configure_prepare_post_factory(None)
+    miaoshou.configure_runtime_transport_factory(None)
+    yield
+    miaoshou.configure_prepare_post_factory(None)
+    miaoshou.configure_runtime_transport_factory(None)
+
+
+def test_platform_owners_are_registered_without_cross_platform_aliasing():
+    registry = production_adapter_registry()
+
+    assert set(registry) == {
+        "miaoshou-direct-store/v1",
+        "shopee_cnsc_publish",
+    }
+    registration = registry["miaoshou-direct-store/v1"]
+    assert registration.adapter_name == "miaoshou-direct-store/v1"
+    assert set(registration.target_labels) == set(EXPECTED_STOREFRONTS)
+    assert registration.preparation_available is True
+    assert registration.dispatch_available is True
+    shopee_global = registry["shopee_cnsc_publish"]
+    assert shopee_global.adapter_name == "shopee_cnsc_publish"
+    assert shopee_global.target_labels == ("shopee:GLOBAL",)
+    assert shopee_global.prepare is not registration.prepare
+    assert shopee_global.dispatch is not registration.dispatch
+
+
+def test_fixed_miaoshou_storefront_and_endpoint_matrix_is_exact():
+    assert set(miaoshou.DIRECT_STORE_CONFIG) == set(EXPECTED_STOREFRONTS)
+    for target, (platform, site, shop_id) in EXPECTED_STOREFRONTS.items():
+        config = miaoshou.DIRECT_STORE_CONFIG[target]
+        assert config["platform"] == platform
+        assert config["site"] == site
+        assert config["shop_id"] == shop_id
+        assert config["save_path"].startswith(
+            f"/open/v1/product/collect_box/{platform}/"
+        )
+        expected_publish_path = (
+            "/open/v1/product/collect_box/tiktok/collect_box/"
+            "save_move_collect_task"
+            if platform == "tiktok"
+            else (
+                f"/open/v1/product/collect_box/{platform}/"
+                "move_collect/save_move_collect_task"
+            )
+        )
+        assert config["publish_path"] == expected_publish_path
+
+
+def test_tiktok_draft_mode_matrix_preserves_the_proven_site_shop_split():
+    """SEA uses site drafts; only MX/GB use shop drafts."""
+
+    for target in (
+        "tiktok:LH_PH",
+        "tiktok:LH_MY",
+        "tiktok:LH_TH",
+        "tiktok:LH_VN",
+        "tiktok:HB_PH",
+        "tiktok:HB_MY",
+        "tiktok:HB_TH",
+        "tiktok:HB_VN",
+    ):
+        config = miaoshou.DIRECT_STORE_CONFIG[target]
+        assert config["draft_mode"] == "site"
+        assert config["get_path"].endswith("get_site_collect_item_info")
+        assert config["save_path"].endswith("save_site_collect_item_info")
+
+    for target in ("tiktok:MX", "tiktok:GB"):
+        config = miaoshou.DIRECT_STORE_CONFIG[target]
+        assert config["draft_mode"] == "shop"
+        assert config["get_path"].endswith("get_shop_collect_item_info")
+        assert config["save_path"].endswith("save_shop_collect_item_info")
+
+
+def _expected(target):
+    config = miaoshou.DIRECT_STORE_CONFIG[target]
+    return {
+        "common_detail_id": "7",
+        "source_offer_id": "986159122616",
+        "title": "Approved title",
+        "item_num": "0954",
+        "weight": "0.2",
+        "package_cm": ["30", "20", "1"],
+        "images": ["https://assets.example/one.jpg"],
+        "notes": "<p>Exact</p>",
+        "video_url": "",
+        "selected_sku_keys": ["default"],
+        "model_skus": {"default": "0954"},
+        "target_label": target,
+        "shop_name": str(config["shop"]),
+        "shop_id": str(config["shop_id"]),
+        "region": str(config["region"]),
+        "platform": str(config["platform"]),
+        "price": "33",
+        "currency": {
+            "MX": "MXN",
+            "GB": "GBP",
+            "PH": "PHP",
+            "MY": "MYR",
+            "TH": "THB",
+            "VN": "VND",
+            "OZON": "RUB",
+        }[str(config["region"])],
+    }
+
+
+def _detail(target):
+    expected = _expected(target)
+    if expected["platform"] == "ozon":
+        return {
+            "detailId": 77,
+            "title": expected["title"],
+            "itemNum": expected["item_num"],
+            "notes": expected["notes"],
+            "mainImgVideoUrl": "",
+            "packageInfo": {
+                "depth": 30,
+                "width": 20,
+                "height": 1,
+                "dimensionUnit": "CENTIMETER",
+            },
+            "weightInfo": {"weight": 0.2, "weightUnit": "KILOGRAM"},
+            "skuMap": {
+                "default": {
+                    "itemNum": "0954",
+                    "price": 33,
+                    "marketPrice": 33,
+                    "originPrice": 33,
+                    "imgUrls": list(expected["images"]),
+                }
+            },
+        }
+    detail = {
+        "detailId": 77,
+        "shopId": expected["shop_id"],
+        "sourceOfferId": expected["source_offer_id"],
+        "title": expected["title"],
+        "itemNum": expected["item_num"],
+        "weight": 0.2,
+        "packageLength": 30,
+        "packageWidth": 20,
+        "packageHeight": 1,
+        "imgUrls": list(expected["images"]),
+        "notes": expected["notes"],
+        "mainImgVideoUrl": "",
+        "skuMap": {
+            "default": {
+                "itemNum": "0954",
+                "weight": 0.2,
+                "packageLength": 30,
+                "packageWidth": 20,
+                "packageHeight": 1,
+                "price": 33,
+                "priceIncludeVat": 33,
+            }
+        },
+    }
+    if miaoshou.DIRECT_STORE_CONFIG[target]["draft_mode"] == "site":
+        detail.pop("shopId")
+        detail["site"] = expected["region"]
+        detail["editModel"] = "site"
+        detail["collectBoxDetailShopList"] = [
+            {"shopId": expected["shop_id"], "site": expected["region"]}
+        ]
+    if expected["platform"] == "tiktok":
+        detail["skuMap"]["default"].update({
+            "stock": 300,
+            "shopIdToWarehouseIdAndStockMap": {
+                expected["shop_id"]: {"EXISTING-WAREHOUSE": "300"}
+            },
+        })
+    return detail
+
+
+def test_tiktok_readback_allows_provider_normalized_title_after_exact_save():
+    target = "tiktok:LH_TH"
+    expected = _expected(target)
+    expected["category_id"] = "600009"
+    detail = _detail(target)
+    detail["title"] = "Provider-localized Thai title"
+    detail["cid"] = "600009"
+    detail["collectBoxDetailShopList"][0].update(
+        {"brandId": miaoshou.TIKTOK_NO_BRAND_ID, "brandName": "No Brand"}
+    )
+
+    miaoshou._verify_target_readback(
+        target,
+        detail,
+        expected,
+        platform="tiktok",
+        strict_collectbox_tiktok=True,
+        draft_mode="site",
+    )
+
+    shop_expected = _expected("tiktok:MX")
+    shop_expected["category_id"] = "600009"
+    shop_detail = _detail("tiktok:MX")
+    shop_detail["title"] = "Unexpected shop-title drift"
+    shop_detail["cid"] = "600009"
+    miaoshou._verify_target_readback(
+        "tiktok:MX",
+        shop_detail,
+        shop_expected,
+        platform="tiktok",
+        strict_collectbox_tiktok=True,
+        draft_mode="shop",
+    )
+
+
+def test_tiktok_prepare_polls_after_save_until_provider_state_materializes(
+    monkeypatch,
+):
+    target = "tiktok:LH_PH"
+    payload = _plan_payload(target)
+    fake = DirectStoreFake(target)
+    original = deepcopy(fake.detail)
+    saved = False
+    stale_readbacks = 0
+
+    def post(path, body):
+        nonlocal saved, stale_readbacks
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {"result": "success"}
+        if path == fake.config["save_path"]:
+            response = fake.post(path, body)
+            saved = True
+            return response
+        if path == fake.config["get_path"] and saved and stale_readbacks == 0:
+            stale_readbacks += 1
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": deepcopy(original),
+                    "ossMd5": "stale-md5",
+                },
+            }
+        return fake.post(path, body)
+
+    waits = []
+    monkeypatch.setattr(miaoshou, "_post_save_readback_wait", waits.append)
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"][0]["status"] == "SUCCEEDED"
+    assert stale_readbacks == 1
+    assert waits == [miaoshou.POST_SAVE_READBACK_RETRY_DELAY_SECONDS]
+
+
+def test_tiktok_prepare_defers_unmaterialized_target_without_duplicate_claim(
+    monkeypatch,
+):
+    target = "tiktok:LH_MY"
+    payload = _plan_payload(target)
+    fake = DirectStoreFake(target)
+    transient_failures = 0
+
+    def post(path, body):
+        nonlocal transient_failures
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {"result": "success"}
+        if path == fake.config["get_path"] and transient_failures < 5:
+            transient_failures += 1
+            raise miaoshou.MiaoshouOneClickPreDispatchError(
+                "provider draft is still materializing"
+            )
+        return fake.post(path, body)
+
+    waits = []
+    monkeypatch.setattr(miaoshou, "_pre_update_prepare_wait", waits.append)
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"][0]["status"] == "SUCCEEDED"
+    assert transient_failures == 5
+    assert waits == [
+        miaoshou.PRE_UPDATE_PREPARATION_RETRY_DELAY_SECONDS
+    ] * 4
+    assert sum(path == miaoshou.SHOP_CLAIM_PATH for path, _ in fake.calls) == 1
+
+
+def _tiktok_list_response(target, detail, *, price=None):
+    config = miaoshou.DIRECT_STORE_CONFIG[target]
+    sku_rows = list(detail["skuMap"].values())
+    assert sku_rows
+    return {
+        "result": "success",
+        "data": {
+            "detailList": [
+                {
+                    "collectBoxDetailId": detail["detailId"],
+                    "commonCollectBoxDetailId": 7,
+                    "sourceOfferId": "986159122616",
+                    "site": str(config["site"]),
+                    "price": sku_rows[0]["price"] if price is None else price,
+                    "collectBoxDetailShopList": [
+                        {
+                            "shopId": str(config["shop_id"]),
+                            "site": str(config["site"]),
+                        }
+                    ],
+                }
+            ],
+            "totalCount": 1,
+        },
+    }
+
+
+def _command(target):
+    config = miaoshou.DIRECT_STORE_CONFIG[target]
+    expected = _expected(target)
+    detail = _detail(target)
+    return {
+        "schema_version": "oneclick-miaoshou-direct-store-command/v1",
+        "kind": "DIRECT_STORE",
+        "target_label": target,
+        "platform": config["platform"],
+        "site": config["site"],
+        "source_offer_id": expected["source_offer_id"],
+        "common_detail_id": expected["common_detail_id"],
+        "shop_id": expected["shop_id"],
+        "action": "USE_EXISTING",
+        "detail_id": "77",
+        "api_less": True,
+        "expected": expected,
+        "observed_snapshot_digest": miaoshou._digest(
+            miaoshou._detail_snapshot(detail)
+        ),
+        "identity_binding": {
+            "target_label": target,
+            "shop_id": expected["shop_id"],
+            "platform": config["platform"],
+            "idempotency_key": f"job:{target}",
+            "source_identity_digest": "a" * 64,
+            "payload_digest": "b" * 64,
+            "adapter_policy_digest": "c" * 64,
+        },
+    }
+
+
+def _plan_payload(target):
+    config = miaoshou.DIRECT_STORE_CONFIG[target]
+    return {
+        "product_id": "7",
+        "source_product_identity": {
+            "source_offer_id": "986159122616",
+        },
+        "seller_sku": "0954",
+        "targets": ["miaoshou:COMMON", target],
+        "product_facts": {
+            "title": "Approved source title",
+            "category": {"name": "wall sticker"},
+            "weight_kg": "0.2",
+            "package_cm": [30, 20, 1],
+            "selected_sku_keys": ["default"],
+        },
+        "images": [{"image_url": "https://assets.example/one.jpg"}],
+        "video_urls": [],
+        "listing_copy": {
+            "shopee_description_en": "Exact",
+            "candidates": [{
+                "channel": config["platform"],
+                "site": config["region"],
+                "policy_check": "passed",
+                "title": "Approved title",
+            }],
+        },
+        "pricing": {
+            "selected_targets": {
+                target: {
+                    "store_prices": [{
+                        "target_key": config["key"],
+                        "list_price": "33",
+                        "currency": _expected(target)["currency"],
+                    }]
+                }
+            }
+        },
+        "approved_tiktok_category_decisions": (
+            miaoshou.approved_tiktok_category_decisions(
+                {"name": "wall sticker"},
+                targets=("miaoshou:COMMON", target),
+            )
+            if target.startswith("tiktok:")
+            else {}
+        ),
+    }
+
+
+def _tiktok_category_decisions(targets):
+    decisions = miaoshou.approved_tiktok_category_decisions(
+        {"name": "wall sticker"},
+        targets=("miaoshou:COMMON", *targets),
+    )
+    assert isinstance(decisions, dict)
+    return decisions
+
+
+def _gb_category_metadata_response(
+    *, mandatory=True, values=None
+):
+    return {
+        "result": "success",
+        "data": {
+            "categoryMetadata": {
+                "categoryConfig": {},
+                "categorySaleAttrList": [],
+                "categoryProductAttrList": [
+                    {
+                        "attrId": "102255",
+                        "name": "Batch Number",
+                        "attributeNameAlias": "生产批次号",
+                        "attributeType": 3,
+                        "isMandatory": mandatory,
+                        "isMultipleSelected": False,
+                        "isCustomized": True,
+                        "values": (
+                            [
+                                {
+                                    "id": "1000256",
+                                    "name": "1",
+                                    "valueNameAlias": "1",
+                                }
+                            ]
+                            if values is None
+                            else values
+                        ),
+                    }
+                ],
+            }
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "metadata_response",
+    [
+        _gb_category_metadata_response(mandatory=False),
+        _gb_category_metadata_response(values=[]),
+        _gb_category_metadata_response(
+            values=[
+                {"id": "1000256", "name": "1", "valueNameAlias": "1"},
+                {"id": "1000257", "name": "2", "valueNameAlias": "2"},
+            ]
+        ),
+        {
+            "result": "success",
+            "data": {
+                "categoryMetadata": {"categoryProductAttrList": []}
+            },
+        },
+    ],
+    ids=("not-mandatory", "no-value", "multiple-values", "missing-rule"),
+)
+def test_tiktok_gb_batch_number_metadata_fails_closed(metadata_response):
+    expected = _expected("tiktok:GB")
+    expected["category_id"] = "600338"
+
+    with pytest.raises(
+        miaoshou.MiaoshouOneClickPreDispatchError,
+        match="GB Batch Number",
+    ):
+        miaoshou._tiktok_category_product_attributes(
+            lambda _path, _body: deepcopy(metadata_response),
+            current={},
+            expected=expected,
+            shop_endpoint_id=10204699,
+        )
+
+
+def test_legacy_missing_category_field_backfills_but_present_malformed_fails():
+    target = "tiktok:GB"
+    payload = _plan_payload(target)
+    payload.pop("approved_tiktok_category_decisions")
+
+    assert miaoshou._approved_tiktok_category_id(
+        payload,
+        target=target,
+    ) == "600338"
+
+    payload["product_facts"]["category"] = {"name": "unmapped"}
+    assert miaoshou._approved_tiktok_category_id(
+        payload,
+        target=target,
+    ) is None
+
+    payload = _plan_payload(target)
+    payload["approved_tiktok_category_decisions"][target][
+        "evidence_digest"
+    ] = "e" * 64
+    assert miaoshou._approved_tiktok_category_id(
+        payload,
+        target=target,
+    ) is None
+
+    payload["approved_tiktok_category_decisions"] = {target: {}}
+    assert miaoshou._approved_tiktok_category_id(
+        payload,
+        target=target,
+    ) is None
+
+    for malformed in (None, [], "legacy"):
+        payload = _plan_payload(target)
+        payload["approved_tiktok_category_decisions"] = malformed
+        assert miaoshou._approved_tiktok_category_id(
+            payload,
+            target=target,
+        ) is None
+
+
+def test_present_tiktok_category_semantic_drift_fails_closed():
+    target = "tiktok:GB"
+    payload = _plan_payload(target)
+    payload["approved_tiktok_category_decisions"][target][
+        "category_id"
+    ] = "600339"
+
+    assert miaoshou._approved_tiktok_category_id(
+        payload,
+        target=target,
+    ) is None
+
+
+def test_present_tiktok_category_semantic_drift_makes_zero_storefront_calls():
+    target = "tiktok:GB"
+    payload = _plan_payload(target)
+    payload["approved_tiktok_category_decisions"][target][
+        "category_id"
+    ] = "600339"
+    calls = []
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=False,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=lambda path, body: calls.append((path, body)),
+    )
+
+    assert calls == []
+    assert result["external_writes"] == ()
+    assert result["external_write_count"] == 0
+    assert result["target_results"] == [
+        {
+            "target_label": target,
+            "status": "FAILED",
+            "error_code": "category_not_approved",
+            "detail_digest": result["target_results"][0]["detail_digest"],
+        }
+    ]
+    assert len(result["target_results"][0]["detail_digest"]) == 64
+
+def test_collectbox_tiktok_repairs_vendor_auto_converted_price_once_then_reads_exact():
+    """A vendor CNY-auto-price readback gets one bounded repair, not success."""
+
+    target = "tiktok:MX"
+    payload = _plan_payload(target)
+    payload["pricing"]["selected_targets"][target]["store_prices"][0][
+        "list_price"
+    ] = "286"
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions((target,))
+    )
+    calls = []
+    detail = _detail(target)
+    detail["cid"] = "600338"
+    save_count = 0
+    get_count = 0
+    web_calls = []
+
+    def post(path, body):
+        nonlocal detail, save_count, get_count
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_shop_collect_item_info"):
+            get_count += 1
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(detail),
+                    "ossMd5": f"md5-{get_count}",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            save_count += 1
+            detail = deepcopy(body["shopCollectItemInfo"])
+            detail["detailId"] = int(body["detailId"])
+            detail["shopId"] = str(body["shopId"])
+            detail["sourceOfferId"] = "986159122616"
+            detail["cid"] = "600338"
+            if save_count == 1:
+                # Sanitized live shape from Offer 3846511157: Miaoshou kept
+                # the common CNY 10 auto-conversion instead of approved MXN 286.
+                detail["skuMap"]["default"]["price"] = 25.66
+                detail["skuMap"]["default"]["priceIncludeVat"] = 25.66
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    def web_post(path, body):
+        web_calls.append((path, deepcopy(body)))
+        assert path == miaoshou.WEB_BATCH_SET_PRICE_PATH
+        detail["skuMap"]["default"]["price"] = 286
+        detail["skuMap"]["default"]["priceIncludeVat"] = 286
+        return {"success": True}
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+        web_post=web_post,
+    )
+
+    saves = [
+        body
+        for path, body in calls
+        if path.endswith("save_shop_collect_item_info")
+    ]
+    assert len(saves) == 1
+    assert saves[0]["ossMd5"] == "md5-1"
+    assert all(
+        body["shopCollectItemInfo"]["skuMap"]["default"]["price"] == 286
+        and body["shopCollectItemInfo"]["skuMap"]["default"][
+            "priceIncludeVat"
+        ]
+        == 286
+        for body in saves
+    )
+    assert web_calls == [
+        (
+            miaoshou.WEB_BATCH_SET_PRICE_PATH,
+            {
+                "collectBoxDetailIds": [77],
+                "site": "MX",
+                "priceConfig": {
+                    "price": {
+                        "modifyMode": "newValue",
+                        "newValue": 286,
+                    }
+                },
+            },
+        )
+    ]
+    assert result["target_results"] == [
+        {
+            "target_label": target,
+            "status": "REPAIRED_SUCCEEDED",
+            "error_code": None,
+            "detail_digest": None,
+        }
+    ]
+    assert result["checks"]["approved_prices_exact"] is True
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
+def test_collectbox_tiktok_sea_uses_site_payload_and_exact_readback():
+    target = "tiktok:LH_MY"
+    payload = _plan_payload(target)
+    detail = _detail(target)
+    detail.pop("shopId", None)
+    detail["site"] = "MY"
+    detail["editModel"] = "site"
+    detail["cid"] = "600338"
+    detail["collectBoxDetailShopList"] = [
+        {"shopId": str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])}
+    ]
+    calls = []
+
+    def post(path, body):
+        nonlocal detail
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path == miaoshou.SOURCE_LIST_PATH:
+            return _tiktok_list_response(target, detail)
+        if path.endswith("get_site_collect_item_info"):
+            assert body == {"detailId": 77, "site": "MY"}
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": deepcopy(detail),
+                    "ossMd5": "site-md5",
+                },
+            }
+        if path.endswith("save_site_collect_item_info"):
+            assert body["detailId"] == 77
+            assert body["site"] == "MY"
+            assert body["ossMd5"] == "site-md5"
+            assert "shopId" not in body
+            assert "shopCollectItemInfo" not in body
+            detail = deepcopy(body["siteCollectItemInfo"])
+            detail["detailId"] = 77
+            detail["site"] = "MY"
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"][0]["status"] == "SUCCEEDED"
+    assert [path for path, _ in calls] == [
+        miaoshou.SHOP_CLAIM_PATH,
+        miaoshou.DIRECT_STORE_CONFIG[target]["get_path"],
+        miaoshou.DIRECT_STORE_CONFIG[target]["save_path"],
+        miaoshou.DIRECT_STORE_CONFIG[target]["get_path"],
+    ]
+
+
+@pytest.mark.parametrize("target", ("tiktok:LH_MY", "tiktok:HB_MY"))
+def test_collectbox_tiktok_sea_replaces_existing_brand_with_no_brand(target):
+    payload = _plan_payload(target)
+    detail = _detail(target)
+    detail["cid"] = "600338"
+    detail["collectBoxDetailShopList"][0].update(
+        {"brandId": "999", "brandName": "Wrong Brand"}
+    )
+    saved = []
+
+    def post(path, body):
+        nonlocal detail
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path == miaoshou.SOURCE_LIST_PATH:
+            return _tiktok_list_response(target, detail)
+        if path.endswith("get_site_collect_item_info"):
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": deepcopy(detail),
+                    "ossMd5": "site-md5",
+                },
+            }
+        if path.endswith("save_site_collect_item_info"):
+            saved.append(deepcopy(body))
+            detail = deepcopy(body["siteCollectItemInfo"])
+            detail["detailId"] = 77
+            return {"result": "success"}
+        if path.endswith("get_shop_collect_item_info"):
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(detail),
+                    "ossMd5": "shop-md5",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            detail = deepcopy(body["shopCollectItemInfo"])
+            detail["detailId"] = 77
+            detail["shopId"] = str(body["shopId"])
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"][0]["status"] == "SUCCEEDED"
+    shop_row = saved[0]["siteCollectItemInfo"][
+        "collectBoxDetailShopList"
+    ][0]
+    assert shop_row["brandId"] == "0"
+    assert shop_row["brandName"] == "No Brand"
+
+
+@pytest.mark.parametrize("target", ("tiktok:LH_MY", "tiktok:HB_MY"))
+def test_collectbox_tiktok_sea_wrong_brand_readback_never_succeeds(target):
+    payload = _plan_payload(target)
+    detail = _detail(target)
+    detail["cid"] = "600338"
+
+    def post(path, body):
+        nonlocal detail
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_site_collect_item_info"):
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": deepcopy(detail),
+                    "ossMd5": "site-md5",
+                },
+            }
+        if path.endswith("save_site_collect_item_info"):
+            detail = deepcopy(body["siteCollectItemInfo"])
+            detail["detailId"] = 77
+            detail["collectBoxDetailShopList"][0].update(
+                {"brandId": "999", "brandName": "Wrong Brand"}
+            )
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"][0]["status"] == "FAILED"
+
+
+def test_collectbox_tiktok_blank_gb_category_uses_approved_semantic_candidate_and_continues():
+    """A blank draft CID may only be replaced from approved semantic facts."""
+
+    targets = ("tiktok:GB", "tiktok:MX")
+    payload = _plan_payload(targets[0])
+    payload["targets"] = ["miaoshou:COMMON", *targets]
+    payload["listing_copy"]["candidates"].append(
+        {
+            "channel": "tiktok",
+            "site": "MX",
+            "policy_check": "passed",
+            "title": "Approved MX title",
+        }
+    )
+    payload["pricing"]["selected_targets"] = {
+        "tiktok:GB": {
+            "store_prices": [
+                {"target_key": "gb", "list_price": "15", "currency": "GBP"}
+            ]
+        },
+        "tiktok:MX": {
+            "store_prices": [
+                {"target_key": "mx", "list_price": "286", "currency": "MXN"}
+            ]
+        },
+    }
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions(targets)
+    )
+    payload["approved_tiktok_category_decisions"].pop("tiktok:GB")
+    calls = []
+    details = {
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"]["shop_id"]): {
+            **_detail("tiktok:GB"),
+            "cid": "",
+        },
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:MX"]["shop_id"]): {
+            **_detail("tiktok:MX"),
+            "cid": "600338",
+        },
+    }
+    details[str(miaoshou.DIRECT_STORE_CONFIG["tiktok:MX"]["shop_id"])][
+        "detailId"
+    ] = 78
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
+        if path == miaoshou.DETAIL_CREATE_PATH:
+            return {
+                "result": "success",
+                "data": {"platformCollectBoxDetailIdMap": {"tiktok": {"7": 78}}},
+            }
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(details[shop_id]),
+                    "ossMd5": "md5",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            cid = details[shop_id].get("cid")
+            details[shop_id] = deepcopy(body["shopCollectItemInfo"])
+            details[shop_id]["detailId"] = int(body["detailId"])
+            details[shop_id]["shopId"] = shop_id
+            details[shop_id]["sourceOfferId"] = "986159122616"
+            # Vendor preserves blank GB category.  MX keeps its audited cid.
+            details[shop_id]["cid"] = cid
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=targets,
+        post=post,
+    )
+
+    assert result["target_results"][0]["target_label"] == "tiktok:GB"
+    assert result["target_results"][0]["status"] == "SUCCEEDED"
+    assert result["target_results"][0]["error_code"] is None
+    assert result["target_results"][0]["detail_digest"] is None
+    assert result["target_results"][1] == {
+        "target_label": "tiktok:MX",
+        "status": "SUCCEEDED",
+        "error_code": None,
+        "detail_digest": None,
+    }
+    claimed_shop_ids = [
+        str(body["shopIds"][0])
+        for path, body in calls
+        if path == miaoshou.SHOP_CLAIM_PATH
+    ]
+    assert claimed_shop_ids == [
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"]["shop_id"]),
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:MX"]["shop_id"])
+    ]
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
+def test_collectbox_tiktok_failed_bounded_price_repair_continues_next_site():
+    targets = ("tiktok:MX", "tiktok:GB")
+    payload = _plan_payload(targets[0])
+    payload["targets"] = ["miaoshou:COMMON", *targets]
+    payload["listing_copy"]["candidates"].append(
+        {
+            "channel": "tiktok",
+            "site": "GB",
+            "policy_check": "passed",
+            "title": "Approved GB title",
+        }
+    )
+    payload["pricing"]["selected_targets"] = {
+        "tiktok:MX": {
+            "store_prices": [
+                {"target_key": "mx", "list_price": "286", "currency": "MXN"}
+            ]
+        },
+        "tiktok:GB": {
+            "store_prices": [
+                {"target_key": "gb", "list_price": "15", "currency": "GBP"}
+            ]
+        },
+    }
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions(targets)
+    )
+    details = {}
+    for index, target in enumerate(targets):
+        detail = _detail(target)
+        detail["detailId"] = 77 + index
+        detail["cid"] = "600338"
+        details[str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])] = detail
+    calls = []
+    web_calls = []
+    target_by_site = {
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["site"]): target
+        for target in targets
+    }
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
+        if path == miaoshou.DETAIL_CREATE_PATH:
+            return {
+                "result": "success",
+                "data": {"platformCollectBoxDetailIdMap": {"tiktok": {"7": 78}}},
+            }
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(details[shop_id]),
+                    "ossMd5": f"md5-{len(calls)}",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            details[shop_id] = deepcopy(body["shopCollectItemInfo"])
+            details[shop_id]["detailId"] = int(body["detailId"])
+            details[shop_id]["shopId"] = shop_id
+            details[shop_id]["sourceOfferId"] = "986159122616"
+            details[shop_id]["cid"] = "600338"
+            if shop_id == str(
+                miaoshou.DIRECT_STORE_CONFIG["tiktok:MX"]["shop_id"]
+            ):
+                # The vendor keeps overriding the approved MXN price even
+                # after the single repair.  A third write is forbidden.
+                details[shop_id]["skuMap"]["default"]["price"] = 6.05
+                details[shop_id]["skuMap"]["default"][
+                    "priceIncludeVat"
+                ] = 6.05
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    def web_post(path, body):
+        web_calls.append((path, deepcopy(body)))
+        target = target_by_site[str(body["site"])]
+        shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        if target != "tiktok:MX":
+            approved_price = int(
+                payload["pricing"]["selected_targets"][target][
+                    "store_prices"
+                ][0]["list_price"]
+            )
+            details[shop_id]["skuMap"]["default"]["price"] = approved_price
+            details[shop_id]["skuMap"]["default"][
+                "priceIncludeVat"
+            ] = approved_price
+        return {"success": True}
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=targets,
+        post=post,
+        web_post=web_post,
+    )
+
+    assert result["target_results"][0]["status"] == "FAILED"
+    assert result["target_results"][0]["error_code"] == (
+        "approved_price_readback_mismatch"
+    )
+    assert result["target_results"][1]["status"] == "SUCCEEDED"
+    save_shop_ids = [
+        str(body["shopId"])
+        for path, body in calls
+        if path.endswith("save_shop_collect_item_info")
+    ]
+    assert save_shop_ids.count(
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:MX"]["shop_id"])
+    ) == 1
+    assert save_shop_ids.count(
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"]["shop_id"])
+    ) == 1
+    assert [body["site"] for _path, body in web_calls] == ["MX"]
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
+LIVE_SIX_TIKTOK_TARGETS = (
+    "tiktok:LH_PH",
+    "tiktok:LH_MY",
+    "tiktok:LH_TH",
+    "tiktok:LH_VN",
+    "tiktok:MX",
+    "tiktok:GB",
+)
+
+LIVE_SIX_SAVE_COUNTS = {
+    "tiktok:LH_PH": 1,
+    "tiktok:LH_MY": 1,
+    "tiktok:LH_TH": 1,
+    "tiktok:LH_VN": 1,
+    "tiktok:MX": 1,
+    "tiktok:GB": 1,
+}
+
+
+@pytest.mark.parametrize("target", ("tiktok:MX", "tiktok:GB"))
+def test_collectbox_tiktok_shop_draft_persists_price_and_category_without_web(
+    target, monkeypatch
+):
+    """The legacy complete per-site draft contract must persist both fields.
+
+    Offer 3846511157 reproduced the regression: the reduced save payload was
+    accepted, but Miaoshou rebuilt the local price from COMMON CNY 10 and some
+    site categories were blank.  The previously proven path first reads the
+    target warehouse and writes the complete site/shop draft contract.  That
+    path must not depend on a browser Cookie or the batch-price repair API.
+    """
+
+    approved_prices = {
+        "tiktok:LH_PH": ("523", "PHP"),
+        "tiktok:LH_MY": ("46", "MYR"),
+        "tiktok:LH_TH": ("386", "THB"),
+        "tiktok:LH_VN": ("408000", "VND"),
+        "tiktok:MX": ("286", "MXN"),
+        "tiktok:GB": ("15", "GBP"),
+    }
+    converted_prices = {
+        "tiktok:LH_PH": 90.66,
+        "tiktok:LH_MY": 6.05,
+        "tiktok:LH_TH": 49.47,
+        "tiktok:LH_VN": 38939.8,
+        "tiktok:MX": 25.66,
+        "tiktok:GB": 1.1,
+    }
+    config = miaoshou.DIRECT_STORE_CONFIG[target]
+    approved_price, currency = approved_prices[target]
+    payload = _plan_payload(target)
+    payload["pricing"]["selected_targets"][target]["store_prices"][0].update(
+        {"list_price": approved_price, "currency": currency}
+    )
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions((target,))
+    )
+    detail = _detail(target)
+    detail["cid"] = ""
+    detail["isCodOpen"] = "0"
+    detail["skuMap"]["default"].pop(
+        "shopIdToWarehouseIdAndStockMap", None
+    )
+    calls = []
+
+    def post(path, body):
+        nonlocal detail
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_shop_warehouse_list"):
+            assert body == {"shopIds": [str(config["shop_id"])]}
+            return {
+                "result": "success",
+                "data": {
+                    "shopWarehouseList": [{
+                        "warehouseList": [{
+                            "warehouseId": "WAREHOUSE-1",
+                            "warehouseEffectStatus": "1",
+                            "isDefault": "1",
+                        }]
+                    }]
+                },
+            }
+        if path == config["get_path"]:
+            field = (
+                "siteCollectItemInfo"
+                if config["draft_mode"] == "site"
+                else "shopCollectItemInfo"
+            )
+            return {
+                "result": "success",
+                "data": {field: deepcopy(detail), "ossMd5": "md5"},
+            }
+        if path == config["save_path"]:
+            field = (
+                "siteCollectItemInfo"
+                if config["draft_mode"] == "site"
+                else "shopCollectItemInfo"
+            )
+            candidate = deepcopy(body[field])
+            sku = candidate["skuMap"]["default"]
+            shop_rows = candidate.get("collectBoxDetailShopList") or []
+            brand_exact = (
+                len(shop_rows) == 1
+                and str(shop_rows[0].get("brandId") or "") == "0"
+                if config["draft_mode"] == "site"
+                else str(candidate.get("brandId") or "") == "0"
+            )
+            product_attributes_exact = (
+                candidate.get("productAttributes")
+                == [
+                    {
+                        "attributeId": "102255",
+                        "attributeName": "Batch Number",
+                        "attributeNameAlias": "生产批次号",
+                        "attributeValues": [
+                            {
+                                "valueName": "1",
+                                "valueId": "1000256",
+                                "valueNameAlias": "1",
+                            }
+                        ],
+                    }
+                ]
+                if target == "tiktok:GB"
+                else candidate.get("productAttributes")
+                == detail.get("productAttributes")
+            )
+            complete_legacy_contract = all((
+                candidate.get("isCodOpen") == "0",
+                candidate.get("sizeChart") == "",
+                candidate.get("sizeChartType") == "",
+                candidate.get("deliveryOptionSetType") == "default",
+                candidate.get("mainImgAppVideoId")
+                == detail.get("mainImgAppVideoId"),
+                candidate.get("mainImgPlatformVideoId")
+                == detail.get("mainImgPlatformVideoId"),
+                candidate.get("deliveryOptionIds")
+                == detail.get("deliveryOptionIds"),
+                candidate.get("manufacturerIds")
+                == detail.get("manufacturerIds"),
+                candidate.get("responsiblePersonIds")
+                == detail.get("responsiblePersonIds"),
+                product_attributes_exact,
+                candidate.get("productCertifications")
+                == detail.get("productCertifications"),
+                brand_exact,
+                sku.get("stock") == 300,
+                sku.get("shopIdToWarehouseIdAndStockMap") == {
+                    str(config["shop_id"]): {"WAREHOUSE-1": "300"}
+                },
+            ))
+            detail = candidate
+            detail["detailId"] = int(body["detailId"])
+            detail["cid"] = (
+                "600338" if complete_legacy_contract else ""
+            )
+            if not complete_legacy_contract:
+                detail["skuMap"]["default"]["price"] = converted_prices[target]
+                detail["skuMap"]["default"]["priceIncludeVat"] = (
+                    converted_prices[target]
+                )
+            elif config["draft_mode"] == "site":
+                # The live API localizes this display label; brandId is the
+                # stable no-brand identity.
+                detail["collectBoxDetailShopList"][0]["brandName"] = "无品牌"
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(
+        miaoshou,
+        "_prepare_web_price_post",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("browser batch-price repair must not be used")
+        ),
+    )
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"] == [{
+        "target_label": target,
+        "status": "SUCCEEDED",
+        "error_code": None,
+        "detail_digest": None,
+    }]
+    assert any(path.endswith("get_shop_warehouse_list") for path, _ in calls)
+    assert all(path != miaoshou.WEB_BATCH_SET_PRICE_PATH for path, _ in calls)
+
+
+def test_collectbox_gb_uses_numeric_shop_identity_for_write_and_readback(
+    monkeypatch,
+):
+    """GB must preserve the numeric shop identity used by the proven path.
+
+    Historical official readback proves detail 3231607651 persisted GBP 15 and
+    category 600338.  That production path passed the integer ``10204699`` to
+    both the GET and SAVE endpoints.  Offer 3846511157 reproduced a dangerous
+    vendor behaviour after the new path stringified the identity: SAVE returned
+    success while the official readback retained GBP 1.10 and a blank category.
+    """
+
+    target = "tiktok:GB"
+    config = miaoshou.DIRECT_STORE_CONFIG[target]
+    payload = _plan_payload(target)
+    payload["pricing"]["selected_targets"][target]["store_prices"][0].update(
+        {"list_price": "15", "currency": "GBP"}
+    )
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions((target,))
+    )
+    detail = _detail(target)
+    detail.update({"cid": "", "isCodOpen": "1"})
+    detail["skuMap"]["default"].update(
+        {"price": 1.1, "priceIncludeVat": 1.1}
+    )
+    calls = []
+
+    def post(path, body):
+        nonlocal detail
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path == config["get_path"]:
+            assert type(body["shopId"]) is int
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(detail),
+                    "ossMd5": "gb-md5",
+                },
+            }
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
+        if path == config["save_path"]:
+            candidate = deepcopy(body["shopCollectItemInfo"])
+            # A success envelope is not persistence proof.  This deliberately
+            # models the live accepted-but-unchanged response unless the proven
+            # numeric shop identity contract is respected.
+            if type(body["shopId"]) is int:
+                detail = candidate
+                detail["detailId"] = int(body["detailId"])
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(
+        miaoshou,
+        "_prepare_web_price_post",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("browser batch-price repair must not be used")
+        ),
+    )
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"] == [{
+        "target_label": target,
+        "status": "SUCCEEDED",
+        "error_code": None,
+        "detail_digest": None,
+    }]
+    save_bodies = [
+        body for path, body in calls if path == config["save_path"]
+    ]
+    assert len(save_bodies) == 1
+    assert type(save_bodies[0]["shopId"]) is int
+    saved = save_bodies[0]["shopCollectItemInfo"]
+    assert saved["isCodOpen"] == "0"
+    assert saved["cid"] == "600338"
+    assert saved["skuMap"]["default"]["price"] == 15
+    assert saved["skuMap"]["default"]["priceIncludeVat"] == 15
+    assert any(path == miaoshou.CATEGORY_METADATA_PATH for path, _ in calls)
+
+
+def test_collectbox_gb_writes_approved_category_and_required_attribute(
+    monkeypatch,
+):
+    """The category's one official required value must accompany the save.
+
+    The live GB endpoint rejected the otherwise exact approved price/category
+    update with ``产品属性【生产批次号】必填``.  Official category metadata for
+    category 600338 exposes exactly one legal Batch Number value, so the
+    deterministic draft path may select it without inventing business data.
+    """
+
+    target = "tiktok:GB"
+    config = miaoshou.DIRECT_STORE_CONFIG[target]
+    payload = _plan_payload(target)
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions((target,))
+    )
+    detail = _detail(target)
+    detail.update({"cid": "", "isCodOpen": "1"})
+    detail.pop("productAttributes", None)
+    detail["skuMap"]["default"].update(
+        {"price": 1.1, "priceIncludeVat": 1.1}
+    )
+    calls: list[tuple[str, dict[str, object]]] = []
+    category_metadata_path = (
+        "/open/v1/product/collect_box/tiktok/collect_box/"
+        "get_category_metadata"
+    )
+
+    def post(path, body):
+        nonlocal detail
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path == config["get_path"]:
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(detail),
+                    "ossMd5": "gb-md5",
+                },
+            }
+        if path == category_metadata_path:
+            assert body == {
+                "site": "GB",
+                "cid": 600338,
+                "shopIds": [10204699],
+            }
+            return {
+                "result": "success",
+                "data": {
+                    "categoryMetadata": {
+                        "categoryConfig": {},
+                        "categorySaleAttrList": [],
+                        "categoryProductAttrList": [
+                            {
+                                "attrId": "102255",
+                                "name": "Batch Number",
+                                "attributeNameAlias": "生产批次号",
+                                "attributeType": 3,
+                                "isMandatory": True,
+                                "isMultipleSelected": False,
+                                "isCustomized": True,
+                                "values": [
+                                    {
+                                        "id": "1000256",
+                                        "name": "1",
+                                        "valueNameAlias": "1",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                },
+            }
+        if path == config["save_path"]:
+            candidate = deepcopy(body["shopCollectItemInfo"])
+            required = [
+                {
+                    "attributeId": "102255",
+                    "attributeName": "Batch Number",
+                    "attributeNameAlias": "生产批次号",
+                    "attributeValues": [
+                        {
+                            "valueName": "1",
+                            "valueId": "1000256",
+                            "valueNameAlias": "1",
+                        }
+                    ],
+                }
+            ]
+            if (
+                miaoshou.DIRECT_STORE_CONFIG[target]["verification_policy"]
+                == "exact"
+                and candidate.get("productAttributes") != required
+            ):
+                return {
+                    "result": "fail",
+                    "message": "产品属性【生产批次号】必填，请填写后重试",
+                }
+            detail = candidate
+            detail["detailId"] = int(body["detailId"])
+            # Live GB normalizes the top-level itemNum away while retaining
+            # the exact approved seller SKU on every selected model row.
+            detail.pop("itemNum", None)
+            return {"result": "success"}
+        if path == miaoshou.WAREHOUSE_GET_PATH:
+            return _warehouse_response(target)
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_tiktok_collectbox(
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"] == [{
+        "target_label": target,
+        "status": "SUCCEEDED",
+        "error_code": None,
+        "detail_digest": None,
+    }]
+    save_body = next(
+        body for path, body in calls if path == config["save_path"]
+    )
+    assert save_body["shopCollectItemInfo"]["productAttributes"] == [
+        {
+            "attributeId": "102255",
+            "attributeName": "Batch Number",
+            "attributeNameAlias": "生产批次号",
+            "attributeValues": [
+                {
+                    "valueName": "1",
+                    "valueId": "1000256",
+                    "valueNameAlias": "1",
+                }
+            ],
+        }
+    ]
+    assert save_body["shopCollectItemInfo"]["cid"] == "600338"
+    assert any(path == category_metadata_path for path, _ in calls)
+
+
+def _run_live_six_site_tiktok_drift(
+    *,
+    category_decisions,
+    use_web_price_repair=False,
+    price_batch_faults=None,
+    price_batch_noops=(),
+    site_detail_echoes_approved_price=False,
+    shop_save_updates_display=True,
+    shop_save_faults=None,
+    plan_source_offer_id="986159122616",
+    opaque_vendor_identity=False,
+    probe=None,
+):
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    approved_prices = {
+        "tiktok:LH_PH": ("523", "PHP"),
+        "tiktok:LH_MY": ("46", "MYR"),
+        "tiktok:LH_TH": ("386", "THB"),
+        "tiktok:LH_VN": ("408000", "VND"),
+        "tiktok:MX": ("286", "MXN"),
+        "tiktok:GB": ("15", "GBP"),
+    }
+    vendor_cny10_prices = {
+        "tiktok:LH_PH": 90.66,
+        "tiktok:LH_MY": 6.05,
+        "tiktok:LH_TH": 49.47,
+        "tiktok:LH_VN": 38939.8,
+        "tiktok:MX": 25.66,
+        "tiktok:GB": 1.1,
+    }
+    display_prices = dict(vendor_cny10_prices)
+    observed_categories = {
+        target: ("" if target in {"tiktok:LH_VN", "tiktok:GB"} else "600338")
+        for target in targets
+    }
+
+    payload = _plan_payload(targets[0])
+    payload["targets"] = ["miaoshou:COMMON", *targets]
+    payload["listing_copy"]["candidates"] = [
+        {
+            "channel": "tiktok",
+            "site": str(miaoshou.DIRECT_STORE_CONFIG[target]["region"]),
+            "policy_check": "passed",
+            "title": f"Approved {target} title",
+        }
+        for target in targets
+    ]
+    payload["pricing"]["selected_targets"] = {
+        target: {
+            "store_prices": [
+                {
+                    "target_key": str(
+                        miaoshou.DIRECT_STORE_CONFIG[target]["key"]
+                    ),
+                    "list_price": price,
+                    "currency": currency,
+                }
+            ]
+        }
+        for target, (price, currency) in approved_prices.items()
+    }
+    payload["approved_tiktok_category_decisions"] = category_decisions
+    if plan_source_offer_id is None:
+        payload.pop("source_product_identity", None)
+    else:
+        payload["source_product_identity"] = {
+            "source_offer_id": plan_source_offer_id,
+        }
+
+    details = {}
+    target_by_shop_id = {}
+    for index, target in enumerate(targets):
+        shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        detail = _detail(target)
+        if opaque_vendor_identity:
+            detail.pop("sourceOfferId", None)
+        detail["detailId"] = 77 + index
+        detail["cid"] = observed_categories[target]
+        details[shop_id] = detail
+        target_by_shop_id[shop_id] = target
+
+    # Miaoshou persists site and shop drafts in distinct layers.  Keep the
+    # fixture independent too, otherwise a site save can accidentally make a
+    # later shop readback look successful without proving list persistence.
+    site_details = deepcopy(details)
+    shop_details = deepcopy(details)
+
+    calls = []
+    web_calls = []
+    save_counts = {target: 0 for target in targets}
+    save_bodies = {target: [] for target in targets}
+    if probe is not None:
+        probe.update({
+            "calls": calls,
+            "web_calls": web_calls,
+            "save_counts": save_counts,
+        })
+    create_count = 0
+    target_by_site = {
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["site"]): target
+        for target in targets
+    }
+
+    def post(path, body):
+        nonlocal create_count
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
+        if path == miaoshou.DETAIL_CREATE_PATH:
+            create_count += 1
+            return {
+                "result": "success",
+                "data": {
+                    "platformCollectBoxDetailIdMap": {
+                        "tiktok": {"7": 77 + create_count}
+                    }
+                },
+            }
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path == miaoshou.SOURCE_LIST_PATH:
+            assert body["filter"] == {
+                "sourceItemIdKeyword": "986159122616"
+            }
+            rows = []
+            for listed_target in targets:
+                listed_config = miaoshou.DIRECT_STORE_CONFIG[listed_target]
+                listed_shop_id = str(listed_config["shop_id"])
+                listed_rows = _tiktok_list_response(
+                    listed_target,
+                    shop_details[listed_shop_id],
+                    price=display_prices[listed_target],
+                )["data"]["detailList"]
+                if opaque_vendor_identity:
+                    for row in listed_rows:
+                        row.pop("sourceOfferId", None)
+                        row.pop("site", None)
+                        for shop_row in row["collectBoxDetailShopList"]:
+                            shop_row.pop("site", None)
+                rows.extend(listed_rows)
+            return {
+                "result": "success",
+                "data": {"detailList": rows, "totalCount": len(rows)},
+            }
+        if path.endswith("get_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(shop_details[shop_id]),
+                    "ossMd5": f"md5-{len(calls)}",
+                },
+            }
+        if path.endswith("get_site_collect_item_info"):
+            target = target_by_site[str(body["site"])]
+            shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": deepcopy(site_details[shop_id]),
+                    "ossMd5": f"md5-{len(calls)}",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            target = target_by_shop_id[shop_id]
+            save_counts[target] += 1
+            save_bodies[target].append(deepcopy(body))
+            fault = (shop_save_faults or {}).get(target)
+            if fault == "exception":
+                raise RuntimeError("sanitized shop save transport failure")
+            if fault == "business_rejected":
+                raise miaoshou.MiaoshouBusinessRejectedError(
+                    "sanitized shop save rejection",
+                    code="DRAFT_SAVE_REJECTED",
+                )
+            if fault == "nonmapping":
+                return []
+            if fault == "rejected":
+                return {"result": "fail", "message": "rejected"}
+            shop_details[shop_id] = deepcopy(body["shopCollectItemInfo"])
+            shop_details[shop_id]["detailId"] = int(body["detailId"])
+            shop_details[shop_id]["shopId"] = shop_id
+            if not opaque_vendor_identity:
+                shop_details[shop_id]["sourceOfferId"] = "986159122616"
+            if save_counts[target] == 1 and not site_detail_echoes_approved_price:
+                converted = vendor_cny10_prices[target]
+                shop_details[shop_id]["skuMap"]["default"]["price"] = converted
+                shop_details[shop_id]["skuMap"]["default"][
+                    "priceIncludeVat"
+                ] = converted
+            if shop_save_updates_display:
+                price, _currency = approved_prices[target]
+                display_prices[target] = int(price)
+            return {"result": "success"}
+        if path.endswith("save_site_collect_item_info"):
+            target = target_by_site[str(body["site"])]
+            shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+            save_counts[target] += 1
+            save_bodies[target].append(deepcopy(body))
+            site_details[shop_id] = deepcopy(body["siteCollectItemInfo"])
+            site_details[shop_id]["detailId"] = int(body["detailId"])
+            site_details[shop_id]["site"] = str(body["site"])
+            if not opaque_vendor_identity:
+                site_details[shop_id]["sourceOfferId"] = "986159122616"
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    def web_post(path, body):
+        web_calls.append((path, deepcopy(body)))
+        assert path == (
+            "/api/platform/tiktok/move/collect_box/batchSetPrice"
+        )
+        target = target_by_site[str(body["site"])]
+        price, _currency = approved_prices[target]
+        detail_id = shop_details[
+            str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        ]["detailId"]
+        assert body == {
+            "collectBoxDetailIds": [detail_id],
+            "site": str(miaoshou.DIRECT_STORE_CONFIG[target]["site"]),
+            "priceConfig": {
+                "price": {
+                    "modifyMode": "newValue",
+                    "newValue": int(price),
+                }
+            },
+        }
+        fault = (price_batch_faults or {}).get(target)
+        if fault == "exception":
+            raise RuntimeError("sanitized batch price transport failure")
+        if fault == "rejected":
+            return {"success": False, "code": "REJECTED"}
+        if target in price_batch_noops:
+            return {"success": True}
+        shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        display_prices[target] = int(price)
+        shop_details[shop_id]["skuMap"]["default"]["price"] = int(price)
+        shop_details[shop_id]["skuMap"]["default"]["priceIncludeVat"] = int(
+            price
+        )
+        return {"success": True}
+
+    arguments = dict(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=targets,
+        post=post,
+    )
+    if use_web_price_repair:
+        arguments["web_post"] = web_post
+    result = miaoshou.prepare_selected_platform_collectbox(**arguments)
+    return result, calls, web_calls, save_counts, save_bodies
+
+
+def test_collectbox_tiktok_sea_site_price_does_not_require_web_batch_write():
+    """SEA persists through its exact site draft without a web endpoint."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, web_calls, save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            site_detail_echoes_approved_price=True,
+        )
+    )
+
+    assert save_counts == LIVE_SIX_SAVE_COUNTS
+    assert web_calls == []
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert all(
+        outcomes[target]["status"] == "SUCCEEDED"
+        for target in targets
+    )
+    assert all(":price:update:" not in write for write in result["external_writes"])
+
+
+def test_collectbox_tiktok_sea_persists_site_without_changing_mx_gb():
+    """SEA uses site drafts while MX/GB keep their proven shop-only path."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, calls, web_calls, save_counts, save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=False,
+            site_detail_echoes_approved_price=True,
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert web_calls == []
+    assert all(outcomes[target]["status"] == "SUCCEEDED" for target in targets)
+    assert save_counts == LIVE_SIX_SAVE_COUNTS
+    save_paths = [path for path, _body in calls if "save_" in path]
+    assert sum(path.endswith("save_site_collect_item_info") for path in save_paths) == 4
+    assert sum(path.endswith("save_shop_collect_item_info") for path in save_paths) == 2
+    for target, approved_price in {
+        "tiktok:LH_PH": 523,
+        "tiktok:LH_MY": 46,
+        "tiktok:LH_TH": 386,
+        "tiktok:LH_VN": 408000,
+        "tiktok:MX": 286,
+        "tiktok:GB": 15,
+    }.items():
+        final_body = save_bodies[target][-1]
+        root_key = (
+            "siteCollectItemInfo"
+            if target.startswith("tiktok:LH_")
+            else "shopCollectItemInfo"
+        )
+        assert (
+            final_body[root_key]["skuMap"]["default"]["price"]
+            == approved_price
+        )
+
+
+def test_collectbox_tiktok_sea_accepts_exact_site_draft_without_list_card_price():
+    """A stale intermediate list card must not block the proven publish input.
+
+    The historical SEA release path writes and verifies the site draft before
+    submitting it with ``save_move_collect_task``.  The collect-box list card
+    is not the payload consumed by that final submission, so its automatically
+    converted display price is not a preparation failure.
+    """
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, calls, web_calls, save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            site_detail_echoes_approved_price=True,
+            shop_save_updates_display=False,
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert all(outcomes[target]["status"] == "SUCCEEDED" for target in targets)
+    assert web_calls == []
+    assert all("batchSetPrice" not in path for path, _body in calls)
+    assert save_counts == LIVE_SIX_SAVE_COUNTS
+
+
+def test_collectbox_tiktok_live_opaque_responses_persist_all_six_prices():
+    """The captured live response shape omits source/site echoes."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, web_calls, save_counts, save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            site_detail_echoes_approved_price=True,
+            opaque_vendor_identity=True,
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert save_counts == LIVE_SIX_SAVE_COUNTS
+    assert all(outcomes[target]["status"] == "SUCCEEDED" for target in targets)
+    assert web_calls == []
+    assert save_bodies["tiktok:MX"][0]["shopCollectItemInfo"]["skuMap"][
+        "default"
+    ]["price"] == 286
+    assert save_bodies["tiktok:GB"][0]["shopCollectItemInfo"]["skuMap"][
+        "default"
+    ]["price"] == 15
+
+
+def test_collectbox_tiktok_sea_ignores_web_batch_noop_and_uses_openapi_readback():
+    """A web-batch noop cannot affect the SEA Open API path."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, web_calls, save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            price_batch_noops=("tiktok:LH_PH",),
+            site_detail_echoes_approved_price=True,
+        )
+    )
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert save_counts == LIVE_SIX_SAVE_COUNTS
+    assert all(outcomes[target]["status"] == "SUCCEEDED" for target in targets)
+    assert web_calls == []
+
+
+def test_tiktok_sea_price_authority_uses_approved_source_not_common_detail_id():
+    """COMMON detail ID 7 is not the approved source offer identity."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, _web_calls, _save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            site_detail_echoes_approved_price=True,
+            plan_source_offer_id="986159122616",
+        )
+    )
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert outcomes["tiktok:LH_PH"]["status"] == "SUCCEEDED"
+
+
+@pytest.mark.parametrize("plan_source_offer_id", (None, "986159122617"))
+def test_tiktok_sea_price_authority_requires_exact_approved_plan_source(
+    plan_source_offer_id,
+):
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    arguments = {
+        "category_decisions": _tiktok_category_decisions(targets),
+        "use_web_price_repair": True,
+        "site_detail_echoes_approved_price": True,
+        "plan_source_offer_id": plan_source_offer_id,
+    }
+    with pytest.raises(
+        miaoshou.MiaoshouCollectBoxPreparationError,
+        match="all approved platform drafts failed preparation",
+    ):
+        _run_live_six_site_tiktok_drift(**arguments)
+
+
+def test_tiktok_six_sites_reject_wrong_approved_source_before_business_writes():
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    probe = {}
+    with pytest.raises(
+        miaoshou.MiaoshouCollectBoxPreparationError,
+        match="all approved platform drafts failed preparation",
+    ) as captured:
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            site_detail_echoes_approved_price=True,
+            plan_source_offer_id="986159122617",
+            probe=probe,
+        )
+    error = captured.value
+    assert error.target_results == tuple(
+        (target, "RECONCILIATION_REQUIRED") for target in targets
+    )
+    assert probe["save_counts"] == {target: 0 for target in targets}
+    assert probe["web_calls"] == []
+    assert all(
+        "save_shop_collect_item_info" not in path
+        and "save_site_collect_item_info" not in path
+        for path, _body in probe["calls"]
+    )
+    assert all(
+        ":detail:update:" not in write and ":price:update:" not in write
+        for write in error.external_writes
+    )
+
+
+def test_tiktok_authoritative_list_price_follows_bounded_pagination():
+    target = "tiktok:LH_PH"
+    expected = _expected(target)
+    detail = _detail(target)
+    calls = []
+
+    def exact_row(detail_id, price):
+        row = _tiktok_list_response(target, detail, price=price)["data"][
+            "detailList"
+        ][0]
+        row["collectBoxDetailId"] = detail_id
+        return row
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        assert path == miaoshou.SOURCE_LIST_PATH
+        if body["pageNo"] == 1:
+            return {
+                "result": "success",
+                "data": {
+                    "detailList": [exact_row(76, "90.66")],
+                    "totalCount": 2,
+                    "hasNextPage": True,
+                    "nextPage": 2,
+                },
+            }
+        return {
+            "result": "success",
+            "data": {
+                "detailList": [exact_row(77, "33")],
+                "totalCount": 2,
+                "hasNextPage": False,
+            },
+        }
+
+    assert miaoshou._authoritative_tiktok_list_price_exact(
+        post,
+        detail=detail,
+        expected=expected,
+        detail_id=77,
+        target=target,
+    ) is True
+    assert [body["pageNo"] for _path, body in calls] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "row_mutation",
+    (
+        {"price": None},
+        {"price": True},
+        {"price": {"malformed": True}},
+        {"price": "NaN"},
+        {"sourceOfferId": {"malformed": True}},
+    ),
+)
+def test_tiktok_authoritative_list_price_rejects_malformed_exact_row(
+    row_mutation,
+):
+    target = "tiktok:LH_PH"
+    detail = _detail(target)
+    row = _tiktok_list_response(target, detail)["data"]["detailList"][0]
+    row.update(row_mutation)
+    with pytest.raises(miaoshou.MiaoshouOneClickPreDispatchError):
+        miaoshou._authoritative_tiktok_list_price_exact(
+            lambda _path, _body: {
+                "result": "success",
+                "data": {"detailList": [row], "totalCount": 1},
+            },
+            detail=detail,
+            expected=_expected(target),
+            detail_id=77,
+            target=target,
+        )
+
+
+def test_tiktok_authoritative_list_price_rejects_nonmapping_mixed_page():
+    target = "tiktok:LH_PH"
+    row = _tiktok_list_response(target, _detail(target))["data"][
+        "detailList"
+    ][0]
+    with pytest.raises(
+        miaoshou.MiaoshouOneClickPreDispatchError,
+        match="source query response is malformed",
+    ):
+        miaoshou._authoritative_tiktok_list_price_exact(
+            lambda _path, _body: {
+                "result": "success",
+                "data": {
+                    "detailList": [row, "malformed-extra-row"],
+                    "totalCount": 2,
+                },
+            },
+            detail=_detail(target),
+            expected=_expected(target),
+            detail_id=77,
+            target=target,
+        )
+
+
+def test_tiktok_live_detail_identity_allows_missing_vendor_source_echo():
+    """Real Miaoshou site/shop detail payloads do not echo sourceOfferId."""
+
+    target = "tiktok:LH_PH"
+    detail = _detail(target)
+    detail.pop("sourceOfferId")
+
+    miaoshou._verify_tiktok_detail_source_identity(
+        detail,
+        _expected(target),
+    )
+
+
+def test_tiktok_authoritative_list_price_accepts_live_opaque_identity_shape():
+    """Bind the real list row by queried source, COMMON, detail and shop."""
+
+    target = "tiktok:LH_PH"
+    expected = _expected(target)
+    detail = _detail(target)
+    detail.pop("sourceOfferId")
+    row = _tiktok_list_response(target, detail, price="33")["data"][
+        "detailList"
+    ][0]
+    row.pop("sourceOfferId")
+    row.pop("site")
+    row["collectBoxDetailShopList"][0].pop("site")
+
+    assert miaoshou._authoritative_tiktok_list_price_exact(
+        lambda _path, _body: {
+            "result": "success",
+            "data": {"detailList": [row], "totalCount": 1},
+        },
+        detail=detail,
+        expected=expected,
+        detail_id=77,
+        target=target,
+    ) is True
+
+
+@pytest.mark.parametrize(
+    "identity_fault",
+    (
+        "exact_site_wrong_shop",
+        "wrong_site_exact_shop",
+        "exact_shop_with_extra_shop",
+        "detail_and_row_source_drift",
+    ),
+)
+def test_tiktok_authoritative_list_price_requires_exact_complete_identity(
+    identity_fault,
+):
+    target = "tiktok:LH_PH"
+    expected = _expected(target)
+    detail = _detail(target)
+    row = _tiktok_list_response(target, detail, price="33")["data"][
+        "detailList"
+    ][0]
+
+    if identity_fault == "exact_site_wrong_shop":
+        row["collectBoxDetailShopList"] = [
+            {"shopId": "99999999", "site": "PH"}
+        ]
+    elif identity_fault == "wrong_site_exact_shop":
+        row["site"] = "MY"
+        row["collectBoxDetailShopList"] = [
+            {"shopId": expected["shop_id"], "site": "PH"}
+        ]
+    elif identity_fault == "exact_shop_with_extra_shop":
+        row["collectBoxDetailShopList"].append(
+            {"shopId": "99999999", "site": "PH"}
+        )
+    elif identity_fault == "detail_and_row_source_drift":
+        detail["sourceOfferId"] = "986159122617"
+        row["sourceOfferId"] = "986159122617"
+    else:  # pragma: no cover - the parameter table is exhaustive
+        raise AssertionError(identity_fault)
+
+    with pytest.raises(miaoshou.MiaoshouOneClickPreDispatchError):
+        miaoshou._authoritative_tiktok_list_price_exact(
+            lambda _path, _body: {
+                "result": "success",
+                "data": {"detailList": [row], "totalCount": 1},
+            },
+            detail=detail,
+            expected=expected,
+            detail_id=77,
+            target=target,
+        )
+
+
+@pytest.mark.parametrize(
+    ("fault", "error_code"),
+    [
+        ("rejected", "approved_price_batch_repair_rejected"),
+        ("exception", "approved_price_batch_repair_unknown"),
+    ],
+)
+def test_collectbox_tiktok_sea_price_failure_is_local_and_later_sites_continue(
+    fault, error_code
+):
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, web_calls, save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            price_batch_faults={"tiktok:LH_PH": fault},
+            site_detail_echoes_approved_price=True,
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert save_counts == LIVE_SIX_SAVE_COUNTS
+    assert all(outcomes[target]["status"] == "SUCCEEDED" for target in targets)
+    assert web_calls == []
+    assert result["external_write_count"] is not None
+
+
+def test_collectbox_tiktok_live_six_site_uses_effective_repair_and_continues():
+    """A repair must change the rejected payload and process all six sites."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, calls, web_calls, save_counts, _ = _run_live_six_site_tiktok_drift(
+        category_decisions=_tiktok_category_decisions(targets),
+        use_web_price_repair=True,
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert tuple(row["target_label"] for row in result["target_results"]) == targets
+    assert save_counts == LIVE_SIX_SAVE_COUNTS
+    claimed_shop_ids = [
+        str(body["shopIds"][0])
+        for path, body in calls
+        if path == miaoshou.SHOP_CLAIM_PATH
+    ]
+    assert claimed_shop_ids == [
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        for target in targets
+    ]
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+    assert [body["site"] for _path, body in web_calls] == ["MX"]
+    assert {
+        target: (outcomes[target]["status"], outcomes[target]["error_code"])
+        for target in targets
+    } == {
+        "tiktok:LH_PH": ("SUCCEEDED", None),
+        "tiktok:LH_MY": ("SUCCEEDED", None),
+        "tiktok:LH_TH": ("SUCCEEDED", None),
+        "tiktok:LH_VN": ("SUCCEEDED", None),
+        "tiktok:MX": ("REPAIRED_SUCCEEDED", None),
+        "tiktok:GB": ("SUCCEEDED", None),
+    }
+    assert all(
+        outcomes[target]["detail_digest"] is None
+        for target in targets
+    )
+
+
+def test_gb_known_save_rejection_is_waived_for_direct_publish_policy():
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, _web_calls, save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            shop_save_faults={"tiktok:GB": "business_rejected"},
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    identities = {
+        row["target_label"]: row
+        for row in result["target_detail_identities"]
+    }
+    assert save_counts["tiktok:GB"] == 1
+    assert outcomes["tiktok:GB"]["status"] == "SUCCEEDED"
+    assert outcomes["tiktok:GB"]["error_code"] is None
+    assert identities["tiktok:GB"]["shop_id"] == "10204699"
+    assert identities["tiktok:GB"]["detail_id"].isdigit()
+    assert all(
+        outcomes[target]["status"] == "SUCCEEDED"
+        for target in targets[:4]
+    )
+    assert outcomes["tiktok:MX"]["error_code"] == (
+        "approved_price_batch_repair_unknown"
+    )
+
+
+def test_gb_policy_keeps_approved_category_and_required_batch_attribute():
+    current = {
+        "title": "Existing GB draft",
+        "cid": "",
+    }
+    required_attributes = [
+        {
+            "attributeId": "102255",
+            "attributeName": "Batch Number",
+            "attributeNameAlias": "生产批次号",
+            "attributeValues": [
+                {
+                    "valueName": "1",
+                    "valueId": "1000256",
+                    "valueNameAlias": "1",
+                }
+            ],
+        }
+    ]
+    approved = {
+        **current,
+        "cid": "600338",
+        "productAttributes": required_attributes,
+    }
+
+    actual = miaoshou._apply_target_verification_policy(
+        current,
+        approved,
+        miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"],
+    )
+
+    assert miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"][
+        "requires_category_attributes"
+    ] is True
+    assert actual["cid"] == "600338"
+    assert actual["productAttributes"] == required_attributes
+
+
+@pytest.mark.parametrize(
+    ("fault", "error_code"),
+    [
+        ("rejected", "approved_price_batch_repair_rejected"),
+        ("exception", "approved_price_batch_repair_unknown"),
+    ],
+)
+def test_collectbox_tiktok_batch_price_failure_is_local_and_continues(
+    fault, error_code
+):
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, calls, web_calls, save_counts, _ = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            price_batch_faults={"tiktok:MX": fault},
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert tuple(row["target_label"] for row in result["target_results"]) == targets
+    assert save_counts == LIVE_SIX_SAVE_COUNTS
+    assert outcomes["tiktok:LH_MY"]["status"] == "SUCCEEDED"
+    assert outcomes["tiktok:LH_TH"]["status"] == "SUCCEEDED"
+    assert outcomes["tiktok:LH_VN"]["status"] == "SUCCEEDED"
+    assert outcomes["tiktok:MX"]["status"] == "FAILED"
+    assert outcomes["tiktok:MX"]["error_code"] == error_code
+    assert outcomes["tiktok:GB"]["status"] == "SUCCEEDED"
+    assert [body["site"] for _path, body in web_calls] == ["MX"]
+    assert [
+        str(body["shopIds"][0])
+        for path, body in calls
+        if path == miaoshou.SHOP_CLAIM_PATH
+    ] == [
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        for target in targets
+    ]
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
+def test_collectbox_default_web_business_rejection_is_known_and_continues(
+    monkeypatch,
+):
+    from modules.miaoshou.client import MiaoshouBusinessRejectedError
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    monkeypatch.setattr(
+        "modules.miaoshou.client.ensure_web_batch_price_auth_available",
+        lambda: None,
+    )
+
+    def rejected_request_web(_method, _path, **_kwargs):
+        raise MiaoshouBusinessRejectedError(
+            "price rejected", code="PRICE_REJECTED"
+        )
+
+    monkeypatch.setattr(
+        "modules.miaoshou.client.request_web",
+        rejected_request_web,
+    )
+    result, calls, web_calls, save_counts, _ = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+        )
+    )
+
+    assert web_calls == []
+    assert save_counts == LIVE_SIX_SAVE_COUNTS
+    assert tuple(
+        row["target_label"] for row in result["target_results"]
+    ) == targets
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert all(
+        outcomes[target]["status"] == "SUCCEEDED"
+        for target in targets[:4]
+    )
+    assert outcomes["tiktok:MX"]["status"] == "FAILED"
+    assert (
+        outcomes["tiktok:MX"]["error_code"]
+        == "approved_price_batch_repair_rejected"
+    )
+    assert outcomes["tiktok:GB"]["status"] == "SUCCEEDED"
+    assert result["external_write_count"] is not None
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
+def test_collectbox_tiktok_live_six_site_auto_maps_each_official_draft_category():
+    """Each site may adopt its own exact official draft candidate."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, calls, web_calls, save_counts, _ = _run_live_six_site_tiktok_drift(
+        category_decisions={},
+        use_web_price_repair=True,
+    )
+
+    assert tuple(row["target_label"] for row in result["target_results"]) == targets
+    outcomes = {
+        row["target_label"]: (row["status"], row["error_code"])
+        for row in result["target_results"]
+    }
+    for target in ("tiktok:LH_PH", "tiktok:LH_MY", "tiktok:LH_TH", "tiktok:MX"):
+        assert outcomes[target][0] in {"SUCCEEDED", "REPAIRED_SUCCEEDED"}
+        assert outcomes[target][1] is None
+        assert save_counts[target] >= 1
+    for target in ("tiktok:LH_VN", "tiktok:GB"):
+        assert outcomes[target] == ("SUCCEEDED", None)
+        assert save_counts[target] >= 1
+    metadata_sites = {
+        body["site"]
+        for path, body in calls
+        if path == miaoshou.CATEGORY_METADATA_PATH
+    }
+    assert metadata_sites == {"PH", "MY", "TH", "VN", "MX", "GB"}
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+    assert {body["site"] for _path, body in web_calls} <= {"MX"}
+
+
+def test_shopee_simple_description_preserves_approved_cnsc_master_text():
+    description = (
+        "Product overview\n"
+        "Decorative wall sticker made of PVC.\n\n"
+        "Verified details\n"
+        "- Material: PVC\n\n"
+        "Suitable spaces\n"
+        "Living room and bedroom"
+    )
+    payload = _plan_payload("shopee:MY")
+    payload["listing_copy"]["shopee_description_en"] = description
+
+    expected = miaoshou._approved_site(
+        payload,
+        target="shopee:MY",
+        config=miaoshou.DIRECT_STORE_CONFIG["shopee:MY"],
+        source_offer_id="986159122616",
+    )
+    updated = miaoshou._apply_expected(_detail("shopee:MY"), expected)
+
+    assert expected["simple_description"] == description
+    assert updated["notesText"] == description
+
+
+def test_tiktok_applies_distinct_price_and_parcel_to_each_approved_sku():
+    target = "tiktok:LH_MY"
+    payload = _plan_payload(target)
+    payload["seller_sku"] = "0963"
+    payload["product_facts"].update(
+        {
+            "selected_sku_keys": ["short", "long"],
+            "sku_commercial_facts": {
+                "short": {
+                    "cost_cny": 15,
+                    "weight_kg": 0.1,
+                    "package_cm": [20, 20, 3],
+                },
+                "long": {
+                    "cost_cny": 22,
+                    "weight_kg": 0.8,
+                    "package_cm": [45, 30, 15],
+                },
+            },
+        }
+    )
+    payload["sku_lineage"] = {
+        "assignment": {
+            "seller_sku": "0963",
+            "model_skus": [
+                {"variant_key": "short", "model_sku": "0963"},
+                {"variant_key": "long", "model_sku": "0964"},
+            ],
+        }
+    }
+    payload["pricing"]["selected_targets"][target]["sku_prices"] = [
+        {
+            "variant_key": "short",
+            "target_key": "lh_my",
+            "list_price": "30.5",
+            "currency": "MYR",
+        },
+        {
+            "variant_key": "long",
+            "target_key": "lh_my",
+            "list_price": "49.9",
+            "currency": "MYR",
+        },
+    ]
+    expected = miaoshou._approved_site(
+        payload,
+        target=target,
+        config=miaoshou.DIRECT_STORE_CONFIG[target],
+        source_offer_id="986159122616",
+    )
+    current = _detail(target)
+    template = current["skuMap"].pop("default")
+    current["skuMap"] = {
+        "short": deepcopy(template),
+        "long": deepcopy(template),
+    }
+
+    updated = miaoshou._apply_expected(current, expected)
+
+    assert updated["skuMap"]["short"]["itemNum"] == "0963"
+    assert updated["skuMap"]["short"]["price"] == 30.5
+    assert updated["skuMap"]["short"]["weight"] == 0.1
+    assert updated["skuMap"]["short"]["packageLength"] == 20
+    assert updated["skuMap"]["long"]["itemNum"] == "0964"
+    assert updated["skuMap"]["long"]["price"] == 49.9
+    assert updated["skuMap"]["long"]["weight"] == 0.8
+    assert updated["skuMap"]["long"]["packageLength"] == 45
+
+
+def test_tiktok_normalizes_selected_and_commercial_variant_keys_together():
+    """Live review keys may retain framing semicolons on both structures."""
+
+    target = "tiktok:LH_MY"
+    payload = _plan_payload(target)
+    raw_short = ";星月金线边（只桌旗）;35*140;"
+    raw_long = ";星月金线边（只桌旗）;35*200;"
+    payload["seller_sku"] = "0963"
+    payload["product_facts"].update(
+        {
+            "selected_sku_keys": [raw_short, raw_long],
+            "sku_commercial_facts": {
+                raw_short: {
+                    "cost_cny": 15,
+                    "weight_kg": 0.1,
+                    "package_cm": [20, 20, 3],
+                },
+                raw_long: {
+                    "cost_cny": 18,
+                    "weight_kg": 0.15,
+                    "package_cm": [20, 20, 3],
+                },
+            },
+        }
+    )
+    payload["sku_lineage"] = {
+        "assignment": {
+            "seller_sku": "0963",
+            "model_skus": [
+                {"variant_key": raw_short, "model_sku": "0963"},
+                {"variant_key": raw_long, "model_sku": "0964"},
+            ],
+        }
+    }
+    payload["pricing"]["selected_targets"][target]["sku_prices"] = [
+        {
+            "variant_key": raw_short,
+            "target_key": "lh_my",
+            "list_price": "61",
+            "currency": "MYR",
+        },
+        {
+            "variant_key": raw_long,
+            "target_key": "lh_my",
+            "list_price": "72",
+            "currency": "MYR",
+        },
+    ]
+
+    expected = miaoshou._approved_site(
+        payload,
+        target=target,
+        config=miaoshou.DIRECT_STORE_CONFIG[target],
+        source_offer_id="1070173617923",
+    )
+
+    assert expected["selected_sku_keys"] == [
+        "星月金线边（只桌旗）;35*140",
+        "星月金线边（只桌旗）;35*200",
+    ]
+    assert set(expected["sku_commercial_facts"]) == set(
+        expected["selected_sku_keys"]
+    )
+
+
+def test_tiktok_binds_opaque_sku_ids_by_property_dimension_not_raw_id_order():
+    expected = {
+        "selected_sku_keys": [
+            "星月金线边（只桌旗）;35*140",
+            "星月金线边（只桌旗）;35*200",
+            "星月金线边（只桌旗）;35*300",
+        ],
+        "model_skus": {
+            "星月金线边（只桌旗）;35*140": "0963",
+            "星月金线边（只桌旗）;35*200": "0964",
+            "星月金线边（只桌旗）;35*300": "0965",
+        },
+    }
+    repeated_source_item = {"itemNum": "1070173617923"}
+    detail = {
+        "skuMap": {
+            ";size-140;color-gold;": deepcopy(repeated_source_item),
+            ";color-gold;size-200;": deepcopy(repeated_source_item),
+            ";size-300;color-gold;": deepcopy(repeated_source_item),
+        },
+        "skuPropertyList": [
+            {
+                "attrName": "颜色",
+                "attrValueList": [
+                    {
+                        "attrValueId": "color-gold",
+                        "attrValue": "星月金线边（只桌旗）",
+                    }
+                ],
+            },
+            {
+                "attrName": "尺寸",
+                "attrValueList": [
+                    {"attrValueId": "size-140", "attrValue": "35*140"},
+                    {"attrValueId": "size-200", "attrValue": "35*200"},
+                    {"attrValueId": "size-300", "attrValue": "35*300"},
+                ],
+            },
+        ],
+    }
+
+    bindings = miaoshou._approved_variant_key_bindings(detail, expected)
+
+    assert bindings == {
+        "星月金线边（只桌旗）;35*140": ";size-140;color-gold;",
+        "星月金线边（只桌旗）;35*200": ";color-gold;size-200;",
+        "星月金线边（只桌旗）;35*300": ";size-300;color-gold;",
+    }
+
+
+def test_prepare_client_paces_and_retries_exact_miaoshou_rate_limit_once():
+    calls = []
+    waits = []
+    moments = iter((0.0, 3.0))
+
+    def post(path, body):
+        calls.append((path, body))
+        if len(calls) == 1:
+            raise miaoshou.MiaoshouBusinessRejectedError(
+                "rate limited", code="accountApiQpsRateLimit"
+            )
+        return {"result": "success"}
+
+    client = miaoshou._PacedPreparePost(
+        post,
+        wait=waits.append,
+        now=lambda: next(moments),
+    )
+
+    assert client("/read", {"id": 1}) == {"result": "success"}
+    assert len(calls) == 2
+    assert waits == [miaoshou.PUBLISH_RATE_LIMIT_RETRY_DELAY_SECONDS]
+
+
+def test_tiktok_official_category_candidate_retries_metadata_materialization(
+    monkeypatch,
+):
+    calls = []
+    waits = []
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if len(calls) == 1:
+            return {"result": "success", "data": {}}
+        return {
+            "result": "success",
+            "data": {
+                "categoryMetadata": {
+                    "categoryConfig": {},
+                    "categorySaleAttrList": [],
+                    "categoryProductAttrList": [],
+                }
+            },
+        }
+
+    monkeypatch.setattr(miaoshou, "_category_metadata_wait", waits.append)
+    expected = {
+        "region": "PH",
+        "product_category": {"name": "wall sticker"},
+    }
+    category_id = miaoshou._official_tiktok_draft_category_candidate(
+        post,
+        current={"cid": "600009"},
+        expected=expected,
+        shop_endpoint_id=7676267,
+    )
+
+    assert category_id == "600338"
+    assert expected["category_id"] == "600338"
+    assert len(calls) == 2
+    assert waits == [miaoshou.CATEGORY_METADATA_RETRY_DELAY_SECONDS]
+
+
+def test_tiktok_draft_read_retries_until_official_category_materializes(
+    monkeypatch,
+):
+    reads = iter(
+        (
+            ({"cid": "", "skuMap": {"one": {}}}, "first-md5"),
+            ({"cid": "600009", "skuMap": {"one": {}}}, "second-md5"),
+        )
+    )
+    waits = []
+    monkeypatch.setattr(miaoshou, "_read_shop", lambda *_args, **_kwargs: next(reads))
+    monkeypatch.setattr(miaoshou, "_category_metadata_wait", waits.append)
+
+    detail, oss_md5 = miaoshou._read_shop_with_category_materialization(
+        lambda _path, _body: {},
+        123,
+        7676267,
+        target="tiktok:LH_PH",
+        expected={"category_id": None},
+        platform="tiktok",
+    )
+
+    assert detail["cid"] == "600009"
+    assert oss_md5 == "second-md5"
+    assert waits == [miaoshou.CATEGORY_METADATA_RETRY_DELAY_SECONDS]
+
+
+def test_tiktok_official_readback_compares_each_model_sku_price(monkeypatch):
+    """Official readback must not compare every model with one listing price."""
+
+    from core import api_client, auth, shops
+
+    target = "tiktok:LH_MY"
+    expected = _expected(target)
+    expected.update(
+        {
+            "selected_sku_keys": ["short", "long"],
+            "model_skus": {"short": "0963", "long": "0964"},
+            "sku_prices": {"short": "30.5", "long": "49.9"},
+            # The first SKU remains the backward-compatible listing summary.
+            "price": "30.5",
+        }
+    )
+    monkeypatch.setattr(auth, "access_token", lambda: "token")
+    monkeypatch.setattr(
+        shops,
+        "list_shops",
+        lambda _token: [
+            {
+                "id": expected["shop_id"],
+                "region": expected["region"],
+                "name": expected["shop_name"],
+                "cipher": "cipher",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        api_client,
+        "post",
+        lambda *_args, **_kwargs: {
+            "code": 0,
+            "data": {
+                "products": [
+                    {
+                        "id": "product-1",
+                        "skus": [
+                            {"seller_sku": "0964"},
+                            {"seller_sku": "0963"},
+                        ],
+                    }
+                ],
+                "total_count": 1,
+                "next_page_token": "",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        api_client,
+        "get",
+        lambda *_args, **_kwargs: {
+            "code": 0,
+            "data": {
+                "title": expected["title"],
+                "status": "LIVE",
+                # Reverse order proves identity, not list position, binds price.
+                "skus": [
+                    {
+                        "seller_sku": "0964",
+                        "price": {"sale_price": "49.9"},
+                    },
+                    {
+                        "seller_sku": "0963",
+                        "price": {"sale_price": "30.5"},
+                    },
+                ],
+                "main_images": [{"uri": "image-1"}],
+                "package_weight": {"unit": "KG", "value": "0.2"},
+                "package_dimensions": {
+                    "unit": "CM",
+                    "length": "30",
+                    "width": "20",
+                    "height": "1",
+                },
+            },
+        },
+    )
+
+    assert miaoshou._default_tiktok_readback(expected) is True
+
+
+def test_tiktok_batch_price_repair_refuses_to_flatten_distinct_sku_prices():
+    with pytest.raises(
+        miaoshou.MiaoshouOneClickPreDispatchError,
+        match="distinct SKU prices",
+    ):
+        miaoshou._tiktok_batch_price_body(
+            detail_id=77,
+            site="MY",
+            price="30.5",
+            sku_prices={"short": "30.5", "long": "49.9"},
+        )
+
+
+def _live_shaped_plan_payload(target):
+    """Sanitized shape captured from approved Offer 3846511157.
+
+    Values are synthetic; only the server-owned nesting and cardinality match
+    the production payload.
+    """
+    config = miaoshou.DIRECT_STORE_CONFIG[target]
+    payload = _plan_payload(target)
+    payload["product_id"] = "3846511157"
+    payload["listing_copy"]["candidates"] = [
+        {
+            "channel": "ozon",
+            "site": "RU",
+            "policy_check": "passed",
+            "title": "Approved Ozon title",
+        },
+        {
+            "channel": "shopee",
+            "site": "CNSC",
+            "policy_check": "passed",
+            "title": "Approved Shopee master title",
+        },
+        {
+            "channel": "tiktok",
+            "site": config["region"],
+            "policy_check": "passed",
+            "title": "Approved TikTok title",
+        },
+    ]
+    if target.startswith("shopee:"):
+        region = target.split(":", 1)[1]
+        payload["pricing"]["selected_targets"][target] = {
+            "selected_source_target_key": f"lh_{region.lower()}",
+            "target_site": region,
+            "derived_preview": {
+                "exchange_rate_cny_per_local": 1,
+                "global_original_price_cny": 8,
+                "local_original_price": 33,
+                "source_currency": "PHP",
+            },
+            "write_fields": ["global.original_price"],
+        }
+    elif target == "ozon:RU":
+        payload["pricing"]["selected_targets"][target] = {
+            "selected_source_target_key": "lh_ph",
+            "target_site": "RU",
+            "derived_preview": {
+                "exchange_rate_cny_per_local": 1,
+                "old_price_cny": 56,
+                "price_cny": 33,
+                "source_currency": "PHP",
+            },
+            "write_fields": ["draft.price", "draft.old_price"],
+        }
+    return payload
+
+
+def _prepare_request(target):
+    return SimpleNamespace(
+        target_label=target,
+        idempotency_key=f"job:{target}",
+        source_identity={
+            "schema_version": "source-product-identity/v1",
+            "source_offer_id": "986159122616",
+            "identity_digest": "a" * 64,
+        },
+        source_identity_digest="a" * 64,
+        payload_digest="b" * 64,
+        adapter_policy_digest="c" * 64,
+        immutable_plan_payload=_plan_payload(target),
+    )
+
+
+class DirectStoreFake:
+    def __init__(
+        self, target, *, malformed_publish=False, existing=True
+    ):
+        self.target = target
+        self.config = miaoshou.DIRECT_STORE_CONFIG[target]
+        self.detail = _detail(target)
+        self.malformed_publish = malformed_publish
+        self.existing = existing
+        self.calls = []
+
+    def post(self, path, body):
+        self.calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
+        if path == self.config["search_path"]:
+            rows = (
+                [{
+                    "collectBoxDetailId": 77,
+                    "commonCollectBoxDetailId": 7,
+                    "sourceOfferId": "986159122616",
+                    "site": self.config["site"],
+                    "price": next(iter(self.detail["skuMap"].values()))[
+                        "price"
+                    ],
+                    "collectBoxDetailShopList": [
+                        {
+                            "shopId": str(self.config["shop_id"]),
+                            "site": str(self.config["site"]),
+                        }
+                    ],
+                }]
+                if self.existing
+                else []
+            )
+            return {
+                "result": "success",
+                "data": {
+                    "detailList": rows,
+                    "totalCount": len(rows),
+                    "hasNextPage": False,
+                },
+            }
+        if path == miaoshou.DETAIL_CREATE_PATH:
+            self.existing = True
+            return {
+                "result": "success",
+                "data": {
+                    "platformCollectBoxDetailIdMap": {
+                        self.config["platform"]: {"7": 77}
+                    }
+                },
+            }
+        if path == self.config["get_path"]:
+            field = {
+                "tiktok": (
+                    "siteCollectItemInfo"
+                    if self.config["draft_mode"] == "site"
+                    else "shopCollectItemInfo"
+                ),
+                "shopee": "siteDetailSimpleData",
+                "ozon": "siteCollectItemInfo",
+            }[self.config["platform"]]
+            return {
+                "result": "success",
+                "data": {
+                    field: deepcopy(self.detail),
+                    "ossMd5": (
+                        "" if self.config["platform"] == "ozon" else "md5"
+                    ),
+                },
+            }
+        if (
+            self.config["platform"] == "tiktok"
+            and self.config["draft_mode"] == "site"
+            and path == miaoshou.SHOP_GET_PATH
+        ):
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(self.detail),
+                    "ossMd5": "shop-md5",
+                },
+            }
+        if path == self.config["save_path"]:
+            field = {
+                "tiktok": (
+                    "siteCollectItemInfo"
+                    if self.config["draft_mode"] == "site"
+                    else "shopCollectItemInfo"
+                ),
+                "shopee": "siteDetailSimpleData",
+                "ozon": "siteCollectItemInfo",
+            }[self.config["platform"]]
+            self.detail = deepcopy(body[field])
+            self.detail["detailId"] = 77
+            if self.config["platform"] == "tiktok":
+                if self.config["draft_mode"] == "site":
+                    self.detail["site"] = str(self.config["site"])
+                    self.detail["editModel"] = "site"
+                else:
+                    self.detail["shopId"] = str(self.config["shop_id"])
+                self.detail["sourceOfferId"] = "986159122616"
+            return {"result": "success"}
+        if (
+            self.config["platform"] == "tiktok"
+            and self.config["draft_mode"] == "site"
+            and path == miaoshou.SHOP_SAVE_PATH
+        ):
+            self.detail = deepcopy(body["shopCollectItemInfo"])
+            self.detail["detailId"] = 77
+            self.detail["shopId"] = str(self.config["shop_id"])
+            self.detail["sourceOfferId"] = "986159122616"
+            return {"result": "success"}
+        if path == self.config["publish_path"]:
+            return [] if self.malformed_publish else {"result": "success"}
+        raise AssertionError(path)
+
+    def web_post(self, path, body):
+        self.calls.append((path, deepcopy(body)))
+        assert path == miaoshou.WEB_BATCH_SET_PRICE_PATH
+        price = body["priceConfig"]["price"]["newValue"]
+        for row in self.detail["skuMap"].values():
+            row["price"] = price
+            row["priceIncludeVat"] = price
+        return {"success": True}
+
+
+def test_collectbox_tiktok_writes_selected_store_price_without_publish():
+    target = "tiktok:MX"
+    payload = _plan_payload(target)
+    payload["pricing"]["selected_targets"][target]["store_prices"][0][
+        "list_price"
+    ] = "286"
+    fake = DirectStoreFake(target)
+
+    def post(path, body):
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {"result": "success"}
+        return fake.post(path, body)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+        web_post=lambda _path, _body: {"success": True},
+    )
+
+    save = next(
+        body for path, body in fake.calls if path == fake.config["save_path"]
+    )
+    sku = save["shopCollectItemInfo"]["skuMap"]["default"]
+    assert sku["price"] == 286
+    assert sku["priceIncludeVat"] == 286
+    assert result["target_count"] == 1
+    assert result["checks"]["approved_prices_exact"] is True
+    assert fake.config["publish_path"] not in [path for path, _ in fake.calls]
+
+
+def test_collectbox_tiktok_accepts_latest_draft_opaque_variant_key_by_exact_model_sku():
+    """Miaoshou rewrites the claimed draft's SKU-map key to an opaque ID.
+
+    The approved model SKU remains exact and is the only safe binding between
+    the approved variant and the latest platform draft.  Historical drafts do
+    not participate in this operation because the claim response already
+    supplies the exact latest detail identity.
+    """
+
+    target = "tiktok:LH_PH"
+    payload = _plan_payload(target)
+    fake = DirectStoreFake(target)
+    original_row = fake.detail["skuMap"].pop("default")
+    fake.detail["skuMap"][";a00a0f90f5;"] = original_row
+
+    def post(path, body):
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {"result": "success"}
+        return fake.post(path, body)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+        web_post=lambda _path, _body: {"success": True},
+    )
+
+    save = next(
+        body for path, body in fake.calls if path == fake.config["save_path"]
+    )
+    draft = save["siteCollectItemInfo"]
+    assert set(draft["skuMap"]) == {
+        ";a00a0f90f5;"
+    }
+    assert draft["skuMap"][";a00a0f90f5;"][
+        "itemNum"
+    ] == "0954"
+    assert result["checks"]["readback_exact"] is True
+    assert fake.config["publish_path"] not in [path for path, _ in fake.calls]
+
+
+def test_collectbox_tiktok_rejects_opaque_variant_with_wrong_model_sku():
+    target = "tiktok:LH_PH"
+    payload = _plan_payload(target)
+    fake = DirectStoreFake(target)
+    original_row = fake.detail["skuMap"].pop("default")
+    original_row["itemNum"] = "different-model"
+    fake.detail["skuMap"][";a00a0f90f5;"] = original_row
+
+    def post(path, body):
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {"result": "success"}
+        return fake.post(path, body)
+
+    with pytest.raises(miaoshou.MiaoshouCollectBoxPreparationError) as captured:
+        miaoshou.prepare_selected_platform_collectbox(
+            platform="tiktok",
+            common_detail_id="7",
+            initial_platform_detail_id="77",
+            initial_claim_written=True,
+            approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+        web_post=fake.web_post,
+    )
+
+    assert captured.value.external_writes == (
+        "miaoshou:collectbox:claim:tiktok",
+        "miaoshou:collectbox:tiktok:shop:claim:tiktok:LH_PH",
+    )
+    assert captured.value.external_write_count == 2
+    assert fake.config["save_path"] not in [path for path, _ in fake.calls]
+
+
+def test_collectbox_tiktok_writes_each_selected_country_and_approved_price():
+    targets = ("tiktok:MX", "tiktok:GB")
+    payload = _plan_payload(targets[0])
+    payload["targets"] = ["miaoshou:COMMON", *targets]
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions(targets)
+    )
+    payload["listing_copy"]["candidates"].append(
+        {
+            "channel": "tiktok",
+            "site": "GB",
+            "policy_check": "passed",
+            "title": "Approved GB title",
+        }
+    )
+    payload["pricing"]["selected_targets"] = {
+        "tiktok:MX": {
+            "store_prices": [
+                {"target_key": "mx", "list_price": "286", "currency": "MXN"}
+            ]
+        },
+        "tiktok:GB": {
+            "store_prices": [
+                {"target_key": "gb", "list_price": "42", "currency": "GBP"}
+            ]
+        },
+    }
+    calls = []
+    details = {
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"]): _detail(target)
+        for target in targets
+    }
+    details[str(miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"]["shop_id"])][
+        "detailId"
+    ] = 78
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
+        if path == miaoshou.DETAIL_CREATE_PATH:
+            return {
+                "result": "success",
+                "data": {"platformCollectBoxDetailIdMap": {"tiktok": {"7": 78}}},
+            }
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(details[shop_id]),
+                    "ossMd5": "md5",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            details[shop_id] = deepcopy(body["shopCollectItemInfo"])
+            details[shop_id]["detailId"] = int(body["detailId"])
+            details[shop_id]["shopId"] = shop_id
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=targets,
+        post=post,
+    )
+
+    saved = {
+        str(body["shopId"]): body["shopCollectItemInfo"]["skuMap"]["default"]["price"]
+        for path, body in calls
+        if path.endswith("save_shop_collect_item_info")
+    }
+    assert saved == {
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:MX"]["shop_id"]): 286,
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"]["shop_id"]): 42,
+    }
+    assert result["target_count"] == 2
+    assert result["platform_detail_count"] == 2
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
+def test_collectbox_tiktok_first_target_unknown_does_not_skip_later_countries():
+    """One target fault must not truncate the approved storefront set."""
+
+    targets = (
+        "tiktok:LH_PH",
+        "tiktok:LH_MY",
+        "tiktok:LH_TH",
+        "tiktok:LH_VN",
+        "tiktok:MX",
+        "tiktok:GB",
+    )
+    payload = _plan_payload(targets[0])
+    payload["targets"] = ["miaoshou:COMMON", *targets]
+    payload["listing_copy"]["candidates"] = [
+        {
+            "channel": "tiktok",
+            "site": miaoshou.DIRECT_STORE_CONFIG[target]["region"],
+            "policy_check": "passed",
+            "title": f"Approved {target} title",
+        }
+        for target in targets
+    ]
+    payload["pricing"]["selected_targets"] = {
+        target: {
+            "store_prices": [{
+                "target_key": miaoshou.DIRECT_STORE_CONFIG[target]["key"],
+                "list_price": "33",
+                "currency": _expected(target)["currency"],
+            }]
+        }
+        for target in targets
+    }
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions(targets)
+    )
+    payload["approved_tiktok_category_decisions"].pop(targets[-1])
+    calls = []
+    detail_ids = {target: 77 + index for index, target in enumerate(targets)}
+    details = {}
+    for target in targets:
+        detail = _detail(target)
+        detail["detailId"] = detail_ids[target]
+        details[str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])] = detail
+    created_by_serial = {
+        index + 1: detail_ids[target]
+        for index, target in enumerate(targets)
+        if index > 0
+    }
+    target_by_site = {
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["site"]): target
+        for target in targets
+    }
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
+        if path == miaoshou.DETAIL_CREATE_PATH:
+            serial = body["detailSerialNumberPlatformList"][0]["serialNumber"]
+            return {
+                "result": "success",
+                "data": {
+                    "platformCollectBoxDetailIdMap": {
+                        "tiktok": {"7": created_by_serial[serial]}
+                    }
+                },
+            }
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path == miaoshou.SOURCE_LIST_PATH:
+            rows = []
+            for listed_target in targets:
+                listed_shop_id = str(
+                    miaoshou.DIRECT_STORE_CONFIG[listed_target]["shop_id"]
+                )
+                rows.extend(
+                    _tiktok_list_response(
+                        listed_target, details[listed_shop_id]
+                    )["data"]["detailList"]
+                )
+            return {
+                "result": "success",
+                "data": {"detailList": rows, "totalCount": len(rows)},
+            }
+        if path.endswith("get_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(details[shop_id]),
+                    "ossMd5": "md5",
+                },
+            }
+        if path.endswith("get_site_collect_item_info"):
+            target = target_by_site[str(body["site"])]
+            shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": deepcopy(details[shop_id]),
+                    "ossMd5": "md5",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            if shop_id == str(
+                miaoshou.DIRECT_STORE_CONFIG["tiktok:LH_PH"]["shop_id"]
+            ):
+                raise RuntimeError("fixture unknown after first target update")
+            details[shop_id] = deepcopy(body["shopCollectItemInfo"])
+            details[shop_id]["detailId"] = int(body["detailId"])
+            details[shop_id]["shopId"] = shop_id
+            return {"result": "success"}
+        if path.endswith("save_site_collect_item_info"):
+            target = target_by_site[str(body["site"])]
+            shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+            if target == "tiktok:LH_PH":
+                raise RuntimeError("fixture unknown after first target update")
+            details[shop_id] = deepcopy(body["siteCollectItemInfo"])
+            details[shop_id]["detailId"] = int(body["detailId"])
+            details[shop_id]["site"] = str(body["site"])
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    def web_post(path, body):
+        assert path == miaoshou.WEB_BATCH_SET_PRICE_PATH
+        target = target_by_site[str(body["site"])]
+        shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        price = body["priceConfig"]["price"]["newValue"]
+        details[shop_id]["skuMap"]["default"]["price"] = price
+        details[shop_id]["skuMap"]["default"]["priceIncludeVat"] = price
+        return {"success": True}
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=targets,
+        post=post,
+        web_post=web_post,
+    )
+
+    assert [row["target_label"] for row in result["target_results"]] == list(
+        targets
+    )
+    assert result["target_results"][0]["status"] == "FAILED"
+    assert result["target_results"][0]["error_code"] == (
+        "target_preparation_failed"
+    )
+    assert len(result["target_results"][0]["detail_digest"]) == 64
+    for row in result["target_results"][1:-1]:
+        assert row["status"] == "SUCCEEDED"
+        assert row["error_code"] is None
+        assert row["detail_digest"] is None
+    assert result["target_results"][-1]["status"] == "SUCCEEDED"
+    assert result["target_results"][-1]["error_code"] is None
+    attempted_shop_ids = {
+        str(shop_id)
+        for path, body in calls
+        if path == miaoshou.SHOP_CLAIM_PATH
+        for shop_id in body["shopIds"]
+    }
+    assert attempted_shop_ids == {
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        for target in targets
+    }
+    assert result["external_write_count"] is None
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
+def test_collectbox_invalid_approved_price_preserves_prior_claim_write():
+    target = "tiktok:MX"
+    payload = _plan_payload(target)
+    payload["pricing"]["selected_targets"][target]["store_prices"][0][
+        "list_price"
+    ] = "invalid"
+    calls = []
+
+    def post(path, body):
+        calls.append((path, body))
+        return {"result": "success"}
+
+    with pytest.raises(miaoshou.MiaoshouCollectBoxPreparationError) as captured:
+        miaoshou.prepare_selected_platform_collectbox(
+            platform="tiktok",
+            common_detail_id="7",
+            initial_platform_detail_id="77",
+            initial_claim_written=True,
+            approved_plan_payload=payload,
+            approved_targets=(target,),
+            post=post,
+        )
+
+    assert captured.value.external_writes == (
+        "miaoshou:collectbox:claim:tiktok",
+    )
+    assert captured.value.external_write_count == 1
+    assert calls == []
+
+
+def test_collectbox_wrong_target_currency_stops_before_storefront_writes():
+    target = "tiktok:MX"
+    payload = _plan_payload(target)
+    payload["pricing"]["selected_targets"][target]["store_prices"][0][
+        "currency"
+    ] = "GBP"
+    calls = []
+
+    def post(path, body):
+        calls.append((path, body))
+        return {"result": "success"}
+
+    with pytest.raises(miaoshou.MiaoshouCollectBoxPreparationError) as captured:
+        miaoshou.prepare_selected_platform_collectbox(
+            platform="tiktok",
+            common_detail_id="7",
+            initial_platform_detail_id="77",
+            initial_claim_written=True,
+            approved_plan_payload=payload,
+            approved_targets=(target,),
+            post=post,
+        )
+
+    assert captured.value.external_writes == (
+        "miaoshou:collectbox:claim:tiktok",
+    )
+    assert captured.value.external_write_count == 1
+    assert calls == []
+
+
+def test_collectbox_shopee_writes_exact_simple_description_without_publish():
+    target = "shopee:MY"
+    description = (
+        "Product overview\nDecorative wall sticker made of PVC.\n\n"
+        "Verified details\n- Material: PVC\n\nSuitable spaces"
+    )
+    payload = _plan_payload(target)
+    payload["listing_copy"]["shopee_description_en"] = description
+    fake = DirectStoreFake(target)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="shopee",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=fake.post,
+    )
+
+    save = next(
+        body for path, body in fake.calls if path == fake.config["save_path"]
+    )
+    assert save["siteDetailSimpleData"]["notesText"] == description
+    assert result["checks"]["approved_content_exact"] is True
+    assert fake.config["publish_path"] not in [path for path, _ in fake.calls]
+
+
+def _dispatch_request(command):
+    binding = command["identity_binding"]
+    return SimpleNamespace(
+        target_label=command["target_label"],
+        idempotency_key=binding["idempotency_key"],
+        source_identity_digest=binding["source_identity_digest"],
+        payload_digest=binding["payload_digest"],
+        adapter_policy_digest=binding["adapter_policy_digest"],
+        command={"payload": {"provider_command": json.loads(
+            json.dumps(command, sort_keys=True)
+        )}},
+        progress_recorder=None,
+    )
+
+
+@pytest.mark.parametrize("target", ["shopee:PH", "ozon:RU"])
+def test_shopee_and_ozon_dispatch_only_miaoshou_and_wait_for_manual(target):
+    command = _command(target)
+    fake = DirectStoreFake(target)
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake.post)
+    )
+
+    result = miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+        _dispatch_request(command)
+    )
+
+    platform = command["platform"]
+    assert result["canonical_status"] == "SUBMITTED_UNVERIFIED"
+    assert result["readback_verified"] is False
+    assert result["external_writes"] == (
+        f"miaoshou:{platform}_detail:update",
+        f"miaoshou:{platform}_publish:submission",
+    )
+    assert [path for path, _ in fake.calls] == [
+        miaoshou.DIRECT_STORE_CONFIG[target]["search_path"],
+        miaoshou.DIRECT_STORE_CONFIG[target]["get_path"],
+        miaoshou.DIRECT_STORE_CONFIG[target]["save_path"],
+        miaoshou.DIRECT_STORE_CONFIG[target]["get_path"],
+        miaoshou.DIRECT_STORE_CONFIG[target]["publish_path"],
+    ]
+    assert not any("modules.shopee" in path for path, _ in fake.calls)
+
+
+def test_tiktok_gb_restart_dispatch_keeps_numeric_identity_and_required_attribute():
+    """The durable dispatch path must preserve the same GB draft contract."""
+
+    target = "tiktok:GB"
+    command = _command(target)
+    command["expected"].update(
+        {"category_id": "600338", "price": "15", "currency": "GBP"}
+    )
+    fake = DirectStoreFake(target)
+    fake.detail.update({"cid": "", "isCodOpen": "1"})
+    fake.detail.pop("productAttributes", None)
+    fake.detail["skuMap"]["default"].update(
+        {"price": 1.1, "priceIncludeVat": 1.1}
+    )
+    command["observed_snapshot_digest"] = miaoshou._digest(
+        miaoshou._detail_snapshot(fake.detail)
+    )
+    required = _gb_category_metadata_response()["data"][
+        "categoryMetadata"
+    ]["categoryProductAttrList"]
+    command["expected"]["product_attributes"] = [
+        {
+            "attributeId": required[0]["attrId"],
+            "attributeName": required[0]["name"],
+            "attributeNameAlias": required[0]["attributeNameAlias"],
+            "attributeValues": [
+                {
+                    "valueName": "1",
+                    "valueId": "1000256",
+                    "valueNameAlias": "1",
+                }
+            ],
+        }
+    ]
+
+    def post(path, body):
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return _gb_category_metadata_response()
+        if path == miaoshou.WAREHOUSE_GET_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {
+                "result": "success",
+                "data": {
+                    "shopWarehouseList": [
+                        {
+                            "shopId": "10204699",
+                            "warehouseList": [
+                                {
+                                    "warehouseId": "WAREHOUSE-1",
+                                    "warehouseEffectStatus": "1",
+                                    "isDefault": "1",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        if path == fake.config["save_path"]:
+            fake.calls.append((path, deepcopy(body)))
+            candidate = deepcopy(body["shopCollectItemInfo"])
+            selected = candidate.get("productAttributes")
+            expected_selected = [
+                {
+                    "attributeId": required[0]["attrId"],
+                    "attributeName": required[0]["name"],
+                    "attributeNameAlias": required[0]["attributeNameAlias"],
+                    "attributeValues": [
+                        {
+                            "valueName": "1",
+                            "valueId": "1000256",
+                            "valueNameAlias": "1",
+                        }
+                    ],
+                }
+            ]
+            # Reproduce the vendor's dangerous accepted-but-not-persisted
+            # response unless both the numeric identity and required
+            # attribute are present.
+            if type(body.get("shopId")) is int and selected == expected_selected:
+                fake.detail = candidate
+                fake.detail["detailId"] = 77
+                fake.detail["shopId"] = "10204699"
+                fake.detail["sourceOfferId"] = "986159122616"
+                fake.detail.pop("itemNum", None)
+            return {"result": "success"}
+        return fake.post(path, body)
+
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=post)
+    )
+
+    result = miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+        _dispatch_request(command)
+    )
+
+    assert result["canonical_status"] == "SUBMITTED_UNVERIFIED"
+    endpoint_calls = [
+        (path, body)
+        for path, body in fake.calls
+        if path
+        in {
+            fake.config["get_path"],
+            fake.config["save_path"],
+            fake.config["publish_path"],
+            miaoshou.CATEGORY_METADATA_PATH,
+        }
+    ]
+    for path, body in endpoint_calls:
+        if path == fake.config["publish_path"]:
+            assert type(body["shopIds"][0]) is int
+        elif path == miaoshou.CATEGORY_METADATA_PATH:
+            assert type(body["shopIds"][0]) is int
+        else:
+            assert type(body["shopId"]) is int
+    save_body = next(
+        body for path, body in fake.calls if path == fake.config["save_path"]
+    )
+    saved = save_body["shopCollectItemInfo"]
+    assert saved["cid"] == "600338"
+    assert saved["skuMap"]["default"]["price"] == 15
+    assert saved["productAttributes"] == command["expected"][
+        "product_attributes"
+    ]
+    assert any(
+        path == miaoshou.CATEGORY_METADATA_PATH for path, _ in fake.calls
+    )
+
+
+def test_tiktok_gb_official_readback_requires_the_bound_batch_number():
+    expected = _expected("tiktok:GB")
+    expected.update(
+        {
+            "category_id": "600338",
+            "price": "15",
+            "currency": "GBP",
+            "product_attributes": [
+                {
+                    "attributeId": "102255",
+                    "attributeName": "Batch Number",
+                    "attributeNameAlias": "生产批次号",
+                    "attributeValues": [
+                        {
+                            "valueName": "1",
+                            "valueId": "1000256",
+                            "valueNameAlias": "1",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    readback = _detail("tiktok:GB")
+    readback["cid"] = "600338"
+    readback["skuMap"]["default"].update(
+        {"price": 15, "priceIncludeVat": 15}
+    )
+    readback.pop("productAttributes", None)
+
+    with pytest.raises(
+        miaoshou.MiaoshouOneClickPreDispatchError,
+        match="official Miaoshou readback",
+    ):
+        miaoshou._verify_expected_detail(
+            readback,
+            expected,
+            platform="tiktok",
+            strict_collectbox_tiktok=True,
+            draft_mode="shop",
+        )
+
+
+def test_tiktok_gb_legacy_create_without_bound_attributes_is_zero_transport():
+    command = _command("tiktok:GB")
+    command["action"] = "CREATE_AND_CLAIM"
+    command["detail_id"] = None
+    command["observed_snapshot_digest"] = None
+    command["expected"].update(
+        {"category_id": "600338", "price": "15", "currency": "GBP"}
+    )
+    command["expected"].pop("product_attributes", None)
+    fake = DirectStoreFake("tiktok:GB", existing=False)
+    def post(path, body):
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {"result": "success"}
+        if path == miaoshou.WAREHOUSE_GET_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return _warehouse_response("tiktok:GB")
+        return fake.post(path, body)
+
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=post)
+    )
+
+    with pytest.raises(
+        miaoshou.MiaoshouOneClickPreDispatchError,
+        match="category attributes are unavailable",
+    ):
+        miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+            _dispatch_request(command)
+        )
+
+    assert fake.calls == []
+
+
+def test_malformed_publish_preserves_confirmed_update_and_unknown_submission():
+    target = "shopee:MY"
+    command = _command(target)
+    fake = DirectStoreFake(target, malformed_publish=True)
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake.post)
+    )
+
+    with pytest.raises(miaoshou.MiaoshouOneClickDispatchError) as captured:
+        miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+            _dispatch_request(command)
+        )
+
+    error = captured.value
+    assert error.dispatch_outcome_unknown is True
+    assert error.external_writes == (
+        "miaoshou:shopee_detail:update",
+        "miaoshou:shopee_publish:submission",
+    )
+    assert error.confirmed_external_write_count_lower_bound == 1
+    assert error.possible_external_write_count_upper_bound == 2
+
+
+def test_stored_idempotency_or_shop_drift_stops_before_transport():
+    command = _command("ozon:RU")
+    command["identity_binding"]["idempotency_key"] = "different"
+    called = []
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(
+            post=lambda path, body: called.append((path, body))
+        )
+    )
+
+    with pytest.raises(miaoshou.MiaoshouOneClickPreDispatchError):
+        request = _dispatch_request(command)
+        request.idempotency_key = "original"
+        miaoshou.dispatch_tiktok_miaoshou_prepared_target(request)
+
+    assert called == []
+
+
+@pytest.mark.parametrize(
+    "target", ["tiktok:MX", "tiktok:GB", "shopee:PH", "ozon:RU"]
+)
+def test_prepare_is_read_only_json_only_and_binds_server_identity(target):
+    fake = DirectStoreFake(target)
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+
+    result = prepare_oneclick_target(_prepare_request(target))
+    command = json.loads(
+        json.dumps(
+            result["command"]["provider_command"],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+    assert result["classification"] == "READY_SUBMIT_MANUAL"
+    assert result["manual_after_submit"] is True
+    assert command["kind"] == "DIRECT_STORE"
+    assert command["target_label"] == target
+    assert command["identity_binding"] == {
+        "target_label": target,
+        "shop_id": str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"]),
+        "platform": miaoshou.DIRECT_STORE_CONFIG[target]["platform"],
+        "idempotency_key": f"job:{target}",
+        "source_identity_digest": "a" * 64,
+        "payload_digest": "b" * 64,
+        "adapter_policy_digest": "c" * 64,
+    }
+    if target == "tiktok:GB":
+        assert command["expected"]["product_attributes"] == [
+            {
+                "attributeId": "102255",
+                "attributeName": "Batch Number",
+                "attributeNameAlias": "生产批次号",
+                "attributeValues": [
+                    {
+                        "valueName": "1",
+                        "valueId": "1000256",
+                        "valueNameAlias": "1",
+                    }
+                ],
+            }
+        ]
+    assert all(
+        path
+        in {
+            miaoshou.DIRECT_STORE_CONFIG[target]["search_path"],
+            miaoshou.DIRECT_STORE_CONFIG[target]["get_path"],
+            *(
+                [miaoshou.CATEGORY_METADATA_PATH]
+                if target == "tiktok:GB"
+                else []
+            ),
+        }
+        for path, _ in fake.calls
+    )
+
+
+@pytest.mark.parametrize("target", ["shopee:VN", "ozon:RU"])
+def test_missing_site_detail_is_created_then_saved_and_submitted_once(target):
+    command = _command(target)
+    command["action"] = "CREATE_AND_CLAIM"
+    command["detail_id"] = None
+    command["observed_snapshot_digest"] = None
+    fake = DirectStoreFake(target, existing=False)
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake.post)
+    )
+
+    result = miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+        _dispatch_request(command)
+    )
+
+    platform = command["platform"]
+    assert result["canonical_status"] == "SUBMITTED_UNVERIFIED"
+    assert result["external_writes"] == (
+        f"miaoshou:{platform}_detail:create",
+        f"miaoshou:{platform}_detail:update",
+        f"miaoshou:{platform}_publish:submission",
+    )
+    assert [path for path, _ in fake.calls].count(
+        miaoshou.DETAIL_CREATE_PATH
+    ) == 1
+    assert fake.calls[-3][0] == miaoshou.DIRECT_STORE_CONFIG[target]["save_path"]
+    assert fake.calls[-1][0] == (
+        miaoshou.DIRECT_STORE_CONFIG[target]["publish_path"]
+    )
+
+
+def test_one_store_failure_does_not_poison_a_different_store_dispatch():
+    failed_command = _command("shopee:TH")
+    failed = DirectStoreFake("shopee:TH", malformed_publish=True)
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=failed.post)
+    )
+    with pytest.raises(miaoshou.MiaoshouOneClickDispatchError):
+        miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+            _dispatch_request(failed_command)
+        )
+
+    succeeding_command = _command("ozon:RU")
+    succeeding = DirectStoreFake("ozon:RU")
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=succeeding.post)
+    )
+    result = miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+        _dispatch_request(succeeding_command)
+    )
+
+    assert result["canonical_status"] == "SUBMITTED_UNVERIFIED"
+    assert result["external_writes"] == (
+        "miaoshou:ozon_detail:update",
+        "miaoshou:ozon_publish:submission",
+    )
+
+
+def test_live_shaped_shopee_cnsc_title_prepares_each_regional_store():
+    target = "shopee:MY"
+    fake = DirectStoreFake(target)
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    request = _prepare_request(target)
+    request.immutable_plan_payload = _live_shaped_plan_payload(target)
+
+    result = prepare_oneclick_target(request)
+
+    assert result["classification"] == "READY_SUBMIT_MANUAL"
+    assert result["command"]["provider_command"]["expected"]["title"] == (
+        "Approved Shopee master title"
+    )
+    assert result["command"]["provider_command"]["expected"]["price"] == "33"
+    assert result["command"]["provider_command"]["expected"]["currency"] == (
+        "MYR"
+    )
+
+
+def test_live_shaped_ozon_derived_preview_supplies_approved_price():
+    target = "ozon:RU"
+    fake = DirectStoreFake(target)
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    request = _prepare_request(target)
+    request.immutable_plan_payload = _live_shaped_plan_payload(target)
+
+    result = prepare_oneclick_target(request)
+
+    assert result["classification"] == "READY_SUBMIT_MANUAL"
+    assert result["command"]["provider_command"]["expected"]["price"] == "33"
+    assert result["command"]["provider_command"]["expected"]["currency"] == (
+        "CNY"
+    )
+
+
+def test_live_shaped_tiktok_default_prepare_uses_miaoshou_common_id_not_offer_id(
+    monkeypatch,
+):
+    target = "tiktok:LH_PH"
+    fake = DirectStoreFake(target)
+    original_post = fake.post
+
+    def post(path, body):
+        result = original_post(path, body)
+        if path == fake.config["search_path"]:
+            result["data"]["detailList"][0][
+                "commonCollectBoxDetailId"
+            ] = 7001
+        return result
+
+    monkeypatch.setattr("modules.miaoshou.client.post_open", post)
+    request = _prepare_request(target)
+    request.immutable_plan_payload = _live_shaped_plan_payload(target)
+
+    result = prepare_oneclick_target(request)
+    command = result["command"]["provider_command"]
+
+    assert command["source_offer_id"] == "986159122616"
+    assert command["common_detail_id"] == "7001"
+    assert command["detail_id"] == "77"
+    assert command["action"] == "USE_EXISTING"
+
+
+def test_shopee_master_title_and_derived_price_remain_strictly_unique():
+    target = "shopee:MY"
+    fake = DirectStoreFake(target)
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    duplicate_title = _prepare_request(target)
+    duplicate_title.immutable_plan_payload = _live_shaped_plan_payload(target)
+    duplicate_title.immutable_plan_payload["listing_copy"]["candidates"].append(
+        {
+            "channel": "shopee",
+            "site": "CNSC",
+            "policy_check": "passed",
+            "title": "A second approved master is invalid",
+        }
+    )
+
+    title_result = prepare_oneclick_target(duplicate_title)
+
+    assert title_result["classification"] == "BLOCKED_CAPABILITY"
+    assert title_result["reason_code"] == (
+        "approved_storefront_title_not_unique"
+    )
+
+    wrong_site = _prepare_request(target)
+    wrong_site.immutable_plan_payload = _live_shaped_plan_payload(target)
+    wrong_site.immutable_plan_payload["pricing"]["selected_targets"][target][
+        "target_site"
+    ] = "PH"
+
+    price_result = prepare_oneclick_target(wrong_site)
+
+    assert price_result["classification"] == "BLOCKED_CAPABILITY"
+    assert price_result["reason_code"] == "approved_store_price_not_unique"
+
+
+def test_source_result_common_identity_mismatch_or_ambiguity_fails_closed():
+    target = "tiktok:LH_PH"
+    request = _prepare_request(target)
+    request.immutable_plan_payload = _live_shaped_plan_payload(target)
+    fake = DirectStoreFake(target)
+    original_post = fake.post
+
+    def mismatched_source(path, body):
+        result = original_post(path, body)
+        if path == fake.config["search_path"]:
+            result["data"]["detailList"][0]["sourceOfferId"] = (
+                "111111111111"
+            )
+            result["data"]["detailList"][0]["sourceList"] = [
+                {"sourceItemId": "111111111111"}
+            ]
+        return result
+
+    miaoshou.configure_prepare_post_factory(lambda: mismatched_source)
+    mismatch = prepare_oneclick_target(request)
+    assert mismatch["classification"] == "BLOCKED_CAPABILITY"
+    assert mismatch["reason_code"] == (
+        "miaoshou_official_prepare_proof_unavailable"
+    )
+
+    def ambiguous_common(path, body):
+        result = original_post(path, body)
+        if path == fake.config["search_path"]:
+            second = deepcopy(result["data"]["detailList"][0])
+            second["commonCollectBoxDetailId"] = 7002
+            second["collectBoxDetailId"] = 78
+            result["data"]["detailList"].append(second)
+            result["data"]["totalCount"] = 2
+        return result
+
+    miaoshou.configure_prepare_post_factory(lambda: ambiguous_common)
+    ambiguous = prepare_oneclick_target(request)
+    assert ambiguous["classification"] == "BLOCKED_CAPABILITY"
+    assert ambiguous["reason_code"] == (
+        "miaoshou_official_prepare_proof_unavailable"
+    )
+def test_tiktok_sku_parcel_all_fields_omitted_is_provider_omission_but_partial_is_not():
+    target = "tiktok:LH_MY"
+    expected = _expected(target)
+    expected.update(
+        {
+            "selected_sku_keys": ["short", "long", "wide"],
+            "model_skus": {"short": "0963", "long": "0964", "wide": "0965"},
+            "sku_prices": {"short": "30", "long": "40", "wide": "50"},
+            "sku_commercial_facts": {
+                "short": {"weight": "0.1", "package_cm": [20, 20, 3]},
+                "long": {"weight": "0.2", "package_cm": [20, 20, 3]},
+                "wide": {"weight": "0.3", "package_cm": [20, 20, 3]},
+            },
+            "price": "30",
+        }
+    )
+    detail = _detail(target)
+    row = detail["skuMap"].pop("default")
+    detail["skuMap"] = {
+        key: {
+            **deepcopy(row),
+            "itemNum": expected["model_skus"][key],
+            "weight": expected["sku_commercial_facts"][key]["weight"],
+            "price": expected["sku_prices"][key],
+            "priceIncludeVat": expected["sku_prices"][key],
+        }
+        for key in expected["selected_sku_keys"]
+    }
+    for sku in detail["skuMap"].values():
+        sku.pop("packageLength")
+        sku.pop("packageWidth")
+        sku.pop("packageHeight")
+
+    miaoshou._verify_expected_detail(detail, expected)
+
+    detail["skuMap"]["long"]["packageLength"] = 20
+    with pytest.raises(miaoshou.MiaoshouOneClickPreDispatchError):
+        miaoshou._verify_expected_detail(detail, expected)
+
+
+@pytest.mark.parametrize(
+    "category_name",
+    (
+        "居家布艺 > 桌旗",
+        "家纺布艺 > 居家布艺 > 桌布、桌旗",
+    ),
+)
+def test_tiktok_semantic_category_ignores_wrong_draft_cid_and_requires_enabled_tree(
+    category_name,
+):
+    expected = _expected("tiktok:LH_MY")
+    expected["product_category"] = {"name": category_name}
+    calls = []
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_TREE_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "cateTree": {
+                        "600204": {
+                            "disabled": False,
+                            "name": "Kitchen Linens",
+                            "nameChinese": "桌布、桌旗",
+                        }
+                    }
+                },
+            }
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return {
+                "result": "success",
+                "data": {"categoryMetadata": {"categoryProductAttrList": []}},
+            }
+        raise AssertionError(path)
+
+    accepted = miaoshou._official_tiktok_draft_category_candidate(
+        post,
+        current={"cid": "600009"},
+        expected=expected,
+        shop_endpoint_id=13295169,
+    )
+
+    assert accepted == "600204"
+    assert expected["category_id"] == "600204"
+    assert [path for path, _body in calls] == [
+        miaoshou.CATEGORY_TREE_PATH,
+        miaoshou.CATEGORY_METADATA_PATH,
+    ]
+    assert calls[1][1]["cid"] == 600204
+
+
+@pytest.mark.parametrize(
+    ("tree_disabled", "metadata_rules"),
+    [(True, []), (False, None)],
+    ids=("disabled-category", "malformed-required-attributes"),
+)
+def test_tiktok_semantic_category_requires_confirmation_without_fallback(
+    tree_disabled, metadata_rules
+):
+    expected = _expected("tiktok:LH_MY")
+    expected["product_category"] = {"name": "tablecloth"}
+    calls = []
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_TREE_PATH:
+            return {
+                "result": "success",
+                "data": {"cateTree": {"600204": {
+                    "disabled": tree_disabled,
+                    "name": "Kitchen Linens",
+                }}},
+            }
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return {
+                "result": "success",
+                "data": {"categoryMetadata": {
+                    "categoryProductAttrList": metadata_rules,
+                }},
+            }
+        raise AssertionError(path)
+
+    with pytest.raises(
+        miaoshou.MiaoshouOneClickPreDispatchError,
+        match="CATEGORY_CONFIRMATION_REQUIRED",
+    ):
+        miaoshou._official_tiktok_draft_category_candidate(
+            post,
+            current={"cid": "600009"},
+            expected=expected,
+            shop_endpoint_id=13295169,
+        )
+    assert expected.get("category_id") is None
+    assert calls[0][0] == miaoshou.CATEGORY_TREE_PATH
+    if tree_disabled:
+        assert len(calls) == 1
+    else:
+        assert [path for path, _body in calls] == [
+            miaoshou.CATEGORY_TREE_PATH,
+            miaoshou.CATEGORY_METADATA_PATH,
+        ]
+
+
+def test_tiktok_table_runner_uses_enabled_festive_fallback_when_exact_category_is_disabled():
+    expected = _expected("tiktok:LH_MY")
+    expected["product_category"] = {"name": "居家布艺 > 桌旗"}
+    calls = []
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_TREE_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "cateTree": {
+                        "600204": {
+                            "disabled": True,
+                            "name": "Kitchen Linens",
+                            "nameChinese": "桌布、桌旗",
+                        },
+                        "600009": {
+                            "disabled": False,
+                            "name": "Festive & Party Supplies",
+                            "nameChinese": "节庆及派对用品 > 节日装饰",
+                        },
+                    }
+                },
+            }
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            assert body["cid"] == 600009
+            return {
+                "result": "success",
+                "data": {"categoryMetadata": {"categoryProductAttrList": []}},
+            }
+        raise AssertionError(path)
+
+    accepted = miaoshou._official_tiktok_draft_category_candidate(
+        post,
+        current={"cid": "600009"},
+        expected=expected,
+        shop_endpoint_id=13295169,
+    )
+
+    assert accepted == "600009"
+    assert expected["category_id"] == "600009"
+    assert [path for path, _body in calls] == [
+        miaoshou.CATEGORY_TREE_PATH,
+        miaoshou.CATEGORY_METADATA_PATH,
+    ]
+
+
+def test_tiktok_table_runner_finds_enabled_festive_fallback_in_nested_official_tree():
+    """Miaoshou returns categories as a hierarchy, not a flat cid map."""
+
+    expected = _expected("tiktok:LH_PH")
+    expected["product_category"] = {"name": "tablecloth"}
+
+    def post(path, body):
+        if path == miaoshou.CATEGORY_TREE_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "cateTree": {
+                        "600154": {
+                            "cid": 600154,
+                            "disabled": False,
+                            "children": {
+                                "809992": {
+                                    "cid": 809992,
+                                    "disabled": False,
+                                    "children": {
+                                        "600204": {
+                                            "cid": 600204,
+                                            "disabled": True,
+                                            "name": "Kitchen Linens",
+                                            "nameChinese": "桌布、桌旗",
+                                            "children": {},
+                                        }
+                                    },
+                                }
+                            },
+                        },
+                        "600001": {
+                            "cid": 600001,
+                            "disabled": False,
+                            "children": {
+                                "852488": {
+                                    "cid": 852488,
+                                    "disabled": False,
+                                    "children": {
+                                        "600009": {
+                                            "cid": 600009,
+                                            "disabled": False,
+                                            "name": "Festive Decorations",
+                                            "nameChinese": "节日装饰",
+                                            "children": {},
+                                        }
+                                    },
+                                }
+                            },
+                        },
+                    }
+                },
+            }
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            assert body["cid"] == 600009
+            return {
+                "result": "success",
+                "data": {"categoryMetadata": {"categoryProductAttrList": []}},
+            }
+        raise AssertionError(path)
+
+    accepted = miaoshou._official_tiktok_draft_category_candidate(
+        post,
+        current={"cid": "600204"},
+        expected=expected,
+        shop_endpoint_id=13295169,
+    )
+
+    assert accepted == "600009"
+    assert expected["category_id"] == "600009"

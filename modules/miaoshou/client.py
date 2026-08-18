@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 import gzip
 import urllib.error
@@ -23,6 +24,56 @@ CONFIG_CANDIDATES = (
     ROOT / "config" / "miaoshou.local.json",
     MAIN_REPO / "config" / "miaoshou.local.json",
 )
+OPEN_REQUEST_INTERVAL_SECONDS = 1.1
+_open_request_lock = threading.Lock()
+_last_open_request_at = 0.0
+
+
+class MiaoshouBusinessRejectedError(RuntimeError):
+    """The API returned a parsed business rejection, so transport is not unknown."""
+
+    def __init__(self, message: str, *, code: object = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.business_rejected = True
+
+
+class MiaoshouWebAuthUnavailableError(RuntimeError):
+    """The authenticated Miaoshou Web session is not configured."""
+
+
+def ensure_web_batch_price_auth_available(
+    cfg: dict[str, Any] | None = None,
+) -> None:
+    """Fail before writes unless a secure Web Cookie is available."""
+
+    try:
+        config = cfg or _load_config()
+    except (FileNotFoundError, KeyError, TypeError, ValueError) as error:
+        raise MiaoshouWebAuthUnavailableError(
+            "Miaoshou web auth is unavailable"
+        ) from error
+    cookie = str(
+        config.get("web_cookie")
+        or config.get("erp_cookie")
+        or os.environ.get("MIAOSHOU_WEB_COOKIE")
+        or ""
+    ).strip()
+    configured_headers = config.get("web_headers")
+    header_cookie = ""
+    if isinstance(configured_headers, dict):
+        header_cookie = next(
+            (
+                str(value).strip()
+                for key, value in configured_headers.items()
+                if str(key).strip().casefold() == "cookie" and value is not None
+            ),
+            "",
+        )
+    if not cookie and not header_cookie:
+        raise MiaoshouWebAuthUnavailableError(
+            "Miaoshou web auth is unavailable"
+        )
 
 
 def _load_config() -> dict[str, Any]:
@@ -41,6 +92,19 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
 def _open_sign(secret: str, path: str, timestamp: int, key: str, body_json: str) -> str:
     content = f"{secret}{path}{timestamp}{key}{body_json}{secret}"
     return hmac.new(secret.encode(), content.encode(), hashlib.sha256).hexdigest()
+
+
+def _wait_for_open_slot() -> None:
+    """Space signed Open API requests below the account's one-second limit."""
+
+    global _last_open_request_at
+    with _open_request_lock:
+        now = time.monotonic()
+        remaining = OPEN_REQUEST_INTERVAL_SECONDS - (now - _last_open_request_at)
+        if _last_open_request_at and remaining > 0:
+            time.sleep(remaining)
+            now = time.monotonic()
+        _last_open_request_at = now
 
 
 def generate_sign(
@@ -85,6 +149,7 @@ def post_open(
         path = "/" + path
     payload = body or {}
     body_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    _wait_for_open_slot()
     timestamp = int(time.time())
     request = urllib.request.Request(
         root + path,
@@ -106,7 +171,14 @@ def post_open(
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Miaoshou network error: {exc}") from exc
     if str(result.get("result") or "").lower() != "success":
-        raise RuntimeError(str(result.get("message") or result.get("code") or "Miaoshou request failed"))
+        raise MiaoshouBusinessRejectedError(
+            str(
+                result.get("message")
+                or result.get("code")
+                or "Miaoshou request failed"
+            ),
+            code=result.get("code"),
+        )
     return result
 
 
@@ -200,14 +272,15 @@ def request_web(
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Miaoshou web network error: {exc}") from exc
     if not _web_ok(result):
-        raise RuntimeError(
+        raise MiaoshouBusinessRejectedError(
             str(
                 result.get("reason")
                 or result.get("msg")
                 or result.get("message")
                 or result.get("code")
                 or "Miaoshou web request failed"
-            )
+            ),
+            code=result.get("code"),
         )
     return result
 
@@ -294,4 +367,19 @@ def web_save_shop_collect_item_info(shop_collect_item_info: dict[str, Any]) -> d
                 separators=(",", ":"),
             )
         },
+    )
+
+
+def web_batch_set_tiktok_price(payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply an exact local TikTok price through Miaoshou's web protocol."""
+
+    return request_web(
+        "POST",
+        "/api/platform/tiktok/move/collect_box/batchSetPrice",
+        form=json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        headers={"Content-Type": "application/json;charset=UTF-8"},
     )

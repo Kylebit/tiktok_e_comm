@@ -96,7 +96,27 @@ def connect() -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=30000")
+    return conn
+
+
+def connect_readonly(path: str | Path | None = None) -> sqlite3.Connection:
+    """Open an existing SQLite database with writes disabled.
+
+    Read paths must use this helper instead of ``init_db()`` so a page render,
+    report, or diagnostic query cannot create tables, run migrations, or
+    mutate production data as a side effect.
+    """
+    source = Path(path) if path is not None else db_path()
+    source = source.resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"database not found: {source}")
+    conn = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA query_only=ON")
     return conn
 
 

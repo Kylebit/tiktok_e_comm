@@ -14,11 +14,16 @@ def digits_only(sku: str) -> str:
 
 
 def seller_sku_tail4(sku: str) -> str:
-    """数字 SKU 取末四位并零填充；非数字原样返回 strip。"""
-    d = digits_only(sku)
-    if not d:
-        return str(sku or "").strip()
-    return d[-4:].zfill(4)
+    """数字 SKU 取末四位并零填充；非纯数字 SKU 保持原样。
+
+    Shopee 的历史快照里存在 ``item_id_description_50cm`` 一类复合值。
+    把其中所有数字拼接后取末四位会把尺寸、数量误当成 Seller SKU，
+    甚至与真实四位 SKU 碰撞，因此只有纯数字值才能参与末四位对齐。
+    """
+    raw = str(sku or "").strip()
+    if not raw or not re.fullmatch(r"\d+", raw):
+        return raw
+    return raw[-4:].zfill(4)
 
 
 def sku_variants_for_lookup(sku: str) -> list[str]:
@@ -26,6 +31,8 @@ def sku_variants_for_lookup(sku: str) -> list[str]:
     raw = str(sku or "").strip()
     if not raw:
         return []
+    if not re.fullmatch(r"\d+", raw):
+        return [raw]
     tail = seller_sku_tail4(raw)
     out: list[str] = []
     for v in (
@@ -43,7 +50,8 @@ def sku_variants_for_lookup(sku: str) -> list[str]:
 
 
 def same_seller_sku(a: str, b: str) -> bool:
-    da, db = digits_only(a), digits_only(b)
-    if da and db:
-        return seller_sku_tail4(da) == seller_sku_tail4(db)
-    return str(a or "").strip() == str(b or "").strip()
+    raw_a = str(a or "").strip()
+    raw_b = str(b or "").strip()
+    if re.fullmatch(r"\d+", raw_a) and re.fullmatch(r"\d+", raw_b):
+        return seller_sku_tail4(raw_a) == seller_sku_tail4(raw_b)
+    return raw_a == raw_b

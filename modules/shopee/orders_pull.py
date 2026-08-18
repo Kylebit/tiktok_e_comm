@@ -168,7 +168,8 @@ def _normalize_detail(
         qty = max(int(it.get("quantity_purchased") or 1), 1)
         subtotal = sale * qty if sale else w
         share = settlement * (w / total_w)
-        cost = _cost_by_seller_sku(sku)
+        unit_cost = _cost_by_seller_sku(sku)
+        product_cost = unit_cost * qty if unit_cost is not None else None
         rows.append(
             {
                 "region": region,
@@ -179,9 +180,14 @@ def _normalize_detail(
                 "status": "COMPLETED",
                 "sale_local": round(subtotal, 2),
                 "settlement_local": round(share, 2),
+                "quantity": qty,
                 "release_time": release_str,
                 "release_ts": int(release_ts or 0),
-                "product_cost": cost,
+                # ``product_cost`` remains the backwards-compatible total
+                # line cost.  New consumers should use the explicit fields.
+                "unit_cost_cny": unit_cost,
+                "product_cost_cny": product_cost,
+                "product_cost": product_cost,
                 "commission_fee": _f(oi.get("commission_fee")) * (w / total_w),
                 "service_fee": _f(oi.get("service_fee")) * (w / total_w),
                 "source": "shopee_api_escrow",
@@ -198,6 +204,7 @@ def _headers() -> list[dict[str, str]]:
         {"name": "Product Name"},
         {"name": "Status"},
         {"name": "Currency"},
+        {"name": "Quantity"},
         {"name": "Sale Price (Paid)"},
         {"name": "Settlement"},
         {"name": "Release Time"},
@@ -212,6 +219,7 @@ def _row_to_html_row(norm: dict[str, Any]) -> dict[str, Any]:
         norm.get("product_name") or "",
         norm.get("status") or "COMPLETED",
         norm.get("currency") or "THB",
+        norm.get("quantity") or 1,
         norm.get("sale_local") or 0,
         norm.get("settlement_local") or 0,
         norm.get("release_time") or "",
@@ -222,7 +230,12 @@ def _row_to_html_row(norm: dict[str, Any]) -> dict[str, Any]:
         "file": "Shopee escrow API",
         "cells": cells,
         "image_url": "",
-        "product_cost": norm.get("product_cost") or 0,
+        "quantity": norm.get("quantity") or 1,
+        "unit_cost_cny": norm.get("unit_cost_cny") or 0,
+        "product_cost_cny": norm.get("product_cost_cny") or norm.get("product_cost") or 0,
+        # Compatibility for current report readers: this is now always the
+        # total cost for the order line, never the per-unit cost.
+        "product_cost": norm.get("product_cost_cny") or norm.get("product_cost") or 0,
         "ad_cost": 0,
         "subtotal": norm.get("sale_local") or 0,
         "settlement": norm.get("settlement_local") or 0,

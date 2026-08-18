@@ -1,0 +1,91 @@
+{
+  "schema_version": "convergence-stage0-legacy-topology/v1",
+  "source_offer": "redacted-production-shaped-offer",
+  "approved_plan": {
+    "plan_id": "omnichannel:stage0-legacy-plan",
+    "product_revision": 15,
+    "status": "APPROVED"
+  },
+  "history": {
+    "collectbox_batch_count": 14,
+    "oneclick_job_count": 1
+  },
+  "latest_collectbox_projection": {
+    "schema_version": "collectbox-action-status/v1",
+    "ok": true,
+    "persisted": true,
+    "action": {
+      "action_id": "collectbox-action-batch:stage0-latest",
+      "status": "PARTIAL_FAILED",
+      "platforms": [
+        {
+          "platform": "TIKTOK",
+          "status": "RECONCILIATION_REQUIRED",
+          "error": {
+            "code": "collectbox_platform_preparation_partial"
+          },
+          "target_outcomes": [
+            {
+              "target_label": "tiktok:LH_PH",
+              "status": "SUCCEEDED",
+              "error_code": null,
+              "detail_digest": null
+            },
+            {
+              "target_label": "tiktok:LH_MY",
+              "status": "SUCCEEDED",
+              "error_code": null,
+              "detail_digest": null
+            },
+            {
+              "target_label": "tiktok:LH_TH",
+              "status": "SUCCEEDED",
+              "error_code": null,
+              "detail_digest": null
+            },
+            {
+              "target_label": "tiktok:LH_VN",
+              "status": "SUCCEEDED",
+              "error_code": null,
+              "detail_digest": null
+            },
+            {
+              "target_label": "tiktok:MX",
+              "status": "SUCCEEDED",
+              "error_code": null,
+              "detail_digest": null
+            },
+            {
+              "target_label": "tiktok:GB",
+              "status": "FAILED",
+              "error_code": "target_preparation_failed",
+              "detail_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          ]
+        },
+        {
+          "platform": "SHOPEE",
+          "status": "RECONCILIATION_REQUIRED",
+          "error": {
+            "code": "collectbox_platform_preparation_failed"
+          },
+          "target_outcomes": []
+        }
+      ]
+    }
+  },
+  "persisted_oneclick_projection": {
+    "phase": "BLOCKED",
+    "batch_sequence": 4,
+    "active_scope": [
+      "ozon:RU"
+    ],
+    "canonical_run_status": "PENDING",
+    "target_summary": {
+      "tiktok_blocked_capability": 6,
+      "shopee_blocked_capability": 4,
+      "ozon_blocked_capability": 1,
+      "promotion_pending": 8
+    }
+  }
+}

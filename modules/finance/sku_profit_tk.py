@@ -12,7 +12,7 @@ from typing import Any
 from core import auth
 from core.api_client import get as api_get
 from core.config import ROOT, get
-from core.db import connect, init_db
+from core.db import connect_readonly
 from core.shops import list_shops
 from modules.finance.sku_key import seller_sku_tail4, sku_variants_for_lookup
 from modules.finance.sku_profit_model import (
@@ -61,8 +61,8 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
     q = (sku_query or "").strip()
     if not q:
         return None
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
+    platform_id_query = q.isdigit() and len(q) > 10
 
     th_cipher = ""
     try:
@@ -151,7 +151,7 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
 
     row = None
     # 1) 精确平台 sku_id（长 ID）
-    if len(q) > 10:
+    if platform_id_query:
         if th_cipher:
             row = conn.execute(
                 """
@@ -160,16 +160,21 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
                 """,
                 (q, th_cipher),
             ).fetchone()
-        if row is None:
-            row = conn.execute(
+        else:
+            exact_rows = conn.execute(
                 """
                 SELECT sku_id, seller_sku, product_id, product_name, sku_name, image_url, price, currency, shop_cipher
-                FROM products WHERE sku_id = ? LIMIT 1
+                FROM products WHERE sku_id = ? AND currency = 'THB'
                 """,
                 (q,),
-            ).fetchone()
-            if row and th_cipher and str(row["shop_cipher"] or "") != th_cipher:
-                row = None
+            ).fetchall()
+            if len(exact_rows) == 1:
+                row = exact_rows[0]
+
+    # Unknown long platform IDs must never fall back to Seller SKU tail matching.
+    if platform_id_query and row is None:
+        conn.close()
+        return None
 
     # 2) seller_sku 候选（含 99/66 前缀变体）
     if row is None:
@@ -574,7 +579,7 @@ def estimate(
             "comps_total": len(comps_all),
             "comps_in_window": len(comps),
             "min_samples_for_posterior": MIN_POSTERIOR_SAMPLES,
-            "recent_comps": comps[:20],
+            "recent_comps": comps,
             "sale_stats": summarize_nums(usable_sales),
             "ship_stats": summarize_nums(
                 [float(c.get("ship_net_local") or 0) for c in comps if not c.get("outlier")]
@@ -593,8 +598,7 @@ def list_hot_skus(limit: int = 30) -> list[dict[str, Any]]:
     """从结算 CSV 统计 TH 近单最多的 seller_sku（经 products 反查；优先有货本）。"""
     from collections import Counter
 
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     th_cipher = ""
     try:
         tok = auth.ensure_valid_token()["access_token"]

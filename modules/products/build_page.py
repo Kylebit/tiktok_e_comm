@@ -6,14 +6,13 @@ import json
 from pathlib import Path
 
 from core.config import ROOT
-from core.db import connect, init_db
+from core.db import connect_readonly
 
 OUTPUT = ROOT / "web" / "costs.html"
 
 
 def load_page_data() -> list[dict]:
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     rows = conn.execute(
         """SELECT p.sku_id, p.product_name, p.sku_name, p.seller_sku,
                   p.image_url, s.region, p.price, p.currency, p.stock, p.status,

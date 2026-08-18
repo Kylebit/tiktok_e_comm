@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#173b36">
+  <title>Orbit · 商品发布中心</title>
+  <link rel="stylesheet" href="/static/product_workspace.css?v=20260801-v20">
+  <script src="/static/product_workspace.js?v=20260815-v38" defer></script>
+  <script src="/static/disabled_control_hints.js?v=20260729-v2" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="返回 Orbit 总览">
+      <span class="brand-mark" aria-hidden="true">O</span>
+      <span><strong>Orbit</strong><small>商品运营</small></span>
+    </a>
+    <nav aria-label="页面导航">
+      <a href="#overview">发布进度</a>
+      <a href="#productFactsPanel">商品事实</a>
+      <a href="#approval">商品审批</a>
+      <a href="#content">商品图片</a>
+      <a href="#channels">渠道准备</a>
+      <a href="#releasePlan">发布确认</a>
+      <a id="studioNavLink" href="/ai-image-studio" target="_blank" rel="noopener">内容与图片工作室 ↗</a>
+    </nav>
+    <span class="safety-pill"><i aria-hidden="true"></i> 正式 V1 · 外部动作需二次确认</span>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="overview">
+      <div class="hero-copy">
+        <p class="eyebrow">PRODUCT OPERATIONS</p>
+        <h1>商品发布中心</h1>
+        <p>从商品事实、原素材或 AI 辅助图片，到妙手待发布草稿与 16 个渠道目标，在同一个正式流程完成审核、准备、发布和回读。</p>
+      </div>
+
+      <form id="lookupForm" class="lookup-card" aria-label="添加商品到并行发布队列">
+        <label>
+          <span>Offer ID</span>
+          <input id="offerId" name="offer_id" value="3828811808" inputmode="numeric"
+                 pattern="[0-9]{1,32}" autocomplete="off" required>
+        </label>
+        <div class="automatic-sku" aria-live="polite">
+          <span>Seller SKU</span>
+          <strong id="sellerSku">系统读取后自动分配</strong>
+          <small>依据 TikTok 商品目录序列，并避开全目录占用、工作台锁、已验证认领及正式发布计划预留。</small>
+        </div>
+        <button class="button button-primary" type="submit">
+          <span class="button-label">加入队列并打开</span>
+          <span class="button-loading">正在检查…</span>
+        </button>
+        <p>你只需输入 Offer ID。多个商品可以并行检查；Seller SKU 在审批前会再次自动核验。</p>
+      </form>
+    </section>
+
+    <section class="queue-section" aria-labelledby="queueTitle">
+      <div class="queue-heading">
+        <div>
+          <p class="kicker">PARALLEL RELEASE QUEUE</p>
+          <h2 id="queueTitle">并行发布队列</h2>
+          <p>队列保存在本机浏览器。批量刷新只读取状态，不会上传、同步或发布商品。</p>
+        </div>
+        <button id="refreshAllButton" class="button button-secondary" type="button">
+          <span class="refresh-all-label">刷新全部商品</span>
+          <span class="refresh-all-loading">并行刷新中…</span>
+        </button>
+      </div>
+      <div id="queueGrid" class="queue-grid" aria-live="polite"></div>
+      <p id="queueMessage" class="queue-message" role="status"></p>
+    </section>
+
+    <div id="pageAlert" class="alert" role="alert" hidden></div>
+
+    <section class="status-hero" aria-live="polite">
+      <div>
+        <p class="kicker">CURRENT PRODUCT</p>
+        <h2 id="productTitle">正在读取商品…</h2>
+        <div id="productIdentity" class="identity-line"></div>
+      </div>
+      <div class="readiness">
+        <span id="readinessLabel">检查中</span>
+        <strong id="readinessValue">—</strong>
+        <small id="readinessNote">正在核对发布条件</small>
+      </div>
+    </section>
+
+    <section aria-labelledby="journeyTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">RELEASE JOURNEY</p>
+          <h2 id="journeyTitle">七阶段正式发布进度</h2>
+        </div>
+        <p>每一阶段都必须有真实证据；后续阶段不会覆盖前序缺口。</p>
+      </div>
+      <div id="stageRail" class="stage-rail" aria-live="polite">
+        <div class="stage pending"><span>01</span><strong>商品事实</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>02</span><strong>内容审批</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>03</span><strong>商品审批</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>04</span><strong>发布计划</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>05</span><strong>妙手待发布</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>06</span><strong>渠道执行</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>07</span><strong>回读对账</strong><small>等待检查</small></div>
+      </div>
+    </section>
+
+    <section class="overview-grid">
+      <article id="productFactsPanel" class="panel facts-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="kicker">PRODUCT FACTS</p>
+            <h2>商品事实 · 直接编辑</h2>
+            <p>在事实原位修改；保存新 revision 后，全部国家与店铺售价、费用和渠道预检会一起刷新。</p>
+          </div>
+          <div class="facts-heading-status">
+            <span id="factsEditRevision" class="revision-pill">revision —</span>
+            <span id="factsBadge" class="badge neutral">读取中</span>
+          </div>
+        </div>
+        <p id="factsNotice" class="facts-notice">
+          当前显示的是带来源的前序采集值。只有 Kyle 完成商品事实审批后，它们才成为锁定版本；后续修改会废止旧发布计划并要求重新审批。
+        </p>
+        <form id="productFactsForm" class="facts-edit-form unified-facts-form">
+          <div id="productFacts" class="fact-grid skeleton-lines"></div>
+          <div class="facts-edit-grid">
+            <label class="facts-edit-title">
+              <span>正式英文商品标题</span>
+              <textarea id="factsEditTitle" name="title" rows="3" maxlength="220"
+                        placeholder="先生成 ToAPI 平台候选，或直接输入经核对的商品标题" required></textarea>
+              <small id="factsEditTitleSource">来源：读取中</small>
+            </label>
+            <label>
+              <span>Seller SKU（系统自动分配）</span>
+              <input id="factsEditSellerSku" type="text" readonly
+                     aria-describedby="factsEditSellerSkuNote">
+              <small id="factsEditSellerSkuNote">不可手填；保存前会再次核对目录与预留占用。</small>
+            </label>
+            <label hidden aria-hidden="true">
+              <span>采购成本（CNY）</span>
+              <input id="factsEditCost" name="cost_cny" type="number"
+                     min="0.01" step="0.01" inputmode="decimal" disabled>
+              <small id="factsEditCostSource">来源：读取中</small>
+            </label>
+            <label hidden aria-hidden="true">
+              <span>商品重量（kg）</span>
+              <input id="factsEditWeight" name="weight_kg" type="number"
+                     min="0.001" step="0.001" inputmode="decimal" disabled>
+              <small id="factsEditWeightSource">来源：读取中</small>
+            </label>
+            <fieldset class="dimension-editor" hidden aria-hidden="true">
+              <legend>包装尺寸（cm）</legend>
+              <label><span>长</span><input id="factsEditLength" name="package_length_cm" type="number" min="0.1" step="0.1" inputmode="decimal" disabled></label>
+              <label><span>宽</span><input id="factsEditWidth" name="package_width_cm" type="number" min="0.1" step="0.1" inputmode="decimal" disabled></label>
+              <label><span>高</span><input id="factsEditHeight" name="package_height_cm" type="number" min="0.1" step="0.1" inputmode="decimal" disabled></label>
+              <small id="factsEditPackageSource">来源：读取中</small>
+            </fieldset>
+          </div>
+          <section id="listingCopyAssistant" class="title-assistant" aria-labelledby="titleAssistantTitle">
+            <div class="title-assistant-heading">
+              <div>
+                <p class="kicker">AI LISTING COPY</p>
+                <h3 id="titleAssistantTitle">中文事实 → 平台标题候选</h3>
+                <p>一次生成各平台标题候选和 Shopee 英文全球描述：先严格校验，失败时只修复一次；若修复后仅英文描述仍混入非英文字符，系统会用已核实商品事实生成保守的本地英文描述兜底。不会修改商品事实，也不会写妙手或平台。</p>
+              </div>
+              <button id="generateTitleDraftButton" class="button button-secondary" type="button">
+                <span class="title-draft-label">AI 生成平台标题</span>
+                <span class="title-draft-loading">ToAPI 正在优化…</span>
+              </button>
+            </div>
+            <p id="titleDraftStatus" class="title-draft-status" role="status">尚未为当前商品事实生成标题候选。</p>
+            <div id="titleCandidateGrid" class="title-candidate-grid"></div>
+          </section>
+          <fieldset class="source-spec-editor">
+            <legend>本次保留的来源规格（可多选）</legend>
+            <p>每个 SKU 独立填写采购成本、重量和包装尺寸；系统会据此分别计算各站点售价。你也可以编辑“发布规格名称”。至少保留一个真实可采购规格。</p>
+            <div id="productSpecGrid" class="source-spec-grid" aria-live="polite">
+              <span class="source-spec-empty">采集完成后显示来源规格。</span>
+            </div>
+          </fieldset>
+          <div class="facts-pricing-linkage">
+            <strong>售价联动</strong>
+            <span>保存后使用新成本、重量和包装尺寸重新计算全部国家与店铺售价。</span>
+          </div>
+          <p id="factsImpactSummary" class="facts-edit-message" role="status">
+            修改影响：正在读取字段依赖…
+          </p>
+          <div class="facts-edit-actions">
+            <p id="factsEditMessage" class="facts-edit-message" role="status">正在读取商品 revision…</p>
+            <button id="factsEditSaveButton" class="button button-primary" type="submit" disabled>
+              <span class="facts-edit-save-label">保存并确认商品事实 · 刷新全部售价</span>
+              <span class="facts-edit-save-loading">正在核对、保存并重新计算全部售价…</span>
+            </button>
+          </div>
+        </form>
+      </article>
+
+      <article class="panel next-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="kicker">NEXT ACTION</p>
+            <h2>下一步</h2>
+          </div>
+          <span id="nextStepNumber" class="step-number">—</span>
+        </div>
+        <h3 id="nextStepTitle">正在确认当前阶段</h3>
+        <p id="nextStepDescription">完成检查后，这里会给出唯一明确的下一步。</p>
+        <ul id="blockerList" class="blocker-list"></ul>
+        <div class="action-row">
+          <button id="nextStepActionButton" class="button button-primary"
+                  type="button" hidden>前往下一步</button>
+          <a id="workbenchLink" class="button button-dark" href="/ai-image-studio"
+             target="_blank" rel="noopener">并行打开内容与图片工作室 ↗</a>
+          <button id="refreshButton" class="button button-secondary" type="button">重新检查</button>
+        </div>
+        <p class="boundary-note">
+          AI 图片工作室中的付费生图与妙手写入默认关闭，开启后仍需明确二次确认。
+        </p>
+      </article>
+    </section>
+
+    <section id="approval" class="approval-section" aria-labelledby="approvalTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">LOCAL PRODUCT APPROVAL</p>
+          <h2 id="approvalTitle">商品事实审批与版本锁定</h2>
+        </div>
+        <p>上方按钮负责编辑、核对和刷新售价；这里仅负责最终锁定当前 revision。不会上传妙手、创建渠道草稿或发布商品。</p>
+      </div>
+      <article class="approval-card">
+        <div class="approval-summary">
+          <div>
+            <span>候选 Seller SKU</span>
+            <strong id="approvalSku">—</strong>
+          </div>
+          <div>
+            <span>当前 revision</span>
+            <strong id="approvalRevision">—</strong>
+          </div>
+          <div>
+            <span>内容包</span>
+            <strong id="approvalContent">读取中</strong>
+          </div>
+          <div>
+            <span>审批状态</span>
+            <strong id="approvalStatus">未审批</strong>
+          </div>
+        </div>
+        <div id="approvalFacts" class="approval-facts" aria-live="polite"></div>
+        <form id="approvalForm" class="approval-form">
+          <div class="approval-actions">
+            <span>审批人：<strong>Kyle</strong></span>
+            <button id="approvalButton" class="button button-primary" type="submit" disabled>
+              <span class="approval-button-label">批准并锁定当前 revision</span>
+              <span class="approval-button-loading">正在保存本地审批…</span>
+            </button>
+          </div>
+          <p id="approvalMessage" class="approval-message" role="status"></p>
+        </form>
+      </article>
+    </section>
+
+    <section id="content" class="content-section" aria-labelledby="contentTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">FINAL CONTENT SET</p>
+          <h2 id="contentTitle">最终商品图片</h2>
+        </div>
+        <div class="heading-badges">
+          <span id="contentBadge" class="badge neutral">读取中</span>
+          <span id="syncBadge" class="badge neutral">妙手状态未知</span>
+        </div>
+      </div>
+      <div id="imageGrid" class="image-grid skeleton-cards" aria-live="polite"></div>
+      <div id="contentNotice" class="content-notice"></div>
+    </section>
+
+    <section id="channels" class="channel-section" aria-labelledby="channelsTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">CHANNEL READINESS</p>
+          <h2 id="channelsTitle">16 目标全渠道发布准备</h2>
+        </div>
+        <p>先建立妙手公共草稿，再以 TikTok 审定商品为主版本，派生 Shopee 与 Ozon。当前只做预检，不会调用渠道接口。</p>
+      </div>
+      <article class="publication-scope-panel" aria-labelledby="publicationScopeTitle">
+        <div class="scope-panel-head">
+          <div>
+            <p class="kicker">PUBLICATION SCOPE</p>
+            <h3 id="publicationScopeTitle">选择本次准备的平台与国家</h3>
+            <p>每个目标可独立选择。修改后只会重新生成本地预检、售价审查与确认令牌，不会创建草稿或发布商品。</p>
+          </div>
+          <div class="scope-actions">
+            <button id="selectAllTargetsButton" class="text-button" type="button">全选 16 个目标</button>
+            <button id="restoreTargetDefaultsButton" class="text-button" type="button">恢复商品默认</button>
+          </div>
+        </div>
+        <form id="publicationScopeForm">
+          <div id="publicationTargetGrid" class="publication-target-grid" aria-live="polite"></div>
+          <div class="scope-apply">
+            <p id="publicationScopeNote" role="status">正在读取商品默认发布范围…</p>
+            <button id="applyPublicationScopeButton" class="button button-primary" type="submit" disabled>
+              应用选择并审查售价
+            </button>
+          </div>
+        </form>
+      </article>
+      <article class="pricing-panel" aria-labelledby="pricingTitle">
+        <div class="pricing-panel-head">
+          <div>
+            <p class="kicker">LEGACY PRICING — PRESERVED</p>
+            <h3 id="pricingTitle">全部国家与店铺售价审查</h3>
+            <p>沿用上一版反向定价、费率、折扣预留与最低利润保护；未选择的店铺也保留计算供核对。</p>
+          </div>
+          <div id="pricingSummary" class="pricing-summary">正在计算全部店铺售价…</div>
+        </div>
+        <div id="storePriceGrid" class="store-price-grid" aria-live="polite"></div>
+        <div class="selected-channel-pricing">
+          <div>
+            <h4>已选平台与国家售价</h4>
+            <p>TikTok 展示所选店铺建议价；Shopee 与 Ozon 展示从 TikTok 审定商品回读后派生的价格、来源和阻塞状态。</p>
+          </div>
+          <div id="selectedChannelPriceGrid" class="selected-channel-price-grid" aria-live="polite"></div>
+        </div>
+        <details class="legacy-pricing-audit">
+          <summary>展开上一版完整费用、汇率与利润计算</summary>
+          <div id="pricingAuditTables"></div>
+        </details>
+      </article>
+      <div class="channel-flow" aria-label="全渠道发布依赖流程">
+        <span>妙手公共草稿</span><i aria-hidden="true">→</i>
+        <span>TikTok 主商品回读</span><i aria-hidden="true">→</i>
+        <span>Shopee / Ozon 派生</span>
+      </div>
+      <div class="channel-toolbar">
+        <div id="channelPlanSummary" class="channel-plan-summary">正在读取发布计划…</div>
+        <button id="refreshChannelsButton" class="button button-secondary" type="button">
+          刷新全渠道预检
+        </button>
+      </div>
+      <div id="channelGrid" class="channel-grid" aria-live="polite"></div>
+      <div id="channelBlockers" class="channel-blockers"></div>
+    </section>
+
+    <section id="releasePlan" class="release-plan-section" aria-labelledby="releasePlanTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">IMMUTABLE RELEASE PLAN</p>
+          <h2 id="releasePlanTitle">发布计划批准与正式执行</h2>
+        </div>
+        <p>发布计划把商品 revision、内容包、图片与视频、精确目标、来源店铺、售价、成本、汇率和费用规则绑定为同一个不可变版本。</p>
+      </div>
+
+      <article class="release-plan-card">
+        <div id="releasePlanSummary" class="release-plan-summary">
+          <div><span>ReleasePlan</span><strong>尚未生成</strong></div>
+          <div><span>商品 / 内容版本</span><strong>—</strong></div>
+          <div><span>精确目标</span><strong>—</strong></div>
+          <div><span>批准状态</span><strong>未批准</strong></div>
+        </div>
+        <form id="releasePlanApprovalForm" class="release-plan-form">
+          <input id="releasePlanCheckbox" type="checkbox" hidden aria-hidden="true" tabindex="-1">
+          <p class="approval-confirm approval-confirm-single-action">
+            点击“批准当前发布计划”即表示 Kyle 已核对本次商品、内容、视频、目标店铺、来源映射、售价与费用。
+          </p>
+          <div class="approval-actions">
+            <span>批准人：<strong>Kyle</strong></span>
+            <button id="approveReleasePlanButton" class="button button-primary" type="submit"
+                    aria-describedby="releasePlanMessage releasePlanRecoveryDetail" disabled>
+              批准当前发布计划
+            </button>
+          </div>
+          <p id="releasePlanMessage" class="approval-message" role="status"></p>
+        </form>
+        <div id="releasePlanRecovery" class="release-plan-recovery" role="status" hidden>
+          <div>
+            <strong id="releasePlanRecoveryTitle">当前计划还不能批准</strong>
+            <p id="releasePlanRecoveryDetail"></p>
+          </div>
+          <div id="releasePlanRecoveryActions" class="release-plan-recovery-actions"></div>
+          <div id="releasePlanRecoveryReview" class="release-plan-recovery-review" hidden></div>
+        </div>
+      </article>
+
+      <article id="releasePrimaryActionPanel" class="external-action-card publish" hidden>
+        <div>
+          <p class="kicker">APPROVED RELEASE</p>
+          <h3>发布已批准计划</h3>
+          <p id="releasePrimaryActionMessage" role="status" aria-live="polite">
+            批准后，系统会按照服务端给出的唯一下一步继续执行。
+          </p>
+        </div>
+        <section id="collectboxActionPanel" class="collectbox-action-panel"
+          aria-labelledby="collectboxActionTitle" hidden>
+          <h4 id="collectboxActionTitle">妙手采集箱导入状态</h4>
+          <p id="collectboxActionMessage" role="status" aria-live="polite">
+            正在读取 TikTok 与 Shopee 妙手采集箱状态。
+          </p>
+          <div id="collectboxActionStatus" class="collectbox-action-status"></div>
+          <button id="collectboxActionButton" class="button button-secondary"
+            type="button" disabled>
+            导入 TikTok / Shopee 妙手采集箱
+          </button>
+        </section>
+        <div class="release-platform-actions" aria-label="独立平台发布操作">
+          <button id="releasePrimaryActionButton" class="button button-primary"
+            type="button" disabled>
+            发布 TikTok
+          </button>
+          <button id="shopeeGlobalReleaseButton" class="button button-primary"
+            type="button" disabled>
+            发布 Shopee 全球商品
+          </button>
+          <button id="ozonReleaseButton" class="button button-primary"
+            type="button" disabled>
+            发布 Ozon
+          </button>
+        </div>
+        <section id="oneClickExecutionPreview" class="oneclick-execution-preview"
+          aria-labelledby="oneClickExecutionTitle">
+          <h4 id="oneClickExecutionTitle">本轮执行状态</h4>
+          <p id="oneClickExecutionMessage" role="status" aria-live="polite">
+            批准后可随时发起新的妙手 API 发布批次。
+          </p>
+          <div id="oneClickExecutionGroups" class="oneclick-execution-groups"></div>
+        </section>
+      </article>
+
+      <div id="legacyReleaseActionPanels" class="release-actions-grid">
+        <article class="external-action-card">
+          <div>
+            <p class="kicker">STEP 1 · PREPARE</p>
+            <h3>同步到妙手待发布并回读</h3>
+            <p>写入已批准的标题、SKU、规格、重量、包装、图片与视频；不会认领站点或提交发布。</p>
+          </div>
+          <label class="approval-confirm compact">
+            <input id="prepareMiaoshouCheckbox" type="checkbox">
+            <span>我确认将当前 ReleasePlan 写入妙手公共采集箱并执行回读验证。</span>
+          </label>
+          <button id="prepareMiaoshouButton" class="button button-secondary" type="button" disabled>
+            同步到妙手待发布
+          </button>
+          <p id="prepareMiaoshouMessage" class="approval-message" role="status"></p>
+          <section id="commonOverwritePanel" class="common-overwrite-panel" hidden
+            aria-labelledby="commonOverwriteTitle">
+            <div>
+              <p class="kicker">IMMUTABLE PLAN DIFF</p>
+              <h4 id="commonOverwriteTitle">妙手公共草稿与当前 ReleasePlan 不一致</h4>
+              <p id="commonOverwriteRisk">
+                这里只显示脱敏摘要。身份、绑定或未知字段不一致时，系统会保持关闭。
+              </p>
+            </div>
+            <div id="commonOverwriteIdentity" class="common-overwrite-identity"></div>
+            <div id="commonOverwriteDiff" class="common-overwrite-diff"></div>
+            <label id="commonOverwriteConfirmLabel" class="approval-confirm compact" hidden>
+              <input id="commonOverwriteCheckbox" type="checkbox">
+              <span>我确认仅按当前已批准的不可变 ReleasePlan 覆盖上述允许字段，并立即执行官方回读。</span>
+            </label>
+            <button id="commonOverwriteButton" class="button button-danger"
+              type="button" hidden disabled>
+              按当前 ReleasePlan 覆盖妙手公共草稿并回读
+            </button>
+            <p id="commonOverwriteMessage" class="approval-message" role="status"></p>
+          </section>
+        </article>
+
+        <article id="publishPanel" class="external-action-card publish">
+          <div>
+            <p class="kicker">STEP 2 · PUBLISH</p>
+            <h3>一键发布已选店铺</h3>
+            <p id="publishAllNote">只有发布计划已批准、妙手回读一致且所有目标适配器通过审计后，按钮才会开放。</p>
+          </div>
+          <label class="approval-confirm compact">
+            <input id="publishAllCheckbox" type="checkbox">
+            <span>我确认按当前确认令牌执行所选目标；成功目标不会因部分重试而重复发布。</span>
+          </label>
+          <button id="publishAllButton" class="button button-primary" type="button" disabled>
+            一键发布已选店铺
+          </button>
+          <p id="publishRunMessage" class="approval-message" role="status"></p>
+        </article>
+      </div>
+
+      <article id="legacyReleaseRunLedger" class="run-ledger">
+        <div>
+          <p class="kicker">RELEASE RUN</p>
+          <h3>逐目标执行与回读账本</h3>
+        </div>
+        <div id="releaseRunLedger" class="release-run-ledger">
+          当前没有发布运行。批准计划不会自动触发外部写入。
+        </div>
+      </article>
+    </section>
+
+    <section class="safety-card" aria-labelledby="safetyTitle">
+      <div class="safety-mark" aria-hidden="true">✓</div>
+      <div>
+        <p class="kicker">SAFE BY DEFAULT</p>
+        <h2 id="safetyTitle">正式执行由精确计划和确认令牌保护</h2>
+        <p>读取、选择和审批不会自动发布。两个外部动作均需要当前 ReleasePlan、Kyle 的批准、未过期 revision 和独立二次确认。</p>
+      </div>
+      <span>GUARDED EXECUTION</span>
+    </section>
+  </main>
+
+  <footer>
+    <span>Orbit 商品发布中心</span>
+    <span>本地审批事实 · 真实内容证据 · 外部发布默认关闭</span>
+  </footer>
+</body>
+</html>

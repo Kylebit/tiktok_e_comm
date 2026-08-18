@@ -30,15 +30,15 @@
       "category_id": 17027906,
       "profile": "sticker",
       "source": "migrate",
-      "updated_at": "2026-06-26T09:10:24"
+      "updated_at": "2026-07-27T02:19:03"
     },
     "853256": {
-      "tk_category_name": "อุปกรณ์ในห้องน้ำ",
-      "type_id": 92008,
-      "category_id": 17027905,
-      "profile": "generic",
+      "tk_category_name": "Bathroom Gadgets",
+      "type_id": 91971,
+      "category_id": 17027906,
+      "profile": "sticker",
       "source": "migrate",
-      "updated_at": "2026-06-26T16:47:42"
+      "updated_at": "2026-07-26T20:22:08"
     }
   },
   "type_profiles": {

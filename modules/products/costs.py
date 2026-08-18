@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from core.config import ROOT
-from core.db import connect, init_db
+from core.db import connect, connect_readonly, init_db
 
 CURSOR_COSTS = ROOT / "CURSOR" / "product_cost" / "sku_costs.csv"
 
@@ -85,8 +85,7 @@ def import_from_cursor(path: Path | None = None) -> int:
 
 
 def get_all_costs() -> dict[str, float]:
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     rows = conn.execute("SELECT sku_id, cost_cny FROM sku_costs").fetchall()
     conn.close()
     return {r["sku_id"]: float(r["cost_cny"]) for r in rows}
@@ -124,8 +123,7 @@ def save_costs_bulk(items: list[dict]) -> int:
 
 
 def export_csv(path: Path) -> int:
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     rows = conn.execute(
         "SELECT sku_id, cost_cny FROM sku_costs WHERE cost_cny > 0 ORDER BY sku_id"
     ).fetchall()

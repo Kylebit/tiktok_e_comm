@@ -15,6 +15,11 @@ def test_adapts_decimal_safe_costs_and_negative_refund_to_json_ready_payload():
     assert [fact.amount for fact in result.facts] == [Decimal("10.123456789012345678"), Decimal("-2.50")]
     assert result.facts[1].fact_type == "refund"
     assert result.facts[1].currency == "USD"
+    assert result.facts[0].sku_id == "SKU-1"
+    assert result.facts[0].product_id is None
+    assert result.facts[1].sku_id == "SKU-1"
+    assert result.facts[1].region == "US"
+    assert result.facts[1].channel is None
     payload = result.payload()
     assert payload["facts"][0]["amount"] == "10.123456789012345678"
     assert payload["facts"][1]["amount"] == "-2.50"
@@ -38,6 +43,7 @@ def test_reports_missing_cost_currency_and_time_without_inventing_facts():
 
 def test_reads_temporary_sqlite_fixture_without_writing():
     connection = sqlite3.connect(":memory:")
+    original_row_factory = connection.row_factory
     connection.executescript("""
         CREATE TABLE sku_costs (sku_id TEXT, cost_cny REAL, updated_at INTEGER);
         CREATE TABLE settlement_lines (id INTEGER, statement_id TEXT, statement_date TEXT, line_type TEXT, order_id TEXT, sku_id TEXT, region TEXT, currency TEXT, settlement_amount REAL);
@@ -52,3 +58,25 @@ def test_reads_temporary_sqlite_fixture_without_writing():
         ("fee", Decimal("-1.5"), "GBP"),
     ]
     assert not result.issues
+    assert connection.row_factory is original_row_factory
+
+
+def test_single_cost_row_is_not_mistaken_for_a_sku_keyed_mapping():
+    result = adapt_financial_facts(
+        {"sku_id": "SKU-1", "cost_cny": "4.20", "updated_at": "2026-07-01"},
+        [],
+    )
+
+    assert len(result.facts) == 1
+    assert result.facts[0].sku_id == "SKU-1"
+    assert result.facts[0].amount == Decimal("4.20")
+
+
+def test_non_positive_cost_is_rejected_and_reported():
+    result = adapt_financial_facts(
+        {"SKU-0": {"cost_cny": "0", "updated_at": "2026-07-01"}},
+        [{"id": 1, "sku_id": "SKU-0", "settlement_amount": "8", "currency": "CNY", "statement_date": "2026-07-01"}],
+    )
+
+    assert [issue.code for issue in result.issues] == ["invalid_cost", "invalid_cost"]
+    assert [fact.fact_type for fact in result.facts] == ["settlement"]

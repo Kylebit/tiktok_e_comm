@@ -1,9 +1,12 @@
 import json
+import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from modules.sourcing import miaoshou_precollect
+from modules.sourcing.image_shot_prompts import build_shot_prompts
 from modules.sourcing.miaoshou_precollect import (
     import_common_collect_detail,
     normalize_detail,
@@ -12,12 +15,20 @@ from modules.sourcing.miaoshou_precollect import (
 )
 from modules.sourcing.new_product_workbench import (
     _anchor_group_key,
+    _apply_audited_english_variant_labels,
+    _audited_english_variant_value,
+    _canonical_variant_manifest,
+    _english_variant_checks_pass,
     _expected_region_site_state,
     _distribute_total,
     _normalize_title,
+    _next_seller_sku,
     _miaoshou_editable_weight_kg,
+    _miaoshou_platform_package_cm,
+    _miaoshou_post_retry,
     _ordered_selected_images,
     _pick_default_warehouse_id,
+    _prepare_site_mode_draft,
     _product_workflow_summary,
     _site_state_matches_expected,
     build_preview,
@@ -29,24 +40,487 @@ from modules.sourcing.new_product_workbench import (
     prepare_miaoshou_site_drafts,
     prepare_miaoshou_draft,
     price_review,
+    save_manual_storyboard_edits,
+    content_package_summary,
     save_state,
+    sync_miaoshou_second_review,
     write_miaoshou_draft,
     write_ordered_images_to_miaoshou,
 )
 
 
 class NewProductWorkbenchTests(unittest.TestCase):
+    def test_manual_storyboard_edit_replaces_paid_plan_copy_and_invalidates_preflight(self):
+        with TemporaryDirectory() as tmp, patch(
+            "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp, "state")
+        ), patch("modules.sourcing.new_product_workbench.IMAGE_SUITE_OUTPUTS_DIR", Path(tmp, "images")), patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key", side_effect=lambda value: value
+        ):
+            package = Path(tmp, "images", "123456789")
+            package.mkdir(parents=True)
+            package.joinpath("review_package.json").write_text(json.dumps({
+                "plan": {"suite": {"items": [{"id": "scene_1", "type": "scene", "selected": True, "title": "AI title", "focus": "AI focus", "aspect_ratio": "1:1"}]}},
+                "model_proposal": {"planning_source": "ai"}, "collect_box": {}, "fact_card": {},
+            }), encoding="utf-8")
+            save_state("123456789", {"content_package": {"collect_box_id": "123456789", "remaining_images_preflight": {"status": "ready_for_explicit_paid_confirmation"}}})
+            result = save_manual_storyboard_edits("123456789", expected_revision=1, edits={"scene_1": {"title": "人工标题", "focus": "人工构图"}})
+            saved = json.loads(package.joinpath("review_package.json").read_text(encoding="utf-8"))
+            prompts = build_shot_prompts({"analysis": {}, "_meta": {}, "suite": saved["plan"]["suite"]})
+            saved["plan"]["suite"]["items"][0].update({"title": "AI title", "focus": "AI focus"})
+            package.joinpath("review_package.json").write_text(json.dumps(saved), encoding="utf-8")
+            refreshed = content_package_summary("123456789", resolved_offer_id=True)
+            replayed = json.loads(package.joinpath("review_package.json").read_text(encoding="utf-8"))
+
+        self.assertIn("人工标题", prompts["shots"][0]["prompt"])
+        self.assertIn("人工构图", prompts["shots"][0]["prompt"])
+        self.assertEqual(result["revision"], 2)
+        self.assertEqual(refreshed["suite"]["items"][0]["title"], "人工标题")
+        self.assertEqual(replayed["plan"]["suite"]["items"][0]["focus"], "人工构图")
+        self.assertFalse(result["remaining_images_preflight"]["ready"])
+
+    def test_manual_storyboard_edit_rejects_tampered_shot_or_stale_revision(self):
+        with TemporaryDirectory() as tmp, patch(
+            "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp, "state")
+        ), patch("modules.sourcing.new_product_workbench.IMAGE_SUITE_OUTPUTS_DIR", Path(tmp, "images")), patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key", side_effect=lambda value: value
+        ):
+            package = Path(tmp, "images", "123456789")
+            package.mkdir(parents=True)
+            package.joinpath("review_package.json").write_text(json.dumps({"plan": {"suite": {"items": [{"id": "scene_1", "selected": True}]}}}), encoding="utf-8")
+            save_state("123456789", {"content_package": {"collect_box_id": "123456789"}})
+            with self.assertRaisesRegex(ValueError, "shot IDs"):
+                save_manual_storyboard_edits("123456789", expected_revision=1, edits={"evil": {"title": "x", "focus": "y"}})
+            with self.assertRaisesRegex(ValueError, "stale"):
+                save_manual_storyboard_edits("123456789", expected_revision=0, edits={"scene_1": {"title": "x", "focus": "y"}})
+
+    def test_duplicate_alias_content_state_is_mirrored_to_canonical_collect_box_owner(self):
+        with TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            canonical = {
+                "review": {
+                    "seller_sku": "0966",
+                    "selected_sites": ["lh_my"],
+                },
+                "product_approval": {"status": "approved"},
+            }
+            alias = {
+                "review": {
+                    "seller_sku": "",
+                    "image_actions": [
+                        {
+                            "url": "https://img.example/approved.jpg",
+                            "action": "keep",
+                        }
+                    ],
+                    "image_order": ["https://img.example/approved.jpg"],
+                    "video_action": "remove",
+                },
+                "content_package": {
+                    "collect_box_id": "456",
+                    "content_strategy": "source_only",
+                    "source_only_review_status": "approved",
+                    "source_only_final_approval": {
+                        "status": "approved",
+                        "approved_by": "Kyle",
+                    },
+                    "miaoshou_ordered_images_write": {
+                        "status": "verified",
+                        "collect_box_id": "456",
+                    },
+                },
+            }
+
+            with patch(
+                "modules.sourcing.new_product_workbench.STATE_DIR",
+                state_dir,
+            ):
+                save_state("456", canonical)
+                save_state("123", alias)
+
+            mirrored = json.loads((state_dir / "456.json").read_text(encoding="utf-8"))
+            self.assertEqual(mirrored["product_approval"]["status"], "approved")
+            self.assertEqual(mirrored["review"]["seller_sku"], "0966")
+            self.assertEqual(
+                mirrored["review"]["image_order"],
+                ["https://img.example/approved.jpg"],
+            )
+            self.assertEqual(
+                mirrored["content_package"]["source_only_review_status"],
+                "approved",
+            )
+            self.assertEqual(
+                mirrored["content_package"]["miaoshou_ordered_images_write"]["status"],
+                "verified",
+            )
+
+    def test_miaoshou_open_calls_are_spaced_to_respect_account_rate_limit(self):
+        clock = {"now": 20.0}
+        sleeps = []
+
+        def monotonic():
+            return clock["now"]
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock["now"] += seconds
+
+        with patch.object(miaoshou_precollect.time, "monotonic", side_effect=monotonic), patch.object(
+            miaoshou_precollect.time, "sleep", side_effect=sleep
+        ):
+            miaoshou_precollect._last_open_request_at = 0.0
+            miaoshou_precollect._wait_for_open_slot()
+            miaoshou_precollect._wait_for_open_slot()
+
+        self.assertEqual(len(sleeps), 1)
+        self.assertGreaterEqual(
+            sleeps[0], miaoshou_precollect.OPEN_REQUEST_INTERVAL_SECONDS
+        )
+
+    def test_picture_color_and_approved_specification_form_exact_manifest(self):
+        info = {
+            "skuPropertyList": [
+                {
+                    "attrName": "颜色",
+                    "attrValueList": [
+                        {"attrValueId": "color-1", "attrValue": "图片色"},
+                    ],
+                },
+                {
+                    "attrName": "尺寸",
+                    "attrValueList": [
+                        {"attrValueId": "size-1", "attrValue": "特大"},
+                    ],
+                },
+            ],
+        }
+
+        _apply_audited_english_variant_labels(
+            info,
+            {";图片色;特大;": "Flower sticker"},
+        )
+
+        self.assertEqual(
+            info["skuPropertyList"][0]["attrValueList"][0]["attrValue"],
+            "As Shown",
+        )
+        self.assertEqual(
+            info["skuPropertyList"][1]["attrValueList"][0]["attrValue"],
+            "Flower sticker",
+        )
+        self.assertTrue(_canonical_variant_manifest(info))
+        self.assertTrue(_english_variant_checks_pass(info, info))
+
+        drifted = json.loads(json.dumps(info))
+        drifted["skuPropertyList"][1]["attrValueList"][0]["attrValue"] = (
+            "Different English label"
+        )
+        self.assertFalse(_english_variant_checks_pass(drifted, info))
+
+    def test_unmapped_non_english_variant_is_rejected_before_site_save(self):
+        saved = []
+        base = {
+            "title": "Old title",
+            "skuPropertyList": [
+                {
+                    "attrName": "颜色",
+                    "attrValueList": [
+                        {"attrValueId": "unknown-1", "attrValue": "未审核花色"},
+                    ],
+                }
+            ],
+            "skuMap": {";unknown-1;": {}},
+            "collectBoxDetailShopList": [],
+        }
+
+        def fake_post(path, body=None):
+            if path.endswith("get_site_collect_item_info"):
+                return {
+                    "result": "success",
+                    "data": {
+                        "siteCollectItemInfo": json.loads(json.dumps(base)),
+                        "ossMd5": "revision-1",
+                    },
+                }
+            if path.endswith("save_site_collect_item_info"):
+                saved.append(body)
+                return {"result": "success"}
+            raise AssertionError(path)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "has no approved English mapping",
+        ):
+            _prepare_site_mode_draft(
+                fake_post,
+                detail_id=123,
+                region="PH",
+                region_targets=[
+                    (
+                        "lh_ph",
+                        {
+                            "shop_id": 1001,
+                            "shop": "Test shop",
+                            "warehouses": {
+                                "shopWarehouseList": [
+                                    {
+                                        "warehouseList": [
+                                            {
+                                                "warehouseId": "warehouse-1",
+                                                "warehouseEffectStatus": "1",
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                        },
+                        {
+                            "list_price": 100,
+                            "currency": "PHP",
+                        },
+                    )
+                ],
+                draft={
+                    "title": "Approved title",
+                    "notes": "",
+                    "imgUrls": [],
+                    "weight": 0.1,
+                    "packageLength": 10,
+                    "packageWidth": 10,
+                    "packageHeight": 1,
+                    "itemNum": "0001",
+                },
+                category_id="600338",
+            )
+
+        self.assertEqual(saved, [])
+
+    def test_audited_variant_translation_uses_verified_size_only(self):
+        self.assertEqual(
+            _audited_english_variant_value("大号（34x58cm）"),
+            "Large (34 x 58 cm)",
+        )
+        self.assertEqual(
+            _audited_english_variant_value("定制花色"),
+            "定制花色",
+        )
+
+    def test_approved_specification_name_reaches_final_sale_property(self):
+        info = {
+            "skuPropertyList": [
+                {
+                    "attrName": "Color",
+                    "attrValueList": [
+                        {"attrValueId": "style-1", "attrValue": "HS4489Q"},
+                    ],
+                },
+                {
+                    "attrName": "Size",
+                    "attrValueList": [
+                        {
+                            "attrValueId": "size-1",
+                            "attrValue": "30*40CM*3排版",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        _apply_audited_english_variant_labels(
+            info,
+            {
+                ";HS4489Q;30*40CM*3排版;": "30 x 40 cm, 3 Pieces",
+            },
+        )
+
+        self.assertEqual(
+            info["skuPropertyList"][1]["attrValueList"][0]["attrValue"],
+            "30 x 40 cm, 3 Pieces",
+        )
+        self.assertEqual(
+            info["skuPropertyList"][1]["attrName"],
+            "Specification",
+        )
+
+    def test_miaoshou_readback_preserves_locked_image_lineage(self):
+        source_urls = [
+            "https://img.example/source-1.jpg",
+            "https://img.example/source-2.jpg",
+            "https://img.example/source-3.jpg",
+        ]
+        generated_urls = [
+            "https://img.example/generated-scene.png",
+            "https://img.example/generated-size.png",
+        ]
+        image_order = [
+            generated_urls[0],
+            *source_urls,
+            generated_urls[1],
+        ]
+        state = {
+            "offer_id": "123456789",
+            "review": {
+                "title": "Approved wall decal",
+                "seller_sku": "0953",
+                "weight_kg": 0.02,
+                "package_cm": [58, 34, 0.02],
+                "video_action": "keep",
+                "fields_locked": True,
+                "image_order": image_order,
+                "image_actions": [
+                    {"url": url, "action": "keep", "kind": "source"}
+                    for url in source_urls
+                ],
+            },
+            "product_approval": {"status": "approved"},
+        }
+        detail = {
+            "commonCollectBoxDetailId": "123456789",
+            "title": "Approved wall decal",
+            "itemNum": "0953",
+            "weight": 0.02,
+            "packageLength": 58.0,
+            "packageWidth": 34.0,
+            "packageHeight": 0.02,
+            "imgUrls": image_order,
+            "mainImgVideoUrl": "https://video.example/approved.mp4",
+            "skuMap": {"only": {"itemNum": "0953"}},
+        }
+
+        def fake_post(_path, _body=None):
+            return {
+                "result": "success",
+                "data": {"editCommonCollectBoxDetail": detail},
+            }
+
+        with TemporaryDirectory() as tmp, patch(
+            "modules.sourcing.new_product_workbench.STATE_DIR",
+            Path(tmp),
+        ), patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123456789",
+        ):
+            save_state("123456789", state)
+            Path(tmp, "123456789_miaoshou_draft.json").write_text(
+                json.dumps({
+                    "draft": {
+                        "mainImgVideoUrl": "https://video.example/approved.mp4",
+                    }
+                }),
+                encoding="utf-8",
+            )
+            result = sync_miaoshou_second_review("123456789", post=fake_post)
+            saved = json.loads(
+                Path(tmp, "123456789.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(result["locked_approval_preserved"])
+        self.assertEqual(saved["review"]["image_actions"], state["review"]["image_actions"])
+        self.assertEqual(saved["review"]["image_order"], image_order)
+        self.assertEqual(saved["miaoshou_second_review"]["status"], "verified")
+
+    def test_tiktok_transport_package_floor_preserves_source_fact(self):
+        draft = {
+            "packageLength": 58,
+            "packageWidth": 34,
+            "packageHeight": 0.02,
+        }
+
+        self.assertEqual(
+            _miaoshou_platform_package_cm(draft),
+            (58.0, 34.0, 1.0),
+        )
+        self.assertEqual(draft["packageHeight"], 0.02)
+
+    def test_miaoshou_retry_handles_client_rate_limit_exceptions(self):
+        calls = []
+
+        def fake_post(path, body):
+            calls.append((path, body))
+            if len(calls) < 3:
+                raise RuntimeError("账户接口每秒请求频率超限")
+            return {"result": "success", "data": {"ok": True}}
+
+        with patch("modules.sourcing.new_product_workbench.time.sleep") as sleep:
+            result = _miaoshou_post_retry(
+                fake_post,
+                "/open/test",
+                {"value": 1},
+                "read draft",
+            )
+
+        self.assertEqual(result["data"], {"ok": True})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 4])
+
+    def test_next_seller_sku_skips_legacy_locks_and_verified_claim_range(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "data" / "new_product_workbench"
+            state_dir.mkdir(parents=True)
+            database = root / "data" / "shop.db"
+            connection = sqlite3.connect(database)
+            connection.execute("CREATE TABLE products (seller_sku TEXT)")
+            connection.execute("INSERT INTO products VALUES ('990945')")
+            connection.commit()
+            connection.close()
+            for offer_id in (
+                "3749982947",
+                "3749982951",
+                "3749982953",
+                "780091850593",
+            ):
+                (state_dir / f"{offer_id}.json").write_text(
+                    json.dumps(
+                        {
+                            "review": {
+                                "seller_sku": "0946",
+                                "fields_locked": True,
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            (state_dir / "3749982951_tiktok_claim.json").write_text(
+                json.dumps(
+                    {
+                        "claimed": True,
+                        "sku_numbering": {
+                            "base_sku": "0946",
+                            "sku_item_nums": [
+                                "0946",
+                                "0947",
+                                "0948",
+                                "0949",
+                                "0950",
+                                "0951",
+                            ],
+                            "verified": True,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "modules.sourcing.new_product_workbench.ROOT",
+                root,
+            ), patch(
+                "modules.sourcing.new_product_workbench.STATE_DIR",
+                state_dir,
+            ):
+                self.assertEqual(_next_seller_sku(2), "0952")
+
     def test_miaoshou_editable_weight_rounds_up_without_understating(self):
         self.assertEqual(_miaoshou_editable_weight_kg(0.08), 0.08)
         self.assertEqual(_miaoshou_editable_weight_kg(0.139), 0.14)
         with self.assertRaises(ValueError):
             _miaoshou_editable_weight_kg(0.005)
 
-    def test_anchor_group_key_merges_lively_sea_mx_gb(self):
-        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "PH"}), "lively")
-        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "MX"}), "lively")
-        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "GB"}), "lively")
-        self.assertEqual(_anchor_group_key({"shop": "HomeBloom", "region": "PH"}), "homebloom")
+    def test_anchor_group_key_isolates_each_global_shop_subsite(self):
+        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "PH"}), "lively:PH")
+        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "MX"}), "lively:MX")
+        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "GB"}), "lively:GB")
+        self.assertEqual(_anchor_group_key({"shop": "HomeBloom", "region": "PH"}), "homebloom:PH")
 
     def test_pick_default_warehouse_id_prefers_default_then_cnsc(self):
         rows = [
@@ -233,11 +707,11 @@ class NewProductWorkbenchTests(unittest.TestCase):
         ])
         self.assertEqual(result["change_summary"]["generated_image_count"], 1)
 
-    def test_unified_image_bar_defaults_to_all_nonremoved_images_in_saved_order(self):
+    def test_unified_image_bar_only_includes_explicitly_kept_images(self):
         state = {
             "review": {
                 "image_actions": [
-                    {"action": "review", "url": "https://img.example/source-1.jpg"},
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
                     {"action": "remove", "url": "https://img.example/source-2.jpg"},
                 ],
                 "image_order": [
@@ -273,17 +747,14 @@ class NewProductWorkbenchTests(unittest.TestCase):
         ):
             selected = _ordered_selected_images("123", state)
 
-        self.assertEqual(selected["urls"], [
-            "https://img.example/generated-1.png",
-            "https://img.example/source-1.jpg",
-        ])
+        self.assertEqual(selected["urls"], ["https://img.example/source-1.jpg"])
 
     def test_ordered_image_sync_replaces_main_and_detail_images_and_verifies_order(self):
         state = {
             "review": {
                 "weight_kg": 0.08,
                 "image_actions": [
-                    {"action": "review", "url": "https://img.example/source-1.jpg"},
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
                     {"action": "remove", "url": "https://img.example/source-2.jpg"},
                 ],
                 "image_order": [
@@ -297,7 +768,7 @@ class NewProductWorkbenchTests(unittest.TestCase):
             "artifact_id": "sc1_r1",
             "shot_id": "sc1",
             "url": "https://img.example/generated-1.png",
-            "miaoshou_action": "review",
+            "miaoshou_action": "keep",
         }]
         current = {
             "title": "Existing title",
@@ -312,12 +783,13 @@ class NewProductWorkbenchTests(unittest.TestCase):
         def fake_post(path, body=None):
             if path.endswith("edit_common_collect_box_detail"):
                 saved.update((body or {})["editCommonCollectBoxDetail"])
+                current.update(saved)
                 return {"result": "success"}
             if path.endswith("get_common_collect_box_detail"):
                 return {
                     "result": "success",
                     "data": {
-                        "editCommonCollectBoxDetail": saved or current,
+                        "editCommonCollectBoxDetail": current,
                         "ossMd5": "x",
                     },
                 }
@@ -357,8 +829,437 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertEqual(saved["notes"].count("<img "), 2)
         self.assertEqual(saved["title"], "Existing title")
         self.assertEqual(saved["itemNum"], "0942")
+        self.assertEqual(saved["weight"], 0.08)
+        self.assertEqual(saved["skuMap"], {})
+        self.assertEqual(result["sync"]["status"], "verified")
+        self.assertEqual(
+            [row["status"] for row in result["sync"]["steps"]],
+            ["completed", "completed", "completed", "completed"],
+        )
+        self.assertEqual(result["sync"]["written_image_count"], 2)
+        self.assertEqual(result["sync"]["ordered_image_count"], 2)
+        self.assertTrue(all(result["sync"]["checks"].values()))
+        self.assertEqual(result["sync"]["collect_box_id"], "123")
+        self.assertTrue(all(result["checks"].values()))
 
-    def test_workflow_includes_verified_ai_image_until_operator_removes_it(self):
+    def test_ordered_image_sync_reconciles_stale_sku_weight_from_saved_facts(self):
+        state = {
+            "review": {
+                "weight_kg": 0.1,
+                "sku_commercial_facts": {
+                    ";星空蓝;15*15cm无织唛;": {
+                        "weight_kg": 0.1,
+                    },
+                },
+                "image_actions": [
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
+                ],
+                "image_order": ["https://img.example/source-1.jpg"],
+            },
+            "content_package": {"collect_box_id": "123"},
+        }
+        current = {
+            "title": "Existing title",
+            "itemNum": "0968",
+            "weight": 0.08,
+            "skuMap": {
+                ";星空蓝;15*15cm无织唛;": {
+                    "weight": 0.015,
+                    "stock": 200,
+                },
+            },
+            "imgUrls": ["https://img.example/old.jpg"],
+            "notes": '<p>Existing description</p><p><img src="https://img.example/old.jpg"></p>',
+        }
+        submitted = {}
+        edit_calls = []
+
+        def fake_post(path, body=None):
+            if path.endswith("edit_common_collect_box_detail"):
+                edit = dict((body or {})["editCommonCollectBoxDetail"])
+                submitted.update(edit)
+                edit_calls.append(edit)
+                effective = {**current, **edit}
+                effective_sku_weight = float(
+                    ((effective.get("skuMap") or {}).get(";星空蓝;15*15cm无织唛;") or {}).get("weight") or 0
+                )
+                images_changed = edit.get("imgUrls") != current.get("imgUrls")
+                current_sku_weight = float(
+                    ((current.get("skuMap") or {}).get(";星空蓝;15*15cm无织唛;") or {}).get("weight") or 0
+                )
+                if effective_sku_weight == 0.015 or (
+                    images_changed and current_sku_weight == 0.015
+                ):
+                    return {
+                        "result": "error",
+                        "message": "skuMap weight 小数位数不能超过2位",
+                    }
+                current.update(edit)
+                return {"result": "success"}
+            if path.endswith("get_common_collect_box_detail"):
+                return {
+                    "result": "success",
+                    "data": {
+                        "editCommonCollectBoxDetail": current,
+                        "ossMd5": "x",
+                    },
+                }
+            raise AssertionError(path)
+
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123",
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state",
+            return_value=state,
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state",
+        ), patch(
+            "modules.sourcing.new_product_workbench._source_summary",
+            return_value={"images": []},
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir",
+            return_value=Path("."),
+        ), patch(
+            "modules.sourcing.new_product_workbench._generated_review_images",
+            return_value=[],
+        ):
+            result = write_ordered_images_to_miaoshou("123", post=fake_post)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(submitted["weight"], 0.08)
+        self.assertEqual(
+            submitted["skuMap"][";星空蓝;15*15cm无织唛;"],
+            {"weight": 0.1, "stock": 200},
+        )
+        self.assertEqual(submitted["title"], "Existing title")
+        self.assertEqual(submitted["itemNum"], "0968")
+        self.assertEqual(submitted["skuMap"][";星空蓝;15*15cm无织唛;"]["stock"], 200)
+        self.assertEqual(len(edit_calls), 2)
+        self.assertEqual(edit_calls[0]["imgUrls"], ["https://img.example/old.jpg"])
+        self.assertEqual(edit_calls[1]["imgUrls"], ["https://img.example/source-1.jpg"])
+
+    def test_ordered_image_sync_keeps_valid_existing_weights(self):
+        state = {
+            "review": {
+                "weight_kg": 0.1,
+                "sku_commercial_facts": {";Blue;;": {"weight_kg": 0.1}},
+                "image_actions": [
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
+                ],
+                "image_order": ["https://img.example/source-1.jpg"],
+            },
+            "content_package": {"collect_box_id": "123"},
+        }
+        current = {
+            "title": "Existing title",
+            "itemNum": "0968",
+            "weight": 0.08,
+            "skuMap": {";Blue;;": {"weight": 0.08, "stock": 200}},
+            "imgUrls": ["https://img.example/old.jpg"],
+            "notes": "<p>Existing description</p>",
+        }
+        submitted = {}
+
+        def fake_post(path, body=None):
+            if path.endswith("edit_common_collect_box_detail"):
+                submitted.update((body or {})["editCommonCollectBoxDetail"])
+                current.update(submitted)
+                return {"result": "success"}
+            if path.endswith("get_common_collect_box_detail"):
+                return {
+                    "result": "success",
+                    "data": {"editCommonCollectBoxDetail": current, "ossMd5": "x"},
+                }
+            raise AssertionError(path)
+
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key", return_value="123"
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state", return_value=state
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state"
+        ), patch(
+            "modules.sourcing.new_product_workbench._source_summary", return_value={"images": []}
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir", return_value=Path(".")
+        ), patch(
+            "modules.sourcing.new_product_workbench._generated_review_images", return_value=[]
+        ):
+            result = write_ordered_images_to_miaoshou("123", post=fake_post)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(submitted["weight"], 0.08)
+        self.assertEqual(submitted["skuMap"][";Blue;;"]["weight"], 0.08)
+
+    def test_ordered_image_sync_uses_resolved_duplicate_collect_box_identity(self):
+        state = {
+            "review": {
+                "weight_kg": 0.08,
+                "image_actions": [
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
+                ],
+                "image_order": ["https://img.example/source-1.jpg"],
+            },
+            "content_package": {},
+        }
+        current = {
+            "title": "Existing title",
+            "itemNum": "0966",
+            "weight": 0.08,
+            "skuMap": {},
+            "imgUrls": ["https://img.example/old.jpg"],
+            "notes": "<p>Existing description</p>",
+        }
+        seen_detail_ids = []
+
+        def fake_post(path, body=None):
+            detail_id = int((body or {}).get("commonCollectBoxDetailId") or 0)
+            seen_detail_ids.append(detail_id)
+            if detail_id != 456:
+                raise RuntimeError("数据链接为空")
+            if path.endswith("get_common_collect_box_detail"):
+                return {
+                    "result": "success",
+                    "data": {
+                        "editCommonCollectBoxDetail": current,
+                        "ossMd5": "x",
+                    },
+                }
+            if path.endswith("edit_common_collect_box_detail"):
+                current.update((body or {})["editCommonCollectBoxDetail"])
+                return {"result": "success"}
+            raise AssertionError(path)
+
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123",
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state",
+            return_value=state,
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state",
+        ), patch(
+            "modules.sourcing.new_product_workbench._source_summary",
+            return_value={
+                "images": [],
+                "precollect": {
+                    "resolved_duplicate": True,
+                    "resolved_common_collect_id": 456,
+                    "records": [{"common_collect_id": 456}],
+                },
+            },
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir",
+            return_value=Path("."),
+        ), patch(
+            "modules.sourcing.new_product_workbench._generated_review_images",
+            return_value=[],
+        ):
+            result = write_ordered_images_to_miaoshou("123", post=fake_post)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(seen_detail_ids, [456, 456, 456])
+        self.assertEqual(result["sync"]["collect_box_id"], "456")
+
+    def test_completed_reviewed_ai_suite_does_not_regress_to_ai_planning_stage(self):
+        source_actions = [
+            {"action": action, "url": f"https://img.example/source-{index}.jpg"}
+            for index, action in enumerate(("keep", "keep", "keep", "keep", "remove"), start=1)
+        ]
+        generated = [
+            {
+                "artifact_id": f"sc{index}_r5",
+                "miaoshou_action": action,
+                "url": f"https://img.example/generated-{index}.png",
+            }
+            for index, action in enumerate(("remove", "remove", "keep", "keep"), start=1)
+        ]
+        workflow = _product_workflow_summary(
+            source={
+                "title_source": "Watercolour floral wall decal",
+                "cost_cny": 0.2,
+                "images": source_actions,
+            },
+            review={
+                "title": "Watercolour Floral Butterfly Wall Decal",
+                "cost_cny": 0.2,
+                "weight_kg": 0.14,
+                "package_cm": [30, 3, 3],
+                "selected_sites": ["lh_th"],
+                "image_actions": source_actions,
+                "image_order": [
+                    row["url"] for row in source_actions if row["action"] == "keep"
+                ] + [
+                    row["url"] for row in generated if row["miaoshou_action"] == "keep"
+                ],
+            },
+            content={
+                "content_strategy": "ai_assisted",
+                "package_found": True,
+                "fact_card_approved": True,
+                "planning_scope_approved": True,
+                "suite_approved": True,
+                "model_proposal": {"valid": False},
+                "suite_customization": {
+                    "type_counts": {"scene": 3, "selling_point": 1}
+                },
+                "remaining_images_generation": {
+                    "status": "completed_waiting_human_review"
+                },
+                "generated_review_images": generated,
+            },
+            miaoshou_draft={"written_to_miaoshou": True, "verified": True},
+            tiktok_claim={},
+            site_drafts={},
+        )
+
+        self.assertTrue(workflow["content_ready"])
+        self.assertTrue(workflow["generation_ready"])
+        self.assertTrue(workflow["image_review_ready"])
+        self.assertNotEqual(workflow["current_stage"], "content")
+        self.assertNotIn("调用 AI 生成当前配方", workflow["blockers"])
+
+    def test_content_summary_keeps_completed_legacy_suite_approved_without_model_proposal(self):
+        generated = [
+            {
+                "artifact_id": f"sc{index}_r5",
+                "miaoshou_action": action,
+                "url": f"https://img.example/generated-{index}.png",
+            }
+            for index, action in enumerate(("remove", "remove", "keep", "keep"), start=1)
+        ]
+        source_actions = [
+            {"action": action, "url": f"https://img.example/source-{index}.jpg"}
+            for index, action in enumerate(("keep", "keep", "keep", "keep", "remove"), start=1)
+        ]
+        state = {
+            "offer_id": "123",
+            "review": {
+                "image_actions": source_actions,
+                "image_order": [
+                    row["url"] for row in source_actions if row["action"] == "keep"
+                ] + [
+                    row["url"] for row in generated if row["miaoshou_action"] == "keep"
+                ],
+            },
+            "content_package": {
+                "collect_box_id": "123",
+                "content_strategy": "ai_assisted",
+                "fact_card_approved": True,
+                "planning_scope_approved": True,
+                "suite_approved": True,
+                "remaining_images_generation": {
+                    "status": "completed_waiting_human_review"
+                },
+                "miaoshou_ordered_images_write": {
+                    "status": "verified",
+                    "ordered_image_urls": ["https://img.example/source-1.jpg"],
+                },
+            },
+        }
+        with TemporaryDirectory() as tmp:
+            package_dir = Path(tmp)
+            (package_dir / "review_package.json").write_text(
+                json.dumps({
+                    "collect_box": {},
+                    "fact_card": {},
+                    "plan": {"suite": {"items": []}},
+                }),
+                encoding="utf-8",
+            )
+            with patch(
+                "modules.sourcing.new_product_workbench.resolve_offer_key",
+                return_value="123",
+            ), patch(
+                "modules.sourcing.new_product_workbench.load_state",
+                return_value=state,
+            ), patch(
+                "modules.sourcing.new_product_workbench._source_summary",
+                return_value={"images": []},
+            ), patch(
+                "modules.sourcing.new_product_workbench._content_package_dir",
+                return_value=package_dir,
+            ), patch(
+                "modules.sourcing.new_product_workbench._content_artifacts",
+                return_value=[],
+            ), patch(
+                "modules.sourcing.new_product_workbench._generated_review_images",
+                return_value=generated,
+            ):
+                summary = content_package_summary("123")
+
+        self.assertTrue(summary["completed_ai_suite_evidence"])
+        self.assertTrue(summary["content_approved"])
+        self.assertNotEqual(summary["stage"], "待 AI 生成分镜")
+        self.assertEqual(
+            summary["miaoshou_generated_images_write"]["status"],
+            "verified",
+        )
+
+    def test_ordered_image_sync_rejects_pending_images_before_calling_post(self):
+        state = {
+            "review": {"image_actions": [{"action": "review", "url": "https://img.example/pending.jpg"}]},
+            "content_package": {"collect_box_id": "123"},
+        }
+        calls = []
+        with patch("modules.sourcing.new_product_workbench.resolve_offer_key", return_value="123"), patch(
+            "modules.sourcing.new_product_workbench.load_state", return_value=state
+        ), patch("modules.sourcing.new_product_workbench._source_summary", return_value={"images": []}), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir", return_value=Path(".")
+        ), patch("modules.sourcing.new_product_workbench._generated_review_images", return_value=[]):
+            with self.assertRaisesRegex(ValueError, "explicit keep or remove"):
+                write_ordered_images_to_miaoshou("123", post=lambda *args, **kwargs: calls.append(args))
+        self.assertEqual(calls, [])
+
+    def test_ordered_image_sync_records_read_failure_with_stage_feedback(self):
+        state = {
+            "review": {
+                "weight_kg": 0.08,
+                "image_actions": [
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
+                ],
+                "image_order": ["https://img.example/source-1.jpg"],
+            },
+            "content_package": {"collect_box_id": "123"},
+        }
+        snapshots = []
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123",
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state",
+            return_value=state,
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state",
+            side_effect=lambda _offer, value: snapshots.append(
+                json.loads(json.dumps(value))
+            ),
+        ), patch(
+            "modules.sourcing.new_product_workbench._source_summary",
+            return_value={"images": []},
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir",
+            return_value=Path("."),
+        ), patch(
+            "modules.sourcing.new_product_workbench._generated_review_images",
+            return_value=[],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "network unavailable"):
+                write_ordered_images_to_miaoshou(
+                    "123",
+                    post=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        RuntimeError("network unavailable")
+                    ),
+                )
+
+        feedback = snapshots[-1]["content_package"]["miaoshou_ordered_images_write"]
+        self.assertEqual(feedback["status"], "failed")
+        self.assertEqual(feedback["phase"], "read_current")
+        self.assertEqual(feedback["steps"][1]["status"], "failed")
+        self.assertIn("network unavailable", feedback["steps"][1]["detail"])
+
+    def test_workflow_blocks_until_every_visible_image_has_a_final_decision(self):
         workflow = _product_workflow_summary(
             source={"title_source": "Title", "cost_cny": 5, "images": [{"url": "x"}]},
             review={
@@ -377,8 +1278,9 @@ class NewProductWorkbenchTests(unittest.TestCase):
             miaoshou_draft={}, tiktok_claim={}, site_drafts={},
         )
 
-        self.assertEqual(workflow["current_stage"], "commercial")
-        self.assertTrue(workflow["image_review_ready"])
+        self.assertEqual(workflow["current_stage"], "images")
+        self.assertFalse(workflow["image_review_ready"])
+        self.assertEqual(workflow["pending_generated_image_count"], 1)
         self.assertNotIn("还有 1 张 AI 图待决定", workflow["blockers"])
 
     def test_workflow_blocks_generation_until_ai_storyboard_is_valid(self):
@@ -439,7 +1341,7 @@ class NewProductWorkbenchTests(unittest.TestCase):
             "packageHeight": 10.0,
             "imgUrls": ["https://img.example/1.jpg", "https://img.example/2.jpg", "https://img.example/3.jpg"],
             "notes": '<p><img src="1"><img src="2"><img src="3"></p>',
-            "mainImgVideoUrl": "",
+            "mainImgVideoUrl": "https://video.example/approved.mp4",
         }
         prepared = {"ok": True, "ready": True, "offer_id": "123", "draft": draft, "blockers": []}
         current = {"skuMap": {";Red;;": {"stock": 10, "price": 9}}, "title": "old"}
@@ -463,6 +1365,11 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertTrue(result["written_to_miaoshou"])
         self.assertFalse(result["claimed"])
         self.assertFalse(result["published"])
+        self.assertTrue(result["checks"]["video_action"])
+        self.assertEqual(
+            saved["mainImgVideoUrl"],
+            "https://video.example/approved.mp4",
+        )
 
     def test_miaoshou_draft_write_keeps_only_selected_skus(self):
         draft = {
@@ -473,7 +1380,18 @@ class NewProductWorkbenchTests(unittest.TestCase):
             "selectedSkuKeys": [";Large;;"],
         }
         prepared = {"ok": True, "ready": True, "offer_id": "123", "draft": draft, "blockers": []}
-        current = {"skuMap": {";Small;;": {"stock": 10}, ";Large;;": {"stock": 12}}}
+        current = {
+            "colorMap": {
+                "Small": {"name": "Small"},
+                "Large": {"name": "Large"},
+            },
+            "sizeMap": {"Cotton": {"name": "Cotton"}},
+            "skuMap": {
+                ";Small;Cotton;": {"stock": 10},
+                ";Large;Cotton;": {"stock": 12},
+            },
+        }
+        draft["selectedSkuKeys"] = [";Large;Cotton;"]
         saved = {}
 
         def fake_post(path, body=None):
@@ -490,7 +1408,9 @@ class NewProductWorkbenchTests(unittest.TestCase):
             result = write_miaoshou_draft("123", post=fake_post)
 
         self.assertTrue(result["verified"])
-        self.assertEqual(list(saved["skuMap"]), [";Large;;"])
+        self.assertEqual(list(saved["skuMap"]), [";Large;Cotton;"])
+        self.assertEqual(list(saved["colorMap"]), ["Large"])
+        self.assertEqual(list(saved["sizeMap"]), ["Cotton"])
 
     def test_common_sku_fix_preserves_content_and_numbers_variants(self):
         current = {
@@ -580,6 +1500,79 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertEqual(claim_calls[0]["shopIds"], ["7676267"])
         self.assertFalse(result["published"])
 
+    def test_claim_to_tiktok_retry_reuses_existing_detail_group(self):
+        calls = []
+        collect_rows = [{
+            "collectBoxDetailId": "456",
+            "commonCollectBoxDetailId": "123",
+            "gmtCreate": "2026-07-01 11:00:00",
+            "collectBoxDetailShopList": [{"shopId": "7676267"}],
+        }]
+
+        def fake_post(path, body=None):
+            calls.append(path)
+            if path.endswith("common_collect_box/claimed"):
+                raise AssertionError("retry must not create another TikTok collect detail")
+            if path.endswith("claim_to_shop"):
+                return {"result": "success"}
+            if path.endswith("search_collect_box_detail_list"):
+                return {"result": "success", "data": {"detailList": collect_rows}}
+            if path.endswith("get_shop_warehouse_list"):
+                return {"result": "success", "data": {"shopWarehouseList": []}}
+            raise AssertionError(path)
+
+        custom_markets = [{
+            "id": "lh_ph",
+            "shop": "LivelyHive",
+            "region": "PH",
+            "currency": "PHP",
+            "enabled": True,
+            "shop_id": 7676267,
+            "publish_group": "lively",
+        }]
+        with TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            (state_dir / "123_tiktok_claim.json").write_text(
+                json.dumps({
+                    "ok": False,
+                    "offer_id": "123",
+                    "shops": {},
+                    "detail_group_detail_ids": {"lively:PH": 456},
+                    "tiktok_detail_id": 456,
+                }),
+                encoding="utf-8",
+            )
+            with patch(
+                "modules.sourcing.new_product_workbench.resolve_offer_key",
+                return_value="123",
+            ), patch(
+                "modules.sourcing.new_product_workbench.build_preview",
+                return_value={"source": {"source_id": "src-1"}},
+            ), patch(
+                "modules.sourcing.new_product_workbench.sync_miaoshou_second_review",
+                return_value={"ok": True, "second_review_approved": True},
+            ), patch(
+                "modules.sourcing.new_product_workbench.ensure_common_sequential_skus",
+                return_value={"ok": True, "verified": True, "sku_item_nums": ["0942"]},
+            ), patch(
+                "modules.sourcing.new_product_workbench.load_state",
+                return_value={"review": {"selected_sites": ["lh_ph"]}},
+            ), patch(
+                "modules.sourcing.new_product_workbench.STATE_DIR",
+                state_dir,
+            ), patch(
+                "modules.sourcing.new_product_workbench.SEA_MARKETS",
+                custom_markets,
+            ):
+                result = claim_miaoshou_to_tiktok("123", post=fake_post)
+
+        self.assertTrue(result["claimed"])
+        self.assertEqual(result["tiktok_detail_id"], 456)
+        self.assertNotIn(
+            "/open/v1/product/common_collect_box/common_collect_box/claimed",
+            calls,
+        )
+
     def test_claim_to_tiktok_claims_each_selected_shop_without_final_reset(self):
         claim_calls = []
         claimed_calls = []
@@ -631,11 +1624,14 @@ class NewProductWorkbenchTests(unittest.TestCase):
             result = claim_miaoshou_to_tiktok("123", post=fake_post)
 
         self.assertTrue(result["claimed"])
-        self.assertEqual(len(claim_calls), 1)
-        self.assertEqual(len(claimed_calls), 1)
-        self.assertEqual([call["shopIds"] for call in claim_calls], [["7676267"]])
+        self.assertEqual(len(claim_calls), 2)
+        self.assertEqual(len(claimed_calls), 2)
+        self.assertEqual(
+            [call["shopIds"] for call in claim_calls],
+            [["7676267"], ["10204699"]],
+        )
         self.assertEqual(result["shops"]["lh_ph"]["detail_id"], 456)
-        self.assertEqual(result["shops"]["gb"]["detail_id"], 456)
+        self.assertEqual(result["shops"]["gb"]["detail_id"], 457)
 
     def test_claim_to_tiktok_keeps_all_requested_shop_claims(self):
         claim_calls = []
@@ -648,7 +1644,7 @@ class NewProductWorkbenchTests(unittest.TestCase):
         def fake_post(path, body=None):
             if path.endswith("common_collect_box/claimed"):
                 claimed_calls.append(body or {})
-                detail_id = {1: 456, 2: 457}.get(len(claimed_calls), 458)
+                detail_id = {1: 456, 2: 457, 3: 458}.get(len(claimed_calls), 459)
                 return {"result": "success", "data": {"platformCollectBoxDetailIdMap": {"tiktok": {"123": detail_id}}}}
             if path.endswith("claim_to_shop"):
                 claim_calls.append(body or {})
@@ -660,6 +1656,7 @@ class NewProductWorkbenchTests(unittest.TestCase):
                 claim_ids = {
                     "456": [7676267, 10204699],
                     "457": [15173238],
+                    "458": [10204699],
                 }.get(detail_id, [])
                 return {"result": "success", "data": {"shopCollectItemInfo": {
                     "title": "Title", "cid": "1", "imgUrls": ["https://img/1.jpg"],
@@ -694,12 +1691,15 @@ class NewProductWorkbenchTests(unittest.TestCase):
             result = claim_miaoshou_to_tiktok("123", post=fake_post)
 
         self.assertTrue(result["claimed"])
-        self.assertEqual(len(claimed_calls), 2)
-        self.assertEqual(len(claim_calls), 2)
-        self.assertEqual([call["shopIds"] for call in claim_calls], [["7676267"], ["15173238"]])
+        self.assertEqual(len(claimed_calls), 3)
+        self.assertEqual(len(claim_calls), 3)
+        self.assertEqual(
+            [call["shopIds"] for call in claim_calls],
+            [["7676267"], ["15173238"], ["10204699"]],
+        )
         self.assertEqual(result["shops"]["lh_ph"]["detail_id"], 456)
         self.assertEqual(result["shops"]["hb_ph"]["detail_id"], 457)
-        self.assertEqual(result["shops"]["gb"]["detail_id"], 456)
+        self.assertEqual(result["shops"]["gb"]["detail_id"], 458)
 
     def test_site_draft_writes_price_cod_english_variants_and_warehouse(self):
         self.skipTest("legacy shop-mode expectations replaced by live site-mode regression")
@@ -759,7 +1759,11 @@ class NewProductWorkbenchTests(unittest.TestCase):
         ), patch(
             "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp)
         ), patch(
-            "modules.sourcing.new_product_workbench.build_preview", return_value={"pricing": pricing}
+            "modules.sourcing.new_product_workbench.build_preview",
+            return_value={
+                "pricing": pricing,
+                "review": {"category": {"name": "贴饰 > 墙贴"}},
+            },
         ):
             Path(tmp, "123_tiktok_claim.json").write_text(json.dumps(claim), encoding="utf-8")
             Path(tmp, "123_miaoshou_draft.json").write_text(json.dumps(draft), encoding="utf-8")
@@ -767,7 +1771,7 @@ class NewProductWorkbenchTests(unittest.TestCase):
 
         self.assertTrue(result["ready"])
         self.assertFalse(result["published"])
-        self.assertEqual(saved["7676267"]["cid"], "853256")
+        self.assertEqual(saved["7676267"]["cid"], "600338")
         self.assertEqual(saved["7676267"]["isCodOpen"], "1")
         self.assertEqual(saved["7676267"]["skuPropertyList"][0]["attrValueList"][0]["attrValue"], "Ivory Red")
         self.assertEqual(
@@ -912,7 +1916,11 @@ class NewProductWorkbenchTests(unittest.TestCase):
         ), patch(
             "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp)
         ), patch(
-            "modules.sourcing.new_product_workbench.build_preview", return_value={"pricing": pricing}
+            "modules.sourcing.new_product_workbench.build_preview",
+            return_value={
+                "pricing": pricing,
+                "review": {"category": {"name": "贴饰 > 墙贴"}},
+            },
         ):
             Path(tmp, "123_tiktok_claim.json").write_text(json.dumps(claim), encoding="utf-8")
             Path(tmp, "123_miaoshou_draft.json").write_text(json.dumps(draft), encoding="utf-8")
@@ -1134,7 +2142,11 @@ class NewProductWorkbenchTests(unittest.TestCase):
         ), patch(
             "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp)
         ), patch(
-            "modules.sourcing.new_product_workbench.build_preview", return_value={"pricing": pricing}
+            "modules.sourcing.new_product_workbench.build_preview",
+            return_value={
+                "pricing": pricing,
+                "review": {"category": {"name": "贴饰 > 墙贴"}},
+            },
         ):
             Path(tmp, "123_tiktok_claim.json").write_text(json.dumps(claim), encoding="utf-8")
             Path(tmp, "123_miaoshou_draft.json").write_text(json.dumps(draft), encoding="utf-8")
@@ -1186,6 +2198,90 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertEqual(result["offer_id"], "123456")
         self.assertEqual(result["review"]["title"], "Imported ERP item")
         self.assertEqual(len(result["review"]["image_actions"]), 1)
+
+    def test_skipped_duplicate_collect_id_resolves_exact_successful_source_record(self):
+        """A skipped duplicate is an alias, not an unreadable new product."""
+
+        requested_detail_id = 3880092384
+        successful_detail_id = 3838608018
+        source_item_id = "965497333269"
+
+        def fake_post(path, body=None):
+            body = body or {}
+            if path.endswith("get_common_collect_box_detail"):
+                detail_id = int(body["commonCollectBoxDetailId"])
+                if detail_id == requested_detail_id:
+                    raise RuntimeError("数据链接为空")
+                if detail_id == successful_detail_id:
+                    return {
+                        "result": "success",
+                        "data": {
+                            "editCommonCollectBoxDetail": {
+                                "commonCollectBoxDetailId": successful_detail_id,
+                                "title": "Canonical collected product",
+                                "price": 11,
+                                "stock": 30,
+                                "weight": 0.2,
+                                "imgUrls": ["https://img.example/canonical.jpg"],
+                                "sourceList": [{
+                                    "sourceItemId": source_item_id,
+                                    "source": "1688",
+                                    "sourceItemUrl": (
+                                        "https://detail.1688.com/offer/"
+                                        f"{source_item_id}.html"
+                                    ),
+                                }],
+                            }
+                        },
+                    }
+            if path.endswith("get_common_collect_box_list"):
+                source_keyword = (body.get("filter") or {}).get(
+                    "sourceItemIdKeyword"
+                )
+                rows = [
+                    {
+                        "commonCollectBoxDetailId": requested_detail_id,
+                        "status": "skip",
+                        "reason": "产品已经采集过。",
+                        "sourceList": [{"sourceItemId": source_item_id}],
+                    },
+                    {
+                        "commonCollectBoxDetailId": successful_detail_id,
+                        "status": "success",
+                        "sourceList": [{"sourceItemId": source_item_id}],
+                    },
+                ]
+                if source_keyword:
+                    rows = [
+                        row
+                        for row in rows
+                        if source_keyword
+                        in {
+                            str(item.get("sourceItemId") or "")
+                            for item in row.get("sourceList") or []
+                        }
+                    ]
+                return {
+                    "result": "success",
+                    "data": {"detailList": rows, "total": len(rows)},
+                }
+            raise AssertionError((path, body))
+
+        key, payload = import_common_collect_detail(
+            str(requested_detail_id),
+            post=fake_post,
+            state_key=str(requested_detail_id),
+        )
+
+        self.assertEqual(key, str(requested_detail_id))
+        self.assertEqual(
+            payload["normalized"]["common_collect_id"],
+            successful_detail_id,
+        )
+        self.assertEqual(payload["normalized"]["source_id"], source_item_id)
+        self.assertEqual(payload["requested_common_collect_id"], requested_detail_id)
+        self.assertEqual(payload["resolved_common_collect_id"], successful_detail_id)
+        self.assertTrue(payload["resolved_duplicate"])
 
     def test_overseas_common_collect_id_becomes_material(self):
         def fake_post(path, body=None):

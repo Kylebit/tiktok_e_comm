@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#173139">
+  <title>Orbit 利润中心</title>
+  <link rel="stylesheet" href="/static/profit_center.css">
+  <script src="/static/profit_center.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="返回 Orbit 总览">
+      <span class="brand-mark" aria-hidden="true">O</span>
+      <span><strong>Orbit</strong><small>Profit Center</small></span>
+    </a>
+    <nav aria-label="利润中心导航">
+      <a href="#weekly">周度经营结论</a>
+      <a href="#evidence">结算证据</a>
+      <a href="#sku">SKU 利润查询</a>
+    </nav>
+    <a class="top-link" href="/settlement">结算明细</a>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">DATA OPERATIONS · PROFIT CONTROL</p>
+        <h1>先判断数据能不能信，<br>再判断业务赚不赚钱。</h1>
+        <p class="hero-lead">
+          周报负责已发生的结算事实，SKU 查询负责单品估算。两种口径不会相加，也不会把缺失成本或广告支出的数字包装成已确认利润。
+        </p>
+      </div>
+      <aside class="definition-card" aria-label="利润口径">
+        <span>确认利润的最低口径</span>
+        <strong>平台净结算 − 完整商品成本 − 受治理广告支出</strong>
+        <p>任一输入缺失时，只展示结算与证据，利润结论保持关闭。</p>
+      </aside>
+    </section>
+
+    <section id="weekly" class="workspace">
+      <div class="section-heading">
+        <div>
+          <span class="section-index">01</span>
+          <div>
+            <p class="eyebrow">WEEKLY REALIZED FACTS</p>
+            <h2>周度经营结论</h2>
+          </div>
+        </div>
+        <p>固定读取完整的周一至周日，展示最新结算、成本证据和数据质量门。</p>
+      </div>
+
+      <form id="weeklyForm" class="period-form">
+        <label>
+          开始日期
+          <input id="weekStart" type="date" required>
+        </label>
+        <span class="period-arrow" aria-hidden="true">→</span>
+        <label>
+          结束日期
+          <input id="weekEnd" type="date" required>
+        </label>
+        <button class="button button-primary" type="submit">
+          <span class="button-label">查看该周</span>
+          <span class="button-loading">正在核对…</span>
+        </button>
+        <p>仅接受完整自然周；读取与复算不会写入报表或发送通知。</p>
+      </form>
+
+      <div id="weeklyAlert" class="alert" hidden></div>
+
+      <article id="weeklyVerdict" class="verdict-card is-loading" aria-live="polite">
+        <div class="verdict-symbol" aria-hidden="true">·</div>
+        <div>
+          <span id="weeklyStatusLabel">正在读取周报</span>
+          <h3 id="weeklyVerdictTitle">正在确认本周数据质量门</h3>
+          <p id="weeklyVerdictText">利润数字会在成本、数量、汇率和广告支出都可审计后开放。</p>
+        </div>
+        <span id="weeklyStatusBadge" class="badge neutral">LOADING</span>
+      </article>
+
+      <div class="metric-grid" aria-label="周度核心指标">
+        <article class="metric-card metric-primary">
+          <span>利润结论</span>
+          <strong id="profitMetric">读取中</strong>
+          <small id="profitMetricNote">等待数据质量门</small>
+        </article>
+        <article class="metric-card">
+          <span>平台净结算</span>
+          <strong id="settlementMetric">—</strong>
+          <small>已发生结算证据 · CNY</small>
+        </article>
+        <article class="metric-card">
+          <span>已识别商品成本</span>
+          <strong id="costMetric">—</strong>
+          <small id="costMetricNote">不完整时不代表总成本</small>
+        </article>
+        <article class="metric-card">
+          <span>受治理广告支出</span>
+          <strong id="adMetric">—</strong>
+          <small id="adMetricNote">等待证据</small>
+        </article>
+      </div>
+
+      <div class="weekly-grid">
+        <article class="panel quality-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">DECISION GATE</p>
+              <h3>数据质量门</h3>
+            </div>
+            <span id="qualityCount" class="badge neutral">—</span>
+          </div>
+          <div id="qualitySummary" class="quality-summary skeleton-lines"></div>
+          <div id="qualityList" class="quality-list"></div>
+        </article>
+
+        <article id="evidence" class="panel evidence-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">AUDIT EVIDENCE</p>
+              <h3>本周证据链</h3>
+            </div>
+            <span id="freshnessBadge" class="badge neutral">—</span>
+          </div>
+          <dl id="evidenceGrid" class="evidence-grid skeleton-lines"></dl>
+          <div class="panel-actions">
+            <a class="button button-quiet" href="/settlement">打开结算与订单明细</a>
+            <a class="text-link" href="/billing">查看账单原始证据</a>
+          </div>
+        </article>
+      </div>
+
+      <article id="negativeQueue" class="panel review-queue" hidden>
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">REVIEW QUEUE</p>
+            <h3>负利润复核候选</h3>
+          </div>
+          <span id="negativeCount" class="badge warn">0</span>
+        </div>
+        <p>这里是复核队列，不是已经确认的亏损清单。数据质量门未通过时不展示候选利润金额。</p>
+        <div id="negativeList" class="candidate-list"></div>
+      </article>
+    </section>
+
+    <section class="semantics" aria-label="两种利润口径的区别">
+      <article>
+        <span class="semantic-number">A</span>
+        <div>
+          <p class="eyebrow">REALIZED · 周报</p>
+          <h3>回答“上周实际结算了什么”</h3>
+          <p>来源是结算快照和版本化成本。只有质量门通过后，才可形成经营利润结论。</p>
+        </div>
+      </article>
+      <div class="not-equal" aria-label="不等于">≠</div>
+      <article>
+        <span class="semantic-number">B</span>
+        <div>
+          <p class="eyebrow">ESTIMATE · SKU</p>
+          <h3>回答“这个单品大概能赚多少”</h3>
+          <p>使用当前售价、样本结算比、假设广告率和目录成本。适合定价判断，不进入财务结账。</p>
+        </div>
+      </article>
+    </section>
+
+    <section id="sku" class="workspace sku-workspace">
+      <div class="section-heading">
+        <div>
+          <span class="section-index">02</span>
+          <div>
+            <p class="eyebrow">ON-DEMAND SKU ESTIMATE</p>
+            <h2>SKU 利润查询</h2>
+          </div>
+        </div>
+        <p>支持 Seller SKU 或完整平台 SKU ID；每个平台独立给出估算，不生成跨平台“总利润”。</p>
+      </div>
+
+      <form id="skuForm" class="sku-form">
+        <label class="sku-input">
+          Seller SKU / 平台 SKU ID
+          <input id="skuInput" name="sku" autocomplete="off" placeholder="例如 0021 或完整平台 SKU ID" required>
+        </label>
+        <label>
+          平台
+          <select id="skuPlatform">
+            <option value="both">TikTok + Shopee</option>
+            <option value="tiktok">仅 TikTok TH</option>
+            <option value="shopee">仅 Shopee TH</option>
+          </select>
+        </label>
+        <label>
+          广告费率 %
+          <input id="skuAdRate" type="number" min="0" max="100" step="0.1" value="22" required>
+        </label>
+        <label>
+          回看天数
+          <input id="skuLookback" type="number" min="1" max="365" step="1" value="14" required>
+        </label>
+        <button class="button button-primary" type="submit">
+          <span class="button-label">查询估算</span>
+          <span class="button-loading">正在计算…</span>
+        </button>
+      </form>
+      <p class="form-footnote">
+        广告费率按百分数传入；默认 22%。Shopee 因快照稀疏会使用至少 45 天窗口。
+      </p>
+
+      <div id="skuAlert" class="alert" hidden></div>
+      <div id="skuResult" class="sku-result empty-state" aria-live="polite">
+        <strong>输入一个 SKU 开始查询</strong>
+        <span>结果会标出售价、成本、汇率、样本量和假设来源。</span>
+      </div>
+
+      <div class="sku-footer">
+        <p><strong>使用边界：</strong>SKU 结果是单件估算，不可与周报相加，也不能替代每月 16 日的财务结账。</p>
+        <span class="read-only-pill">只读分析 · 不写回成本与定价</span>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Orbit 利润中心 · 本地经营决策</span>
+    <span>结算事实、成本证据与单品估算严格分层</span>
+  </footer>
+</body>
+</html>

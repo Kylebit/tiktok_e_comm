@@ -25,12 +25,58 @@ def list_unmigrated() -> list[dict]:
     return list_unmigrated_from_catalog()
 
 
-def migrate_one(seller_sku: str, on_progress: Callable[[str], None] | None = None) -> dict:
+def migrate_one(
+    seller_sku: str,
+    on_progress: Callable[[str], None] | None = None,
+    *,
+    allow_deepseek: bool = True,
+    title_candidate: str = "",
+    product_size_cm: tuple[float, float] | None = None,
+    quantity: int | None = None,
+    color_name_override: str = "",
+    price_cny_override: int | None = None,
+    old_price_cny_override: int | None = None,
+    price_source_override: str = "",
+    price_label_override: str = "",
+    image_urls_override: list[str] | tuple[str, ...] | None = None,
+    skip_rich_content: bool = False,
+    skip_mapping_write: bool = False,
+    process_images: bool = True,
+    wait_for_import: bool = True,
+    category_id_override: int | None = None,
+    type_id_override: int | None = None,
+    migrate_profile_override: str = "",
+    approved_snapshot: dict | None = None,
+) -> dict:
     """seller_sku: 6位 TK 货号；migrate  payload 用 draft 返回的 4位 offer_id。"""
     _progress(on_progress, f"  {seller_sku}: 生成俄语草稿…")
-    from modules.ozon.catalog_draft import build_draft
+    from modules.ozon.catalog_draft import (
+        build_draft,
+        build_draft_from_approved_snapshot,
+    )
 
-    draft = build_draft(seller_sku)
+    draft = (
+        build_draft_from_approved_snapshot(
+            approved_snapshot, seller_sku=seller_sku
+        )
+        if approved_snapshot is not None
+        else build_draft(
+            seller_sku,
+            allow_deepseek=allow_deepseek,
+            title_candidate=title_candidate,
+            product_size_cm=product_size_cm,
+            quantity=quantity,
+            color_name_override=color_name_override,
+            price_cny_override=price_cny_override,
+            old_price_cny_override=old_price_cny_override,
+            price_source_override=price_source_override,
+            price_label_override=price_label_override,
+            image_urls_override=image_urls_override,
+            category_id_override=category_id_override,
+            type_id_override=type_id_override,
+            migrate_profile_override=migrate_profile_override,
+        )
+    )
     if not isinstance(draft, dict) or (draft.get("error") and not draft.get("draft_title")):
         return {"seller_sku": seller_sku, "ok": False, "step": "draft", "error": draft}
 
@@ -40,14 +86,28 @@ def migrate_one(seller_sku: str, on_progress: Callable[[str], None] | None = Non
         return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "draft", "error": "无源图"}
 
     _progress(on_progress, f"  {seller_sku}: 转换并上传图片 ({len(images_src)} 张)…")
-    status, proc = proxy_json(
-        "POST",
-        f"process_images/{seller_sku}",
-        payload={"images": images_src},
-    )
+    if process_images:
+        status, proc = proxy_json(
+            "POST",
+            f"process_images/{seller_sku}",
+            payload={"images": images_src, "max_images": min(len(images_src), 15)},
+        )
+    else:
+        status, proc = 200, {"images": list(images_src[:15]), "errors": []}
     if status != 200 or not isinstance(proc, dict):
         return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "images", "error": proc}
     images = proc.get("images") or []
+    if not images and proc.get("errors"):
+        return {
+            "seller_sku": seller_sku,
+            "offer_id": offer_id,
+            "ok": False,
+            "step": "images",
+            "error": {
+                "message": "image processing failed",
+                "details": proc.get("errors"),
+            },
+        }
     if not images:
         return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "images", "error": "图片处理失败"}
 
@@ -75,23 +135,66 @@ def migrate_one(seller_sku: str, on_progress: Callable[[str], None] | None = Non
         "migrate_profile": draft.get("migrate_profile") or "generic",
         "tk_category_id": draft.get("tk_category_id") or "",
         "tk_category_leaf": draft.get("tk_category_leaf") or "",
+        "skip_rich_content": bool(skip_rich_content),
+        "skip_mapping_write": bool(skip_mapping_write),
     }
 
     _progress(on_progress, f"  {offer_id}: 提交 Ozon import（含 Rich 内容，可能需数分钟）…")
-    status, result = proxy_json("POST", "migrate", payload=payload)
+    try:
+        status, result = proxy_json("POST", "migrate", payload=payload)
+    except Exception as error:
+        return {
+            "seller_sku": seller_sku,
+            "offer_id": offer_id,
+            "ok": False,
+            "step": "migrate",
+            "error": str(error),
+            "import_request_attempted": True,
+            "import_dispatch_outcome": "unknown_after_dispatch",
+        }
     if status != 200 or not isinstance(result, dict):
-        return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "migrate", "error": result}
+        return {
+            "seller_sku": seller_sku,
+            "offer_id": offer_id,
+            "ok": False,
+            "step": "migrate",
+            "error": result,
+            "import_request_attempted": True,
+            "import_dispatch_outcome": "rejected_or_unknown",
+        }
 
     import_status = result.get("status")
-    if import_status == "pending":
+    if import_status == "pending" and wait_for_import:
         import_status = _poll_imported(offer_id, on_progress=on_progress)
 
-    ok = import_status == "imported"
+    accepted_without_wait = bool(
+        not wait_for_import
+        and import_status == "pending"
+        and result.get("task_id")
+        and not result.get("errors")
+    )
+    if accepted_without_wait:
+        import_status = "accepted"
+    ok = (
+        import_status in {"imported", "accepted"}
+        and not result.get("errors")
+    )
     return {
         "seller_sku": seller_sku,
         "offer_id": offer_id,
         "ok": ok,
         "status": import_status,
+        "task_id": str(result.get("task_id") or ""),
+        "import_request_attempted": True,
+        "import_dispatch_outcome": (
+            "accepted"
+            if ok and result.get("task_id")
+            else (
+                "rejected_or_unknown"
+                if result.get("errors")
+                else "ambiguous_missing_task_id"
+            )
+        ),
         "rich_status": result.get("rich_status"),
         "errors": result.get("errors") or [],
         "title": payload["title"],

@@ -56,9 +56,16 @@ _TABLECLOTH_HINTS = (
     "table cloth",
     "table cover",
     "tablecloths",
+    "table runner",
+    "table runners",
+    "table flag",
     "скатерть",
+    "дорожка на стол",
+    "настольная дорожка",
     "taplak meja",
     "meja cover",
+    "桌布",
+    "桌旗",
 )
 
 
@@ -85,7 +92,7 @@ def _size_label(len_cm: str = "", wid_cm: str = "") -> str:
     a = (len_cm or "").strip()
     b = (wid_cm or "").strip()
     if a and b:
-        return f"{a}×{b} см"
+        return f"{a}х{b} см"
     if a:
         return f"{a} см"
     if b:
@@ -111,7 +118,7 @@ def _normalize_title_sizes(text: str, *, len_cm: str = "", wid_cm: str = "") -> 
     t = re.sub(r",?\s*\b\d{4,}\s*см\b", "", t)
     correct = _size_label(len_cm, wid_cm)
     if correct:
-        t = re.sub(r"\d+\s*[×xX]\s*\d+\s*см", correct, t)
+        t = re.sub(r"\d+\s*[×xXхХ]\s*\d+\s*см", correct, t)
         if correct not in t:
             pass  # ensure_ozon_title_length will append
     return _clean_spaces(t)
@@ -248,7 +255,7 @@ def _is_keyword_spam_title(text: str) -> bool:
     if _ORIGINAL_WORD_RE.search(t):
         return True
     # 已是规范 Ozon 标题（含尺寸、够长）→ 不要重写成短标题
-    if len(t) >= OZON_TITLE_MIN_LEN and re.search(r"\d+\s*[×xX]\s*\d+", t):
+    if len(t) >= OZON_TITLE_MIN_LEN and re.search(r"\d+\s*[×xXхХ]\s*\d+", t):
         if t.startswith(("Самоклеящаяся", "Наклейка", "Декоратив", "Обои", "Стеклянный")):
             return False
     parts = [p.strip() for p in t.split(",") if p.strip()]
@@ -256,7 +263,7 @@ def _is_keyword_spam_title(text: str) -> bool:
         return False
     short = sum(
         1 for p in parts
-        if len(p) < 12 and p.lower() not in ("пвх",) and not re.search(r"\d+\s*[×xX]\s*\d+", p)
+        if len(p) < 12 and p.lower() not in ("пвх",) and not re.search(r"\d+\s*[×xXхХ]\s*\d+", p)
     )
     return short >= 4
 
@@ -266,6 +273,12 @@ def sanitize_ozon_title(text: str, *, len_cm: str = "", wid_cm: str = "") -> str
         return build_ozon_sticker_title([], len_cm=len_cm, wid_cm=wid_cm)
     t = _DRAFT_TITLE_SUFFIX_RE.sub(" ", text)
     t = _strip_original_words(t)
+    # Preserve dimensions such as ``30 x 90`` before the general Latin-word
+    # scrub removes the ASCII separator. Ozon strips the mathematical
+    # multiplication sign from a live product name, while the Cyrillic
+    # ``х`` is the conventional Russian dimension separator and survives
+    # the API round trip.
+    t = re.sub(r"(?<=\d)\s*[xX×хХ]\s*(?=\d)", "х", t)
     if _is_keyword_spam_title(t):
         t = _strip_latin(t)
         t = _simplify_keyword_title(t, len_cm=len_cm, wid_cm=wid_cm)
@@ -344,6 +357,51 @@ def polish_ozon_title(
 
 def polish_ozon_description(text: str) -> str:
     return sanitize_ozon_description(text)
+
+
+_PRODUCT_DIMENSION_RE = re.compile(
+    r"(?<!\d)\d+(?:[.,]\d+)?\s*[xX×хХ*]\s*\d+(?:[.,]\d+)?\s*(?:см|cm)?",
+    re.IGNORECASE,
+)
+
+
+def build_ozon_tablecloth_title(
+    approved_title: str,
+    *,
+    len_cm: str,
+    wid_cm: str,
+) -> str:
+    """Retain approved table-textile copy while binding the exact variant size."""
+
+    replacement = f"{len_cm}х{wid_cm} см"
+    source = (approved_title or "").strip()
+    if _PRODUCT_DIMENSION_RE.search(source):
+        source = _PRODUCT_DIMENSION_RE.sub(replacement, source, count=1)
+    else:
+        source = f"{source}, {replacement}" if source else f"Дорожка на стол, {replacement}"
+    title = polish_ozon_title(
+        source,
+        len_cm=len_cm,
+        wid_cm=wid_cm,
+        migrate_profile="tablecloth",
+    )
+    forbidden = ("самокле", "наклейк", "на стен", "плёнк", "пвх")
+    if any(token in title.lower() for token in forbidden):
+        raise ValueError("approved Ozon tablecloth title retained sticker semantics")
+    return title
+
+
+def build_ozon_tablecloth_description(*, len_cm: str, wid_cm: str, kit: str) -> str:
+    """Build provider-safe factual copy without the legacy wall-sticker template."""
+
+    return (
+        f"Декоративная текстильная дорожка на стол размером {len_cm}х{wid_cm} см. "
+        "Подходит для оформления обеденного или журнального стола, гостиной, "
+        "столовой и праздничной сервировки. Ажурное изделие можно использовать "
+        "самостоятельно или поверх основной скатерти. "
+        f"В комплекте: {kit}. Перед использованием рекомендуется бережный уход "
+        "в соответствии с маркировкой изделия. Страна производства — Китай."
+    )
 
 
 def tablecloth_hashtags() -> str:

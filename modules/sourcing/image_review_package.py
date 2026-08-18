@@ -420,11 +420,22 @@ def create_model_suite_proposal(
             if not isinstance(old_item, dict):
                 continue
             shot_id = str(old_item.get("id") or "")
-            merged_items.append(
-                deepcopy(revised_items[shot_id])
-                if shot_id in target_ids
-                else deepcopy(old_item)
-            )
+            if shot_id in target_ids:
+                merged_items.append(deepcopy(revised_items[shot_id]))
+                continue
+            preserved = deepcopy(old_item)
+            translated = revised_items.get(shot_id) or {}
+            if not str(preserved.get("operator_title_zh") or "").strip():
+                preserved["operator_title_zh"] = str(
+                    translated.get("operator_title_zh") or ""
+                ).strip()
+            if not str(preserved.get("operator_focus_zh") or "").strip():
+                preserved["operator_focus_zh"] = str(
+                    translated.get("operator_focus_zh")
+                    or preserved.get("focus_zh")
+                    or ""
+                ).strip()
+            merged_items.append(preserved)
         locked["analysis"] = deepcopy(previous_plan.get("analysis") or {})
         locked.setdefault("suite", {})["summary"] = str(
             ((previous_plan.get("suite") or {}).get("summary") or "")

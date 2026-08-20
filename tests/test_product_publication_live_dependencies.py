@@ -285,6 +285,54 @@ def test_tiktok_category_resolver_rejects_wallpaper_without_self_adhesive_fact_b
     assert calls == []
 
 
+def test_tiktok_category_resolver_uses_exact_decorative_sticker_for_wall_sticker():
+    calls = []
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == CATEGORY_TREE_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "cateTree": {
+                        "600338": {
+                            "cid": 600338,
+                            "disabled": False,
+                            "name": "Decorative Stickers",
+                            "children": {},
+                        }
+                    }
+                },
+            }
+        if path == CATEGORY_METADATA_PATH:
+            return {
+                "result": "success",
+                "data": {"categoryMetadata": {"categoryProductAttrList": []}},
+            }
+        raise AssertionError(path)
+
+    receipt = OfficialMiaoshouTikTokCategoryResolver(post=post).resolve(
+        target={
+            "target_label": "tiktok:LH_PH",
+            "platform": "tiktok",
+            "site": "LH_PH",
+            "store": "LH_PH",
+        },
+        product=_tiktok_product("贴饰 > 墙贴"),
+        skus=[{"model_sku": "0974"}],
+    )
+
+    assert receipt["category"]["id"] == "600338"
+    assert receipt["resolution"] == "EXACT"
+    assert calls == [
+        (CATEGORY_TREE_PATH, {"site": "PH"}),
+        (
+            CATEGORY_METADATA_PATH,
+            {"site": "PH", "cid": 600338, "shopIds": [7676267]},
+        ),
+    ]
+
+
 def test_tiktok_unavailable_storefront_readback_is_truthful_processing_input():
     fact = TikTokUnavailableStorefrontReadback().readback(
         command={"target_label": "tiktok:GB"},
@@ -673,6 +721,78 @@ def test_ozon_profile_resolver_and_builder_accept_exact_wallpaper_profile():
     assert (item["description_category_id"], item["type_id"]) == (17028954, 95819)
     assert attrs[9048]["values"] == [{"dictionary_value_id": 0, "value": "0969-wallpaper"}]
     assert attrs[8229]["values"] == [{"dictionary_value_id": 95819, "value": "Wallpaper"}]
+
+
+def test_ozon_profile_resolver_and_builder_accept_exact_interior_wall_sticker_profile():
+    def post(path, body):
+        if path == "/v1/description-category/tree":
+            return {
+                "result": [
+                    {
+                        "description_category_id": 17027494,
+                        "category_name": "House & Garden",
+                        "disabled": False,
+                        "children": [
+                            {
+                                "description_category_id": 17027906,
+                                "category_name": "Decor & Interior",
+                                "disabled": False,
+                                "children": [
+                                    {
+                                        "type_id": 91971,
+                                        "type_name": "Interior Sticker",
+                                        "disabled": False,
+                                        "children": [],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        if path == "/v1/description-category/attribute":
+            assert body["description_category_id"] == 17027906
+            assert body["type_id"] == 91971
+            return {
+                "result": [
+                    {"id": 85, "is_required": True},
+                    {"id": 9048, "is_required": True},
+                    {"id": 8229, "is_required": True},
+                ]
+            }
+        if path == "/v1/description-category/attribute/values/search":
+            if body["attribute_id"] == 85:
+                return {"result": [{"id": 126745801, "value": "No Brand"}]}
+            return {"result": [{"id": 91971, "value": "Interior Sticker"}]}
+        raise AssertionError(path)
+
+    snapshot = {
+        "schema_version": "approved-publication-snapshot/v4",
+        "product": {"main_category": {"name": "贴饰 > 墙贴"}},
+    }
+    profile = OfficialOzonFridgeMagnetProfileResolver(post=post)(snapshot)
+    assert (profile["description_category_id"], profile["type_id"]) == (
+        17027906,
+        91971,
+    )
+    variant = _ozon_variant()
+    variant.update(
+        {
+            "offer_id": "0974",
+            "approved_seller_sku": "0974",
+            "category": {"id": "17027906", "name": "Decor & Interior", "path": []},
+            "official_profile": profile,
+        }
+    )
+    item = build_ozon_import_item_from_frozen_variant(variant)
+    attrs = {row["id"]: row for row in item["attributes"]}
+    assert (item["description_category_id"], item["type_id"]) == (17027906, 91971)
+    assert attrs[9048]["values"] == [
+        {"dictionary_value_id": 0, "value": "0974-interior-sticker"}
+    ]
+    assert attrs[8229]["values"] == [
+        {"dictionary_value_id": 91971, "value": "Interior Sticker"}
+    ]
 
 
 def test_ozon_import_builder_uses_only_frozen_variant_and_official_profile():

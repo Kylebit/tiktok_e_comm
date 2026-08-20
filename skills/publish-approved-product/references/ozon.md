@@ -140,8 +140,9 @@ name (9048), and Type (8229). Any missing, disabled, or ambiguous official
 fact is a zero-write blocker.
 
 The frozen-v4 import builder has a closed profile registry: only the confirmed
-Fridge Magnet `(17028743, 93785)`, Mug Coaster `(17027926, 96376)`, and
-Wallpaper `(17028954, 95819)` pairs may form an import payload. The Wallpaper
+Fridge Magnet `(17028743, 93785)`, Mug Coaster `(17027926, 96376)`, Wallpaper
+`(17028954, 95819)`, and Interior Sticker `(17027906, 91971)` pairs may form an
+import payload. The Wallpaper
 pair is valid only for the approved wallpaper semantic and the official path
 `Construction & Renovation > Wallpaper & Wall Coatings`; its required
 attributes are likewise Brand (85), Model name (9048), and Type (8229), with
@@ -152,6 +153,15 @@ frozen parcel for that SKU at the Ozon boundary: `0.8 cm` is `8 mm`, not a
 Shopee envelope-rounded value. A local builder failure is a zero-write
 PREPARATION failure; only a submitted provider business rejection is a
 DISPATCH attempt.
+
+For the exact frozen `贴饰 > 墙贴` / wall-sticker semantic, the current official
+enabled profile is `House & Garden > Decor & Interior`,
+`description_category_id=17027906`, type `Interior Sticker`
+(`type_id=91971`). Required attributes are Brand (85), Model name (9048), and
+Type (8229); the exact Type dictionary value is `91971`. Build attribute 9048
+with the stable `interior-sticker` profile suffix. Re-read the tree, attributes,
+and dictionary before dispatch; missing, disabled, or ambiguous facts are a
+zero-write blocker.
 
 For the exact enabled `House & Garden > Souvenirs and Gifts > Fridge Magnet`
 profile (`description_category_id=17028743`, `type_id=93785`), wholly Latin

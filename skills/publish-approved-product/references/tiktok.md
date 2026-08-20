@@ -521,3 +521,9 @@ and metadata; require enabled node and valid metadata. Do not use it for
 ordinary wallpaper or share one site's result with another. GB uses the sole
 official Batch Number selection `102255=1000256` (`1`); all other approved
 sites have no required attribute. Any changed or ambiguous fact fails closed.
+
+For the exact frozen `贴饰 > 墙贴` / `Wall Sticker(s)` semantic, resolve directly
+to the same `cid=600338` only after each selected shop's current official tree
+proves the node enabled and its exact-shop metadata valid. This is an exact
+wall-sticker mapping, not the wallpaper fallback above. Never infer it from
+title keywords or reuse one shop's tree/metadata result for another shop.

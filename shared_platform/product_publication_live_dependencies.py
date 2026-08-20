@@ -99,6 +99,7 @@ _OZON_IMPORT_PROFILE_REGISTRY = {
     (17028743, 93785): "fridge-magnet",
     (17027926, 96376): "mug-coaster",
     (17028954, 95819): "wallpaper",
+    (17027906, 91971): "interior-sticker",
 }
 
 ProviderPost = Callable[[str, dict[str, object]], Mapping[str, object]]
@@ -186,6 +187,19 @@ _TIKTOK_EXACT_CATEGORY_PROFILES = (
         "primary": "600009",
         "fallbacks": (),
         "resolution": "USER_APPROVED_FALLBACK",
+    },
+    {
+        "aliases": frozenset(
+            {
+                "墙贴",
+                "wallsticker",
+                "wallstickers",
+                "walldecal",
+                "walldecals",
+            }
+        ),
+        "primary": "600338",
+        "fallbacks": (),
     },
     {
         "aliases": frozenset(
@@ -1716,6 +1730,8 @@ class OfficialOzonFridgeMagnetProfileResolver:
     _PLACEMAT_TYPE_ID = 96376
     _WALLPAPER_CATEGORY_ID = 17028954
     _WALLPAPER_TYPE_ID = 95819
+    _WALL_STICKER_CATEGORY_ID = 17027906
+    _WALL_STICKER_TYPE_ID = 91971
     _SEMANTIC_ALIASES = frozenset(
         {
             "fridge magnet",
@@ -1735,6 +1751,16 @@ class OfficialOzonFridgeMagnetProfileResolver:
             "wall coverings",
         }
     )
+    _WALL_STICKER_SEMANTIC_ALIASES = frozenset(
+        {
+            "贴饰 > 墙贴",
+            "墙贴",
+            "wall sticker",
+            "wall stickers",
+            "wall decal",
+            "wall decals",
+        }
+    )
 
     def __init__(self, *, post: OzonPost = ozon_post) -> None:
         if not callable(post):
@@ -1747,6 +1773,12 @@ class OfficialOzonFridgeMagnetProfileResolver:
         category = product.get("main_category") if isinstance(product, Mapping) else None
         name = str(category.get("name") or "").strip() if isinstance(category, Mapping) else ""
         normalized = " ".join(name.casefold().split())
+        if normalized in OfficialOzonFridgeMagnetProfileResolver._WALL_STICKER_SEMANTIC_ALIASES:
+            return (
+                OfficialOzonFridgeMagnetProfileResolver._WALL_STICKER_CATEGORY_ID,
+                OfficialOzonFridgeMagnetProfileResolver._WALL_STICKER_TYPE_ID,
+                "Interior Sticker",
+            )
         if normalized in OfficialOzonFridgeMagnetProfileResolver._WALLPAPER_SEMANTIC_ALIASES:
             return (
                 OfficialOzonFridgeMagnetProfileResolver._WALLPAPER_CATEGORY_ID,

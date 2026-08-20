@@ -195,9 +195,36 @@ _EXACT_CATEGORY_ALIASES = {
             "refrigeratormagnets",
         }
     ),
-    "墙贴": frozenset({"墙贴", "wallsticker", "wallstickers", "walldecal", "walldecals"}),
-    "wallsticker": frozenset({"墙贴", "wallsticker", "wallstickers", "walldecal", "walldecals"}),
-    "wallstickers": frozenset({"墙贴", "wallsticker", "wallstickers", "walldecal", "walldecals"}),
+    "墙贴": frozenset(
+        {
+            "墙贴",
+            "wallsticker",
+            "wallstickers",
+            "walldecal",
+            "walldecals",
+            "wallpaperswallstickers",
+        }
+    ),
+    "wallsticker": frozenset(
+        {
+            "墙贴",
+            "wallsticker",
+            "wallstickers",
+            "walldecal",
+            "walldecals",
+            "wallpaperswallstickers",
+        }
+    ),
+    "wallstickers": frozenset(
+        {
+            "墙贴",
+            "wallsticker",
+            "wallstickers",
+            "walldecal",
+            "walldecals",
+            "wallpaperswallstickers",
+        }
+    ),
     "餐垫杯垫": frozenset(
         {"餐垫杯垫", "placematscoasters", "placematcoaster", "placemat", "coaster"}
     ),

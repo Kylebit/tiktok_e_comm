@@ -3,6 +3,7 @@ import json
 from modules.shopee.global_v4_live_runtime import (
     OfficialShopeeGlobalV4Runtime,
     ShopeeGlobalV4LiveRuntimeError,
+    _approved_required_attributes,
     _default_image_upload,
     select_exact_official_category,
 )
@@ -304,6 +305,56 @@ def test_exact_main_category_selects_placemats_and_coasters_from_chinese_semanti
     )
 
     assert selected["id"] == "101247"
+
+
+def test_exact_wall_sticker_selects_official_combined_leaf_and_non_seasonal_value():
+    selected = select_exact_official_category(
+        {"id": "product-semantic:wall-sticker", "name": "贴饰 > 墙贴"},
+        [
+            {
+                "id": "101157",
+                "name": "Wallpapers & Wall Stickers",
+                "path": [
+                    {"id": "100636", "name": "Home & Living"},
+                    {"id": "100711", "name": "Decoration"},
+                    {"id": "101157", "name": "Wallpapers & Wall Stickers"},
+                ],
+                "publishable": True,
+            },
+            {
+                "id": "101156",
+                "name": "Photo Frames & Wall Decoration",
+                "path": [{"id": "101156", "name": "Photo Frames & Wall Decoration"}],
+                "publishable": True,
+            },
+        ],
+    )
+    required, missing = _approved_required_attributes(
+        {"category_decision": {"status": "DEFERRED_TO_SKILL"}},
+        [
+            {
+                "attribute_id": 100818,
+                "original_attribute_name": "Seasonal Decoration",
+                "is_mandatory": True,
+                "attribute_value_list": [
+                    {"value_id": 4228, "original_value_name": "No"},
+                    {"value_id": 4227, "original_value_name": "Yes"},
+                ],
+            }
+        ],
+        selected_category_id=selected["id"],
+    )
+
+    assert selected["id"] == "101157"
+    assert required == [
+        {
+            "attribute_id": 100818,
+            "attribute_value_list": [
+                {"value_id": 4228, "original_value_name": "No"}
+            ],
+        }
+    ]
+    assert missing == []
 
 
 def test_prepare_creation_returns_only_the_exact_official_leaf():

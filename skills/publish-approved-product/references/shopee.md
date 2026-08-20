@@ -29,10 +29,11 @@ For the approved semantic `餐具 > 餐垫、杯垫` (including exact English
 whose own leaf semantic is `Placemats & Coasters`. Do not substitute
 `Table Cloths`, `Others`, title keywords, or a TikTok category fallback.
 
-For the approved semantic `背景墙 > 墙纸、壁纸`, accept only the official
-publishable leaf `101157` (`Wallpapers & Wall Stickers`). If its sole required
-attribute is `100818 Seasonal Decoration`, use only the official dictionary
-value `4228` (`No`): Kyle has approved all such products as non-seasonal.
+For the approved semantics `背景墙 > 墙纸、壁纸` and `贴饰 > 墙贴`, accept only
+the official publishable leaf `101157` (`Wallpapers & Wall Stickers`). If its
+sole required attribute is `100818 Seasonal Decoration`, use only the official
+dictionary value `4228` (`No`): Kyle has approved all such products as
+non-seasonal.
 Do not infer another category or synthesize values for any other required
 attribute. Final global-item readback must still prove the exact category and
 the selected `100818=4228` attribute; absent, changed, or ambiguous official

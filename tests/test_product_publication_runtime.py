@@ -19,6 +19,7 @@ def _module():
 
 def test_service_contract_uses_exact_commands_and_identity_health_endpoints():
     runtime = _module()
+    assert str(runtime.ROOT) in runtime.sys.path
     specs = runtime.service_specs(root=ROOT, executable=Path("python"))
 
     assert [(item.name, item.port, item.health_url) for item in specs] == [

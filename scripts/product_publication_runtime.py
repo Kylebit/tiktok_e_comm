@@ -24,6 +24,8 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUNTIME_DIR = ROOT / "logs" / "product-publication-runtime"
 PUBLISH_ENTRY = ROOT / "skills" / "publish-approved-product" / "scripts" / "product_center_publication.py"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 class ServiceSpec(NamedTuple):

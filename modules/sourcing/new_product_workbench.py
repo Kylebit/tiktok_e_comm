@@ -1062,6 +1062,117 @@ def initialize_localized_image_review(
     return localized_image_review_summary(offer_id)
 
 
+def initialize_second_round_image_review(offer_id_or_url: str) -> dict[str, Any]:
+    """Bind the approved first-review image plan before a ReleasePlan exists."""
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    # Once initialized, this review is the durable frozen boundary. Generation,
+    # Miaoshou readback, and other legitimate second-round work may advance the
+    # mutable Product Center revision; that must not invalidate or overwrite the
+    # already-bound review. A materially changed first round requires an explicit
+    # new review round rather than silent reinitialization here.
+    existing = _localized_image_review_store().load(offer_id)
+    if existing:
+        return localized_image_review_summary(offer_id)
+    state = load_state(offer_id)
+    current_revision = max(0, int(state.get("_revision") or 0))
+    approval = state.get("product_approval") or {}
+    if approval.get("status") != "approved" or approval.get("approved_by") != "Kyle":
+        raise ValueError("an approved first-round product revision is required")
+    packet_path = ROOT / "reports" / "product-preparation" / offer_id / "first-review.json"
+    packet = _load_json(packet_path) or {}
+    if (
+        packet.get("schema") != "publication-preparation-decision/v1"
+        or packet.get("status") != "FIRST_REVIEW_READY"
+        or str(packet.get("offer_id") or "") != offer_id
+        or int(packet.get("product_center_revision") or 0)
+            != current_revision
+    ):
+        raise ValueError("the approved first-review packet is missing or stale")
+    image_plan = packet.get("image_execution_plan") or {}
+    if image_plan.get("schema_version") != "first-review-image-plan/v1":
+        raise ValueError("the first-review image plan is invalid")
+    source_actions = image_plan.get("source_actions") or []
+    if not isinstance(source_actions, list):
+        raise ValueError("the first-review image plan is invalid")
+    review = state.get("review") or {}
+    image_actions = review.get("image_actions") or []
+    if not isinstance(image_actions, list) or not image_actions:
+        raise ValueError("source image review is unavailable")
+    kept: list[tuple[int, str]] = []
+    for original_position, row in enumerate(image_actions, start=1):
+        if not isinstance(row, dict):
+            raise ValueError("source image review is invalid")
+        if str(row.get("action") or "keep").strip().lower() == "remove":
+            continue
+        source_url = str(row.get("output_url") or row.get("url") or "").strip()
+        if not source_url.startswith("https://"):
+            raise ValueError("source image review contains an invalid image")
+        kept.append((original_position, source_url))
+    if not kept or len({url for _position, url in kept}) != len(kept):
+        raise ValueError("source image review is incomplete or ambiguous")
+    final_position_by_original = {
+        original_position: final_position
+        for final_position, (original_position, _url) in enumerate(kept, start=1)
+    }
+    translate_actions = [
+        row for row in source_actions
+        if isinstance(row, dict)
+        and str(row.get("action") or "").strip().upper() == "TRANSLATE"
+    ]
+    selected_positions: list[int] = []
+    target_locales: list[str] = []
+    for action in translate_actions:
+        try:
+            original_position = int(action.get("position") or 0)
+        except (TypeError, ValueError) as error:
+            raise ValueError("the first-review translation position is invalid") from error
+        final_position = final_position_by_original.get(original_position)
+        if final_position is None:
+            raise ValueError("a removed source image cannot enter second-round generation")
+        selected_positions.append(final_position)
+        languages = action.get("target_languages") or []
+        if not isinstance(languages, list) or not languages:
+            raise ValueError("the first-review translation route is missing")
+        for language in languages:
+            clean = str(language or "").strip()
+            if clean != "en-master" and clean not in target_locales:
+                target_locales.append(clean)
+    target_selection = packet.get("target_selection") or {}
+    requested_targets = target_selection.get("requested") or []
+    if not isinstance(requested_targets, list) or not requested_targets:
+        raise ValueError("the first-review target selection is missing")
+    identity = {
+        "schema_version": "approved-first-review-image-input/v1",
+        "offer_id": offer_id,
+        "product_center_revision": current_revision,
+        "product_approval_fingerprint": str(approval.get("input_fingerprint") or ""),
+        "ordered_images": [url for _position, url in kept],
+        "selected_positions": selected_positions,
+        "publication_targets": requested_targets,
+        "target_locales": target_locales,
+        "image_execution_plan": image_plan,
+    }
+    digest = "sha256:" + hashlib.sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    _localized_image_review_store().initialize_from_first_review(
+        offer_id=offer_id,
+        first_review_id=f"first-review:{digest[7:27]}",
+        input_digest=digest,
+        ordered_images=identity["ordered_images"],
+        selected_positions=selected_positions,
+        publication_targets=requested_targets,
+        target_locales=target_locales,
+    )
+    return localized_image_review_summary(offer_id)
+
+
 def generate_localized_image_review(
     offer_id_or_url: str,
     *,
@@ -1273,6 +1384,74 @@ def approve_localized_image_review(
         offer_id,
         expected_revision=expected_revision,
         approved_by=approved_by,
+    )
+    return localized_image_review_summary(offer_id)
+
+
+def sync_localized_images_to_miaoshou_before_review(
+    offer_id_or_url: str,
+    *,
+    expected_revision: object,
+    post=None,
+    writer=None,
+) -> dict[str, Any]:
+    """Write and verify the English common baseline before image review opens.
+
+    Country-localized artifacts remain frozen in the review route ledger. They
+    are projected later into the corresponding site drafts; a common collect
+    box cannot hold several country image sets at the same time.
+    """
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    store = _localized_image_review_store()
+    project = store.load(offer_id)
+    if not project:
+        raise ValueError("localized image review is missing")
+    try:
+        expected = int(expected_revision)
+    except (TypeError, ValueError) as error:
+        raise ValueError("localized image revision is invalid") from error
+    if expected != int(project.get("revision") or 0):
+        raise ValueError("localized image revision has changed")
+    existing = project.get("miaoshou_pre_review_sync") or {}
+    if (
+        existing.get("status") == "VERIFIED"
+        and existing.get("written_to_miaoshou") is True
+        and existing.get("verified") is True
+        and int(existing.get("external_write_count") or 0) == 1
+    ):
+        return localized_image_review_summary(offer_id)
+    if any(
+        row.get("status") not in {"READY_FOR_REVIEW", "PASSED"}
+        for row in project.get("tasks") or []
+    ):
+        raise ValueError("localized images must be generated before Miaoshou sync")
+
+    write = writer or write_miaoshou_draft
+    result = write(offer_id, post=post) if post is not None else write(offer_id)
+    if (
+        not isinstance(result, dict)
+        or result.get("written_to_miaoshou") is not True
+        or result.get("verified") is not True
+        or result.get("claimed") is not False
+        or result.get("published") is not False
+    ):
+        raise RuntimeError("Miaoshou common baseline write was not verified")
+    image_count = len(((result.get("draft") or {}).get("imgUrls") or []))
+    if image_count < 1:
+        raise RuntimeError("Miaoshou common baseline readback has no images")
+    store.record_miaoshou_pre_review_sync(
+        offer_id,
+        expected_revision=expected,
+        receipt={
+            "status": "VERIFIED",
+            "written_to_miaoshou": True,
+            "verified": True,
+            "external_write_count": 1,
+            "written_image_count": image_count,
+            "claimed": False,
+            "published": False,
+        },
     )
     return localized_image_review_summary(offer_id)
 

@@ -9,11 +9,18 @@ Use the approved Product Center snapshot as the only shared input. TikTok,
 Shopee and Ozon are independent tasks. Never let one platform's previous state,
 failure, warning, or readback block another platform.
 
+Kyle's explicit approval in the conversation is the only human approval
+authority. Page buttons are never approval authorities. The agent must persist
+the exact approved revision and plan through the deterministic Product Center
+boundary before publication; a missing or stale technical fact may block
+execution, but it must not ask Kyle to repeat the same approval on another page.
+
 ## Required architecture
 
 1. Require the exact approved `offer_id` and `plan_id`; do not derive either
    from the mutable dashboard.
-2. Use `scripts/product_center_publication.py` as the only production command.
+2. Use `skills/publish-approved-product/scripts/product_center_publication.py`
+   as the only production command.
 3. Let Product Center resolve the frozen v4 snapshot and run each authorized
    platform through its server-owned async Runner and immutable report.
 4. Continue to the next platform after any platform failure.
@@ -81,7 +88,8 @@ specific; do not add it to TikTok or Ozon price rows.
 
 ## Production Runner and deprecated compatibility tools
 
-`product_center_publication.py` is the production control wrapper. It sends
+`skills/publish-approved-product/scripts/product_center_publication.py` is the
+production control wrapper. It sends
 only `{offer_id, plan_id}` to one or more of these explicit Runner start routes:
 
 - `/api/product-workspace/publish-tiktok`
@@ -151,7 +159,7 @@ TH/VN item before reading it again. Never create a duplicate for copy repair.
 After the user authorizes the exact offer, plan and platforms, execute:
 
 ```powershell
-python scripts/product_center_publication.py --offer-id <OFFER_ID> --plan-id <EXACT_PLAN_ID> --platform all --execute
+.venv\Scripts\python.exe skills\publish-approved-product\scripts\product_center_publication.py --offer-id <OFFER_ID> --plan-id <EXACT_PLAN_ID> --platform all --execute
 ```
 
 Use `--platform tiktok`, `shopee`, or `ozon` for an isolated retry. Authorization
@@ -184,14 +192,14 @@ Treat the repository directory `skills/publish-approved-product` as the only
 canonical Skill source. Check the installed copy before use:
 
 ```powershell
-python scripts/sync_publish_approved_product_skill.py --check
+.venv\Scripts\python.exe scripts\sync_product_publication_skills.py --check
 ```
 
 If review authorizes installation, run it explicitly and then check again:
 
 ```powershell
-python scripts/sync_publish_approved_product_skill.py --install
-python scripts/sync_publish_approved_product_skill.py --check
+.venv\Scripts\python.exe scripts\sync_product_publication_skills.py --install
+.venv\Scripts\python.exe scripts\sync_product_publication_skills.py --check
 ```
 
 Never install implicitly during publication, test execution, or Skill

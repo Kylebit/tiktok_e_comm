@@ -6,11 +6,11 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
-  <link rel="stylesheet" href="/static/product_workspace.css?v=20260801-v20">
-  <script src="/static/product_workspace.js?v=20260815-v38" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace.css?v=20260820-v21">
+  <script src="/static/product_workspace.js?v=20260820-v40" defer></script>
   <script src="/static/disabled_control_hints.js?v=20260729-v2" defer></script>
 </head>
-<body>
+<body data-human-review-surface="product-center">
   <a class="skip-link" href="#main">跳到主要内容</a>
 
   <header class="topbar">
@@ -19,15 +19,12 @@
       <span><strong>Orbit</strong><small>商品运营</small></span>
     </a>
     <nav aria-label="页面导航">
-      <a href="#overview">发布进度</a>
-      <a href="#productFactsPanel">商品事实</a>
-      <a href="#approval">商品审批</a>
-      <a href="#content">商品图片</a>
-      <a href="#channels">渠道准备</a>
-      <a href="#releasePlan">发布确认</a>
-      <a id="studioNavLink" href="/ai-image-studio" target="_blank" rel="noopener">内容与图片工作室 ↗</a>
+      <a href="#productFactsPanel">商品信息</a>
+      <a href="#embeddedImageReview">图片审核</a>
+      <a href="#channels">店铺与售价</a>
+      <a id="studioNavLink" class="operator-clutter" href="/ai-image-studio" target="_blank" rel="noopener">高级图片工具 ↗</a>
     </nav>
-    <span class="safety-pill"><i aria-hidden="true"></i> 正式 V1 · 外部动作需二次确认</span>
+    <span class="safety-pill"><i aria-hidden="true"></i> 会话授权 · 页面不重复批准</span>
   </header>
 
   <main id="main">
@@ -35,7 +32,7 @@
       <div class="hero-copy">
         <p class="eyebrow">PRODUCT OPERATIONS</p>
         <h1>商品发布中心</h1>
-        <p>从商品事实、原素材或 AI 辅助图片，到妙手待发布草稿与 16 个渠道目标，在同一个正式流程完成审核、准备、发布和回读。</p>
+        <p>只审核商品信息、图片方案、目标店铺与售价；发布交给后续 Skill。</p>
       </div>
 
       <form id="lookupForm" class="lookup-card" aria-label="添加商品到并行发布队列">
@@ -57,7 +54,7 @@
       </form>
     </section>
 
-    <section class="queue-section" aria-labelledby="queueTitle">
+    <section class="queue-section operator-clutter" aria-labelledby="queueTitle">
       <div class="queue-heading">
         <div>
           <p class="kicker">PARALLEL RELEASE QUEUE</p>
@@ -88,22 +85,18 @@
       </div>
     </section>
 
-    <section aria-labelledby="journeyTitle">
+    <section aria-labelledby="journeyTitle" class="operator-clutter">
       <div class="section-heading">
         <div>
           <p class="kicker">RELEASE JOURNEY</p>
-          <h2 id="journeyTitle">七阶段正式发布进度</h2>
+          <h2 id="journeyTitle">三阶段商品发布流程</h2>
         </div>
-        <p>每一阶段都必须有真实证据；后续阶段不会覆盖前序缺口。</p>
+        <p>页面只保留三次需要你判断的节点；后台仍保留完整证据、发布和回读状态。</p>
       </div>
       <div id="stageRail" class="stage-rail" aria-live="polite">
-        <div class="stage pending"><span>01</span><strong>商品事实</strong><small>等待检查</small></div>
-        <div class="stage pending"><span>02</span><strong>内容审批</strong><small>等待检查</small></div>
-        <div class="stage pending"><span>03</span><strong>商品审批</strong><small>等待检查</small></div>
-        <div class="stage pending"><span>04</span><strong>发布计划</strong><small>等待检查</small></div>
-        <div class="stage pending"><span>05</span><strong>妙手待发布</strong><small>等待检查</small></div>
-        <div class="stage pending"><span>06</span><strong>渠道执行</strong><small>等待检查</small></div>
-        <div class="stage pending"><span>07</span><strong>回读对账</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>01</span><strong>第一轮审核</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>02</span><strong>图片结果审核</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>03</span><strong>最终发布确认</strong><small>等待检查</small></div>
       </div>
     </section>
 
@@ -190,14 +183,14 @@
           <div class="facts-edit-actions">
             <p id="factsEditMessage" class="facts-edit-message" role="status">正在读取商品 revision…</p>
             <button id="factsEditSaveButton" class="button button-primary" type="submit" disabled>
-              <span class="facts-edit-save-label">保存并确认商品事实 · 刷新全部售价</span>
+              <span class="facts-edit-save-label">保存商品事实 · 刷新全部售价</span>
               <span class="facts-edit-save-loading">正在核对、保存并重新计算全部售价…</span>
             </button>
           </div>
         </form>
       </article>
 
-      <article class="panel next-panel">
+      <article class="panel next-panel operator-clutter">
         <div class="panel-heading">
           <div>
             <p class="kicker">NEXT ACTION</p>
@@ -221,11 +214,11 @@
       </article>
     </section>
 
-    <section id="approval" class="approval-section" aria-labelledby="approvalTitle">
+    <section id="approval" class="approval-section operator-clutter" aria-labelledby="approvalTitle">
       <div class="section-heading">
         <div>
           <p class="kicker">LOCAL PRODUCT APPROVAL</p>
-          <h2 id="approvalTitle">商品事实审批与版本锁定</h2>
+          <h2 id="approvalTitle">第一轮审核与版本锁定</h2>
         </div>
         <p>上方按钮负责编辑、核对和刷新售价；这里仅负责最终锁定当前 revision。不会上传妙手、创建渠道草稿或发布商品。</p>
       </div>
@@ -253,7 +246,7 @@
           <div class="approval-actions">
             <span>审批人：<strong>Kyle</strong></span>
             <button id="approvalButton" class="button button-primary" type="submit" disabled>
-              <span class="approval-button-label">批准并锁定当前 revision</span>
+              <span class="approval-button-label">批准第一轮方案</span>
               <span class="approval-button-loading">正在保存本地审批…</span>
             </button>
           </div>
@@ -262,11 +255,46 @@
       </article>
     </section>
 
+    <section id="embeddedImageReview" class="embedded-image-review" aria-labelledby="embeddedImageReviewTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">IMAGE REVIEW</p>
+          <h2 id="embeddedImageReviewTitle">来源图片选择</h2>
+        </div>
+        <span id="embeddedImageReviewBadge" class="badge neutral">正在读取</span>
+      </div>
+      <p class="embedded-image-review-intro">
+        这里只选择每张来源图“保留”或“不使用”。对当前轮次的最终同意以会话中的“继续/通过/下一步”为准，不需要再点批准按钮。
+      </p>
+      <div id="embeddedSourceImageGrid" class="embedded-source-image-grid" aria-live="polite"></div>
+      <div class="embedded-image-review-actions">
+        <p id="embeddedImageReviewMessage" role="status">正在读取当前图片决定…</p>
+        <button id="saveEmbeddedImageReviewButton" class="button button-primary" type="button" disabled>
+          <span class="embedded-image-save-label">保存图片选择</span>
+          <span class="embedded-image-save-loading">正在保存…</span>
+        </button>
+      </div>
+    </section>
+
+    <section id="firstReviewImagePlan" class="image-plan-section" aria-labelledby="firstReviewImagePlanTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">FIRST REVIEW IMAGE PLAN</p>
+          <h2 id="firstReviewImagePlanTitle">翻译与生成计划</h2>
+        </div>
+        <span id="firstReviewImagePlanBadge" class="badge neutral">尚未准备</span>
+      </div>
+      <p id="firstReviewImagePlanNotice" class="image-plan-notice">
+        系统按品类最佳实践列出翻译和新生成建议；你移除的来源图会自动退出后续任务，也可以选择全部不生成。
+      </p>
+      <div id="firstReviewImagePlanGrid" class="image-plan-grid" aria-live="polite"></div>
+    </section>
+
     <section id="content" class="content-section" aria-labelledby="contentTitle">
       <div class="section-heading">
         <div>
           <p class="kicker">FINAL CONTENT SET</p>
-          <h2 id="contentTitle">最终商品图片</h2>
+          <h2 id="contentTitle">最终图片结果</h2>
         </div>
         <div class="heading-badges">
           <span id="contentBadge" class="badge neutral">读取中</span>
@@ -277,11 +305,26 @@
       <div id="contentNotice" class="content-notice"></div>
     </section>
 
+    <section id="localizedImageResults" class="localized-image-results" aria-labelledby="localizedImageResultsTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">LOCALIZED IMAGE RESULTS</p>
+          <h2 id="localizedImageResultsTitle">多语言图片结果</h2>
+        </div>
+        <span id="localizedImageResultsBadge" class="badge neutral">尚未建立</span>
+      </div>
+      <p class="localized-image-results-intro">
+        这里集中显示第二轮图片 Skill 的各语言输出。页面只供查看；你在会话中说“继续/通过/下一步”即代表同意当前轮次。
+      </p>
+      <div id="localizedImageResultsGrid" class="localized-image-results-grid" aria-live="polite"></div>
+      <p id="localizedImageResultsMessage" class="localized-image-results-message" role="status"></p>
+    </section>
+
     <section id="channels" class="channel-section" aria-labelledby="channelsTitle">
       <div class="section-heading">
         <div>
           <p class="kicker">CHANNEL READINESS</p>
-          <h2 id="channelsTitle">16 目标全渠道发布准备</h2>
+          <h2 id="channelsTitle">店铺与售价</h2>
         </div>
         <p>先建立妙手公共草稿，再以 TikTok 审定商品为主版本，派生 Shopee 与 Ozon。当前只做预检，不会调用渠道接口。</p>
       </div>
@@ -308,7 +351,7 @@
         </form>
       </article>
       <article class="pricing-panel" aria-labelledby="pricingTitle">
-        <div class="pricing-panel-head">
+        <div class="pricing-panel-head operator-clutter">
           <div>
             <p class="kicker">LEGACY PRICING — PRESERVED</p>
             <h3 id="pricingTitle">全部国家与店铺售价审查</h3>
@@ -316,35 +359,35 @@
           </div>
           <div id="pricingSummary" class="pricing-summary">正在计算全部店铺售价…</div>
         </div>
-        <div id="storePriceGrid" class="store-price-grid" aria-live="polite"></div>
+        <div id="storePriceGrid" class="store-price-grid operator-clutter" aria-live="polite"></div>
         <div class="selected-channel-pricing">
           <div>
-            <h4>已选平台与国家售价</h4>
+            <h4>已选店铺售价</h4>
             <p>TikTok 展示所选店铺建议价；Shopee 与 Ozon 展示从 TikTok 审定商品回读后派生的价格、来源和阻塞状态。</p>
           </div>
           <div id="selectedChannelPriceGrid" class="selected-channel-price-grid" aria-live="polite"></div>
         </div>
-        <details class="legacy-pricing-audit">
+        <details class="legacy-pricing-audit operator-clutter">
           <summary>展开上一版完整费用、汇率与利润计算</summary>
           <div id="pricingAuditTables"></div>
         </details>
       </article>
-      <div class="channel-flow" aria-label="全渠道发布依赖流程">
+      <div class="channel-flow operator-clutter" aria-label="全渠道发布依赖流程">
         <span>妙手公共草稿</span><i aria-hidden="true">→</i>
         <span>TikTok 主商品回读</span><i aria-hidden="true">→</i>
         <span>Shopee / Ozon 派生</span>
       </div>
-      <div class="channel-toolbar">
+      <div class="channel-toolbar operator-clutter">
         <div id="channelPlanSummary" class="channel-plan-summary">正在读取发布计划…</div>
         <button id="refreshChannelsButton" class="button button-secondary" type="button">
           刷新全渠道预检
         </button>
       </div>
-      <div id="channelGrid" class="channel-grid" aria-live="polite"></div>
+      <div id="channelGrid" class="channel-grid operator-clutter" aria-live="polite"></div>
       <div id="channelBlockers" class="channel-blockers"></div>
     </section>
 
-    <section id="releasePlan" class="release-plan-section" aria-labelledby="releasePlanTitle">
+    <section id="releasePlan" class="release-plan-section operator-clutter" aria-labelledby="releasePlanTitle">
       <div class="section-heading">
         <div>
           <p class="kicker">IMMUTABLE RELEASE PLAN</p>
@@ -428,7 +471,7 @@
         </section>
       </article>
 
-      <div id="legacyReleaseActionPanels" class="release-actions-grid">
+      <div id="legacyReleaseActionPanels" class="release-actions-grid operator-clutter">
         <article class="external-action-card">
           <div>
             <p class="kicker">STEP 1 · PREPARE</p>
@@ -483,7 +526,7 @@
         </article>
       </div>
 
-      <article id="legacyReleaseRunLedger" class="run-ledger">
+      <article id="legacyReleaseRunLedger" class="run-ledger operator-clutter">
         <div>
           <p class="kicker">RELEASE RUN</p>
           <h3>逐目标执行与回读账本</h3>
@@ -494,7 +537,7 @@
       </article>
     </section>
 
-    <section class="safety-card" aria-labelledby="safetyTitle">
+    <section class="safety-card operator-clutter" aria-labelledby="safetyTitle">
       <div class="safety-mark" aria-hidden="true">✓</div>
       <div>
         <p class="kicker">SAFE BY DEFAULT</p>

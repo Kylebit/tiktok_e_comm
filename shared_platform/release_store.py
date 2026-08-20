@@ -2308,6 +2308,303 @@ class ReleaseStore:
         )
         return self.create_plan(payload, supersedes_plan_id=predecessor["plan_id"])
 
+    def create_and_approve_localized_image_successor(
+        self,
+        predecessor_plan_id: str,
+        *,
+        supplement: Mapping[str, Any],
+        uploaded_assets: Mapping[str, Mapping[str, Any]],
+        approved_by: str,
+        user_approved: bool,
+    ) -> dict[str, Any]:
+        """Atomically persist, approve and freeze one localized-image successor.
+
+        A localized successor is not useful in ``PENDING_APPROVAL`` state: the
+        predecessor has already been superseded by then, while publication still
+        cannot consume the successor.  Keep successor creation, predecessor
+        supersession, Kyle's approval and the v4 snapshot in one SQLite
+        transaction so a snapshot validation failure restores the predecessor.
+
+        The operation is idempotent for the exact same successor payload.  It
+        also finishes an exact pending successor left by the older two-call API,
+        but it never approves a different payload or actor.
+        """
+
+        if user_approved is not True:
+            raise ReleaseAuthorizationError("literal user_approved=True is required")
+        if _text(approved_by) != "Kyle":
+            raise ReleaseAuthorizationError("approved_by must be Kyle")
+
+        predecessor = self.get_plan(_text(predecessor_plan_id))
+        if predecessor is None:
+            raise ReleaseStoreError("predecessor release plan was not found")
+        if predecessor["status"] not in {PLAN_APPROVED, SUPERSEDED}:
+            raise ReleaseAuthorizationError(
+                "localized image successor requires an approved predecessor"
+            )
+        predecessor_snapshot = self.approved_publication_snapshot(
+            offer_id=predecessor["product_id"], plan_id=predecessor["plan_id"]
+        )
+        if predecessor_snapshot is None:
+            raise ReleaseAuthorizationError(
+                "localized image successor requires a durable frozen predecessor snapshot"
+            )
+
+        from shared_platform.localized_image_successor import (
+            build_localized_image_successor_payload,
+        )
+
+        payload = build_localized_image_successor_payload(
+            predecessor["payload"],
+            predecessor_snapshot=predecessor_snapshot,
+            supplement=supplement,
+            uploaded_assets=uploaded_assets,
+        )
+        # Validate the full v4 projection before any database mutation.  The
+        # same validation runs again while the snapshot is persisted below.
+        from domains.product_operations import build_approved_publication_snapshot
+
+        preview = self.preview_plan(payload)
+        validation_time = "2000-01-01T00:00:00+00:00"
+        build_approved_publication_snapshot(
+            {
+                **preview,
+                "status": PLAN_APPROVED,
+                "approved_at": validation_time,
+                "approval": {
+                    "status": PLAN_APPROVED,
+                    "approved_by": "Kyle",
+                    "approved_at": validation_time,
+                    "user_approved": True,
+                    "plan_id": preview["plan_id"],
+                    "payload_digest": preview["payload_digest"],
+                },
+            }
+        )
+
+        plan = _validated_plan(payload)
+        plan_id = plan["plan_id"]
+        if predecessor["status"] == SUPERSEDED:
+            if predecessor.get("superseded_by_plan_id") != plan_id:
+                raise ReleaseAuthorizationError(
+                    "predecessor was superseded by a different release plan"
+                )
+            repeated = self.get_plan(plan_id)
+            repeated_snapshot = self.approved_publication_snapshot(
+                offer_id=predecessor["product_id"], plan_id=plan_id
+            )
+            if (
+                not isinstance(repeated, dict)
+                or repeated.get("status") != PLAN_APPROVED
+                or not isinstance(repeated.get("approval"), dict)
+                or repeated["approval"].get("approved_by") != "Kyle"
+                or not isinstance(repeated_snapshot, dict)
+                or "image_routing" not in (repeated_snapshot.get("product") or {})
+            ):
+                raise ImmutableReleaseError(
+                    "localized image successor replay is incomplete"
+                )
+            return {
+                "schema_version": "localized-image-successor-approval/v1",
+                "plan": repeated,
+                "approval": repeated["approval"],
+                "publication_snapshot": repeated_snapshot,
+                "created": False,
+            }
+        encoded = _canonical_json(plan)
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        token = f"PUBLISH-{digest[:16].upper()}"
+        targets_json = _canonical_json(plan["targets"])
+        sku_key = _sku_key(plan["seller_sku"])
+        now = _utc_now()
+
+        try:
+            with self._transaction() as connection:
+                predecessor_row = connection.execute(
+                    "SELECT * FROM release_plans WHERE plan_id = ?",
+                    (predecessor["plan_id"],),
+                ).fetchone()
+                existing = connection.execute(
+                    "SELECT * FROM release_plans WHERE plan_id = ?",
+                    (plan_id,),
+                ).fetchone()
+                created_plan = False
+
+                if existing:
+                    if existing["payload_digest"] != digest:
+                        raise ImmutableReleaseError(
+                            "plan_id already belongs to a different payload digest"
+                        )
+                    if existing["status"] == SUPERSEDED:
+                        raise ReleaseAuthorizationError(
+                            "a superseded localized image successor cannot be approved"
+                        )
+                    if not predecessor_row or (
+                        predecessor_row["superseded_by_plan_id"] != plan_id
+                        and predecessor_row["status"] != PLAN_APPROVED
+                    ):
+                        raise ImmutableReleaseError(
+                            "localized image successor lost its predecessor binding"
+                        )
+                else:
+                    if not predecessor_row:
+                        raise ReleaseStoreError(
+                            "predecessor release plan was not found"
+                        )
+                    if predecessor_row["status"] != PLAN_APPROVED:
+                        raise ReleaseAuthorizationError(
+                            "localized image successor requires an active approved predecessor"
+                        )
+                    if predecessor_row["product_id"] != plan["product_id"]:
+                        raise ReleaseStoreError(
+                            "a successor plan must belong to the same product_id"
+                        )
+                    if predecessor_row["seller_sku"] != plan["seller_sku"]:
+                        raise ReleaseStoreError(
+                            "a successor plan must keep the same seller SKU"
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO release_plans (
+                            plan_id, product_id, seller_sku, sku_key,
+                            product_package_id, content_package_id,
+                            target_labels_json, payload_json, payload_digest,
+                            confirmation_token, status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', ?)
+                        """,
+                        (
+                            plan_id,
+                            plan["product_id"],
+                            plan["seller_sku"],
+                            sku_key,
+                            plan["product_package_id"],
+                            plan["content_package_id"],
+                            targets_json,
+                            encoded,
+                            digest,
+                            token,
+                            now,
+                        ),
+                    )
+                    self._supersede_in_transaction(
+                        connection,
+                        predecessor["plan_id"],
+                        superseded_by_plan_id=plan_id,
+                        reason="replaced by approved localized publication images",
+                        now=now,
+                    )
+                    source_lineage = _insert_source_sku_lineage_in_transaction(
+                        connection,
+                        plan,
+                        now=now,
+                    )
+                    active_legacy = connection.execute(
+                        """
+                        SELECT * FROM release_sku_reservations
+                        WHERE sku_key = ? AND status = 'ACTIVE'
+                        """,
+                        (sku_key,),
+                    ).fetchone()
+                    if not active_legacy:
+                        connection.execute(
+                            """
+                            INSERT INTO release_sku_reservations (
+                                reservation_id, plan_id, product_id, seller_sku,
+                                sku_key, status, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+                            """,
+                            (
+                                f"sku-reservation:{plan_id}",
+                                plan_id,
+                                plan["product_id"],
+                                plan["seller_sku"],
+                                sku_key,
+                                now,
+                                now,
+                            ),
+                        )
+                    elif not source_lineage["inherited_existing_source"]:
+                        raise SkuReservationConflict(
+                            f"seller SKU key {sku_key} is already reserved"
+                        )
+                    existing = connection.execute(
+                        "SELECT * FROM release_plans WHERE plan_id = ?",
+                        (plan_id,),
+                    ).fetchone()
+                    created_plan = True
+
+                approval_row = connection.execute(
+                    "SELECT * FROM release_approvals WHERE plan_id = ?",
+                    (plan_id,),
+                ).fetchone()
+                created_approval = False
+                if approval_row:
+                    if (
+                        approval_row["payload_digest"] != digest
+                        or approval_row["confirmation_token"] != token
+                        or approval_row["approved_by"] != "Kyle"
+                        or approval_row["status"] != PLAN_APPROVED
+                    ):
+                        raise ImmutableReleaseError(
+                            "localized image successor already has a different approval"
+                        )
+                else:
+                    approval_id = f"release-approval:{digest[:24]}"
+                    connection.execute(
+                        """
+                        INSERT INTO release_approvals (
+                            approval_id, plan_id, payload_digest, confirmation_token,
+                            approved_by, user_approved, status, approved_at
+                        ) VALUES (?, ?, ?, ?, 'Kyle', 1, 'APPROVED', ?)
+                        """,
+                        (approval_id, plan_id, digest, token, now),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE release_plans
+                        SET status = 'APPROVED', approved_at = ?
+                        WHERE plan_id = ?
+                        """,
+                        (now, plan_id),
+                    )
+                    approval_row = connection.execute(
+                        "SELECT * FROM release_approvals WHERE approval_id = ?",
+                        (approval_id,),
+                    ).fetchone()
+                    existing = connection.execute(
+                        "SELECT * FROM release_plans WHERE plan_id = ?",
+                        (plan_id,),
+                    ).fetchone()
+                    created_approval = True
+
+                snapshot = _persist_publication_snapshot_in_transaction(
+                    connection,
+                    plan_row=existing,
+                    approval_row=approval_row,
+                    now=now,
+                )
+                if snapshot is None:
+                    raise ImmutableReleaseError(
+                        "localized image successor did not freeze a v4 snapshot"
+                    )
+                if "image_routing" not in (snapshot.get("product") or {}):
+                    raise ImmutableReleaseError(
+                        "localized image successor snapshot lost image routing"
+                    )
+                return {
+                    "schema_version": "localized-image-successor-approval/v1",
+                    "plan": _plan_from_row(existing),
+                    "approval": _approval_from_row(approval_row),
+                    "publication_snapshot": snapshot,
+                    "created": created_plan or created_approval,
+                }
+        except sqlite3.IntegrityError as error:
+            if "release_sku_reservations.sku_key" in str(error):
+                raise SkuReservationConflict(
+                    f"seller SKU key {sku_key} is already reserved"
+                ) from error
+            raise
+
     def create_category_correction_successor(
         self,
         predecessor_plan_id: str,

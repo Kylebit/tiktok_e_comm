@@ -1,0 +1,4 @@
+interface:
+  display_name: "准备商品图片"
+  short_description: "锁定第一轮审核并生成待人工审核的多语言图片"
+  default_prompt: "Use $prepare-product-images to start the approved product's second-round image generation and prepare its human review page."

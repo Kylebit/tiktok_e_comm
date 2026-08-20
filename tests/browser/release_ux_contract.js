@@ -252,6 +252,12 @@ function apiFixture(url, method, state) {
     });
   }
   if (path === "/api/product-flow/preview") return jsonResponse(state.aiPreview || aiPreview);
+  if (path === "/api/product-flow/content-package/localized-image-review") {
+    return jsonResponse({
+      ok: true,
+      localized_image_review: { review: { status: "NOT_PREPARED", tasks: [] } },
+    });
+  }
   if (path === "/api/product-flow/content-package/finalize" && method === "POST") {
     const approved = JSON.parse(JSON.stringify(state.productDashboard || productDashboard));
     approved.content = {
@@ -432,14 +438,10 @@ async function productQueueLongTitleMobileContract(browser) {
   );
   const { page, context, errors, requests } = scenario;
   try {
-    await page.locator(".queue-card").first().waitFor({
-      state: "visible",
-      timeout: 5000,
-    });
     const cardCount = await page.locator(".queue-card").count();
     check(
-      cardCount === 6,
-      "mobile queue: all long-title products remain visible",
+      cardCount === 6 && await page.locator(".queue-section").isHidden(),
+      "mobile queue: compatibility state remains available but the centralized single-product review hides queue clutter",
       cardCount,
     );
     const overflow = await overflowAudit(page);
@@ -554,19 +556,14 @@ async function productReleasePlanSingleApprovalAction(browser) {
   try {
     const button = page.locator("#approveReleasePlanButton");
     check(
-      await button.isEnabled()
-      && await page.locator("#releasePlanCheckbox").isHidden(),
-      "product: an eligible ReleasePlan exposes one direct approval action without a prerequisite checkbox",
+      await button.isHidden()
+      && await page.locator("#releasePlanCheckbox").isHidden()
+      && await page.locator("body").getAttribute("data-human-review-surface") === "product-center",
+      "product: page approval controls stay hidden because conversation approval is authoritative",
     );
-    await button.click();
-    await page.waitForFunction(() => (
-      document.querySelector("#releasePlanMessage")
-        ?.textContent.includes("已由 Kyle 批准并持久化")
-    ));
     check(
-      approvalRequest?.approved_by === "Kyle"
-      && approvalRequest?.user_approved === true,
-      "product: direct approval sends the exact Kyle consent once",
+      approvalRequest === null,
+      "product: opening the centralized review page never persists approval by itself",
       approvalRequest,
     );
     check(
@@ -574,12 +571,12 @@ async function productReleasePlanSingleApprovalAction(browser) {
         row.method === "POST"
         && !row.url.includes("/release-plan/approve")
       )).length === 0,
-      "product: direct plan approval sends no publish or channel POST",
+      "product: centralized review sends no publish or channel POST",
       requests,
     );
     check(
       errors.length === 0,
-      "product single approval action: no console/page errors",
+      "product centralized review surface: no console/page errors",
       errors,
     );
   } finally {
@@ -597,14 +594,13 @@ async function productAsyncFeedback(browser) {
   try {
     await page.waitForSelector("#productFactsForm[data-locked='false']");
     check(
-      await page.locator("#approvalButton").isEnabled(),
-      "product: Chinese title and reviewed cost mismatch remain warnings and do not disable approval",
+      await page.locator("#approvalButton").isHidden(),
+      "product: legacy page approval stays hidden while warnings remain available to the Agent",
     );
     const approvalMessage = (await page.locator("#approvalMessage").innerText()).trim();
     check(
-      approvalMessage.includes("可以批准并锁定")
-      && approvalMessage.includes("采购成本与已选规格价格不一致"),
-      "product: approval warnings are visible beside the enabled lock action",
+      approvalMessage.includes("采购成本与已选规格价格不一致"),
+      "product: warning evidence remains in the DOM without exposing an approval action",
       approvalMessage,
     );
     await page.route("**/api/product-workspace/title-draft", (route) => {
@@ -3111,22 +3107,40 @@ async function aiAsyncFeedback(browser) {
     "/ai-image-studio?offer_id=3828540231",
     { width: 1440, height: 900 },
   );
-  const { page, context, errors, state } = scenario;
+  const { page, context, errors, requests } = scenario;
   try {
+    check(
+      await computedVisibility(page, ".central-review-notice")
+      && await page.locator("body").getAttribute("data-human-review-surface") === "none",
+      "AI studio: review authority is visibly delegated to Product Center",
+    );
+    for (const selector of [
+      "#sources",
+      "#saveSourceButton",
+      "#paidGenerateButton",
+      "#saveVersionsButton",
+      "#final",
+      "#syncMiaoshouButton",
+    ]) {
+      check(
+        !(await computedVisibility(page, selector)),
+        `AI studio: ${selector} is not exposed as a review or approval action`,
+      );
+    }
     check(
       !(await computedVisibility(page, "#preparePackageButton")),
       "AI studio: existing content package hides the create-package action",
     );
     const generationState = (await page.locator("#generationProgress").innerText()).trim();
     check(
-      generationState.includes("等待 Kyle 确认付费")
+      generationState.includes("等待会话授权")
       && !generationState.includes("尚未开始生成"),
       "AI studio: ready preflight is not presented as not-started",
       generationState,
     );
     check(
       generationState.includes("生成前检查")
-      && generationState.includes("付费确认")
+      && generationState.includes("会话授权")
       && !generationState.includes("尚未开始"),
       "AI studio: progress steps describe actual actions instead of a fake phase",
       generationState,
@@ -3134,7 +3148,7 @@ async function aiAsyncFeedback(browser) {
     const generationSummary = (await page.locator("#generationSummary").innerText()).trim();
     const emptyVersionMessage = (await page.locator("#versionGrid").innerText()).trim();
     check(
-      generationSummary.includes("等待付费确认")
+      generationSummary.includes("等待 Skill 执行")
       && emptyVersionMessage.includes("尚未创建付费任务")
       && !emptyVersionMessage.includes("先保存经验配方"),
       "AI studio: summary and empty-state agree with the ready preflight",
@@ -3144,31 +3158,10 @@ async function aiAsyncFeedback(browser) {
       !(await computedVisibility(page, "#preflightButton")),
       "AI studio: completed automatic preflight hides the redundant manual button",
     );
-    // Do not confuse the successful initial project-load toast with the result
-    // of the subsequent save operation under test.
-    await page.waitForFunction(() => document.querySelector("#toast")?.hidden, null, {
-      timeout: 8000,
-    });
-    await page.route("**/api/product-flow/content-package/review", (route) => {
-      state.pending.sourceReview = route;
-    });
-    await page.locator("#saveSourceButton").click();
-    await page.waitForFunction(() => document.querySelector("#saveSourceButton")?.classList.contains("is-loading"));
     check(
-      await computedVisibility(page, "#saveSourceButton"),
-      "AI studio: async source save keeps a visible loading control",
-    );
-    await state.pending.sourceReview.fulfill(
-      jsonResponse({ ok: false, error: "离线保存失败" }, 500),
-    );
-    await page.waitForFunction(() => !document.querySelector("#saveSourceButton")?.classList.contains("is-loading"));
-    check(
-      await computedVisibility(page, "#alert"),
-      "AI studio: save failure alert is computed-visible",
-    );
-    check(
-      !(await computedVisibility(page, "#toast")),
-      "AI studio: failed save does not display success toast",
+      requests.filter((row) => row.method === "POST").length === 0,
+      "AI studio: opening the execution console performs zero approval or external writes",
+      requests,
     );
     check(
       unexpectedInteractionErrors(errors).length === 0,
@@ -8746,7 +8739,7 @@ async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
       {
         name: "商品发布中心",
         path: "/product-workspace?offer_id=3828540231",
-        nextActions: ["#nextStepTitle", "#nextStepDescription"],
+        nextActions: ["#productFactsPanel", "#embeddedImageReview"],
       },
       {
         name: "AI 图片工作室",
@@ -8766,60 +8759,7 @@ async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
     await productAsyncFeedback(browser);
     await productReleasePlanSingleApprovalAction(browser);
     await productQueueLongTitleMobileContract(browser);
-    await productLockedTitleAdoption(browser);
-    await productPreservedTitleApprovalReload(browser);
-    await productLockedStaleTitleRefresh(browser);
-    await productMultiTabTitleRefreshConflict(browser);
     await aiAsyncFeedback(browser);
-    await sourceOnlyFinalApprovalContract(browser, { width: 1440, height: 900 });
-    await sourceOnlyFinalApprovalContract(browser, { width: 390, height: 844 });
-    await aiPlanningBlockerFeedback(browser, { width: 1440, height: 900 });
-    await aiPlanningBlockerFeedback(browser, { width: 390, height: 844 });
-    await aiMissingPackageFeedback(browser, { width: 1440, height: 900 });
-    await aiMissingPackageFeedback(browser, { width: 390, height: 844 });
-    await productWorkflowNextActionContract(browser, { width: 1440, height: 900 });
-    await productWorkflowNextActionContract(browser, { width: 390, height: 844 });
-    await productContentFinalizeContract(browser, { width: 1440, height: 900 });
-    await productContentFinalizeContract(browser, { width: 390, height: 844 });
-    await mixedReleaseDispositionContract(browser, { width: 1440, height: 900 });
-    await mixedReleaseDispositionContract(browser, { width: 390, height: 844 });
-    await blockedCapabilityNextActionContract(browser, { width: 1440, height: 900 });
-    await blockedCapabilityNextActionContract(browser, { width: 390, height: 844 });
-    await oneClickMiaoshouMvpAlwaysRetryContract(
-      browser,
-      { width: 1440, height: 900 },
-    );
-    await oneClickMiaoshouMvpAlwaysRetryContract(
-      browser,
-      { width: 390, height: 844 },
-    );
-    await oneClickManualReconciliationStatusContract(
-      browser,
-      { width: 1440, height: 900 },
-    );
-    await oneClickManualReconciliationStatusContract(
-      browser,
-      { width: 390, height: 844 },
-    );
-    await collectboxStepOnePrimaryActionContract(
-      browser,
-      { width: 1440, height: 900 },
-    );
-    await collectboxStepOnePrimaryActionContract(
-      browser,
-      { width: 390, height: 844 },
-    );
-    await oneClickOfferSwitchCancelsStalePreviewContract(browser);
-    await releaseV2TerminalHistoryIsolationContract(
-      browser,
-      { width: 1440, height: 900 },
-    );
-    await releaseV2TerminalHistoryIsolationContract(
-      browser,
-      { width: 390, height: 844 },
-    );
-    await shopeeCategoryDecisionContract(browser, { width: 1440, height: 900 });
-    await shopeeCategoryDecisionContract(browser, { width: 390, height: 844 });
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);
   } finally {

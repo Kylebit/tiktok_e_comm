@@ -1880,6 +1880,14 @@ def build_release_dashboard(
         if isinstance(review.get("sku_label_overrides"), Mapping)
         else {}
     )
+    from domains.product_operations.variant_display import (
+        VariantDisplayError,
+        normalize_publication_specification,
+    )
+
+    source_item_code = str(
+        source.get("source_item_code") or source.get("itemNum") or ""
+    ).strip()
     for row in source.get("skus") or ():
         if not isinstance(row, Mapping):
             continue
@@ -1888,13 +1896,23 @@ def build_release_dashboard(
             continue
         seen_source_sku_keys.add(key)
         source_name = str(row.get("name") or key).strip() or key
-        name = str(sku_label_overrides.get(key) or source_name).strip()
+        raw_name = str(sku_label_overrides.get(key) or source_name).strip()
+        try:
+            name = normalize_publication_specification(
+                raw_name,
+                internal_identifiers=(source_item_code,),
+            )
+            normalization_status = "READY"
+        except VariantDisplayError:
+            name = raw_name
+            normalization_status = "USER_REVIEW_REQUIRED"
         source_sku = {
             "key": key,
             "label": name,
             "name": name,
             "source_label": source_name,
-            "label_overridden": name != source_name,
+            "label_overridden": key in sku_label_overrides,
+            "normalization_status": normalization_status,
             "price_cny": row.get("price"),
         }
         if inherited_model_skus.get(key):

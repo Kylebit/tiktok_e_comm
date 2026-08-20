@@ -6,7 +6,7 @@ from modules.sourcing import new_product_server
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_standalone_review_console_is_separate_from_ai_studio():
+def test_localized_result_console_is_separate_from_ai_studio():
     html = (ROOT / "web" / "localized_image_review.html").read_text(encoding="utf-8")
     script = (ROOT / "web" / "static" / "localized_image_review.js").read_text(
         encoding="utf-8"
@@ -15,16 +15,18 @@ def test_standalone_review_console_is_separate_from_ai_studio():
         encoding="utf-8"
     )
 
-    assert "多语言图片审核台" in html
-    assert 'id="paidGenerationConfirm"' in html
-    assert 'id="generateLocalizedImages"' in html
-    assert 'id="approveLocalizedImages"' in html
+    assert "多语言图片执行结果" in html
+    assert 'data-human-review-surface="none"' in html
+    assert 'id="refreshReview"' in html
+    assert 'id="paidGenerationConfirm"' not in html
+    assert 'id="generateLocalizedImages"' not in html
+    assert 'id="approveLocalizedImages"' not in html
     assert "content-package/localized-image-review" in script
     assert '"/localized-image-review"' in product_server
     assert "localized_image_review.html" in product_server
 
 
-def test_review_console_does_not_write_marketplaces_or_mutate_product_center():
+def test_result_console_does_not_write_marketplaces_or_mutate_product_center():
     script = (ROOT / "web" / "static" / "localized_image_review.js").read_text(
         encoding="utf-8"
     )
@@ -32,7 +34,26 @@ def test_review_console_does_not_write_marketplaces_or_mutate_product_center():
 
     forbidden = ("publish-tiktok", "publish-shopee", "publish-ozon", "miaoshou-images/commit")
     assert all(value not in script for value in forbidden)
-    assert "独立审核，不修改当前发布计划" in html
+    assert "所有人工审核统一在商品发布中心完成" in html
+
+
+def test_result_page_is_read_only_and_uses_one_refresh_action():
+    script = (ROOT / "web" / "static" / "localized_image_review.js").read_text(
+        encoding="utf-8"
+    )
+    html = (ROOT / "web" / "localized_image_review.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="refreshReview"' in html
+    assert 'id="passVisibleImages"' not in html
+    assert 'id="approveLocalizedImages"' not in html
+    assert 'id="paidGenerationConfirm"' not in html
+    assert 'id="generateLocalizedImages"' not in html
+    assert 'request("/approve"' not in script
+    assert 'request("/decision"' not in script
+    assert 'request("/generate"' not in script
+    assert "refreshReview" in script
 
 
 def test_review_http_actions_are_registered_on_both_local_services():
@@ -50,12 +71,13 @@ def test_review_http_actions_are_registered_on_both_local_services():
     assert "paid ToAPIs localized image generation" in treasury
 
 
-def test_initial_project_button_recovers_after_the_first_read():
+def test_refresh_button_recovers_after_the_first_read():
     script = (ROOT / "web" / "static" / "localized_image_review.js").read_text(
         encoding="utf-8"
     )
 
-    assert '$("initializeReview").disabled = busy || Boolean(state?.initialized);' in script
+    assert '$("refreshReview").disabled = busy;' in script
+    assert '$("refreshReview").addEventListener("click", load);' in script
 
 
 def test_lightbox_close_button_is_not_left_disabled_after_loading():
@@ -66,13 +88,13 @@ def test_lightbox_close_button_is_not_left_disabled_after_loading():
     assert '$("closeLightbox").disabled = false;' in script
 
 
-def test_generation_error_survives_the_final_action_rerender():
+def test_read_error_remains_visible_without_a_write_retry():
     script = (ROOT / "web" / "static" / "localized_image_review.js").read_text(
         encoding="utf-8"
     )
 
-    assert "let failureMessage = \"\";" in script
-    assert "if (failureMessage) status(failureMessage, true);" in script
+    assert 'status(`失败：${error.message || error}`, true);' in script
+    assert "method: \"POST\"" not in script
 
 
 def test_paid_generation_runs_as_a_background_job_and_ui_polls_progress():

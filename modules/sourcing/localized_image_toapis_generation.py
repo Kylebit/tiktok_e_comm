@@ -202,6 +202,14 @@ def generate_localized_reference_image(
             }
             _atomic_json(state_path, state)
         completed = api.wait_for_generation(task_id, timeout=600, poll_interval=3)
+        result_rows = ((completed.get("result") or {}).get("data") or [])
+        public_url = str(
+            (result_rows[0] if result_rows else {}).get("url") or ""
+        ).strip()
+        if not public_url.startswith("https://"):
+            raise RuntimeError(
+                "ToAPIs generation did not return a public HTTPS result"
+            )
         with tempfile.TemporaryDirectory(prefix="localized-toapis-") as temporary:
             downloaded = _download_completed_result(
                 api, completed, Path(temporary) / "result"
@@ -218,6 +226,7 @@ def generate_localized_reference_image(
             "outcome_unknown": False,
             "external_generation_count": 1,
             "output_digest": f"sha256:{output_digest}",
+            "public_url": public_url,
         }
         _atomic_bytes(output_path, image_bytes)
         _atomic_json(

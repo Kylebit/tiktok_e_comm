@@ -290,6 +290,69 @@ def test_real_server_approval_path_atomically_freezes_and_reopens_v4(
         ).fetchone()[0] == 1
 
 
+def test_localized_successor_creation_and_approval_are_one_atomic_operation(
+    tmp_path, monkeypatch
+):
+    store, payload, _response = _approved_full_store(tmp_path, monkeypatch)
+    predecessor = store.get_plan(payload["plan_id"])
+    snapshot = store.approved_publication_snapshot(
+        offer_id=payload["product_id"], plan_id=payload["plan_id"]
+    )
+    base_images = list(snapshot["product"]["images"])
+    routes = {
+        label: {
+            "locale": "en-master",
+            "ordered_images": [
+                {"position": position, "kind": "APPROVED_BASE_URL", "url": url}
+                for position, url in enumerate(base_images, start=1)
+            ],
+        }
+        for label in predecessor["targets"]
+    }
+    supplement = {
+        "schema_version": "publication-image-supplement/v1",
+        "status": "APPROVED_LOCAL_ASSETS",
+        "platform_writes": 0,
+        "product_center_mutated": False,
+        "offer_id": payload["product_id"],
+        "release_plan_id": payload["plan_id"],
+        "approved_snapshot_digest": snapshot["snapshot_digest"],
+        "approval_digest": _sha("localized-approval"),
+        "supplement_digest": _sha("localized-supplement"),
+        "routes": routes,
+    }
+
+    result = store.create_and_approve_localized_image_successor(
+        payload["plan_id"],
+        supplement=supplement,
+        uploaded_assets={},
+        approved_by="Kyle",
+        user_approved=True,
+    )
+
+    successor = result["plan"]
+    assert successor["status"] == "APPROVED"
+    assert store.get_plan(payload["plan_id"])["status"] == "SUPERSEDED"
+    assert result["publication_snapshot"]["product"]["image_routing"][
+        "routes"
+    ] == {
+        label: {
+            "locale": "en-master",
+            "ordered_images": base_images,
+        }
+        for label in predecessor["targets"]
+    }
+    repeated = store.create_and_approve_localized_image_successor(
+        payload["plan_id"],
+        supplement=supplement,
+        uploaded_assets={},
+        approved_by="Kyle",
+        user_approved=True,
+    )
+    assert repeated["plan"]["plan_id"] == successor["plan_id"]
+    assert repeated["created"] is False
+
+
 def test_approved_upstream_drift_does_not_change_frozen_snapshot(
     tmp_path, monkeypatch
 ):

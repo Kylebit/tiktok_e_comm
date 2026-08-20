@@ -75,6 +75,15 @@
   const MAX_QUEUE_ITEMS = 50;
   const QUEUE_REFRESH_CONCURRENCY = 4;
   let currentData = null;
+  let currentFirstReviewImagePlan = null;
+  let embeddedImageReviewPreview = null;
+  let embeddedImageReviewOfferId = "";
+  let embeddedImageReviewDirty = false;
+  let embeddedImageReviewLoading = false;
+  let embeddedImageReviewSubmitting = false;
+  let embeddedImageReviewRequestId = 0;
+  let localizedImageResultsOfferId = "";
+  let localizedImageResultsRequestId = 0;
   let approvalSubmitting = false;
   let factsSubmitting = false;
   let productFactsDraftDirty = false;
@@ -5077,43 +5086,36 @@
       ),
     );
 
+    let finalWaitText = "待确认发布计划";
+    if (planReady && !imageSyncReady) finalWaitText = "计划已批准 · 待执行";
+    if (imageSyncReady && !channelExecutionReady) finalWaitText = channelWaitText;
+    if (channelExecutionReady && !reconciliationReady) finalWaitText = "执行结束 · 待对账";
+    if (runCounts.draftVerify) finalWaitText = `${runCounts.draftVerify} 个草稿待核验`;
+    if (runCounts.draftConflict) finalWaitText = `${runCounts.draftConflict} 个草稿版本冲突`;
+    if (runCounts.reconcileOnly) finalWaitText = `${runCounts.reconcileOnly} 个结果待对账`;
+    if (runCounts.awaitingReadback) finalWaitText = `${runCounts.awaitingReadback} 个待人工验收`;
+    if (runCounts.safeRetry) finalWaitText = `${runCounts.safeRetry} 个修复后可重试`;
     const raw = [
-      { key: "product", label: "商品事实", ready: productReady, readyText: "证据完整", waitText: "待核对" },
-      { key: "content", label: "内容审批", ready: contentReady, readyText: "已批准", waitText: "待审核" },
-      { key: "approval", label: "商品审批", ready: approvalReady, readyText: "已锁定", waitText: "待批准" },
-      { key: "plan", label: "发布计划", ready: planReady, readyText: "已批准", waitText: "待批准" },
-      { key: "sync", label: "妙手待发布", ready: imageSyncReady, readyText: "回读一致", waitText: "待同步" },
       {
-        key: "channels",
-        label: "渠道执行",
-        ready: channelExecutionReady,
-        readyText: channelReadyText,
-        waitText: channelWaitText,
+        key: "first_review",
+        label: "第一轮审核",
+        ready: productReady && approvalReady,
+        readyText: "商品与店铺方案已锁定",
+        waitText: productReady ? "待批准第一轮方案" : "待补齐商品与店铺事实",
       },
       {
-        key: "reconcile",
-        label: "回读对账",
+        key: "image_review",
+        label: "图片结果审核",
+        ready: contentReady,
+        readyText: "最终内容与图片已批准",
+        waitText: "待审核图片结果",
+      },
+      {
+        key: "final_release",
+        label: "最终发布确认",
         ready: reconciliationReady,
-        readyText: "全部一致",
-        waitText: runCounts.draftVerify
-          ? `${runCounts.draftVerify} 个草稿待核验后提交`
-          : (
-            runCounts.draftConflict
-              ? `${runCounts.draftConflict} 个草稿版本冲突`
-              : (
-                runCounts.reconcileOnly
-                  ? `${runCounts.reconcileOnly} 个结果待对账`
-                  : (
-                    runCounts.awaitingReadback
-                      ? `${runCounts.awaitingReadback} 个待人工验收`
-                      : (
-                        runCounts.safeRetry
-                          ? `${runCounts.safeRetry} 个修复后可重试`
-                          : "待对账"
-                      )
-                  )
-              )
-          ),
+        readyText: "全部站点已完成对账",
+        waitText: finalWaitText,
       },
     ];
     const firstIncomplete = raw.findIndex((stage) => !stage.ready);
@@ -5516,7 +5518,7 @@
                      value="${esc(option.label)}"
                      aria-label="${esc(`编辑规格名称：${option.source_label}`)}"
                      ${selected.has(option.key) ? "" : "disabled"}>
-              <small>保留来源规格键和采购价，只修改各平台显示名称。</small>
+              <small>只保留尺寸、数量、样式；保存时会移除供应商编码、包装和运输信息。</small>
             </label>
             <fieldset class="sku-commercial-editor">
               <legend>该 SKU 的采购与物流事实</legend>
@@ -6174,8 +6176,8 @@
       <div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>
     `).join("");
     $(".approval-button-label").textContent = approved
-      ? "商品字段已锁定"
-      : `批准并锁定 revision ${product.revision ?? "—"}`;
+      ? "第一轮方案已批准"
+      : `批准第一轮方案 · revision ${product.revision ?? "—"}`;
     const approvalBlockers = data.approval?.blockers || [];
     const approvalWarnings = (data.approval?.warnings || []).map(translateBlocker);
     $("#approvalMessage").classList.toggle(
@@ -6190,8 +6192,8 @@
         : (eligible
           ? (
             approvalWarnings.length
-              ? `可以批准并锁定。审批提醒：${approvalWarnings.join("；")}`
-              : "点击即代表 Kyle 最终批准并锁定当前 revision；不会上传或发布。"
+              ? `可以批准第一轮方案。审批提醒：${approvalWarnings.join("；")}`
+              : "点击即代表 Kyle 批准当前第一轮方案并锁定 revision；不会上传或发布。"
           )
           : (approvalBlockers.length
             ? `当前不能锁定：${approvalBlockers.map(translateBlocker).join("；")}`
@@ -6343,6 +6345,9 @@
     }
     allBlockers = [...new Set(allBlockers)];
     const descriptions = {
+      first_review: "核对商品公共事实、各店铺类目与价格、平台标题、规格名称，以及图片翻译和生成计划。",
+      image_review: "审核最终内容与图片结果；未选择图片生成或翻译时可以直接跳过。",
+      final_release: "批准不可变发布计划，执行所选平台，并只做必要的官方回读与对账。",
       product: "补齐商品标题、规格、成本、重量、包装尺寸与目标站点。",
       content: "完成内容审核，并确认最终图片的选择、版本与顺序。",
       approval: "确认候选 Seller SKU，保存商品审批并锁定当前商业字段。",
@@ -6428,13 +6433,13 @@
     allBlockers = [...new Set(allBlockers)];
     const phaseNumbers = {
       product: 1,
+      approval: 1,
+      plan: 1,
       content: 2,
-      approval: 3,
-      plan: 4,
-      sync: 5,
-      channels: 6,
-      reconcile: 7,
-      complete: 7,
+      sync: 3,
+      channels: 3,
+      reconcile: 3,
+      complete: 3,
     };
     const workflowValid = (
       workflow.schema_version === "product-workflow-next-action/v1"
@@ -6565,6 +6570,367 @@
     if (image.asset_type === "source") return "来源实拍图";
     if (image.shot_id === "sz1") return "AI 尺寸图";
     return "AI 场景图";
+  }
+
+  function embeddedImageRows() {
+    const review = embeddedImageReviewPreview?.review || {};
+    const source = embeddedImageReviewPreview?.source || {};
+    const rows = Array.isArray(review.image_actions)
+      ? review.image_actions
+      : (Array.isArray(source.images) ? source.images : []);
+    return rows.map((row) => ({
+      ...row,
+      action: row?.action === "remove" ? "remove" : "keep",
+    }));
+  }
+
+  function updateEmbeddedImageReviewControls() {
+    const rows = embeddedImageRows();
+    const kept = rows.filter((row) => row.action === "keep").length;
+    const button = $("#saveEmbeddedImageReviewButton");
+    button.disabled = (
+      embeddedImageReviewLoading
+      || embeddedImageReviewSubmitting
+      || !embeddedImageReviewDirty
+      || !kept
+    );
+    setBadge(
+      $("#embeddedImageReviewBadge"),
+      embeddedImageReviewLoading
+        ? "正在读取"
+        : (embeddedImageReviewDirty ? "有未保存修改" : `${kept}/${rows.length} 张保留`),
+      embeddedImageReviewDirty ? "warn" : (rows.length ? "safe" : "neutral"),
+    );
+  }
+
+  function renderEmbeddedImageReview() {
+    const grid = $("#embeddedSourceImageGrid");
+    const rows = embeddedImageRows();
+    if (!embeddedImageReviewPreview) {
+      grid.innerHTML = '<div class="image-review-empty">正在读取来源图片…</div>';
+      updateEmbeddedImageReviewControls();
+      return;
+    }
+    if (!rows.length) {
+      grid.innerHTML = '<div class="image-review-empty">当前商品没有可审核的来源图片。</div>';
+      $("#embeddedImageReviewMessage").textContent = "请先完成商品来源采集。";
+      updateEmbeddedImageReviewControls();
+      return;
+    }
+    grid.innerHTML = rows.map((row, index) => {
+      const url = row.output_url || row.url || "";
+      const action = row.action === "remove" ? "remove" : "keep";
+      return `
+        <article class="embedded-source-card ${action === "remove" ? "removed" : ""}">
+          <img src="/api/proxy-image?url=${encodeURIComponent(url)}"
+               alt="来源图 ${index + 1}" loading="lazy">
+          <div class="embedded-source-card-body">
+            <header>
+              <strong>来源图 ${index + 1}</strong>
+              <small>${row.kind === "detail" ? "详情图" : "主图"}</small>
+            </header>
+            <div class="embedded-image-choice" role="radiogroup" aria-label="来源图 ${index + 1} 的决定">
+              <label><input type="radio" name="embedded-image-${index}" data-embedded-image-index="${index}"
+                value="keep" ${action === "keep" ? "checked" : ""}>保留</label>
+              <label><input type="radio" name="embedded-image-${index}" data-embedded-image-index="${index}"
+                value="remove" ${action === "remove" ? "checked" : ""}>不使用</label>
+            </div>
+          </div>
+        </article>
+      `;
+    }).join("");
+    grid.querySelectorAll('input[data-embedded-image-index]').forEach((input) => {
+      input.addEventListener("change", () => {
+        if (!input.checked || embeddedImageReviewSubmitting) return;
+        const index = Number(input.dataset.embeddedImageIndex);
+        const review = embeddedImageReviewPreview?.review || {};
+        if (!Array.isArray(review.image_actions) || !review.image_actions[index]) return;
+        review.image_actions[index].action = input.value;
+        embeddedImageReviewDirty = true;
+        $("#embeddedImageReviewMessage").textContent = "图片决定尚未保存；其他页面刷新不会覆盖这里的选择。";
+        renderEmbeddedImageReview();
+        renderFirstReviewImagePlan(currentFirstReviewImagePlan);
+      });
+    });
+    updateEmbeddedImageReviewControls();
+  }
+
+  async function loadEmbeddedImageReview(offerId, { force = false } = {}) {
+    const cleanOfferId = String(offerId || "").trim();
+    if (!validOfferId(cleanOfferId)) return;
+    if (
+      !force
+      && embeddedImageReviewOfferId === cleanOfferId
+      && (embeddedImageReviewPreview || embeddedImageReviewLoading)
+    ) return;
+    if (embeddedImageReviewDirty && embeddedImageReviewOfferId === cleanOfferId && !force) {
+      $("#embeddedImageReviewMessage").textContent = "已保留尚未保存的图片选择。";
+      return;
+    }
+    const requestId = ++embeddedImageReviewRequestId;
+    embeddedImageReviewLoading = true;
+    embeddedImageReviewOfferId = cleanOfferId;
+    renderEmbeddedImageReview();
+    try {
+      const response = await fetch(
+        `/api/product-flow/preview?offer_id=${encodeURIComponent(cleanOfferId)}`,
+        { headers: { Accept: "application/json" } },
+      );
+      const payload = await response.json().catch(() => ({
+        ok: false,
+        error: `服务返回 HTTP ${response.status}`,
+      }));
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || `服务返回 HTTP ${response.status}`);
+      }
+      if (requestId !== embeddedImageReviewRequestId) return;
+      if (embeddedImageReviewDirty && embeddedImageReviewOfferId === cleanOfferId && !force) {
+        $("#embeddedImageReviewMessage").textContent = "服务端状态已更新，但页面保留了你尚未保存的图片选择。";
+        return;
+      }
+      embeddedImageReviewPreview = payload;
+      embeddedImageReviewDirty = false;
+      $("#embeddedImageReviewMessage").textContent = "请选择每张图片保留或不使用；保存只更新本地选择，不会同步妙手或发布。";
+    } catch (error) {
+      if (requestId !== embeddedImageReviewRequestId) return;
+      embeddedImageReviewPreview = null;
+      $("#embeddedImageReviewMessage").textContent = `图片审核暂不可用：${friendlyError(error.message)}`;
+    } finally {
+      if (requestId === embeddedImageReviewRequestId) {
+        embeddedImageReviewLoading = false;
+        renderEmbeddedImageReview();
+        renderFirstReviewImagePlan(currentFirstReviewImagePlan);
+      }
+    }
+  }
+
+  async function saveEmbeddedImageReview() {
+    if (
+      embeddedImageReviewSubmitting
+      || !embeddedImageReviewDirty
+      || !embeddedImageReviewPreview
+    ) return;
+    const rows = embeddedImageRows();
+    const keptUrls = rows
+      .filter((row) => row.action === "keep")
+      .map((row) => row.output_url || row.url)
+      .filter(Boolean);
+    if (!keptUrls.length) {
+      $("#embeddedImageReviewMessage").textContent = "至少保留 1 张来源图。";
+      return;
+    }
+    const savedOrder = Array.isArray(embeddedImageReviewPreview.review?.image_order)
+      ? embeddedImageReviewPreview.review.image_order
+      : [];
+    const imageOrder = [
+      ...savedOrder.filter((url) => keptUrls.includes(url)),
+      ...keptUrls.filter((url) => !savedOrder.includes(url)),
+    ];
+    embeddedImageReviewSubmitting = true;
+    $("#saveEmbeddedImageReviewButton").classList.add("is-loading");
+    $("#embeddedImageReviewMessage").textContent = "正在保存图片选择…";
+    updateEmbeddedImageReviewControls();
+    try {
+      await postProductWorkspace("/api/product-flow/content-package/review", {
+        offer_id: embeddedImageReviewOfferId,
+        review: {
+          expected_revision: Number(embeddedImageReviewPreview.revision || 0),
+          image_actions: rows,
+          image_order: imageOrder,
+        },
+      });
+      embeddedImageReviewDirty = false;
+      await loadEmbeddedImageReview(embeddedImageReviewOfferId, { force: true });
+      $("#embeddedImageReviewMessage").textContent = `图片选择已保存：保留 ${keptUrls.length} 张；未同步妙手，也未发布。`;
+      const item = queueItem(currentQueueKey);
+      if (item) await refreshQueueProduct(item).catch(() => {});
+    } catch (error) {
+      $("#embeddedImageReviewMessage").textContent = `保存失败：${friendlyError(error.message)}`;
+    } finally {
+      embeddedImageReviewSubmitting = false;
+      $("#saveEmbeddedImageReviewButton").classList.remove("is-loading");
+      updateEmbeddedImageReviewControls();
+    }
+  }
+
+  function effectiveFirstReviewImagePlan(plan) {
+    const reviewRows = embeddedImageRows();
+    const removedPositions = new Set(
+      reviewRows
+        .map((row, index) => (row.action === "remove" ? index + 1 : 0))
+        .filter(Boolean),
+    );
+    // removed source images never enter translation or generation
+    const sourceActions = (Array.isArray(plan?.source_actions) ? plan.source_actions : [])
+      .map((sourceAction) => {
+        const row = { ...sourceAction };
+        const position = Number(row.position || 0);
+        if (!removedPositions.has(position)) return row;
+        return {
+          ...row,
+          action: "REMOVE",
+          target_languages: [],
+          output_count: 0,
+          reason: "已标记不使用，不再翻译或生成",
+        };
+      });
+    const generatedAssets = (Array.isArray(plan?.generated_assets) ? plan.generated_assets : [])
+      .filter((asset) => {
+        const sourcePosition = Number(asset?.source_position || 0);
+        return !sourcePosition || !removedPositions.has(sourcePosition);
+      });
+    const translationActions = sourceActions.filter(
+      (row) => String(row.action || "").toUpperCase() === "TRANSLATE",
+    );
+    const summary = {
+      ...(plan?.summary || {}),
+      translation_positions: translationActions.map((row) => Number(row.position || 0)),
+      localized_output_count: translationActions.reduce(
+        (total, row) => total + Math.max(0, Number(row.output_count || 0)),
+        0,
+      ),
+      removed_positions: [...removedPositions].sort((left, right) => left - right),
+    };
+    summary.paid_generation_required = Boolean(
+      summary.localized_output_count || Math.max(0, Number(summary.net_new_output_count || 0)),
+    );
+    return {
+      ...(plan || {}),
+      source_actions: sourceActions,
+      generated_assets: generatedAssets,
+      summary,
+    };
+  }
+
+  function renderFirstReviewImagePlan(plan) {
+    const badge = $("#firstReviewImagePlanBadge");
+    const notice = $("#firstReviewImagePlanNotice");
+    const grid = $("#firstReviewImagePlanGrid");
+    const effectivePlan = effectiveFirstReviewImagePlan(plan);
+    const status = String(effectivePlan?.status || "NOT_PREPARED");
+    const actions = effectivePlan.source_actions;
+    const generated = effectivePlan.generated_assets;
+    const summary = effectivePlan.summary;
+    const statusLabels = {
+      PROPOSED: "等待你审核",
+      APPROVED: "已批准",
+      SKIPPED: "本轮跳过",
+      STALE: "计划已过期",
+      INVALID: "计划不可用",
+      NOT_PREPARED: "尚未准备",
+    };
+    setBadge(
+      badge,
+      statusLabels[status] || status,
+      ["APPROVED", "SKIPPED"].includes(status) ? "safe" : (status === "PROPOSED" ? "warn" : "neutral"),
+    );
+    if (!actions.length && !generated.length) {
+      grid.innerHTML = '<div class="image-plan-empty">第一轮 Skill 尚未提交图片执行计划。系统会按品类指出缺少的图片类型和数量，由你决定是否采用；也可以跳过全部新生成图片。</div>';
+      notice.textContent = status === "STALE"
+        ? "商品 revision 已变化，请重新生成第一轮图片计划。"
+        : "计划会明确告诉你：保留哪些来源图、翻译哪些图片、生成哪些新图片。";
+      return;
+    }
+    const actionLabels = {
+      KEEP: "保留原图",
+      TRANSLATE: "翻译图片",
+      REMOVE: "不使用",
+      REFERENCE: "仅作参考",
+    };
+    const cards = actions.map((action) => {
+      const languages = Array.isArray(action.target_languages)
+        ? action.target_languages.join("、")
+        : "";
+      return `
+        <article class="image-plan-card">
+          <span class="image-plan-position">来源图 ${esc(action.position)}</span>
+          <strong>${esc(actionLabels[action.action] || action.action)}</strong>
+          <small>${languages ? `目标语言：${esc(languages)}` : "无需语言转换"}</small>
+          <p>${esc(action.reason || "等待第一轮审核确认")}</p>
+        </article>
+      `;
+    });
+    const generatedCards = generated.map((asset, index) => `
+      <article class="image-plan-card generated">
+        <span class="image-plan-position">建议生成 ${index + 1}</span>
+        <strong>${esc(asset.type || asset.shot_type || "营销图片")}</strong>
+        <small>${esc(asset.target_language || asset.language || "不限定语言")}</small>
+        <p>${esc(asset.reason || asset.description || "等待第一轮审核确认")}</p>
+      </article>
+    `);
+    grid.innerHTML = [...cards, ...generatedCards].join("");
+    notice.textContent = [
+      `翻译来源图：${(summary.translation_positions || []).join("、") || "无"}`,
+      `预计本地化输出 ${Number(summary.localized_output_count || 0)} 张`,
+      `新生成 ${Number(summary.net_new_output_count || 0)} 张`,
+      summary.paid_generation_required ? "执行时需要付费生图确认" : "不需要付费生图",
+    ].join("；");
+  }
+
+  function renderLocalizedImageResults(payload) {
+    const grid = $("#localizedImageResultsGrid");
+    const message = $("#localizedImageResultsMessage");
+    const badge = $("#localizedImageResultsBadge");
+    if (!grid || !message || !badge) return;
+    const review = payload?.review || {};
+    const tasks = Array.isArray(review.tasks) ? review.tasks : [];
+    const ready = tasks.filter((task) => Boolean(task.local_url));
+    if (!tasks.length) {
+      setBadge(badge, "本轮未启用", "neutral");
+      grid.innerHTML = '<div class="image-plan-empty">本商品尚未建立多语言图片任务；跳过图片翻译时这里保持为空。</div>';
+      message.textContent = "多语言图片是可选步骤，不会阻挡商品事实与发布准备。";
+      return;
+    }
+    const localeNames = {
+      "ms-MY": "马来语 · MY",
+      "th-TH": "泰语 · TH",
+      "vi-VN": "越南语 · VN",
+      "es-MX": "西班牙语 · MX",
+      "ru-RU": "俄语 · RU",
+      "en-master": "英语母版",
+    };
+    setBadge(
+      badge,
+      `${ready.length}/${tasks.length} 张已生成`,
+      ready.length === tasks.length ? "safe" : "warn",
+    );
+    grid.innerHTML = tasks.map((task) => {
+      const output = task.local_url
+        ? `<a href="${esc(task.local_url)}" target="_blank" rel="noopener"><img src="${esc(task.local_url)}" alt="${esc(task.locale)} 第 ${esc(task.position)} 张"></a>`
+        : '<div class="localized-image-placeholder">尚未生成</div>';
+      return `
+        <article class="localized-image-result-card">
+          ${output}
+          <div>
+            <strong>${esc(localeNames[task.locale] || task.locale || "未知语言")}</strong>
+            <small>来源图 ${esc(task.position || "-")} · ${esc(task.status || "PENDING")}</small>
+          </div>
+        </article>
+      `;
+    }).join("");
+    message.textContent = "点击图片可放大查看；本页没有单独批准按钮。";
+  }
+
+  async function loadLocalizedImageResults(offerId) {
+    const cleanOfferId = String(offerId || "").trim();
+    if (!cleanOfferId) return;
+    const requestId = ++localizedImageResultsRequestId;
+    localizedImageResultsOfferId = cleanOfferId;
+    try {
+      const response = await fetch(
+        `/api/product-flow/content-package/localized-image-review?offer_id=${encodeURIComponent(cleanOfferId)}`,
+        { headers: { Accept: "application/json" } },
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+      if (requestId !== localizedImageResultsRequestId || localizedImageResultsOfferId !== cleanOfferId) return;
+      renderLocalizedImageResults(payload.localized_image_review || {});
+    } catch (error) {
+      if (requestId !== localizedImageResultsRequestId || localizedImageResultsOfferId !== cleanOfferId) return;
+      renderLocalizedImageResults({});
+      const message = $("#localizedImageResultsMessage");
+      if (message) message.textContent = "本轮没有可显示的多语言图片结果。";
+    }
   }
 
   function renderImages(content) {
@@ -9167,6 +9533,8 @@
     renderFieldImpactSummary(data);
     renderStages(stages);
     renderNextStep(data, stages);
+    currentFirstReviewImagePlan = data.first_review_image_plan || {};
+    renderFirstReviewImagePlan(currentFirstReviewImagePlan);
     renderImages(data.content || {});
     renderPublicationScope(data.publication_scope || {});
     renderPricingReview(
@@ -9192,6 +9560,12 @@
     renderOneClickExecution(data);
 
     const offer = data.product?.offer_id || $("#offerId").value.trim();
+    if (embeddedImageReviewOfferId !== offer) {
+      embeddedImageReviewPreview = null;
+      embeddedImageReviewDirty = false;
+    }
+    loadEmbeddedImageReview(offer).catch(() => {});
+    loadLocalizedImageResults(offer).catch(() => {});
     const studioUrl = `/ai-image-studio?offer_id=${encodeURIComponent(offer)}`;
     $("#workbenchLink").href = studioUrl;
     $("#studioNavLink").href = studioUrl;
@@ -9396,6 +9770,10 @@
     const item = queueItem(currentQueueKey);
     if (item) refreshQueueProduct(item, { collectIfMissing: true }).catch(() => {});
   });
+  $("#saveEmbeddedImageReviewButton").addEventListener(
+    "click",
+    saveEmbeddedImageReview,
+  );
   $("#nextStepActionButton").addEventListener("click", runWorkflowNextAction);
   $("#refreshAllButton").addEventListener("click", refreshAllQueueProducts);
   $("#refreshChannelsButton").addEventListener("click", () => {

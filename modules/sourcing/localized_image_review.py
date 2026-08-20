@@ -102,8 +102,10 @@ def _png_bytes(raw: object) -> bytes:
 
 
 def _positions(raw: Sequence[object], image_count: int) -> list[int]:
-    if isinstance(raw, (str, bytes)) or not raw:
+    if isinstance(raw, (str, bytes)):
         raise LocalizedImageReviewError("selected image positions are required")
+    if not raw:
+        return []
     try:
         values = [int(value) for value in raw]
     except (TypeError, ValueError) as error:
@@ -187,77 +189,153 @@ class LocalizedImageReviewStore:
             images = _approved_images(snapshot)
             positions = _positions(selected_positions, len(images))
             labels = _publication_targets(snapshot)
-            routes = {label: _target_locale(label) for label in labels}
-            locales = [
-                locale
-                for locale in REVIEW_LOCALES
-                if locale in set(routes.values())
-            ]
-            if not locales:
-                raise LocalizedImageReviewError("localized publication targets are missing")
+            return self._initialize_bound_input(
+                offer_id=offer_id,
+                binding_id=plan_id,
+                input_digest=snapshot_digest,
+                images=images,
+                positions=positions,
+                labels=labels,
+                input_schema_version=APPROVED_SNAPSHOT_SCHEMA_VERSION,
+            )
 
-            existing = self.load(offer_id)
-            if existing:
-                if (
-                    existing.get("approved_snapshot_digest") == snapshot_digest
-                    and existing.get("selected_positions") == positions
-                ):
-                    return existing
-                raise LocalizedImageReviewError(
-                    "localized image review belongs to a different approved input"
-                )
+    def initialize_from_first_review(
+        self,
+        *,
+        offer_id: object,
+        first_review_id: object,
+        input_digest: object,
+        ordered_images: Sequence[object],
+        selected_positions: Sequence[object],
+        publication_targets: Sequence[object],
+        target_locales: Sequence[object],
+    ) -> dict[str, Any]:
+        """Freeze an approved first review before a ReleasePlan exists."""
 
-            tasks: list[dict[str, Any]] = []
-            for position in positions:
-                source_url = images[position - 1]
-                for locale in locales:
-                    identity = {
-                        "offer_id": offer_id,
-                        "approved_snapshot_digest": snapshot_digest,
+        with self._lock:
+            clean_offer_id = _offer_id(offer_id)
+            clean_review_id = str(first_review_id or "").strip()
+            clean_digest = str(input_digest or "").strip()
+            if not re.fullmatch(r"first-review:[a-f0-9]{20}", clean_review_id):
+                raise LocalizedImageReviewError("first-review identity is invalid")
+            if not re.fullmatch(r"sha256:[a-f0-9]{64}", clean_digest):
+                raise LocalizedImageReviewError("first-review digest is invalid")
+            images = [str(value or "").strip() for value in ordered_images]
+            if (
+                not images
+                or any(not value.startswith("https://") for value in images)
+                or len(images) != len(set(images))
+            ):
+                raise LocalizedImageReviewError("first-review images are invalid")
+            positions = _positions(selected_positions, len(images))
+            labels = [str(value or "").strip() for value in publication_targets]
+            if not labels or len(labels) != len(set(labels)):
+                raise LocalizedImageReviewError("first-review targets are invalid")
+            for label in labels:
+                _target_locale(label)
+            locales = [str(value or "").strip() for value in target_locales]
+            if (
+                (positions and not locales)
+                or len(locales) != len(set(locales))
+                or any(locale not in REVIEW_LOCALES for locale in locales)
+            ):
+                raise LocalizedImageReviewError("first-review locales are invalid")
+            return self._initialize_bound_input(
+                offer_id=clean_offer_id,
+                binding_id=clean_review_id,
+                input_digest=clean_digest,
+                images=images,
+                positions=positions,
+                labels=labels,
+                input_schema_version="approved-first-review-image-input/v1",
+                allowed_locales=locales,
+            )
+
+    def _initialize_bound_input(
+        self,
+        *,
+        offer_id: str,
+        binding_id: str,
+        input_digest: str,
+        images: list[str],
+        positions: list[int],
+        labels: list[str],
+        input_schema_version: str,
+        allowed_locales: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        routes = {label: _target_locale(label) for label in labels}
+        allowed = set(allowed_locales or REVIEW_LOCALES)
+        locales = [
+            locale
+            for locale in REVIEW_LOCALES
+            if locale in set(routes.values()) and locale in allowed
+        ]
+        if positions and not locales:
+            raise LocalizedImageReviewError("localized publication targets are missing")
+        existing = self.load(offer_id)
+        if existing:
+            if (
+                existing.get("approved_snapshot_digest") == input_digest
+                and existing.get("selected_positions") == positions
+                and existing.get("input_schema_version")
+                    in {None, input_schema_version}
+            ):
+                return existing
+            raise LocalizedImageReviewError(
+                "localized image review belongs to a different approved input"
+            )
+        tasks: list[dict[str, Any]] = []
+        for position in positions:
+            source_url = images[position - 1]
+            for locale in locales:
+                identity = {
+                    "offer_id": offer_id,
+                    "approved_snapshot_digest": input_digest,
+                    "position": position,
+                    "source_url": source_url,
+                    "locale": locale,
+                }
+                tasks.append(
+                    {
+                        "task_id": f"localized-review-{_canonical_digest(identity)[7:27]}",
                         "position": position,
                         "source_url": source_url,
+                        "source_url_digest": _canonical_digest(source_url),
                         "locale": locale,
+                        "target_labels": [
+                            label for label, target_locale in routes.items()
+                            if target_locale == locale
+                        ],
+                        "status": "PENDING_GENERATION",
+                        "decision": "PENDING",
+                        "artifact_id": None,
+                        "output_digest": None,
+                        "generation_receipt": None,
+                        "translations": [],
                     }
-                    tasks.append(
-                        {
-                            "task_id": f"localized-review-{_canonical_digest(identity)[7:27]}",
-                            "position": position,
-                            "source_url": source_url,
-                            "source_url_digest": _canonical_digest(source_url),
-                            "locale": locale,
-                            "target_labels": [
-                                label for label, target_locale in routes.items()
-                                if target_locale == locale
-                            ],
-                            "status": "PENDING_GENERATION",
-                            "decision": "PENDING",
-                            "artifact_id": None,
-                            "output_digest": None,
-                            "generation_receipt": None,
-                            "translations": [],
-                        }
-                    )
-            created_at = _now()
-            project = {
-                "schema_version": SCHEMA_VERSION,
-                "offer_id": offer_id,
-                "revision": 1,
-                "status": "PENDING_GENERATION",
-                "release_plan_id": plan_id,
-                "approved_snapshot_digest": snapshot_digest,
-                "approved_ordered_images": images,
-                "selected_positions": positions,
-                "route_locales": routes,
-                "tasks": tasks,
-                "paid_generation_budget": len(tasks),
-                "external_generation_count": 0,
-                "product_center_mutated": False,
-                "platform_writes": 0,
-                "created_at": created_at,
-                "updated_at": created_at,
-            }
-            _atomic_json(self._path(offer_id), project)
-            return project
+                )
+        created_at = _now()
+        project = {
+            "schema_version": SCHEMA_VERSION,
+            "input_schema_version": input_schema_version,
+            "offer_id": offer_id,
+            "revision": 1,
+            "status": "PENDING_GENERATION" if tasks else "READY_FOR_REVIEW",
+            "release_plan_id": binding_id,
+            "approved_snapshot_digest": input_digest,
+            "approved_ordered_images": images,
+            "selected_positions": positions,
+            "route_locales": routes,
+            "tasks": tasks,
+            "paid_generation_budget": len(tasks),
+            "external_generation_count": 0,
+            "product_center_mutated": False,
+            "platform_writes": 0,
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+        _atomic_json(self._path(offer_id), project)
+        return project
 
     def save_generation_bundle(
         self,
@@ -293,6 +371,7 @@ class LocalizedImageReviewStore:
                 digest = f"sha256:{hashlib.sha256(artifact).hexdigest()}"
                 receipt = item.get("receipt")
                 translations = item.get("translations")
+                public_url = str((receipt or {}).get("public_url") or "").strip()
                 if (
                     not isinstance(receipt, Mapping)
                     or receipt.get("status") != "COMPLETED"
@@ -304,6 +383,7 @@ class LocalizedImageReviewStore:
                     or receipt.get("outcome_unknown") is not False
                     or int(receipt.get("external_generation_count") or 0) != 1
                     or receipt.get("output_digest") not in {None, digest}
+                    or (public_url and not public_url.startswith("https://"))
                     or not isinstance(translations, list)
                     or not translations
                 ):
@@ -324,6 +404,7 @@ class LocalizedImageReviewStore:
                         "outcome_unknown": False,
                         "external_generation_count": 1,
                         "output_digest": digest,
+                        "public_url": public_url or None,
                     },
                 }
 
@@ -352,6 +433,8 @@ class LocalizedImageReviewStore:
             project["status"] = "REVIEW_REQUIRED"
             project.pop("approval", None)
             project.pop("publication_supplement", None)
+            if project.get("approval_intent"):
+                self._reconcile_approval_intent(project)
             return self._commit(project)
 
     def decide(
@@ -398,6 +481,60 @@ class LocalizedImageReviewStore:
             project["status"] = "REVIEW_REQUIRED"
             return self._commit(project)
 
+    def record_miaoshou_pre_review_sync(
+        self,
+        offer_id: object,
+        *,
+        expected_revision: object,
+        receipt: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Bind one verified common-draft write before human image review."""
+
+        with self._lock:
+            project = self.load(offer_id)
+            if not project:
+                raise LocalizedImageReviewError("localized image review is missing")
+            self._check_revision(project, expected_revision)
+            if any(
+                row.get("status") not in {"READY_FOR_REVIEW", "PASSED"}
+                for row in project["tasks"]
+            ):
+                raise LocalizedImageReviewError(
+                    "localized images must be generated before Miaoshou sync"
+                )
+            if not isinstance(receipt, Mapping):
+                raise LocalizedImageReviewError("Miaoshou pre-review receipt is invalid")
+            try:
+                external_write_count = int(receipt.get("external_write_count") or 0)
+                written_image_count = int(receipt.get("written_image_count") or 0)
+            except (TypeError, ValueError) as error:
+                raise LocalizedImageReviewError(
+                    "Miaoshou pre-review receipt is invalid"
+                ) from error
+            if (
+                receipt.get("status") != "VERIFIED"
+                or receipt.get("written_to_miaoshou") is not True
+                or receipt.get("verified") is not True
+                or external_write_count != 1
+                or written_image_count < 1
+                or receipt.get("claimed") is not False
+                or receipt.get("published") is not False
+            ):
+                raise LocalizedImageReviewError(
+                    "Miaoshou pre-review receipt is invalid"
+                )
+            project["miaoshou_pre_review_sync"] = {
+                "status": "VERIFIED",
+                "written_to_miaoshou": True,
+                "verified": True,
+                "external_write_count": 1,
+                "written_image_count": written_image_count,
+                "claimed": False,
+                "published": False,
+                "verified_at": _now(),
+            }
+            return self._commit(project)
+
     def approve(
         self,
         offer_id: object,
@@ -413,39 +550,69 @@ class LocalizedImageReviewStore:
             actor = str(approved_by or "").strip()
             if not actor or len(actor) > 80:
                 raise LocalizedImageReviewError("localized review approver is invalid")
-            if any(row.get("status") != "PASSED" for row in project["tasks"]):
-                raise LocalizedImageReviewError(
-                    "every localized image requires human review before approval"
-                )
-            approved_tasks = [
-                {
-                    key: row.get(key)
-                    for key in (
-                        "task_id", "position", "source_url", "source_url_digest",
-                        "locale", "target_labels", "artifact_id", "output_digest",
-                        "generation_receipt",
-                    )
-                }
-                for row in project["tasks"]
-            ]
-            identity = {
-                "schema_version": "localized-image-approval/v1",
+            intent_identity = {
+                "schema_version": "localized-image-approval-intent/v1",
                 "offer_id": project["offer_id"],
                 "release_plan_id": project["release_plan_id"],
                 "approved_snapshot_digest": project["approved_snapshot_digest"],
                 "selected_positions": project["selected_positions"],
                 "approved_by": actor,
-                "tasks": approved_tasks,
+                "auto_accept_ready_assets": True,
             }
-            approval = {
-                **identity,
-                "approval_digest": _canonical_digest(identity),
-                "approved_at": _now(),
+            project["approval_intent"] = {
+                **intent_identity,
+                "intent_digest": _canonical_digest(intent_identity),
+                "recorded_at": _now(),
             }
-            project["approval"] = approval
-            project["publication_supplement"] = self._build_supplement(project, approval)
-            project["status"] = "APPROVED"
+            self._reconcile_approval_intent(project)
             return self._commit(project)
+
+    def _reconcile_approval_intent(self, project: dict[str, Any]) -> None:
+        intent = project.get("approval_intent") or {}
+        if intent.get("auto_accept_ready_assets") is not True:
+            raise LocalizedImageReviewError("localized approval intent is invalid")
+        for row in project["tasks"]:
+            if row.get("status") == "READY_FOR_REVIEW":
+                row["status"] = "PASSED"
+                row["decision"] = "CHAT_APPROVED"
+                row["reviewed_at"] = _now()
+        if any(row.get("status") != "PASSED" for row in project["tasks"]):
+            project["status"] = "APPROVAL_RECORDED"
+            project.pop("approval", None)
+            project.pop("publication_supplement", None)
+            return
+
+        actor = str(intent.get("approved_by") or "").strip()
+        if not actor:
+            raise LocalizedImageReviewError("localized approval intent is invalid")
+        approved_tasks = [
+            {
+                key: row.get(key)
+                for key in (
+                    "task_id", "position", "source_url", "source_url_digest",
+                    "locale", "target_labels", "artifact_id", "output_digest",
+                    "generation_receipt",
+                )
+            }
+            for row in project["tasks"]
+        ]
+        identity = {
+            "schema_version": "localized-image-approval/v1",
+            "offer_id": project["offer_id"],
+            "release_plan_id": project["release_plan_id"],
+            "approved_snapshot_digest": project["approved_snapshot_digest"],
+            "selected_positions": project["selected_positions"],
+            "approved_by": actor,
+            "tasks": approved_tasks,
+        }
+        approval = {
+            **identity,
+            "approval_digest": _canonical_digest(identity),
+            "approved_at": _now(),
+        }
+        project["approval"] = approval
+        project["publication_supplement"] = self._build_supplement(project, approval)
+        project["status"] = "APPROVED"
 
     @staticmethod
     def _build_supplement(

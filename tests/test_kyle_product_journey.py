@@ -240,7 +240,7 @@ def test_facts_save_updates_one_revision_and_preserves_unrelated_state(monkeypat
     assert state["review"]["package_cm"] == [31.0, 4.0, 3.0]
     assert state["review"]["selected_sku_keys"] == ["30x90-custom"]
     assert state["review"]["sku_label_overrides"] == {
-        "30x90-custom": "30 x 90 cm, Custom Material",
+        "30x90-custom": "Custom Material · 30 × 90 cm",
     }
     assert state["content_package"] == initial["content_package"]
     assert state["unrelated"] == initial["unrelated"]
@@ -542,16 +542,16 @@ def test_dashboard_opens_before_any_ai_suite_exists(tmp_path):
     ] == [
         {
             "key": "30x90-2pcs",
-                "label": "30*90cm*2pcs; translucent",
-                "name": "30*90cm*2pcs; translucent",
+                "label": "translucent · 30 × 90 cm · 2 pcs",
+                "name": "translucent · 30 × 90 cm · 2 pcs",
                 "source_label": "30*90cm*2pcs; translucent",
                 "label_overridden": False,
                 "price_cny": 8.1,
         },
         {
             "key": "30x90-custom",
-                "label": "30*90cm*2pcs; custom material",
-                "name": "30*90cm*2pcs; custom material",
+                "label": "custom material · 30 × 90 cm · 2 pcs",
+                "name": "custom material · 30 × 90 cm · 2 pcs",
                 "source_label": "30*90cm*2pcs; custom material",
                 "label_overridden": False,
                 "price_cny": 8.2,
@@ -779,7 +779,8 @@ def test_formal_frontend_collects_first_and_has_an_inline_facts_editor():
         field = field[:field.index(">")]
         assert "disabled" in field
         assert "required" not in field
-    assert "保存并确认商品事实 · 刷新全部售价" in html
+    assert 'class="facts-edit-save-label"' in html
+    assert 'id="factsEditSaveButton"' in html
     assert "/api/product-workspace/collect" in script
     assert "/api/product-workspace/facts" in script
     assert "/api/product-workspace/title-adopt" in script

@@ -315,8 +315,8 @@ class SkillArchitectureTests(unittest.TestCase):
             encoding="utf-8"
         )
         for text in (english, chinese):
-            self.assertIn("sync_publish_approved_product_skill.py --check", text)
-            self.assertIn("sync_publish_approved_product_skill.py --install", text)
+            self.assertIn("sync_product_publication_skills.py --check", text)
+            self.assertIn("sync_product_publication_skills.py --install", text)
         self.assertIn("Never install implicitly", english)
         self.assertIn("不得隐式安装", chinese)
 

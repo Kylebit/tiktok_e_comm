@@ -17,6 +17,23 @@ python3 main.py serve --port 8765
 
 Web 页面：`/`、`/catalog`、`/ozon`、`/settlement`、`/titles`、`/images`、`/sourcing`
 
+商品发布流程依赖 8765 主控制台和 8766 新品工作台。新 Agent 接管时先做
+只读检查；只有缺失服务才安全启动，端口身份不符时工具会拒绝抢占：
+
+```bash
+python scripts/product_publication_runtime.py --takeover-check
+python scripts/product_publication_runtime.py --status
+python scripts/product_publication_runtime.py --start
+```
+
+仓库内三项商品发布 Skill 是权威版本。安装前后使用统一清单检查；安装会
+拒绝包含未管理文件的目标目录，不会自动删除漂移文件：
+
+```bash
+python scripts/sync_product_publication_skills.py --check
+python scripts/sync_product_publication_skills.py --install
+```
+
 ## 核心模块
 
 | 路径 | 职责 |

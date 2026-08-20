@@ -103,15 +103,15 @@
 | 商品发布中心 | 保存商品事实 | 表单 submitting + revision 核对消息 | 新 revision + 售价/预检已刷新 | 冲突或失败消息，不覆盖旧 revision |
 | 商品发布中心 | AI 平台标题候选 | 按钮 loading + 模型生成说明 | 英文母版、逐平台候选和审计签名 | 就地失败；不修改商品事实、不伪造候选 |
 | 商品发布中心 | 批准后的统一发布动作 | 只保留 `releasePrimaryActionButton`；服务端状态决定开始、只读刷新、对账或人工处理 | 持久任务状态与逐目标账本 | 原位 blocker + 同一个按钮执行唯一下一步，禁止恢复相邻确认按钮 |
-| AI 图片工作室 | 读取项目、保存审核 | 按钮 loading | toast + 更新后的本地状态 | alert |
-| AI 图片工作室 | AI 分镜、预检、付费生成 | 专用步骤进度 | 完成/等待人工审核 | 失败步骤 + alert |
-| AI 图片工作室 | 妙手同步 | 四步回读进度 | verified | 失败步骤 + 可重试原因 |
+| 商品发布中心 | 保存来源图片选择 | 按钮 loading | 更新后的本地选择 | 原位错误，不覆盖未保存选择 |
+| AI 图片工作室 | 读取图片任务与生成结果 | 刷新 loading | 当前技术状态与结果 | alert；不出现审核或批准入口 |
+| 多语言图片执行结果 | 读取各语言生成结果 | 刷新 loading | 生成进度与结果 | 原位读取失败；不出现审核或批准入口 |
 | 利润中心 | 周报 | 表单 loading + verdict loading | ready 或 needs-review | unavailable + alert |
 | 利润中心 | SKU 查询 | 表单 loading | 样本、费用明细和估算状态 | 空状态 + alert；不得显示 CALCULATED |
 
 新增异步按钮时，必须同时更新本表、静态控件清单和 Chromium 场景。
 
-产品语义回归也属于发布门禁：同一个业务决定不能要求 Kyle 在相邻控件重复表达；自动完成的正常步骤不应继续显示为主按钮；禁用动作必须在同一区域说明具体 blocker；“通过”若已经代表纳入最终结果，就不能再要求一次“保留”。这类问题必须至少有一条真实 Chromium 旅程，而不只做字符串断言。
+产品语义回归也属于发布门禁：商品发布中心是唯一人工审核页面；AI 图片工作室和多语言结果页只显示技术执行状态。Kyle 在会话中明确说“继续”“通过”或“下一步”即构成当前冻结范围的人工授权，由 Agent 通过确定性 Skill 命令持久化；页面不得再要求点击批准、通过或重复确认。同一个业务决定不能要求 Kyle 在相邻控件重复表达；自动完成的正常步骤不应继续显示为主按钮；禁用动作必须在同一区域说明具体 blocker。这类问题必须至少有一条真实 Chromium 旅程，而不只做字符串断言。
 
 `test_approved_release_flow_has_one_server_driven_primary_action` 与
 `oneClickBlockedPromotionStatusAndSingleActionContract` 是永久回归用例。任何

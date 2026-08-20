@@ -433,3 +433,37 @@ footer { width: min(1320px,calc(100% - 40px)); min-height: 72px; display: flex; 
   .sync-progress ol { grid-template-columns:1fr; }
   footer { display:grid; align-content:center; padding:16px 0; }
 }
+body[data-human-review-surface="none"] .review-only-surface,
+body[data-human-review-surface="none"] .version-card .version-meta label,
+body[data-human-review-surface="none"] .move-actions {
+  display: none !important;
+}
+
+.central-review-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0;
+  padding: 14px 18px;
+  border: 1px solid rgba(17, 101, 89, 0.24);
+  border-radius: 16px;
+  background: #eef7f3;
+  color: #173f39;
+}
+
+.central-review-notice span {
+  flex: 1;
+}
+
+.central-review-notice a {
+  color: inherit;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .central-review-notice {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

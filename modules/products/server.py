@@ -444,6 +444,118 @@ def _approved_publication_snapshot_internal(
     )
 
 
+def _first_review_image_plan_view(payload: dict) -> dict:
+    """Read the optional first-review image plan without changing workflow state."""
+
+    product = payload.get("product") if isinstance(payload.get("product"), dict) else {}
+    offer_id = str(product.get("offer_id") or payload.get("offer_id") or "").strip()
+    if not offer_id or not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", offer_id):
+        return {"status": "NOT_PREPARED", "source_actions": [], "generated_assets": []}
+    report_path = (
+        ROOT / "reports" / "product-preparation" / offer_id / "first-review.json"
+    )
+    try:
+        packet = json.loads(report_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return {"status": "NOT_PREPARED", "source_actions": [], "generated_assets": []}
+    if not isinstance(packet, dict) or str(packet.get("offer_id") or "") != offer_id:
+        return {"status": "INVALID", "source_actions": [], "generated_assets": []}
+    plan = packet.get("image_execution_plan")
+    if not isinstance(plan, dict) or plan.get("schema_version") != "first-review-image-plan/v1":
+        return {"status": "INVALID", "source_actions": [], "generated_assets": []}
+    source_actions = plan.get("source_actions")
+    generated_assets = plan.get("generated_assets")
+    summary = plan.get("summary")
+    if not isinstance(source_actions, list) or not isinstance(generated_assets, list) or not isinstance(summary, dict):
+        return {"status": "INVALID", "source_actions": [], "generated_assets": []}
+
+    # The source-image review is authoritative: removed source images never
+    # enter translation or generation, even when an older first-review report
+    # still contains the original recommendation.
+    removed_positions: set[int] = set()
+    try:
+        from modules.sourcing.new_product_workbench import load_state
+
+        workbench_state = load_state(offer_id)
+        review = (
+            workbench_state.get("review")
+            if isinstance(workbench_state.get("review"), dict)
+            else {}
+        )
+        image_actions = review.get("image_actions")
+        if isinstance(image_actions, list):
+            removed_positions = {
+                index
+                for index, row in enumerate(image_actions, start=1)
+                if isinstance(row, dict)
+                and str(row.get("action") or "").strip().lower() == "remove"
+            }
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        removed_positions = set()
+
+    effective_actions: list[dict] = []
+    for source_action in source_actions[:50]:
+        if not isinstance(source_action, dict):
+            continue
+        row = dict(source_action)
+        try:
+            position = int(row.get("position") or 0)
+        except (TypeError, ValueError):
+            position = 0
+        if position in removed_positions:
+            row.update(
+                {
+                    "action": "REMOVE",
+                    "target_languages": [],
+                    "output_count": 0,
+                    "reason": "已在来源图片审核中标记不使用，不再翻译或生成",
+                }
+            )
+        effective_actions.append(row)
+
+    effective_generated_assets: list[dict] = []
+    for generated_asset in generated_assets[:20]:
+        if not isinstance(generated_asset, dict):
+            continue
+        try:
+            source_position = int(generated_asset.get("source_position") or 0)
+        except (TypeError, ValueError):
+            source_position = 0
+        if source_position in removed_positions:
+            continue
+        effective_generated_assets.append(dict(generated_asset))
+    effective_summary = dict(summary)
+    effective_summary["translation_positions"] = [
+        int(row.get("position") or 0)
+        for row in effective_actions
+        if str(row.get("action") or "").upper() == "TRANSLATE"
+    ]
+    effective_summary["localized_output_count"] = sum(
+        max(0, int(row.get("output_count") or 0))
+        for row in effective_actions
+        if str(row.get("action") or "").upper() == "TRANSLATE"
+    )
+    effective_summary["removed_positions"] = sorted(removed_positions)
+    effective_summary["paid_generation_required"] = bool(
+        effective_summary["localized_output_count"]
+        or max(0, int(effective_summary.get("net_new_output_count") or 0))
+    )
+    try:
+        plan_revision = max(0, int(packet.get("product_center_revision") or 0))
+        current_revision = max(0, int(product.get("revision") or payload.get("revision") or 0))
+    except (TypeError, ValueError):
+        return {"status": "INVALID", "source_actions": [], "generated_assets": []}
+    return {
+        "schema_version": "first-review-image-plan/v1",
+        "status": "STALE" if plan_revision and current_revision and plan_revision != current_revision else plan.get("status"),
+        "plan_revision": plan_revision,
+        "current_revision": current_revision,
+        "source_actions": effective_actions,
+        "generated_assets": effective_generated_assets,
+        "summary": effective_summary,
+    }
+
+
 def _product_workspace_view(payload: dict) -> dict:
     """Present governed evidence and durable V1 state as the formal workspace."""
     from shared_platform.product_workflow import (
@@ -499,6 +611,7 @@ def _product_workspace_view(payload: dict) -> dict:
         "approval": payload.get("approval_rehearsal", {}),
         "publication_plan": payload.get("publication_rehearsal", {}),
         "release_v1": release_v1,
+        "first_review_image_plan": _first_review_image_plan_view(payload),
     }
     next_action = project_product_workflow_next_action(view)
     assert_no_dead_end(next_action)
@@ -1068,6 +1181,14 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
             if isinstance(row, dict)
             and str(row.get("key") or row.get("name") or "").strip()
         }
+        from domains.product_operations.variant_display import (
+            VariantDisplayError,
+            normalize_publication_specification,
+        )
+
+        source_item_code = str(
+            source.get("source_item_code") or source.get("itemNum") or ""
+        ).strip()
         available_sku_keys = set(source_label_by_key)
         unknown_sku_keys = [
             value for value in selected_sku_keys if value not in available_sku_keys
@@ -1105,10 +1226,22 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
                 "error": "only selected source SKUs may have edited names",
                 "unselected_sku_keys": unselected_label_keys,
             }
-        effective_sku_labels = [
-            requested_sku_labels.get(key) or source_label_by_key.get(key) or key
-            for key in selected_sku_keys
-        ]
+        normalized_sku_labels: dict[str, str] = {}
+        for key in selected_sku_keys:
+            raw_label = requested_sku_labels.get(key) or source_label_by_key.get(key) or key
+            try:
+                normalized_sku_labels[key] = normalize_publication_specification(
+                    raw_label,
+                    internal_identifiers=(source_item_code,),
+                )
+            except VariantDisplayError as error:
+                return 400, {
+                    "ok": False,
+                    "error_code": "invalid_publication_specification",
+                    "error": str(error),
+                    "source_sku_key": key,
+                }
+        effective_sku_labels = [normalized_sku_labels[key] for key in selected_sku_keys]
         if len({label.casefold() for label in effective_sku_labels}) != len(
             effective_sku_labels
         ):
@@ -1118,9 +1251,9 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
                 "error": "selected specification names must remain unique",
             }
         sku_label_overrides = {
-            key: label
-            for key, label in requested_sku_labels.items()
-            if label != source_label_by_key.get(key)
+            key: normalized_sku_labels[key]
+            for key in selected_sku_keys
+            if normalized_sku_labels[key] != source_label_by_key.get(key)
         }
 
         raw_sku_commercial_facts = data.get("sku_commercial_facts")

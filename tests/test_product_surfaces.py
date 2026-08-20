@@ -10,11 +10,88 @@ import urllib.request
 import pytest
 
 from modules.products.server import Handler
+from modules.products import server as product_server_module
 from shared_platform import release_control
 from shared_platform.registry import owner_for_http_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_product_workspace_exposes_revision_bound_first_review_image_plan(
+    tmp_path, monkeypatch
+):
+    from modules.sourcing import new_product_workbench
+
+    report = (
+        tmp_path
+        / "reports"
+        / "product-preparation"
+        / "offer-1"
+        / "first-review.json"
+    )
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        json.dumps(
+            {
+                "offer_id": "offer-1",
+                "product_center_revision": 7,
+                "image_execution_plan": {
+                    "schema_version": "first-review-image-plan/v1",
+                    "status": "PROPOSED",
+                    "source_actions": [
+                        {
+                            "position": 6,
+                            "action": "TRANSLATE",
+                            "target_languages": ["th-TH"],
+                            "output_count": 1,
+                        },
+                        {
+                            "position": 7,
+                            "action": "TRANSLATE",
+                            "target_languages": ["en-master", "th-TH"],
+                            "output_count": 2,
+                        }
+                    ],
+                    "generated_assets": [],
+                    "summary": {
+                        "translation_positions": [6, 7],
+                        "localized_output_count": 3,
+                        "net_new_output_count": 0,
+                        "paid_generation_required": True,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(product_server_module, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        new_product_workbench,
+        "load_state",
+        lambda _offer_id: {
+            "review": {
+                "image_actions": [
+                    {"action": "keep"} for _ in range(6)
+                ] + [{"action": "remove"}]
+            }
+        },
+    )
+
+    current = product_server_module._first_review_image_plan_view(
+        {"product": {"offer_id": "offer-1", "revision": 7}}
+    )
+    stale = product_server_module._first_review_image_plan_view(
+        {"product": {"offer_id": "offer-1", "revision": 8}}
+    )
+
+    assert current["status"] == "PROPOSED"
+    assert current["summary"]["translation_positions"] == [6]
+    assert current["summary"]["localized_output_count"] == 1
+    assert current["source_actions"][1]["action"] == "REMOVE"
+    assert current["source_actions"][1]["target_languages"] == []
+    assert current["source_actions"][1]["output_count"] == 0
+    assert stale["status"] == "STALE"
 
 
 @pytest.fixture
@@ -121,13 +198,18 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     css = (ROOT / "web/static/product_workspace.css").read_text(encoding="utf-8")
 
     assert "商品发布中心" in html
-    assert "七阶段正式发布进度" in html
-    assert "最终商品图片" in html
+    assert 'aria-labelledby="journeyTitle" class="operator-clutter"' in html
+    assert "七阶段正式发布进度" not in html
+    assert "最终图片结果" in html
+    assert "翻译与生成计划" in html
+    assert 'id="firstReviewImagePlan"' in html
+    assert "renderFirstReviewImagePlan" in script
+    assert "first_review_image_plan" in script
     assert "/api/product-workspace/dashboard" in script
     assert "renderFailure(message)" in script
     assert "页面不会沿用上一次商品结果" in script
-    assert "商品事实审批与版本锁定" in html
-    assert "批准并锁定当前 revision" in html
+    assert 'id="approval" class="approval-section operator-clutter"' in html
+    assert 'id="releasePlan" class="release-plan-section operator-clutter"' in html
     assert 'id="approvalCheckbox"' not in html
     assert "/api/product-workspace/approve" in script
     assert 'method: "POST"' in script
@@ -150,6 +232,28 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "QUEUE_REFRESH_CONCURRENCY = 4" in script
     assert "Promise.allSettled(workers)" in script
     assert "hydrateUnloadedQueueProducts" in script
+
+
+def test_product_center_embeds_only_the_actionable_image_review_surface():
+    html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
+    script = (ROOT / "web/static/product_workspace.js").read_text(encoding="utf-8")
+    css = (ROOT / "web/static/product_workspace.css").read_text(encoding="utf-8")
+
+    assert 'id="embeddedImageReview"' in html
+    assert 'id="embeddedSourceImageGrid"' in html
+    assert 'id="saveEmbeddedImageReviewButton"' in html
+    assert "来源图片选择" in html
+    assert "保存图片选择" in html
+    assert "loadEmbeddedImageReview" in script
+    assert "saveEmbeddedImageReview" in script
+    assert "/api/product-flow/preview" in script
+    assert "/api/product-flow/content-package/review" in script
+    assert "embeddedImageReviewDirty" in script
+    assert "removed source images never enter translation or generation" in script
+    assert "renderFirstReviewImagePlan(currentFirstReviewImagePlan)" in script
+    assert script.count("renderFirstReviewImagePlan(currentFirstReviewImagePlan)") >= 3
+    assert ".operator-clutter" in css
+    assert "display: none" in css
     assert "product?.thumbnail" in script
     assert "data-queue-image" in script
     assert "/api/proxy-image?url=" in script
@@ -160,7 +264,7 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "loadedQueueKey !== currentQueueKey" in script
     assert "history.replaceState" in script
     assert ".queue-grid { grid-template-columns: 1fr; }" in css
-    assert "16 目标全渠道发布准备" in html
+    assert "店铺与售价" in html
     assert "选择本次准备的平台与国家" in html
     assert 'id="publicationScopeForm"' in html
     assert 'id="publicationTargetGrid"' in html
@@ -171,8 +275,7 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "publication_scope" in script
     assert "pendingPublicationTargets" in script
     assert ".publication-target-grid" in css
-    assert "全部国家与店铺售价审查" in html
-    assert "已选平台与国家售价" in html
+    assert "已选店铺售价" in html
     assert 'id="selectedChannelPriceGrid"' in html
     assert "pricing_review" in script
     assert "all_legacy_store_prices" in script

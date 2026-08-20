@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>多语言图片审核台 · Orbit</title>
-  <link rel="stylesheet" href="/static/localized_image_review.css">
+  <title>多语言图片执行结果 · Orbit</title>
+  <link rel="stylesheet" href="/static/localized_image_review.css?v=20260819-1">
 </head>
-<body>
+<body data-human-review-surface="none">
   <main class="page-shell">
     <header class="hero">
       <div>
-        <p class="eyebrow">INDEPENDENT IMAGE REVIEW</p>
-        <h1>多语言图片审核台</h1>
-        <p class="lead">独立审核，不修改当前发布计划。这里只生成、对比和批准国家语言图片；批准后仍需另行创建发布计划并使用发布 Skill。</p>
+        <p class="eyebrow">LOCALIZED IMAGE RESULTS</p>
+        <h1>多语言图片执行结果</h1>
+        <p class="lead">这里只显示各国家语言图片的生成进度和结果。所有人工审核统一在商品发布中心完成。</p>
       </div>
       <a class="back-link" id="backToProduct" href="/new-product">返回商品发布中心</a>
     </header>
@@ -24,32 +24,22 @@
         <p id="projectIdentity" class="muted">正在读取项目…</p>
       </div>
       <div class="actions">
-        <button id="initializeReview" type="button" class="secondary">建立审核项目</button>
-        <label class="paid-confirm">
-          <input id="paidGenerationConfirm" type="checkbox">
-          <span>确认本次将调用 ToAPI，最多生成 20 张图片</span>
-        </label>
-        <button id="generateLocalizedImages" type="button">生成待处理图片</button>
+        <button id="refreshReview" type="button">刷新当前状态</button>
       </div>
       <div id="reviewStatus" class="status" role="status" aria-live="polite">等待加载。</div>
     </section>
 
     <nav id="localeTabs" class="locale-tabs" aria-label="语言筛选"></nav>
 
-    <section class="review-toolbar" aria-label="审核动作">
-      <button id="passVisibleImages" type="button" class="secondary">当前语言全部通过</button>
-      <button id="approveLocalizedImages" type="button">完成整套审核</button>
-    </section>
-
     <section id="reviewGrid" class="review-grid" aria-live="polite"></section>
 
     <section class="handoff-panel">
       <div>
         <p class="eyebrow">SAFE HANDOFF</p>
-        <h2>批准后只生成本地发布补充凭据</h2>
-        <p>不会在本页写妙手、Shopee、TikTok 或 Ozon，也不会直接修改当前 ReleasePlan。</p>
+        <h2>会话授权与技术执行已经分离</h2>
+        <p>生成、妙手写回和平台回读只影响执行就绪状态；本页不承担人工审核。</p>
       </div>
-      <code id="approvalDigest">尚未批准</code>
+      <code id="approvalDigest" hidden>内部授权状态</code>
     </section>
   </main>
 
@@ -57,6 +47,6 @@
     <button id="closeLightbox" type="button" aria-label="关闭大图">×</button>
     <img id="lightboxImage" alt="放大预览">
   </dialog>
-  <script src="/static/localized_image_review.js"></script>
+  <script src="/static/localized_image_review.js?v=20260819-1"></script>
 </body>
 </html>

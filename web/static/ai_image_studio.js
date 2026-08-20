@@ -114,8 +114,8 @@
           status: "complete",
           completedThrough: 3,
           title: "AI 分镜与生成前检查已完成",
-          message: "尚未创建任何付费图片任务；等待 Kyle 确认付费。",
-          badge: "等待付费确认",
+          message: "尚未创建任何付费图片任务；等待会话授权后由图片 Skill 执行。",
+          badge: "等待会话授权",
         }
         : proposalAutoAdopted
           ? {
@@ -237,7 +237,7 @@
       skipped: ["本次只使用来源图", "AI 生图已禁用。", "已跳过", "neutral", 0],
       not_started: ["尚未开始生成", "先完成 AI 分镜与生成前检查。", "未开始", "neutral", 0],
       preflighting: ["正在执行生成前检查", "只验证配方、参考图与任务参数，不会创建付费任务。", "检查中", "warn", 0],
-      "preflight-ready": ["生成前检查已完成", `本次已准备 ${total} 张；等待 Kyle 确认付费。`, "等待付费确认", "warn", 1],
+      "preflight-ready": ["生成前检查已完成", `本次已准备 ${total} 张；等待会话授权后由图片 Skill 执行。`, "等待会话授权", "warn", 1],
       submitting: ["正在提交付费生成确认", "正在建立任务队列；请勿重复点击。", "提交中", "warn", 1],
       queued: ["图片生成任务已排队", `${total || items.length} 张等待生成，页面会自动刷新。`, "排队中", "warn", 2],
       running: [
@@ -247,17 +247,17 @@
         "warn",
         2,
       ],
-      completed: ["图片生成完成", `${completedCount || total} 张已返回，等待逐图审核。`, "待审核", "safe", 3],
+      completed: ["图片生成完成", `${completedCount || total} 张已返回，结果已汇总到商品发布中心。`, "已返回", "safe", 3],
       completed_waiting_human_review: [
         "图片生成完成",
-        `${completedCount || total} 张通过本地技术核验；等待逐图人工审核。`,
-        "待审核",
+        `${completedCount || total} 张通过本地技术核验；结果已汇总到商品发布中心。`,
+        "已返回",
         "safe",
         3,
       ],
       completed_with_errors: [
         "图片生成结束但存在失败项",
-        `${completedCount} 张可审核，${failedCount || "部分"} 张失败；请查看每个版本的原因。`,
+        `${completedCount} 张可用，${failedCount || "部分"} 张失败；请查看每个版本的原因。`,
         "需处理",
         "danger",
         3,
@@ -284,7 +284,7 @@
       "neutral",
       0,
     ];
-    const stepLabels = ["生成前检查", "付费确认", "任务队列", "成图审核"];
+    const stepLabels = ["生成前检查", "会话授权", "任务队列", "结果汇总"];
     const running = ["preflighting", "submitting", "queued", "running"].includes(status);
     const failed = ["failed", "error", "completed_with_errors"].includes(status);
     host.classList.toggle("running", running);
@@ -735,7 +735,9 @@
         : '<span class="source-link-missing">1688 来源 · 未关联</span>',
     ].join("");
     $("#completionScore").textContent = `${completedParts}/5`;
-    $("#currentStage").textContent = workflow.current_label || content.stage || "等待审核";
+    $("#currentStage").textContent = String(
+      workflow.current_label || content.stage || "等待执行",
+    ).replaceAll("审核", "处理").replaceAll("批准", "完成");
     $("#productCenterLink").href = `/product-workspace?offer_id=${encodeURIComponent(preview.offer_id)}`;
 
     const sourceOnlySaved = (
@@ -750,10 +752,10 @@
         ["最终内容批准", sourceOnlyFinalApproved() ? "done" : "pending"],
       ]
       : [
-        ["来源审核", sourceTotal > 0 && sourceReviewed === sourceTotal ? "done" : "current"],
-        ["经验配方", content.fact_card_approved && content.planning_scope_approved && content.suite_approved ? "done" : "pending"],
-        ["生成版本", workflow.generation_ready ? "done" : (content.remaining_images_generation?.status || "pending")],
-        ["最终排序", workflow.image_review_ready && finalOrder.length ? "done" : "pending"],
+        ["来源素材", sourceTotal > 0 && sourceReviewed === sourceTotal ? "done" : "current"],
+        ["生成配方", content.fact_card_approved && content.planning_scope_approved && content.suite_approved ? "done" : "pending"],
+        ["生成结果", workflow.generation_ready ? "done" : (content.remaining_images_generation?.status || "pending")],
+        ["结果汇总", workflow.image_review_ready && finalOrder.length ? "done" : "pending"],
       ];
     const firstOpen = baseSteps.findIndex((row) => row[1] !== "done");
     $("#flowRail").classList.toggle("source-only-flow", sourceOnlyActive());
@@ -1145,7 +1147,7 @@
       `;
     }).join("") : (
       preflightReady
-        ? '<article class="story-card"><p>生成前检查已经完成，但尚未创建付费任务，因此当前没有生成版本。确认付费后会在这里逐张显示进度和结果。</p></article>'
+        ? '<article class="story-card"><p>生成前检查已经完成，但尚未创建付费任务。会话授权后由图片 Skill 执行，结果会自动显示在这里。</p></article>'
         : '<article class="story-card"><p>当前没有生成版本。先保存经验配方并完成生成前检查。</p></article>'
     );
 
@@ -1154,7 +1156,7 @@
     const generationStatusLabel = (
       preflightReady && (!generation.status || generation.status === "not_started")
     )
-      ? "等待付费确认"
+      ? "等待 Skill 执行"
       : (generation.status || "未运行");
     $("#generationSummary").innerHTML = [
       `已生成 ${content.generated_review_images?.length || 0}`,
@@ -1580,6 +1582,10 @@
       const url = new URL(window.location.href);
       url.searchParams.set("offer_id", offerId);
       history.replaceState(null, "", url);
+      const centralReviewLink = $("#centralReviewLink");
+      if (centralReviewLink) {
+        centralReviewLink.href = `/new-product?offer_id=${encodeURIComponent(offerId)}#embeddedImageReview`;
+      }
       if (!quiet) toast("图片项目已加载。");
     } catch (error) {
       showAlert(error.message || "图片项目读取失败。");

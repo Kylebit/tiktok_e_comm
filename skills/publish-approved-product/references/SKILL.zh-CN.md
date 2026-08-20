@@ -33,7 +33,7 @@
 ## 核心流程
 
 1. 要求准确的 `offer_id` 和已批准 `plan_id`，不得从可变工作台重新推导。
-2. 只使用 `product_center_publication.py` 启动生产发布。
+2. 只使用 `skills/publish-approved-product/scripts/product_center_publication.py` 启动生产发布。
 3. 商品中心按 `offer_id + plan_id` 读取冻结 v4 快照，并对每个已授权平台独立执行“发布 → 官方或妙手回读 → 结果分类”。
 4. 一个平台或店铺失败，不得阻止其他平台或店铺。
 5. 对用户只显示：发布成功、平台处理中、部分成功、发布失败；详细证据保留在脱敏报告中。
@@ -41,7 +41,7 @@
 ## 唯一生产命令
 
 ```powershell
-python scripts/product_center_publication.py --offer-id <OFFER_ID> --plan-id <EXACT_PLAN_ID> --platform all --execute
+.venv\Scripts\python.exe skills\publish-approved-product\scripts\product_center_publication.py --offer-id <OFFER_ID> --plan-id <EXACT_PLAN_ID> --platform all --execute
 ```
 
 该薄控制器只向三个商品中心入口发送 `{offer_id, plan_id}`：
@@ -178,14 +178,14 @@ TikTok-only 动作曾因为系统同时插入未选择的 Shopee PENDING 行而�
 仓库中的 `skills/publish-approved-product` 是唯一事实源。使用前先执行：
 
 ```powershell
-python scripts/sync_publish_approved_product_skill.py --check
+.venv\Scripts\python.exe scripts\sync_product_publication_skills.py --check
 ```
 
 只有人工审核同意安装后，才显式执行并再次检查：
 
 ```powershell
-python scripts/sync_publish_approved_product_skill.py --install
-python scripts/sync_publish_approved_product_skill.py --check
+.venv\Scripts\python.exe scripts\sync_product_publication_skills.py --install
+.venv\Scripts\python.exe scripts\sync_product_publication_skills.py --check
 ```
 
 不得隐式安装：发布、测试或 Skill 校验都不能自动修改已安装副本。parity 不一致属于

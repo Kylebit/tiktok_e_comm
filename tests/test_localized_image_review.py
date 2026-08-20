@@ -75,6 +75,18 @@ def _generation_rows(project: dict) -> list[dict]:
     return rows
 
 
+def _verified_miaoshou_receipt() -> dict:
+    return {
+        "status": "VERIFIED",
+        "written_to_miaoshou": True,
+        "verified": True,
+        "external_write_count": 1,
+        "written_image_count": 7,
+        "claimed": False,
+        "published": False,
+    }
+
+
 def test_initializes_only_requested_positions_and_country_locales(tmp_path):
     project = LocalizedImageReviewStore(tmp_path).initialize(
         _snapshot(), selected_positions=[1, 5, 6, 7]
@@ -96,7 +108,37 @@ def test_initializes_only_requested_positions_and_country_locales(tmp_path):
     assert project["product_center_mutated"] is False
 
 
-def test_generated_images_require_human_pass_before_approval(tmp_path):
+def test_initializes_second_round_from_approved_first_review(tmp_path):
+    project = LocalizedImageReviewStore(tmp_path).initialize_from_first_review(
+        offer_id="3882808027",
+        first_review_id=f"first-review:{'b' * 20}",
+        input_digest=f"sha256:{'c' * 64}",
+        ordered_images=[
+            f"https://assets.example/source-{position:02d}.png"
+            for position in range(1, 7)
+        ],
+        selected_positions=[6],
+        publication_targets=[
+            "tiktok:LH_MY",
+            "tiktok:LH_TH",
+            "tiktok:LH_VN",
+            "tiktok:MX",
+            "ozon:RU",
+        ],
+        target_locales=["ms-MY", "th-TH", "vi-VN", "es-MX", "ru-RU"],
+    )
+
+    assert project["input_schema_version"] == "approved-first-review-image-input/v1"
+    assert project["selected_positions"] == [6]
+    assert len(project["tasks"]) == 5
+    assert {row["position"] for row in project["tasks"]} == {6}
+    assert {row["locale"] for row in project["tasks"]} == {
+        "ms-MY", "th-TH", "vi-VN", "es-MX", "ru-RU",
+    }
+    assert project["platform_writes"] == 0
+
+
+def test_chat_approval_auto_accepts_generated_images_without_miaoshou_dependency(tmp_path):
     store = LocalizedImageReviewStore(tmp_path)
     project = store.initialize(_snapshot(), selected_positions=[1, 5, 6, 7])
     generated = store.save_generation_bundle(
@@ -107,33 +149,47 @@ def test_generated_images_require_human_pass_before_approval(tmp_path):
 
     assert {row["status"] for row in generated["tasks"]} == {"READY_FOR_REVIEW"}
     assert generated["external_generation_count"] == 20
-    with pytest.raises(LocalizedImageReviewError, match="human review"):
-        store.approve(
-            "3899705757",
-            expected_revision=generated["revision"],
-            approved_by="Kyle",
-        )
-
-    current = generated
-    for task in generated["tasks"]:
-        current = store.decide(
-            "3899705757",
-            expected_revision=current["revision"],
-            task_id=task["task_id"],
-            decision="PASS",
-        )
     approved = store.approve(
         "3899705757",
-        expected_revision=current["revision"],
+        expected_revision=generated["revision"],
         approved_by="Kyle",
     )
 
     assert approved["status"] == "APPROVED"
+    assert all(row["status"] == "PASSED" for row in approved["tasks"])
+    assert all(row["decision"] == "CHAT_APPROVED" for row in approved["tasks"])
+    assert approved["approval_intent"]["approved_by"] == "Kyle"
     assert approved["approval"]["approved_by"] == "Kyle"
     assert approved["approval"]["approval_digest"].startswith("sha256:")
     assert approved["publication_supplement"]["status"] == "APPROVED_LOCAL_ASSETS"
     assert approved["publication_supplement"]["release_plan_id"] == _snapshot()["plan_id"]
     assert approved["publication_supplement"]["platform_writes"] == 0
+
+
+def test_chat_approval_is_recorded_before_generation_and_reconciles_later(tmp_path):
+    store = LocalizedImageReviewStore(tmp_path)
+    project = store.initialize(_snapshot(), selected_positions=[1])
+    approved_early = store.approve(
+        "3899705757",
+        expected_revision=project["revision"],
+        approved_by="Kyle",
+    )
+
+    assert approved_early["status"] == "APPROVAL_RECORDED"
+    assert approved_early["approval_intent"]["approved_by"] == "Kyle"
+    assert "approval" not in approved_early
+    assert "publication_supplement" not in approved_early
+
+    reconciled = store.save_generation_bundle(
+        "3899705757",
+        expected_revision=approved_early["revision"],
+        items=_generation_rows(project),
+    )
+
+    assert reconciled["status"] == "APPROVED"
+    assert all(row["status"] == "PASSED" for row in reconciled["tasks"])
+    assert reconciled["publication_supplement"]["status"] == "APPROVED_LOCAL_ASSETS"
+    assert "miaoshou_pre_review_sync" not in reconciled
 
 
 def test_retry_decision_never_falls_back_to_the_english_source(tmp_path):
@@ -145,6 +201,11 @@ def test_retry_decision_never_falls_back_to_the_english_source(tmp_path):
         items=_generation_rows(project),
     )
     task = generated["tasks"][0]
+    generated = store.record_miaoshou_pre_review_sync(
+        "3899705757",
+        expected_revision=generated["revision"],
+        receipt=_verified_miaoshou_receipt(),
+    )
 
     retried = store.decide(
         "3899705757",

@@ -99,6 +99,7 @@ agent_comms/helper/outbox/
 /.persistent-*.log
 /.toapis-*.log
 /reports/product-publication/
+/reports/product-preparation/
 /reports/server-*.log
 
 # One-off local investigation helpers; production scripts use stable names

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import http.server
+import json
 import os
 from pathlib import Path
 import socket
@@ -29,6 +30,16 @@ class _ReleaseStaticHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802 - stdlib handler contract
         path = self.path.split("?", 1)[0]
+        if path == "/api/product-flow/content-package/localized-image-review":
+            payload = json.dumps(
+                {"ok": True, "localized_image_review": {"review": {"tasks": []}}}
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if path in self.route_files:
             self.path = f"/{self.route_files[path]}"
         else:
@@ -647,7 +658,7 @@ def test_collectbox_and_platform_release_actions_are_not_cross_wired():
     assert 'id="collectboxActionPanel"' in html
     assert 'id="collectboxActionMessage"' in html
     assert 'id="collectboxActionStatus"' in html
-    assert "product_workspace.js?v=20260815-v38" in html
+    assert "product_workspace.js?v=20260820-v40" in html
     assert 'COLLECTBOX_ACTION_SCHEMA = "collectbox-action-status/v1"' in script
     assert "/api/product-workspace/collectbox-action/preview?" in script
     assert "/api/product-workspace/collectbox-action/status?" in script
@@ -856,8 +867,8 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     )
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
-    assert "product_workspace.css?v=20260801-v20" in html
-    assert "product_workspace.js?v=20260804-v37" in html
+    assert "product_workspace.css?v=20260820-v21" in html
+    assert "product_workspace.js?v=20260820-v40" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script

@@ -88,7 +88,8 @@ def test_verified_miaoshou_image_sync_also_finishes_final_content_approval():
         "function schedulePoll()", 1
     )[0]
 
-    assert "同步图片并批准最终内容" in html
+    assert 'class="sync-button-label"' in html
+    assert 'id="syncMiaoshouButton"' in html
     assert "async function finalizeAiContentAfterVerifiedSync" in script
     assert 'post("content-package/finalize"' in script
     assert "await finalizeAiContentAfterVerifiedSync();" in sync_source

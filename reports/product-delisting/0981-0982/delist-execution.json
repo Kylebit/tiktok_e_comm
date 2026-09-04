@@ -1,0 +1,40 @@
+{
+  "schema_version": "product-delist-execution/v1",
+  "completed_at": "2026-09-03T17:32:00+08:00",
+  "requested_skus": ["0981", "0982"],
+  "operation": "REVERSIBLE_UNLIST",
+  "permanent_delete_count": 0,
+  "summary": {
+    "expected_targets": 15,
+    "tiktok_delisted_targets": 10,
+    "shopee_active_matches": 0,
+    "ozon_active_matches": 0,
+    "unresolved_targets": 0
+  },
+  "targets": [
+    {"target_label":"tiktok:LH_PH","product_id":"1737164201560606651","seller_skus":["0981","0982"],"status":"DELISTED","readback":"MIAOSHOU_ACTIVE_SEARCH_EMPTY_AND_DELISTED_COUNT_10"},
+    {"target_label":"tiktok:LH_MY","product_id":"1737164256460244923","seller_skus":["0981","0982"],"status":"DELISTED","readback":"MIAOSHOU_ACTIVE_SEARCH_EMPTY_AND_DELISTED_COUNT_10"},
+    {"target_label":"tiktok:LH_TH","product_id":"1737164297565603771","seller_skus":["0981","0982"],"status":"DELISTED","readback":"MIAOSHOU_ACTIVE_SEARCH_EMPTY_AND_DELISTED_COUNT_10"},
+    {"target_label":"tiktok:LH_VN","product_id":"1737164169770862523","seller_skus":["0981","0982"],"status":"DELISTED","readback":"MIAOSHOU_ACTIVE_SEARCH_EMPTY_AND_DELISTED_COUNT_10"},
+    {"target_label":"tiktok:HB_PH","product_id":"1737164285244376893","seller_skus":["0981","0982"],"status":"DELISTED","readback":"MIAOSHOU_ACTIVE_SEARCH_EMPTY_AND_DELISTED_COUNT_10"},
+    {"target_label":"tiktok:HB_MY","product_id":"1737164169702770493","seller_skus":["0981","0982"],"status":"DELISTED","readback":"MIAOSHOU_ACTIVE_SEARCH_EMPTY_AND_DELISTED_COUNT_10"},
+    {"target_label":"tiktok:HB_TH","product_id":"1737164233787410237","seller_skus":["0981","0982"],"status":"DELISTED","readback":"MIAOSHOU_ACTIVE_SEARCH_EMPTY_AND_DELISTED_COUNT_10"},
+    {"target_label":"tiktok:HB_VN","product_id":"1737164299238147901","seller_skus":["0981","0982"],"status":"DELISTED","readback":"MIAOSHOU_ACTIVE_SEARCH_EMPTY_AND_DELISTED_COUNT_10"},
+    {"target_label":"tiktok:MX","product_id":"1737164299717936518","seller_skus":["0981","0982"],"status":"DELISTED","readback":"MIAOSHOU_ACTIVE_SEARCH_EMPTY_AND_DELISTED_COUNT_10"},
+    {"target_label":"tiktok:GB","product_id":"1729901739848080306","seller_skus":["0981","0982"],"status":"DELISTED","readback":"MIAOSHOU_ACTIVE_SEARCH_EMPTY_AND_DELISTED_COUNT_10"},
+    {"target_label":"shopee:PH","seller_skus":["0981","0982"],"status":"NO_ACTIVE_MATCH","readback":"SHOPEE_OFFICIAL_ACTIVE_ITEM_SCAN"},
+    {"target_label":"shopee:MY","seller_skus":["0981","0982"],"status":"NO_ACTIVE_MATCH","readback":"SHOPEE_OFFICIAL_ACTIVE_ITEM_SCAN"},
+    {"target_label":"shopee:TH","seller_skus":["0981","0982"],"status":"NO_ACTIVE_MATCH","readback":"SHOPEE_OFFICIAL_ACTIVE_ITEM_SCAN"},
+    {"target_label":"shopee:VN","seller_skus":["0981","0982"],"status":"NO_ACTIVE_MATCH","readback":"SHOPEE_OFFICIAL_ACTIVE_ITEM_SCAN"},
+    {"target_label":"ozon:RU","seller_skus":["0981","0982"],"status":"NO_ACTIVE_MATCH","readback":"OZON_ACTIVE_CATALOG_SCAN"}
+  ],
+  "evidence": {
+    "identity_sources": [
+      "reports/product-discounts/miaoshou-product-identity-evidence-20260901.json",
+      "reports/product-discounts/uncovered-products-20260901.json",
+      "Miaoshou live exact platform-SKU search"
+    ],
+    "obsolete_plan_digest": "sha256:6710ede0e30b65efc3b76831880187daaef6fb48b2b3eea0c80bd18af66353e6",
+    "note": "The plan was generated after TikTok unlisting, so active discovery returned NOT_FOUND for already completed rows. This execution report is the authoritative outcome artifact."
+  }
+}

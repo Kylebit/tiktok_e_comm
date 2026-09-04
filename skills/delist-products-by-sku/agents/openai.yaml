@@ -1,0 +1,7 @@
+interface:
+  display_name: "按 SKU 下架商品"
+  short_description: "逐店安全下架并进行官方回读"
+  default_prompt: "按 Seller SKU 和店铺范围生成不可变下架计划，避免影响未指定变体，执行可恢复下架并逐目标回读。"
+
+policy:
+  allow_implicit_invocation: true

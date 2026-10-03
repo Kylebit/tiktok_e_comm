@@ -68,10 +68,9 @@ def _image_catalog_rows(catalog: object) -> list[Mapping[str, Any]]:
         if name in seen:
             raise ValueError("LINGSHI_CATALOG_MODEL_IDENTITY_DUPLICATE")
         seen.add(name)
-        # Legacy directories omitted type for the already approved image aliases.
-        if ("type" in row and row["type"] != "image") or (
-            "type" not in row and name not in MODEL_CANDIDATES
-        ):
+        # The image query may return legacy typeless rows, including other models.
+        # Selection below still admits only the existing approved image aliases.
+        if "type" in row and row["type"] != "image":
             raise ValueError("LINGSHI_CATALOG_IMAGE_TYPE_REQUIRED")
     return rows
 

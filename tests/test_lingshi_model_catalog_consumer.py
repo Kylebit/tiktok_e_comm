@@ -81,6 +81,18 @@ def test_detail_identity_conflict_cannot_select_another_model():
     assert client.details == ['tt-image-2']
 
 
+def test_typeless_unrelated_models_do_not_block_the_approved_alias():
+    # An image-filtered directory can contain legacy rows without explicit type.
+    client = OfflineCatalog({'models': [
+        {'name': 'unrelated-offline-model', 'available_for_this_key': True},
+        {'name': 'tt-image-2', 'available_for_this_key': True},
+    ]})
+    name, detail = resolve_brand_image_model(client)
+    assert name == 'tt-image-2'
+    assert detail == DETAIL
+    assert client.details == ['tt-image-2']
+
+
 def test_raw_sdk_catalog_contract_is_not_normalized_or_mutated():
     payload = {'models': deepcopy(ROWS), 'metadata': {'offline': True}}
 

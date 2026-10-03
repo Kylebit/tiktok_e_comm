@@ -9,7 +9,7 @@ description: Safely unpublish existing TikTok Shop, Shopee, and Ozon listings by
 source/settings/data/report profile，运行该工程
 `<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry delist --check-binding`，
 再在 `--` 后原样传入 plan/execute/readback 参数。个人物理 Skill 副本不是工程来源。
-v1 仅支持 source 内 data/reports 布局，异址明确拒绝；v2 当前只支持 R1 captured 输入，下架入口明确拒绝。检查通过不授予下架权限。
+v1 仅支持 source 内 data/reports 布局，异址明确拒绝；v2 下架仅支持下述离线诊断路径绑定。live plan/execute/readback 仍使用原 v1 合同。检查通过不授予下架权限。
 
 把“下架”解释为可恢复的停止销售：TikTok `deactivate`、Shopee `unlist=true`、Ozon `archive`。除非用户另外明确要求，永远不要删除商品。
 
@@ -46,4 +46,27 @@ evidence does not prove a listing is absent at the provider. `execute` rejects
 an `OFFLINE_DIAGNOSTIC` plan before acquiring the operation ledger. Build a live
 plan with fresh official identity/status readback within the already authorized
 exact SKU/store scope; this is evidence collection, not another business approval.
-Version 2 delist dispatch remains unsupported.
+Version 2 supports only `entry_mode=delist-offline-diagnostic`, using
+`config/agent_entry.delist-offline-v2.example.json` and the selected source's
+binding wrapper. Pass canonical `plan --sku <EXACT_SKU> --no-live`, with repeated
+full `--sku` flags and optional `--scope all`; canonical equals forms for SKU
+and scope are accepted. Live planning, execute/readback, abbreviations, duplicate
+scope/no-live, technical binding flags and root/output overrides are rejected.
+
+This subset binds an existing read-only catalog, captured preparation/publication/
+discount report inputs, the Shopee cache directory, the Ozon directory containing
+the three retained JSON snapshots, and a separate existing output root. It needs
+no settings, credentials, provider config or workbench/release/report database;
+those fields are rejected. Known cache files may be missing and remain blocked
+diagnostics. It does not create captures, initialize databases, authenticate or
+contact providers. It can create report subdirectories and write the local
+`product-delisting/<normalized-SKUs>/delist-plan.json`, so it is not pure read-only.
+
+The wrapper and child verify the frozen profile digest, exact clean source,
+environment and paths before local reads and again before report writes.
+Links/reparse inputs, nested caches, output aliases and input/output overlaps
+reject. Traversal is bounded; oversized input trees fail rather than silently
+producing incomplete plans. Cached identity and local status do not establish
+current provider state or capture lineage. Legacy v1/live setup, authorization,
+plan digest, official readback and UNKNOWN reconciliation retain their original
+behavior. No live v2 readiness or deployed/personal Skill adoption is implied.

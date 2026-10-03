@@ -30,6 +30,7 @@ R1_CONTRACT = 'orbit-r1-paths/v2'
 AGENT_ENTRY_BINDING_CONTRACT = 'orbit-agent-entry/v2'
 QA_ASSESSMENT_BINDING_CONTRACT = 'orbit-qa-assessment-paths/v2'
 IMAGES_STATUS_BINDING_CONTRACT = 'orbit-images-status-paths/v2'
+DELIST_OFFLINE_BINDING_CONTRACT = 'orbit-delist-offline-paths/v2'
 R1_CONTRACT_FILES = ('modules/sourcing/new_product_workbench.py',
     'modules/sourcing/pipeline.py', 'modules/sourcing/manual_product_intake.py',
     'shared_platform/release_control.py', ENTRIES['preparation'])
@@ -123,6 +124,35 @@ def check_environment(root, scoped=None):
 
 
 def check_arguments(bound, entry, arguments):
+    if bound.get('entry_mode') == 'delist-offline-diagnostic':
+        if not arguments:
+            return
+        if arguments[0] != 'plan':
+            raise ValueError('DELIST_OFFLINE_PLAN_ONLY')
+        counts = {'--sku': 0, '--scope': 0, '--no-live': 0}
+        index = 1
+        while index < len(arguments):
+            option, separator, value = arguments[index].partition('=')
+            if option not in counts:
+                raise ValueError('DELIST_OFFLINE_ARGUMENT_UNSUPPORTED: ' + option)
+            counts[option] += 1
+            if option == '--no-live':
+                if separator or counts[option] != 1:
+                    raise ValueError('DELIST_OFFLINE_NO_LIVE_REQUIRED')
+            else:
+                if not separator:
+                    index += 1
+                    if index >= len(arguments):
+                        raise ValueError('DELIST_OFFLINE_ARGUMENT_VALUE_REQUIRED')
+                    value = arguments[index]
+                if not value or value.startswith('--'):
+                    raise ValueError('DELIST_OFFLINE_ARGUMENT_VALUE_REQUIRED')
+                if option == '--scope' and (value != 'all' or counts[option] != 1):
+                    raise ValueError('DELIST_OFFLINE_SCOPE_ALL_REQUIRED')
+            index += 1
+        if not counts['--sku'] or counts['--no-live'] != 1:
+            raise ValueError('DELIST_OFFLINE_SKU_AND_NO_LIVE_REQUIRED')
+        return
     for index, value in enumerate(arguments):
         option, separator, supplied = value.partition('=')
         output_option = entry == 'preparation' and option == '--output'
@@ -338,6 +368,89 @@ def check_images_status_binding(path, raw, profile):
         'domain_imported':False,'sql_connections':0,'provider_calls':0,'business_calls':0,'auth_writes':0,'paid_calls':0}
 
 
+def checked_offline_child(root, path, name, *, directory=None):
+    """Check one known child before metadata/read/write; missing caches are valid."""
+    root, path = Path(root), Path(path)
+    if not path.is_absolute() or '..' in path.parts or not path.is_relative_to(root):
+        raise ValueError(name + '_OUTSIDE_BOUND_ROOT')
+    for item in (path, *path.parents):
+        if item.exists() or item.is_symlink():
+            info = item.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                raise ValueError(name + '_REPARSE_REJECTED')
+    if path.exists() and directory is not None:
+        if not (path.is_dir() if directory else path.is_file()):
+            raise ValueError(name + '_WRONG_TYPE')
+    return path
+
+
+def check_delist_offline_binding(path, raw, profile):
+    allowed = {'schema', 'entry_mode', 'source_root', 'expected_source_head',
+               'catalog_database', 'captured_reports_root', 'data_root', 'ozon_data_root', 'output_root'}
+    if set(profile) - allowed:
+        raise ValueError('DELIST_OFFLINE_PROFILE_FIELD_UNSUPPORTED: ' + ','.join(sorted(set(profile)-allowed)))
+    root = checked_path(profile.get('source_root'), 'SOURCE_ROOT', directory=True)
+    files = (*SOURCE_FILES, ENTRIES['delist'], 'scripts/repo_bound_agent_entry.py',
+             'modules/catalog/ozon_offline_data.py', 'modules/catalog/sku_key.py')
+    for relative in files:
+        checked_path(str(root/relative), 'DELIST_OFFLINE_SOURCE_FILE')
+    if Path(git(root, 'rev-parse', '--show-toplevel')).resolve() != root:
+        raise ValueError('SOURCE_MUST_BE_GIT_TOP_LEVEL')
+    git(root, 'ls-files', '--error-unmatch', '--', *files)
+    expected = profile.get('expected_source_head')
+    if not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{40}', expected):
+        raise ValueError('EXPECTED_SOURCE_HEAD_REQUIRED')
+    if git(root, 'rev-parse', 'HEAD') != expected:
+        raise ValueError('SOURCE_HEAD_MISMATCH')
+    if git(root, 'status', '--porcelain=v1', '-uall'):
+        raise ValueError('SOURCE_DIRTY')
+    for relative in (ENTRIES['delist'], 'scripts/repo_bound_agent_entry.py'):
+        source_constant_contract(root/relative, 'DELIST_OFFLINE_BINDING_CONTRACT',
+                                DELIST_OFFLINE_BINDING_CONTRACT, 'SOURCE_DELIST_OFFLINE_CAPABILITY_MISSING')
+    source_constant_contract(root/'modules/catalog/ozon_offline_data.py', 'OZON_OFFLINE_READER_CONTRACT',
+                            'orbit-ozon-captured-data/v1', 'SOURCE_OZON_OFFLINE_CAPABILITY_MISSING')
+    fields = {name: str(checked_path(profile.get(name), 'DELIST_OFFLINE_'+name.upper(),
+                                     directory=name != 'catalog_database')) for name in (
+        'catalog_database', 'captured_reports_root', 'data_root', 'ozon_data_root', 'output_root')}
+    output = Path(fields['output_root'])
+    for name in ('captured_reports_root', 'data_root', 'ozon_data_root'):
+        selected = Path(fields[name])
+        if output.is_relative_to(selected) or selected.is_relative_to(output):
+            raise ValueError('DELIST_OFFLINE_INPUT_OUTPUT_OVERLAP: '+name)
+    if output.is_relative_to(root) or root.is_relative_to(output):
+        raise ValueError('DELIST_OFFLINE_SOURCE_OUTPUT_OVERLAP')
+    for selected, name in ((Path(fields['catalog_database']), 'catalog_database'), (path, 'profile')):
+        if selected.is_relative_to(output):
+            raise ValueError('DELIST_OFFLINE_INPUT_OUTPUT_OVERLAP: '+name)
+    for key, value in os.environ.items():
+        if not value:
+            continue
+        if key == 'ORBIT_CATALOG_DATABASE':
+            if str(checked_path(value, 'ENV_CATALOG_DATABASE')) != fields['catalog_database']:
+                raise ValueError('ENV_BINDING_CONFLICT: '+key)
+        elif (key in ('ORBIT_HIVE_SETTINGS', 'TIKTOK_E_COMM_ROOT') or
+              (key.startswith('ORBIT_') and key.endswith(('_ROOT', '_PATH', '_DIR', '_DATABASE', '_PROFILE', '_SETTINGS')))):
+            raise ValueError('ENV_BINDING_UNSUPPORTED_DELIST_OFFLINE: '+key)
+    scopes = {'source_root': 'exact clean source', 'expected_source_head': 'source identity',
+              'catalog_database': 'existing readonly catalog', 'captured_reports_root': 'existing preparation/publication/discount JSON',
+              'data_root': 'existing Shopee SKU map only', 'ozon_data_root': 'three existing Ozon cached JSON files',
+              'output_root': 'local offline diagnostic plan'}
+    propagation = {name: {'supported': True, 'scope': scope} for name, scope in scopes.items()}
+    for name in ('settings_path', 'config_root', 'state_dir', 'release_store_path', 'report_store_path',
+                 'workbench_store_path', 'lingshi_config_path'):
+        propagation[name] = {'supported': False, 'scope': 'not consumed or accepted by offline diagnostic subset'}
+    return {'status': 'AGENT_ENTRY_LAYOUT_BINDING_VALIDATED', 'schema': profile['schema'],
+            'entry_mode': 'delist-offline-diagnostic', 'profile_path': str(path),
+            'profile_sha256': hashlib.sha256(raw).hexdigest(), 'source_root': str(root), 'source_head': expected,
+            'entry': str(root/ENTRIES['delist']), **fields, 'field_propagation': propagation,
+            'delist_offline_binding_contract': DELIST_OFFLINE_BINDING_CONTRACT,
+            'supported_layout': 'existing independent catalog/cache roots and separate diagnostic output',
+            'settings_override_supported': False, 'separate_data_output_supported': True,
+            'dispatch_preflight': 'source/path metadata only; cached candidates are not executable or official readback',
+            'local_writes': ['product-delisting/<normalized-skus>/delist-plan.json and its parent directories'],
+            'domain_imported': False, 'sql_connections': 0, 'provider_calls': 0, 'business_calls': 0, 'auth_writes': 0, 'paid_calls': 0}
+
+
 def check_binding(profile_path, entry):
     path = checked_path(str(profile_path), 'PROFILE')
     try:
@@ -348,6 +461,8 @@ def check_binding(profile_path, entry):
     if not isinstance(profile, dict) or profile.get('schema') not in ('orbit-agent-entry/v1','orbit-agent-entry/v2'):
         raise ValueError('PROFILE_SCHEMA_INVALID')
     v2 = profile['schema'] == 'orbit-agent-entry/v2'
+    if v2 and entry == 'delist' and profile.get('entry_mode') == 'delist-offline-diagnostic':
+        return check_delist_offline_binding(path, raw, profile)
     if v2 and entry == 'qa' and profile.get('entry_mode') == 'qa-existing-assessment':
         return check_qa_assessment_binding(path, raw, profile)
     if v2 and entry == 'images' and profile.get('entry_mode') == 'images-captured-status':

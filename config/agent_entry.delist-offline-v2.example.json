@@ -1,0 +1,11 @@
+{
+  "schema": "orbit-agent-entry/v2",
+  "entry_mode": "delist-offline-diagnostic",
+  "source_root": "E:/replace-with-selected-complete-source",
+  "expected_source_head": "replace-with-exact-40-character-clean-source-HEAD",
+  "catalog_database": "E:/replace-with-existing-captured-catalog.db",
+  "captured_reports_root": "E:/replace-with-existing-captured-reports",
+  "data_root": "E:/replace-with-existing-shopee-cache-directory",
+  "ozon_data_root": "E:/replace-with-existing-ozon-cache-directory",
+  "output_root": "E:/replace-with-existing-separate-diagnostic-output"
+}

@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+DELIST_OFFLINE_BINDING_CONTRACT = 'orbit-delist-offline-paths/v2'
 if __name__ == "__main__" and (not (REPO_ROOT / '.git').exists() or not all((REPO_ROOT / name).is_file() for name in (
     "core/config.py", "modules/sourcing/new_product_workbench.py",
     "shared_platform/publication_rounds.py",
@@ -64,6 +65,85 @@ def _report_dir(skus: tuple[str, ...]) -> Path:
     return REPO_ROOT / "reports" / "product-delisting" / "-".join(skus)
 
 
+def _offline_child(bound, root, path, *, directory=None):
+    from scripts.repo_bound_agent_entry import checked_offline_child
+    return checked_offline_child(root, path, 'DELIST_OFFLINE_CACHE', directory=directory)
+
+
+def _offline_repair_paths(root, bound):
+    """Traverse only the matched offer's publication subtree, never reparse dirs."""
+    _offline_child(bound, bound['captured_reports_root'], root, directory=True)
+    if not root.is_dir():
+        return []
+    stack, paths, visited = [(root, 0)], [], 0
+    while stack:
+        parent, depth = stack.pop()
+        if depth > 64:
+            raise ValueError('DELIST_OFFLINE_CACHE_TRAVERSAL_LIMIT')
+        _offline_child(bound, bound['captured_reports_root'], parent, directory=True)
+        for child in parent.iterdir():
+            visited += 1
+            if visited > 4096:
+                raise ValueError('DELIST_OFFLINE_CACHE_TRAVERSAL_LIMIT')
+            _offline_child(bound, bound['captured_reports_root'], child)
+            if child.is_dir():
+                stack.append((child, depth+1))
+            elif child.name == 'description-media-repair.json':
+                _offline_child(bound, bound['captured_reports_root'], child, directory=False)
+                paths.append(child)
+    return sorted(paths, key=lambda path: path.stat().st_mtime)
+
+
+def _recheck_offline_binding(bound):
+    from scripts.repo_bound_agent_entry import check_binding, checked_path
+    profile = checked_path(bound['profile_path'], 'DELIST_OFFLINE_PROFILE')
+    if hashlib.sha256(profile.read_bytes()).hexdigest() != bound['profile_sha256']:
+        raise ValueError('DELIST_OFFLINE_PROFILE_DIGEST_CHANGED')
+    current = check_binding(profile, 'delist')
+    if (current.get('entry_mode') != 'delist-offline-diagnostic'
+            or Path(current['source_root']) != REPO_ROOT
+            or current['profile_sha256'] != bound['profile_sha256']):
+        raise ValueError('DELIST_OFFLINE_SOURCE_OR_PROFILE_CHANGED')
+    return current
+
+
+def _offline_binding_arguments(argv):
+    """Freeze hidden technical fields before the legacy parser/domain imports."""
+    flags = {'--binding-profile', '--binding-profile-sha256'}
+    if not any(value.partition('=')[0].startswith('--binding-') for value in argv):
+        return None, argv
+    values, original, index = {}, [], 0
+    while index < len(argv):
+        option, separator, value = argv[index].partition('=')
+        if option in flags:
+            if option in values:
+                raise ValueError('DELIST_OFFLINE_BINDING_ARGUMENT_DUPLICATE')
+            if not separator:
+                index += 1
+                if index >= len(argv):
+                    raise ValueError('DELIST_OFFLINE_BINDING_PAIR_REQUIRED')
+                value = argv[index]
+            values[option] = value
+        else:
+            original.append(argv[index])
+        index += 1
+    if set(values) != flags or re.fullmatch(r'[0-9a-f]{64}', values['--binding-profile-sha256']) is None:
+        raise ValueError('DELIST_OFFLINE_BINDING_PAIR_REQUIRED')
+    from scripts.repo_bound_agent_entry import check_binding, check_arguments, checked_path
+    path = checked_path(values['--binding-profile'], 'DELIST_OFFLINE_PROFILE')
+    supplied = values['--binding-profile-sha256']
+    if hashlib.sha256(path.read_bytes()).hexdigest() != supplied:
+        raise ValueError('DELIST_OFFLINE_PROFILE_DIGEST_CHANGED')
+    bound = check_binding(path, 'delist')
+    if (bound.get('entry_mode') != 'delist-offline-diagnostic'
+            or Path(bound['source_root']) != REPO_ROOT or bound['profile_sha256'] != supplied):
+        raise ValueError('DELIST_OFFLINE_SOURCE_OR_PROFILE_CHANGED')
+    if not original:
+        raise ValueError('DELIST_OFFLINE_PLAN_ONLY')
+    check_arguments(bound, 'delist', original)
+    return bound, original
+
+
 def _shop_target(name: str, region: str) -> str:
     folded = name.casefold()
     if "homebloom" in folded:
@@ -77,10 +157,10 @@ def _shop_target(name: str, region: str) -> str:
     return ""
 
 
-def _local_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
+def _local_tiktok_rows(skus: tuple[str, ...], *, offline_binding=None) -> list[dict[str, Any]]:
     from core.db import connect_readonly
 
-    conn = connect_readonly()
+    conn = connect_readonly(offline_binding['catalog_database']) if offline_binding else connect_readonly()
     try:
         shops = {
             str(row["cipher"]): dict(row)
@@ -123,14 +203,17 @@ def _local_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
     return out
 
 
-def _cached_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
+def _cached_tiktok_rows(skus: tuple[str, ...], *, offline_binding=None) -> list[dict[str, Any]]:
     """Parse durable publication candidates without authentication or shop I/O.
 
     Historical evidence is only an identity seed. Every recovered product is
     still re-read from TikTok before it can become executable.
     """
     matching_offers: set[str] = set()
-    prep_root = REPO_ROOT / "reports" / "product-preparation"
+    reports = Path(offline_binding['captured_reports_root']) if offline_binding else REPO_ROOT/'reports'
+    prep_root = reports / 'product-preparation'
+    if offline_binding:
+        _offline_child(offline_binding, reports, prep_root, directory=True)
     def collect_skus(value: object) -> set[str]:
         found: set[str] = set()
         if isinstance(value, Mapping):
@@ -145,11 +228,22 @@ def _cached_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
                 found.update(collect_skus(child))
         return found
 
+    inspected = 0
     for offer_dir in prep_root.iterdir() if prep_root.is_dir() else ():
+        if offline_binding:
+            inspected += 1
+            if inspected > 4096:
+                raise ValueError('DELIST_OFFLINE_CACHE_TRAVERSAL_LIMIT')
+            _offline_child(offline_binding, reports, offer_dir)
         if not offer_dir.is_dir():
             continue
         found: set[str] = set()
         for path in offer_dir.glob("*.json"):
+            if offline_binding:
+                inspected += 1
+                if inspected > 4096:
+                    raise ValueError('DELIST_OFFLINE_CACHE_TRAVERSAL_LIMIT')
+                _offline_child(offline_binding, reports, path, directory=False)
             try:
                 found.update(collect_skus(json.loads(path.read_text(encoding="utf-8"))))
             except (OSError, json.JSONDecodeError):
@@ -161,9 +255,12 @@ def _cached_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
 
     identities: dict[str, dict[str, Any]] = {}
     for offer_id in matching_offers:
-        root = REPO_ROOT / "reports" / "product-publication" / offer_id
-        paths = sorted(root.rglob("description-media-repair.json"), key=lambda p: p.stat().st_mtime)
+        root = reports / 'product-publication' / offer_id
+        paths = (_offline_repair_paths(root, offline_binding) if offline_binding else
+                 sorted(root.rglob('description-media-repair.json'), key=lambda p: p.stat().st_mtime))
         for path in paths:
+            if offline_binding:
+                _offline_child(offline_binding, reports, path, directory=False)
             try:
                 report = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
@@ -183,7 +280,8 @@ def _cached_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
                         "requested_skus": list(skus),
                         "all_product_skus": list(skus),
                         "current_status": str((target.get("after") or target.get("before") or {}).get("status") or ""),
-                        "identity_source": str(path.relative_to(REPO_ROOT)).replace("\\", "/"),
+                        "identity_source": ('captured_reports/'+path.relative_to(reports).as_posix()
+                                            if offline_binding else str(path.relative_to(REPO_ROOT)).replace("\\", "/")),
                         "action": "DEACTIVATE_PRODUCT",
                     }
     return list(identities.values())
@@ -310,17 +408,26 @@ def _live_tiktok_rows(skus: tuple[str, ...], targets=None, *, call_guard=None, t
     return out
 
 
-def _durable_miaoshou_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
+def _durable_miaoshou_tiktok_rows(skus: tuple[str, ...], *, offline_binding=None) -> list[dict[str, Any]]:
     """Recover exact API-less storefront identities from the newest saved evidence."""
-    paths = sorted(
-        (REPO_ROOT / "reports" / "product-discounts").glob(
-            "miaoshou-product-identity-evidence-*.json"
-        ),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
+    reports = Path(offline_binding['captured_reports_root']) if offline_binding else REPO_ROOT/'reports'
+    directory = reports/'product-discounts'
+    if offline_binding:
+        _offline_child(offline_binding, reports, directory, directory=True)
+        paths = []
+        for path in directory.glob('miaoshou-product-identity-evidence-*.json'):
+            if len(paths) >= 4096:
+                raise ValueError('DELIST_OFFLINE_CACHE_TRAVERSAL_LIMIT')
+            _offline_child(offline_binding, reports, path, directory=False)
+            paths.append(path)
+        paths.sort(key=lambda path:path.stat().st_mtime, reverse=True)
+    else:
+        paths = sorted(directory.glob('miaoshou-product-identity-evidence-*.json'),
+                       key=lambda path:path.stat().st_mtime, reverse=True)
     if not paths:
         return []
+    if offline_binding:
+        _offline_child(offline_binding, reports, paths[0], directory=False)
     try:
         payload = json.loads(paths[0].read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -348,7 +455,8 @@ def _durable_miaoshou_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]
             "requested_skus": sorted(set(all_skus) & set(skus)),
             "all_product_skus": all_skus,
             "current_status": "PROVIDER_READBACK_REQUIRED",
-            "identity_source": str(paths[0].relative_to(REPO_ROOT)).replace("\\", "/"),
+            "identity_source": ('captured_reports/'+paths[0].relative_to(reports).as_posix()
+                                if offline_binding else str(paths[0].relative_to(REPO_ROOT)).replace("\\", "/")),
             "action": "MIAOSHOU_DELIST",
         })
     return out
@@ -427,8 +535,11 @@ def _live_shopee_rows(skus: tuple[str, ...], targets=None, *, call_guard=None, t
     return out
 
 
-def _shopee_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
-    path = REPO_ROOT / "data" / "shopee_global_sku_map.json"
+def _shopee_rows(skus: tuple[str, ...], *, offline_binding=None) -> list[dict[str, Any]]:
+    data_root = Path(offline_binding['data_root']) if offline_binding else REPO_ROOT/'data'
+    path = data_root/'shopee_global_sku_map.json'
+    if offline_binding:
+        _offline_child(offline_binding, data_root, path, directory=False)
     if not path.is_file():
         # This file is a legacy identity cache, not provider evidence.  A clean
         # checkout may legitimately omit it; live planning must still continue
@@ -466,11 +577,17 @@ def _shopee_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
     return out
 
 
-def _ozon_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
-    from modules.catalog.ozon_data import load_ozon_by_key
-
+def _ozon_rows(skus: tuple[str, ...], *, offline_binding=None) -> list[dict[str, Any]]:
+    if offline_binding:
+        from modules.catalog.ozon_offline_data import load_ozon_from_directory
+        base = Path(offline_binding['ozon_data_root'])
+        rows = load_ozon_from_directory(base, path_guard=lambda path:
+            _offline_child(offline_binding, base, path, directory=False))
+    else:
+        from modules.catalog.ozon_data import load_ozon_by_key
+        rows = load_ozon_by_key()
     out: list[dict[str, Any]] = []
-    for key, row in load_ozon_by_key().items():
+    for key, row in rows.items():
         if _tail4(key) not in skus and _tail4(row.get("seller_sku")) not in skus:
             continue
         out.append({
@@ -548,32 +665,38 @@ def _live_verify(row: dict[str, Any], *, call_guard=None, tiktok_runtime=None) -
     return row
 
 
-def build_plan(skus: tuple[str, ...], *, live: bool = True) -> dict[str, Any]:
+def build_plan(skus: tuple[str, ...], *, live: bool = True, offline_binding=None) -> dict[str, Any]:
+    if offline_binding:
+        if live:
+            raise ValueError('DELIST_OFFLINE_PLAN_ONLY')
+        offline_binding = _recheck_offline_binding(offline_binding)
     live_tiktok = _live_tiktok_rows(skus) if live else []
     live_tiktok_labels = {row["target_label"] for row in live_tiktok}
     local_tiktok = [
-        row for row in _local_tiktok_rows(skus)
+        row for row in (_local_tiktok_rows(skus, offline_binding=offline_binding) if offline_binding else _local_tiktok_rows(skus))
         if row["target_label"] not in live_tiktok_labels
     ]
     known_tiktok_labels = live_tiktok_labels | {row["target_label"] for row in local_tiktok}
     historical_tiktok = [
-        row for row in (_historical_tiktok_rows(skus) if live else _cached_tiktok_rows(skus))
+        row for row in (_historical_tiktok_rows(skus) if live else
+                        _cached_tiktok_rows(skus, offline_binding=offline_binding) if offline_binding else _cached_tiktok_rows(skus))
         if row["target_label"] not in known_tiktok_labels
     ]
     known_tiktok_labels.update(row["target_label"] for row in historical_tiktok)
     miaoshou_tiktok = [
-        row for row in _durable_miaoshou_tiktok_rows(skus)
+        row for row in (_durable_miaoshou_tiktok_rows(skus, offline_binding=offline_binding)
+                        if offline_binding else _durable_miaoshou_tiktok_rows(skus))
         if row["target_label"] not in known_tiktok_labels
     ]
     live_shopee = _live_shopee_rows(skus) if live else []
     live_shopee_labels = {row["target_label"] for row in live_shopee}
     mapped_shopee = [
-        row for row in _shopee_rows(skus)
+        row for row in (_shopee_rows(skus, offline_binding=offline_binding) if offline_binding else _shopee_rows(skus))
         if row["target_label"] not in live_shopee_labels
     ]
     found = (
         live_tiktok + local_tiktok + historical_tiktok + miaoshou_tiktok
-        + live_shopee + mapped_shopee + _ozon_rows(skus)
+        + live_shopee + mapped_shopee + (_ozon_rows(skus, offline_binding=offline_binding) if offline_binding else _ozon_rows(skus))
     )
     by_target: dict[str, list[dict[str, Any]]] = {}
     for row in found:
@@ -642,6 +765,10 @@ def build_plan(skus: tuple[str, ...], *, live: bool = True) -> dict[str, Any]:
             row["blocked"] = True
             row["executable"] = False
             row.setdefault("reason", "cached candidates are diagnostic only; a live plan with official identity and status readback is required")
+    if offline_binding:
+        body['path_binding'] = {'contract': DELIST_OFFLINE_BINDING_CONTRACT,
+                                'source_head': offline_binding['source_head'],
+                                'profile_sha256': offline_binding['profile_sha256']}
     body["plan_digest"] = _digest(body)
     return body
 
@@ -820,9 +947,10 @@ def readback(plan: Mapping[str, Any], *, call_guard=None, tiktok_runtime=None) -
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    bound, original = _offline_binding_arguments(sys.argv[1:])
+    parser = argparse.ArgumentParser(allow_abbrev=not bool(bound))
     sub = parser.add_subparsers(dest="command", required=True)
-    plan_cmd = sub.add_parser("plan")
+    plan_cmd = sub.add_parser("plan", allow_abbrev=not bool(bound))
     plan_cmd.add_argument("--sku", action="append", required=True)
     plan_cmd.add_argument("--scope", default="all", choices=("all",))
     plan_cmd.add_argument("--no-live", action="store_true")
@@ -830,13 +958,23 @@ def main() -> int:
     execute_cmd.add_argument("--plan", required=True)
     readback_cmd = sub.add_parser("readback")
     readback_cmd.add_argument("--plan", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(original if bound else None)
 
     if args.command == "plan":
         skus = _wanted(args.sku)
-        output = _report_dir(skus) / "delist-plan.json"
-        output.parent.mkdir(parents=True, exist_ok=True)
-        payload = build_plan(skus, live=not args.no_live)
+        if bound:
+            output = Path(bound['output_root'])/'product-delisting'/'-'.join(skus)/'delist-plan.json'
+            _offline_child(bound, bound['output_root'], output, directory=False)
+            payload = build_plan(skus, live=False, offline_binding=bound)
+            _recheck_offline_binding(bound)
+            _offline_child(bound, bound['output_root'], output, directory=False)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            _recheck_offline_binding(bound)
+            _offline_child(bound, bound['output_root'], output, directory=False)
+        else:
+            output = _report_dir(skus) / "delist-plan.json"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            payload = build_plan(skus, live=not args.no_live)
     else:
         source = Path(args.plan).resolve()
         payload_in = json.loads(source.read_text(encoding="utf-8"))

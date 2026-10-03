@@ -86,8 +86,8 @@ separate contracts and remain unchanged.
 `config/agent_entry.r1-v2.example.json` describes `orbit-agent-entry/v2`.
 The R1 profile accepts only `--entry preparation`. QA additionally accepts the
 separate existing-assessment profile described below. Captured images status
-has its own narrow profile; delist and other
-QA modes return `ENTRY_PATH_BINDING_UNSUPPORTED_V2`; use v1 only when its original layout and
+has its own narrow profile; delist additionally accepts only the offline diagnostic
+profile below. Other delist/QA modes return `ENTRY_PATH_BINDING_UNSUPPORTED_V2`; use v1 only when its original layout and
 authority contract actually hold. A whole mixed-root Agent workflow is still
 unsupported. The selected R1 script and its four source consumers must declare
 `R1_PATH_BINDING_CONTRACT = "orbit-r1-paths/v2"`; AST checks these constants and
@@ -244,3 +244,54 @@ without writing reports or initializing history. Existing legacy R1 plans retain
 the `LEGACY_R2_BRIDGE_REQUIRED` status; this mode does not perform that bridge.
 Synthetic validation proves path consumption and boundaries only; real input
 availability, capture provenance, deployed Agent use and provider state remain unverified.
+
+## Version 2: delist offline diagnostic
+
+`config/agent_entry.delist-offline-v2.example.json` selects
+`entry_mode=delist-offline-diagnostic`. The wrapper and delist consumer declare
+`DELIST_OFFLINE_BINDING_CONTRACT = "orbit-delist-offline-paths/v2"`; the pure
+Ozon reader declares `OZON_OFFLINE_READER_CONTRACT = "orbit-ozon-captured-data/v1"`.
+Exact clean source identity and these tracked capabilities are required.
+
+| Field | Exact consumer |
+| --- | --- |
+| `source_root`, `expected_source_head` | Original source/CLI, exact clean Git top-level and HEAD |
+| `catalog_database` | Existing absolute catalog; original readonly `shops`/`products` queries, no schema initialization |
+| `captured_reports_root` | Existing `product-preparation`, `product-publication` and `product-discounts` JSON input tree; never inferred from output/cwd |
+| `data_root` | Existing directory for optional `shopee_global_sku_map.json` only |
+| `ozon_data_root` | Existing directory for optional `all_products_attrs.json`, `migrated_offers.json`, `tk_sku_map.json`; pure parser bypasses Ozon config/credentials resolver |
+| `output_root` | Separate existing root; only `product-delisting/<normalized-SKUs>/delist-plan.json` and its parent directories |
+
+This mode accepts no settings/config/state/provider/workbench/release/report-store
+fields. The explicit catalog path bypasses settings fallback; the scoped Ozon
+reader imports only the pure SKU matcher. The legacy Ozon module retains its
+original top-level imports, default resolver and parsing/error/path behavior.
+Input cache children may be missing without creation or provider discovery.
+
+```powershell
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry delist --check-binding -- plan --sku <SKU> --no-live
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry delist -- plan --sku <SKU> --scope all --no-live
+```
+
+Only complete `plan`, repeated `--sku`, optional single `--scope all`, and one
+bare `--no-live` are accepted; SKU/scope equals forms are supported. Abbreviations,
+live/execute/readback, duplicate scope/no-live, extra flags/positionals, root/output
+overrides and exposed hidden binding arguments reject before domain imports.
+Metadata-only check-binding opens no catalog/settings and writes no reports.
+
+The child rechecks frozen profile SHA-256, source/HEAD/clean/environment before
+domain reads and before output mkdir/write. Nonempty ambient settings/authority/
+path overrides reject; catalog environment, when present, must match the profile.
+Root/ancestor, traversed nested cache and destination links/reparse aliases reject.
+Output cannot overlap source, cache roots, catalog or profile. Preparation cache
+inspection and each matched publication subtree are bounded at 4096 entries;
+publication nesting is limited to 64. Oversized traversals fail closed.
+
+Output plans retain `product-delist-plan/v1`, `OFFLINE_DIAGNOSTIC`, all original
+diagnostic targets, exact SKU blockers and the original digest algorithm. Binding
+provenance is included before the digest. Every target stays blocked/non-executable;
+execute verifies the digest then rejects offline before ledger acquisition.
+The original v1/live APIs, frozen plan/readback and UNKNOWN reconciliation remain
+unchanged. This mode can write a local report and is not pure read-only; no current
+provider state, real captured lineage, atomic concurrent replacement protection,
+actual Agent execution or formal/personal deployment is established.

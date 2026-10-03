@@ -5,6 +5,13 @@ description: Consume an immutable round-1 technical snapshot and prepare auditab
 
 # Prepare Product Images
 
+For a direct Agent CLI, use the explicitly selected complete source's
+`scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images --check-binding`
+(`--entry qa` for automated QA), then pass the original arguments after `--`.
+See that source's `docs/AGENT_ENTRY_BINDING.md`: version 1 preserves source-relative
+config/data/reports and rejects independent roots. Personal physical copies do
+not establish source identity; the check does not grant paid or business authority.
+
 Before resuming an existing product, use the selected project's commit-bound
 `scripts/publication_takeover.py` as described in
 `docs/PUBLICATION_SOURCE_CONTRACT.md`. Preserve prior paid receipts and QA;

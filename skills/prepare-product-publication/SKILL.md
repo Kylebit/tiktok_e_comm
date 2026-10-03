@@ -5,6 +5,15 @@ description: "Prepare an auditable round-1 candidate for one Product Center Offe
 
 # Prepare Product Publication
 
+## Explicit source binding
+
+For a direct Agent CLI, select a complete Git source and explicit settings/data/
+report profile as described in `docs/AGENT_ENTRY_BINDING.md` in that source.
+Run its `scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry preparation --check-binding`,
+then pass the existing arguments after `--`. A personal physical Skill copy is
+not a source root. Version 1 preserves source-relative data/reports and rejects
+independent roots; a binding check grants no business authority.
+
 ## Existing-product takeover
 
 For inspect/resume, first use the commit-bound, read-only

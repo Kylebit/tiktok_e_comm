@@ -5,25 +5,39 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+SETTINGS_BINDING_CONTRACT = "orbit-settings-binding/v1"
 CONFIG_PATH = ROOT / "config" / "settings.json"
 EXAMPLE_PATH = ROOT / "config" / "settings.example.json"
-FALLBACK_CONFIG_PATHS = [
-    Path(os.environ["ORBIT_HIVE_SETTINGS"]) if os.environ.get("ORBIT_HIVE_SETTINGS") else None,
-    Path(r"C:\Users\Windows11\Desktop\Agent_PR\tiktok_e_comm\config\settings.json"),
-]
+# Compatibility callers may explicitly inject fallback paths. Never guess a
+# different physical checkout or capture an environment selection at import.
+FALLBACK_CONFIG_PATHS = []
 
 _cache = None
 # Non-secret provenance of the loaded cache; health must never infer it from
 # the next settings_path() selection or initialize configuration to obtain it.
 _cache_source = None
 _cache_source_stat = None
+_cache_explicit_source = None
 
 
 def settings_path() -> Path:
-    for path in [CONFIG_PATH, *[p for p in FALLBACK_CONFIG_PATHS if p]]:
-        if path.is_file():
-            return path
-    return CONFIG_PATH
+    explicit = os.environ.get("ORBIT_HIVE_SETTINGS")
+    if explicit:
+        path = Path(explicit).expanduser()
+        if not path.is_absolute():
+            raise ValueError("EXPLICIT_SETTINGS_MUST_BE_ABSOLUTE")
+        if not path.is_file():
+            raise FileNotFoundError("EXPLICIT_SETTINGS_MISSING")
+        selected = path.resolve()
+    else:
+        selected = next((path for path in [CONFIG_PATH, *[p for p in FALLBACK_CONFIG_PATHS if p]]
+                         if path.is_file()), CONFIG_PATH)
+    # Token/base-dir callers must reject a new selection too, before any get()
+    # could combine the old settings cache with this new directory.
+    if (_cache is not None and (explicit or _cache_explicit_source is not None)
+            and _cache_source != selected.resolve()):
+        raise RuntimeError("SETTINGS_CACHE_SOURCE_CHANGED: use a fresh process")
+    return selected
 
 
 def settings_base_dir() -> Path:
@@ -32,8 +46,9 @@ def settings_base_dir() -> Path:
 
 
 def load_settings() -> dict:
-    global _cache, _cache_source, _cache_source_stat
+    global _cache, _cache_source, _cache_source_stat, _cache_explicit_source
     if _cache is not None:
+        settings_path()
         return _cache
     path = settings_path()
     if not path.is_file():
@@ -44,6 +59,7 @@ def load_settings() -> dict:
     with path.open(encoding="utf-8") as f:
         _cache = json.load(f)
     _cache_source = path.resolve()
+    _cache_explicit_source = _cache_source if os.environ.get("ORBIT_HIVE_SETTINGS") else None
     stat = path.stat()
     _cache_source_stat = (stat.st_size, stat.st_mtime_ns)
     return _cache

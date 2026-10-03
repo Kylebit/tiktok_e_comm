@@ -11,6 +11,11 @@ from typing import Any, Iterable, Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+if __name__ == "__main__" and (not (REPO_ROOT / '.git').exists() or not all((REPO_ROOT / name).is_file() for name in (
+    "core/config.py", "modules/sourcing/new_product_workbench.py",
+    "shared_platform/publication_rounds.py",
+))):
+    raise SystemExit("COMPLETE_AGENT_SOURCE_REQUIRED: use the selected repository's scripts/repo_bound_agent_entry.py --profile <absolute-profile> --entry delist")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 ALL_TARGETS = (

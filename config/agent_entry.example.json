@@ -1,0 +1,10 @@
+{
+  "schema": "orbit-agent-entry/v1",
+  "source_root": "E:/OrbitHive/selected-complete-source",
+  "expected_source_head": "0000000000000000000000000000000000000000",
+  "settings_path": "D:/OrbitHive/selected-configuration/config/settings.json",
+  "config_root": "E:/OrbitHive/selected-complete-source/config",
+  "data_root": "E:/OrbitHive/selected-complete-source/data",
+  "output_root": "E:/OrbitHive/selected-complete-source/reports",
+  "catalog_database": "D:/OrbitHive/selected-data/catalog.db"
+}

@@ -5,6 +5,12 @@ description: Safely unpublish existing TikTok Shop, Shopee, and Ozon listings by
 
 # 按 Seller SKU 下架商品
 
+直接 Agent CLI 先按所选完整工程的 `docs/AGENT_ENTRY_BINDING.md` 绑定精确
+source/settings/data/report profile，运行该工程
+`scripts/repo_bound_agent_entry.py --profile <绝对profile> --entry delist --check-binding`，
+再在 `--` 后原样传入 plan/execute/readback 参数。个人物理 Skill 副本不是工程来源。
+v1 仅支持 source 内 data/reports 布局，异址明确拒绝；检查通过不授予下架权限。
+
 把“下架”解释为可恢复的停止销售：TikTok `deactivate`、Shopee `unlist=true`、Ozon `archive`。除非用户另外明确要求，永远不要删除商品。
 
 ## 必须遵守的流程

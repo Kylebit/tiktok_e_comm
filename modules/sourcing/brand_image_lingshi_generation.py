@@ -45,19 +45,54 @@ def _source_data_uri(source: Path) -> tuple[str, bytes]:
     return f"data:{mime};base64,{encoded}", raw
 
 
+def _image_catalog_rows(catalog: object) -> list[Mapping[str, Any]]:
+    """Unwrap directory formats without changing the SDK's raw response contract."""
+    if not isinstance(catalog, Mapping):
+        raise ValueError("LINGSHI_CATALOG_OBJECT_REQUIRED")
+    if "models" in catalog:
+        rows = catalog["models"]
+    else:
+        data = catalog.get("data")
+        rows = data if isinstance(data, list) else (
+            data.get("models", data.get("items")) if isinstance(data, Mapping) else None
+        )
+    if not isinstance(rows, list):
+        raise ValueError("LINGSHI_CATALOG_MODEL_LIST_REQUIRED")
+    seen = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("LINGSHI_CATALOG_MODEL_OBJECT_REQUIRED")
+        name = row.get("name")
+        if not isinstance(name, str) or not name or name != name.strip():
+            raise ValueError("LINGSHI_CATALOG_MODEL_IDENTITY_INVALID")
+        if name in seen:
+            raise ValueError("LINGSHI_CATALOG_MODEL_IDENTITY_DUPLICATE")
+        seen.add(name)
+        # Legacy directories omitted type for the already approved image aliases.
+        if ("type" in row and row["type"] != "image") or (
+            "type" not in row and name not in MODEL_CANDIDATES
+        ):
+            raise ValueError("LINGSHI_CATALOG_IMAGE_TYPE_REQUIRED")
+    return rows
+
+
 def resolve_brand_image_model(client: LingshiClient) -> tuple[str, dict[str, Any]]:
     """Resolve an available GPT Image 2 alias and verify the required edit contract."""
 
     catalog = client.list_models("image")
     available = {
-        str(row.get("name") or ""): row
-        for row in (catalog.get("models") or [])
-        if isinstance(row, Mapping) and row.get("available_for_this_key") is True
+        row["name"]: row
+        for row in _image_catalog_rows(catalog)
+        if row.get("available_for_this_key") is True
     }
     for candidate in MODEL_CANDIDATES:
         if candidate not in available:
             continue
         detail = client.model_detail(candidate)
+        if not isinstance(detail, Mapping) or (
+            "name" in detail and detail["name"] != candidate
+        ) or ("type" in detail and detail["type"] != "image"):
+            raise ValueError("LINGSHI_MODEL_DETAIL_IDENTITY_MISMATCH")
         params = {
             str(row.get("name") or ""): row
             for row in (detail.get("params") or [])

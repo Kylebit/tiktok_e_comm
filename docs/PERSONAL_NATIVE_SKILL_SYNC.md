@@ -12,7 +12,7 @@
 
 仓库中的 `scripts/repo_bound_profit_entry.py` 要求明确提供 runtime 根和原 runtime manifest SHA，以及独立利润依赖 manifest 的绝对路径和预期 SHA。原工具 runtime manifest 不覆盖利润源，不能单靠它证明完整利润代码。`config/profit_entry_dependencies16d.json` 把原18路径按16d重新哈希，并覆盖完整 Skill 及四个入口的静态本地导入闭包，共371个文件（不扩大原工具manifest范围）。核验每个预期原始字节 SHA、无 reparse/hardlink 和目标范围，执行前再次读取；所有拒绝为显式错误，`-O` 不能绕过。`--check-binding` 只核文件，完全不导入域/provider。
 
-最初顶层源码白名单漏列 `tiktok_settlement.py`，现已核实它是冻结16d tracked纯源码（原始工作区字节与HEAD只有换行差异），补入独立源码提交，不导入旧历史。371个依赖现与16d逐raw匹配。该清单须用于明确完整 runtime，Python第三方依赖、结算/成本/FX/店铺资料与凭据另按任务核验；源文件匹配不是业务准备就绪，也不会给个人原脚本添加新权限。入口只选择原 report、TikTok monthly、Shopee monthly、weekly 脚本，将显式参数原样交给原脚本；不自动计算/批准、不补月份/店铺/成本/FX，不授新历史任务权。
+最初顶层源码白名单漏列 `tiktok_settlement.py`，现已核实它是冻结16d tracked纯源码（原始工作区字节与HEAD只有换行差异），补入独立源码提交，不导入旧历史。371个依赖在 delivery `c5a2b7ae` 快照与16d原raw匹配，清单永久绑定冻结16d。后续模型目录消费者兼容修复使 delivery 的 `modules/sourcing/brand_image_lingshi_generation.py` 有意不同，不能将新 delivery 当作匹配16d清单的完整 runtime；原16d清单和个人 Junction 不因开发变更而更新。新版本若要执行利润入口，须先按选定完整 runtime 的实际源码重新建立独立预期清单。Python第三方依赖、结算/成本/FX/店铺资料与凭据另按任务核验；源文件匹配不是业务准备就绪，也不会给个人原脚本添加新权限。入口只选择原 report、TikTok monthly、Shopee monthly、weekly 脚本，将显式参数原样交给原脚本；不自动计算/批准、不补月份/店铺/成本/FX，不授新历史任务权。
 
 例如先对部署实际 runtime manifest 文件计算 SHA，然后：
 

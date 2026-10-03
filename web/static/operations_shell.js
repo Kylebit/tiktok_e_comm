@@ -53,7 +53,9 @@
    const notice=document.createElement('div');notice.id='orbitMaintenanceNotice';notice.setAttribute('role','status');
    notice.textContent=profile.environment==='preview'
     ? '只读预览 · 与正式任务账本隔离。可查看页面与历史记录；成本、任务及商品审核不能在此保存。'
-    : '维护模式 · 后台执行已暂停。可查看已有内容、修改目录成本和新建任务；新任务只排队，历史任务不会自动继续。';
+    : (typeof profile.maintenance_message==='string' && profile.maintenance_message.trim()
+       ? profile.maintenance_message
+       : '后台状态待核，请以各任务能力提示为准');
    notice.style.cssText='position:sticky;top:0;z-index:90;padding:10px 20px;background:#fff4d6;color:#754c0b;border-bottom:1px solid #e4c777;font-size:14px';
    document.body.insertBefore(notice,aside.nextSibling);
    loadPublicationHistory();

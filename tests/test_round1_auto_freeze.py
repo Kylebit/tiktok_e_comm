@@ -20,7 +20,14 @@ def public_settings(monkeypatch):
     # sample exchange rates and never needs a credential.
     from core import config
     sample = Path(__file__).resolve().parents[1] / 'config/settings.example.json'
+    monkeypatch.setenv('ORBIT_HIVE_SETTINGS', str(sample))
     monkeypatch.setattr(config, '_cache', json.loads(sample.read_text(encoding='utf-8')))
+    # The explicit-settings contract also checks cache provenance. Inject a
+    # complete synthetic cache, never an unbound dict that bypasses its source.
+    monkeypatch.setattr(config, '_cache_source', sample.resolve())
+    monkeypatch.setattr(config, '_cache_explicit_source', sample.resolve())
+    info = sample.stat()
+    monkeypatch.setattr(config, '_cache_source_stat', (info.st_size, info.st_mtime_ns))
 
 
 def request(packet, offer):

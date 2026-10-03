@@ -51,6 +51,11 @@ def _serve_seams(v, monkeypatch, tmp_path):
     public_configuration = settings.load_settings()
     assert type(public_configuration) is dict and public_configuration['exchange_rates']
     paths['settings'].write_text(json.dumps(public_configuration), encoding='utf-8')
+    # serve starts in a fresh process in deployment. This same-process seam
+    # explicitly discards only the synthetic producer's earlier sample cache
+    # before the launcher selects its distinct synthetic settings file.
+    for name in ('_cache', '_cache_source', '_cache_source_stat', '_cache_explicit_source'):
+        monkeypatch.setattr(settings, name, None)
     operations = SimpleNamespace(engine=v['engine'], profile=v['profile'],
                                  worker=v['worker'], worker_enabled=False)
     config = {'code_root':str(v['profile'].root), 'manifest_digest':v['profile'].manifest_digest,

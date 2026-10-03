@@ -11,8 +11,18 @@ For a direct Agent CLI, use the explicitly selected complete source's
 See that source's `docs/AGENT_ENTRY_BINDING.md`: version 1 preserves source-relative
 config/data/reports and rejects independent roots. Personal physical copies do
 not establish source identity; the check does not grant paid or business authority.
-Version 2 currently supports only R1 captured-input preparation and rejects
-images and QA; an explicit Lingshi discovery path does not propagate their paths.
+Version 2 supports R1 captured-input preparation and the narrowly bound QA
+`qa-existing-assessment` mode. Images and provider/model QA remain unsupported;
+an explicit Lingshi discovery path does not propagate their paths.
+For existing-assessment QA use `config/agent_entry.qa-assessment-v2.example.json`
+from the selected source. It requires separate captured state, retained R1 and
+R2 input reports, the existing assessment, QA output and the original direct
+CLI producer's phase lock. The checker verifies only that declared source/lock
+relationship; native/custom runtime producers and unverified mappings stop.
+It does not prove captured report lineage or current actor state. Missing inputs
+stop before a lock or output write. This mode writes the original phase lock,
+normalized assessment, signed QA receipt and possible superseded signed attempt
+archives; it does not call a provider or initialize a paid ledger.
 
 Before resuming an existing product, use the selected project's commit-bound
 `scripts/publication_takeover.py` as described in
@@ -27,7 +37,11 @@ the selected source wrapper, with the original phase arguments after `--`:
 <PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images --check-binding
 <PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images -- --offer-id <OFFER_ID>
 <PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry qa --check-binding
+# Provider/model QA below requires the original v1 layout and existing authority.
 <PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry qa -- --offer-id <OFFER_ID> --model <APPROVED_MODEL> --paid-policy <EXISTING_POLICY>
+# Captured QA uses its own v2 assessment profile and the exact declared file.
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_ASSESSMENT_PROFILE> --entry qa --check-binding
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_ASSESSMENT_PROFILE> --entry qa -- --offer-id <OFFER_ID> --assessment <ABSOLUTE_CAPTURED_ASSESSMENT>
 ```
 
 Keep the frozen R1 product, brand, target and source identities intact. Read [the local budget and recovery contract](references/paid-recovery.md) before handling unknown results, legacy records or technical drift.
@@ -42,7 +56,13 @@ The bundled `historical-autopilot-policy.example.json` is inactive source eviden
 
 ## Execute one phase
 
-1. Run with only `--offer-id` to inspect local status. Help/status do not call paid providers. Legacy UI consumers without the existing R1/budget bridge return `PAID_CONTEXT_REQUIRED` or `LEGACY_R2_BRIDGE_REQUIRED` before a provider call.
+The generation/status/model-QA phase commands below retain the original v1 or
+governed native contract. They are not enabled by the v2 assessment profile.
+That profile accepts only canonical `--offer-id` and `--assessment`; model,
+paid-policy, upload, rework and alternate root/profile flags reject. Its existing
+assessment branch does not consume a separate master-QA input field.
+
+1. Run with only `--offer-id` to inspect local status. Help/status do not call paid providers; status can write its local business lock. Legacy UI consumers without the existing R1/budget bridge return `PAID_CONTEXT_REQUIRED` or `LEGACY_R2_BRIDGE_REQUIRED` before a provider call.
 2. Validate the frozen brand roles and reuse plan. With applicable paid authority, run `--execute-brand-generation --paid-policy <existing-policy>`. Complete source bytes and frozen facts bind the technical plan and each checkpoint. Continue through automated master-image QA; a rendered review is an audit artifact, not a human gate.
 3. Run the wrapper with `--entry qa -- --offer-id <id> --model <approved-model> --paid-policy <existing-policy>` for master QA after binding checks. Retain raw replies, exact artifact digests and the QA receipt. Passed QA belongs only to those artifacts and that R1 snapshot.
 4. Freeze the policy-selected numbered-image scope with `--approve-translation-images <numbers> --dimension-only-images <numbers-or-none>`. The CLI defaults to the governed technical actor `orbit-product-publication-default-v1`; an explicit `--approved-by Kyle` is blocked because this command has no independent conversation-receipt binding. Existing Kyle plans retain their original bytes and digest as historical evidence, but cannot authorize new R2 paid execution without independently verifiable provenance. This runtime currently has no trusted historical approval registry or automatic successor migration, so affected products remain blocked for new paid translation work. These plans do not grant final marketplace approval. An existing plan with different scope or authority is preserved and requires an explicit successor rather than an in-place rewrite. Route locales within frozen R1 targets; dimension-only images create no translation tasks.

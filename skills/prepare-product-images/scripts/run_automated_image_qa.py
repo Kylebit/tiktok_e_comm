@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, Mapping
 
 
 ROOT = Path(__file__).resolve().parents[3]
+QA_ASSESSMENT_BINDING_CONTRACT = 'orbit-qa-assessment-paths/v2'
 if __name__ == "__main__" and (not (ROOT / '.git').exists() or not all((ROOT / name).is_file() for name in (
     "core/config.py", "modules/sourcing/new_product_workbench.py",
     "shared_platform/publication_rounds.py",
@@ -372,7 +374,42 @@ def _visual_assessment(
     return assessment
 
 
-def run(args: argparse.Namespace, *, runtime=None) -> dict[str, Any]:
+def _checked_cli_binding(args, *, runtime=None):
+    profile = getattr(args, 'binding_profile', None)
+    supplied = getattr(args, 'binding_profile_sha256', None)
+    if profile is None and supplied is None:
+        return None
+    if profile is None or supplied is None or runtime is not None:
+        raise ValueError('QA_FROZEN_ASSESSMENT_BINDING_REQUIRED')
+    if hashlib.sha256(profile.read_bytes()).hexdigest() != supplied:
+        raise ValueError('QA_PROFILE_DIGEST_CHANGED')
+    from scripts.repo_bound_agent_entry import check_binding, check_arguments
+    bound = check_binding(profile, 'qa')
+    if bound.get('entry_mode') != 'qa-existing-assessment' or Path(bound['source_root']) != ROOT:
+        raise ValueError('QA_SOURCE_BINDING_MISMATCH')
+    if bound['profile_sha256'] != supplied:
+        raise ValueError('QA_PROFILE_DIGEST_CHANGED')
+    if (args.model or args.verified_local_assets or args.paid_policy is not None or args.usage_baseline is not None):
+        raise ValueError('QA_EXISTING_ASSESSMENT_MODE_ONLY')
+    if args.assessment is None:
+        raise ValueError('QA_EXISTING_ASSESSMENT_REQUIRED')
+    check_arguments(bound, 'qa', ['--offer-id',args.offer_id,'--assessment',str(args.assessment)])
+    return bound
+
+
+def _check_bound_output(directory):
+    from scripts.repo_bound_agent_entry import checked_path
+    for path,is_directory in ((directory,True),(directory/'image-qa-attempts',True),
+        (directory/'lingshi-image-qa-assessment.json',False),(directory/'automated-image-qa.json',False)):
+        if path.exists() or path.is_symlink():
+            checked_path(str(path),'QA_OUTPUT',directory=is_directory)
+    archive=directory/'image-qa-attempts'
+    if archive.is_dir():
+        for path in archive.iterdir():
+            checked_path(str(path),'QA_OUTPUT_ARCHIVE')
+
+
+def run(args: argparse.Namespace, *, runtime=None, binding=None) -> dict[str, Any]:
     _runtime_root(runtime)
     if runtime is not None:
         runtime.require_offer(args.offer_id)
@@ -381,18 +418,52 @@ def run(args: argparse.Namespace, *, runtime=None) -> dict[str, Any]:
     from shared_platform.publication_rounds import validate_round2_input
     from shared_platform.publication_paid_requests import load_paid_context
     offer_id=str(args.offer_id)
-    state=(load_state(offer_id) if runtime is None else load_state(offer_id, state_dir=runtime.state_dir))
-    round1=(validate_round2_input(offer_id,state) if runtime is None else validate_round2_input(offer_id,state, reports_root=runtime.reports_root))
-    report_root=_runtime_root(runtime)/'reports/product-preparation'/offer_id
+    if binding:
+        from scripts.repo_bound_agent_entry import checked_path
+        if runtime is not None or binding.get('entry_mode') != 'qa-existing-assessment':
+            raise ValueError('QA_EXISTING_ASSESSMENT_MODE_ONLY')
+        # Missing captured inputs stop before acquiring a lock or creating output.
+        for name,path in (
+            ('STATE',Path(binding['state_dir'])/(offer_id+'.json')),
+            ('R1',Path(binding['round1_reports_root'])/offer_id/'round1-approved-snapshot.json'),
+            ('R2_GENERATION',Path(binding['r2_reports_root'])/offer_id/'brand-image-generation.json'),
+            ('ASSESSMENT',Path(binding['assessment_path']))):
+            checked_path(str(path),'QA_CAPTURED_'+name)
+        state=load_state(offer_id,state_dir=Path(binding['state_dir']))
+        round1=validate_round2_input(offer_id,state,reports_root=Path(binding['round1_reports_root']))
+        input_root=Path(binding['r2_reports_root'])/offer_id
+        report_root=Path(binding['qa_output_root'])/offer_id
+        phase_root=Path(binding['phase_lock_root'])/offer_id
+        _check_bound_output(report_root)
+        translation_path=input_root/'brand-image-translation.json'
+        if translation_path.exists() or translation_path.is_symlink():
+            checked_path(str(translation_path),'QA_CAPTURED_R2_TRANSLATION')
+    else:
+        state=(load_state(offer_id) if runtime is None else load_state(offer_id, state_dir=runtime.state_dir))
+        round1=(validate_round2_input(offer_id,state) if runtime is None else validate_round2_input(offer_id,state, reports_root=runtime.reports_root))
+        report_root=_runtime_root(runtime)/'reports/product-preparation'/offer_id
+        input_root=phase_root=report_root
     context=None
     if not getattr(args,'assessment',None):
         if not args.model:
             raise ValueError('a governed QA model or existing local assessment is required')
         context=runtime.paid_context if runtime is not None else load_paid_context(offer_id=offer_id,round1=round1,repo_root=_runtime_root(runtime),
             policy_path=getattr(args,'paid_policy',None),usage_baseline_path=getattr(args,'usage_baseline',None))
-    with business_lock(report_root,digest({'scope':'round2-phase','offer_id':offer_id})):
-        generation=_load(report_root/'brand-image-generation.json')
-        translation_path=report_root/'brand-image-translation.json'
+    phase_digest=digest({'scope':'round2-phase','offer_id':offer_id})
+    if binding:
+        lock_path=phase_root/f'.lingshi-{phase_digest[:24]}.lock'
+        if lock_path.exists() or lock_path.is_symlink():
+            checked_path(str(lock_path),'QA_PHASE_LOCK')
+    with business_lock(phase_root,phase_digest):
+        if binding:
+            if _checked_cli_binding(args) != binding:
+                raise ValueError('QA_FROZEN_BINDING_CHANGED')
+            _check_bound_output(report_root)
+            checked_path(str(input_root/'brand-image-generation.json'),'QA_CAPTURED_R2_GENERATION')
+            if (input_root/'brand-image-translation.json').exists() or (input_root/'brand-image-translation.json').is_symlink():
+                checked_path(str(input_root/'brand-image-translation.json'),'QA_CAPTURED_R2_TRANSLATION')
+        generation=_load(input_root/'brand-image-generation.json')
+        translation_path=input_root/'brand-image-translation.json'
         translation=_load(translation_path) if translation_path.is_file() else {'assets':[],'approved_tasks':[],'generation_identity_digest':''}
         if generation.get('status')!='BRAND_IMAGE_REVIEW_REQUIRED':
             raise ValueError('QA requires the complete current master set')
@@ -425,20 +496,24 @@ def run(args: argparse.Namespace, *, runtime=None) -> dict[str, Any]:
         receipt['qa_digest']=canonical_digest(receipt)
         path=persist_automated_image_qa(receipt,path=report_root/'automated-image-qa.json')
         return {'schema_version':'automated-image-qa-result/v1','offer_id':offer_id,'status':receipt['status'],
-                'qa_digest':receipt['qa_digest'],'report_path':str(path.relative_to(_runtime_root(runtime))), 'platform_writes':0,
+                'qa_digest':receipt['qa_digest'],'report_path':str(path if binding else path.relative_to(_runtime_root(runtime))), 'platform_writes':0,
                 'paid_requests':context.summary() if context else None}
 
 
-def main( *, runtime=None) -> int:
+def main(argv=None, *, runtime=None) -> int:
     _runtime_root(runtime)
-    parser=argparse.ArgumentParser()
+    parser=argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument('--offer-id',required=True)
     parser.add_argument('--model',default=os.environ.get('LINGSHI_IMAGE_QA_MODEL',''))
     parser.add_argument('--assessment',type=Path)
     parser.add_argument('--verified-local-assets',action='store_true',help='Upload only digest-verified local QA image bytes inline')
     parser.add_argument('--paid-policy',type=Path)
     parser.add_argument('--usage-baseline',type=Path)
-    result=run(parser.parse_args(), runtime=runtime)
+    parser.add_argument('--binding-profile',type=Path,help=argparse.SUPPRESS)
+    parser.add_argument('--binding-profile-sha256',help=argparse.SUPPRESS)
+    args=parser.parse_args(argv)
+    binding=_checked_cli_binding(args,runtime=runtime)
+    result=run(args, runtime=runtime,binding=binding)
     print(json.dumps(result,ensure_ascii=True,indent=2))
     return 0 if result['status']=='PASSED' else 2
 

@@ -1,7 +1,7 @@
 """Check an explicit Agent CLI profile before dispatching an original entry.
 
 Only the standard library and Git metadata are used during check-binding.
-Version 1 preserves source-relative layouts; version 2 scopes captured R1 inputs.
+Version 1 preserves source-relative layouts; version 2 scopes captured inputs.
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ SOURCE_FILES = ('core/config.py', 'core/db.py',
 SETTINGS_CONTRACT = 'orbit-settings-binding/v1'
 R1_CONTRACT = 'orbit-r1-paths/v2'
 AGENT_ENTRY_BINDING_CONTRACT = 'orbit-agent-entry/v2'
+QA_ASSESSMENT_BINDING_CONTRACT = 'orbit-qa-assessment-paths/v2'
 R1_CONTRACT_FILES = ('modules/sourcing/new_product_workbench.py',
     'modules/sourcing/pipeline.py', 'modules/sourcing/manual_product_intake.py',
     'shared_platform/release_control.py', ENTRIES['preparation'])
@@ -140,6 +141,128 @@ def check_arguments(bound, entry, arguments):
                 path = Path(bound['source_root']) / path
             if not path.resolve().is_relative_to(Path(bound['output_root'])):
                 raise ValueError('ENTRY_OUTPUT_OUTSIDE_BOUND_ROOT')
+    if bound.get('entry_mode') == 'qa-existing-assessment' and arguments:
+        values = {}
+        index = 0
+        while index < len(arguments):
+            option, separator, value = arguments[index].partition('=')
+            if option not in ('--offer-id', '--assessment'):
+                raise ValueError('QA_ASSESSMENT_ARGUMENT_UNSUPPORTED: ' + option)
+            if option in values:
+                raise ValueError('QA_ARGUMENT_DUPLICATE: ' + option)
+            if not separator:
+                index += 1
+                if index >= len(arguments):
+                    raise ValueError('QA_ARGUMENT_VALUE_REQUIRED: ' + option)
+                value = arguments[index]
+            values[option] = value
+            index += 1
+        if set(values) != {'--offer-id', '--assessment'}:
+            raise ValueError('QA_OFFER_AND_EXISTING_ASSESSMENT_REQUIRED')
+        if re.fullmatch(r'[0-9]+', values['--offer-id']) is None:
+            raise ValueError('QA_OFFER_ID_INVALID')
+        assessment = checked_path(values['--assessment'], 'QA_CAPTURED_ASSESSMENT')
+        if str(assessment) != bound['assessment_path']:
+            raise ValueError('QA_ASSESSMENT_PATH_CHANGED')
+
+
+def direct_producer_lock_contract(root):
+    """Prove the original direct CLI's source-relative phase-lock expression.
+
+    This does not establish a native/custom runtime mapping or report provenance.
+    """
+    try:
+        module = ast.parse((root/ENTRIES['images']).read_text(encoding='utf-8-sig'))
+        functions = {node.name: node for node in module.body if isinstance(node, ast.FunctionDef)}
+        roots = [node.value for node in module.body if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id == 'REPO_ROOT' for target in node.targets)]
+        directory = [node.value for node in ast.walk(functions['run']) if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == 'directory' for target in node.targets)]
+        locks = [item.context_expr for node in ast.walk(functions['run']) if isinstance(node, ast.With)
+                 for item in node.items if isinstance(item.context_expr, ast.Call)
+                 and isinstance(item.context_expr.func, ast.Name) and item.context_expr.func.id == 'business_lock']
+        def same(node, expression):
+            return ast.dump(node) == ast.dump(ast.parse(expression).body[0].value)
+        valid = (len(roots) == len(directory) == len(locks) == 1
+            and same(roots[0], 'Path(__file__).resolve().parents[3]')
+            and ast.dump(functions['_runtime_root'].body[0]) == ast.dump(ast.parse('if runtime is None:\n    return REPO_ROOT').body[0])
+            and same(directory[0], "_runtime_root(runtime)/'reports/product-preparation'/str(args.offer_id)")
+            and same(locks[0], "business_lock(directory,digest({'scope':'round2-phase','offer_id':str(args.offer_id)}))"))
+    except (OSError, ValueError, SyntaxError, KeyError, IndexError):
+        valid = False
+    if not valid:
+        raise ValueError('QA_DIRECT_PRODUCER_LOCK_CONTRACT_UNPROVEN')
+
+
+def check_qa_assessment_binding(path, raw, profile):
+    allowed = {'schema','entry_mode','source_root','expected_source_head','state_dir',
+        'round1_reports_root','r2_reports_root','assessment_path','qa_output_root','phase_lock_root',
+        'r2_producer_mode','r2_producer_source_root','expected_r2_producer_head'}
+    unknown = set(profile)-allowed
+    if unknown:
+        raise ValueError('QA_PROFILE_FIELD_UNSUPPORTED: ' + ','.join(sorted(unknown)))
+    if profile.get('r2_producer_mode') != 'direct-cli-source-reports':
+        raise ValueError('QA_R2_PRODUCER_MODE_UNSUPPORTED')
+    root = checked_path(profile.get('source_root'), 'SOURCE_ROOT', directory=True)
+    producer = checked_path(profile.get('r2_producer_source_root'), 'QA_R2_PRODUCER_SOURCE_ROOT', directory=True)
+    for selected, expected, role, files in (
+        (root, profile.get('expected_source_head'), 'SOURCE', (*SOURCE_FILES, ENTRIES['qa'], 'scripts/repo_bound_agent_entry.py')),
+        (producer, profile.get('expected_r2_producer_head'), 'QA_PRODUCER_SOURCE', (*SOURCE_FILES, ENTRIES['images']))):
+        for relative in files:
+            checked_path(str(selected/relative), role+'_FILE')
+        if Path(git(selected,'rev-parse','--show-toplevel')).resolve() != selected:
+            raise ValueError(role+'_MUST_BE_GIT_TOP_LEVEL')
+        git(selected,'ls-files','--error-unmatch','--',*files)
+        if not isinstance(expected,str) or not re.fullmatch(r'[0-9a-f]{40}',expected):
+            raise ValueError(role+'_EXPECTED_HEAD_REQUIRED')
+        if git(selected,'rev-parse','HEAD') != expected:
+            raise ValueError(role+'_HEAD_MISMATCH')
+        if git(selected,'status','--porcelain=v1','-uall'):
+            raise ValueError(role+'_DIRTY')
+    for relative in (ENTRIES['qa'], 'scripts/repo_bound_agent_entry.py'):
+        source_constant_contract(root/relative,'QA_ASSESSMENT_BINDING_CONTRACT',
+            QA_ASSESSMENT_BINDING_CONTRACT,'SOURCE_QA_ASSESSMENT_CAPABILITY_MISSING: '+relative)
+    direct_producer_lock_contract(producer)
+    fields = {name:str(checked_path(profile.get(name),'QA_CAPTURED_'+name.upper(),
+        directory=name != 'assessment_path')) for name in (
+        'state_dir','round1_reports_root','r2_reports_root','assessment_path','qa_output_root','phase_lock_root')}
+    original = producer/'reports/product-preparation'
+    if Path(fields['r2_reports_root']) != original or Path(fields['phase_lock_root']) != original:
+        raise ValueError('QA_ORIGINAL_PRODUCER_PHASE_LOCK_UNPROVEN')
+    output = Path(fields['qa_output_root'])
+    for name in ('state_dir','round1_reports_root','r2_reports_root'):
+        input_path = Path(fields[name])
+        if output.is_relative_to(input_path) or input_path.is_relative_to(output):
+            raise ValueError('QA_INPUT_OUTPUT_ROOT_OVERLAP: '+name)
+    if Path(fields['assessment_path']).is_relative_to(output):
+        raise ValueError('QA_INPUT_OUTPUT_ROOT_OVERLAP: assessment_path')
+    for key,value in os.environ.items():
+        if value and (key == 'ORBIT_HIVE_SETTINGS' or key == 'LINGSHI_IMAGE_QA_MODEL'
+                or (key.startswith('ORBIT_') and key.endswith(('_ROOT','_PATH','_DATABASE','_PROFILE')))):
+            raise ValueError('ENV_BINDING_UNSUPPORTED_QA_ASSESSMENT: '+key)
+    scopes = {'source_root':'exact clean QA source', 'expected_source_head':'QA source identity',
+        'state_dir':'existing captured JSON state', 'round1_reports_root':'retained R1 snapshot identity',
+        'r2_reports_root':'generation and optional translation input reports', 'assessment_path':'existing captured assessment',
+        'qa_output_root':'normalized assessment, signed QA receipt and signed attempt archives',
+        'phase_lock_root':'original direct producer round2-phase lock',
+        'r2_producer_source_root':'statically verified original direct CLI source path',
+        'expected_r2_producer_head':'original direct producer source identity', 'r2_producer_mode':'direct CLI only'}
+    propagation = {name:{'supported':True,'scope':scope} for name,scope in scopes.items()}
+    for name in ('master_qa_reports_root','settings_path','config_root','data_root','output_root',
+                 'catalog_database','release_store_path','report_store_path','workbench_store_path','lingshi_config_path'):
+        propagation[name] = {'supported':False,'scope':'not consumed or accepted by QA existing-assessment subset'}
+    return {'status':'AGENT_ENTRY_LAYOUT_BINDING_VALIDATED','schema':profile['schema'],
+        'entry_mode':'qa-existing-assessment','profile_path':str(path),'profile_sha256':hashlib.sha256(raw).hexdigest(),
+        'source_root':str(root),'source_head':profile['expected_source_head'],'entry':str(root/ENTRIES['qa']),
+        'r2_producer_source_root':str(producer),'expected_r2_producer_head':profile['expected_r2_producer_head'],
+        'r2_producer_mode':profile['r2_producer_mode'], **fields,
+        'qa_assessment_binding_contract':QA_ASSESSMENT_BINDING_CONTRACT,
+        'supported_layout':'QA existing captured assessment only; explicit independent inputs/output and original direct producer lock',
+        'field_propagation':propagation,'settings_override_supported':False,'separate_data_output_supported':True,
+        'producer_proof':'direct CLI code path plus declared roots/HEAD only; native/custom runtime and actual report provenance not established',
+        'dispatch_preflight':'layout/source only; per-offer captured inputs and existing domain validity checked on dispatch',
+        'local_writes':['original producer phase lock','QA normalized assessment','QA signed receipt','QA signed superseded attempt archive'],
+        'domain_imported':False,'sql_connections':0,'provider_calls':0,'business_calls':0,'auth_writes':0,'paid_calls':0}
 
 
 def check_binding(profile_path, entry):
@@ -152,6 +275,8 @@ def check_binding(profile_path, entry):
     if not isinstance(profile, dict) or profile.get('schema') not in ('orbit-agent-entry/v1','orbit-agent-entry/v2'):
         raise ValueError('PROFILE_SCHEMA_INVALID')
     v2 = profile['schema'] == 'orbit-agent-entry/v2'
+    if v2 and entry == 'qa' and profile.get('entry_mode') == 'qa-existing-assessment':
+        return check_qa_assessment_binding(path, raw, profile)
     if v2 and entry != 'preparation':
         raise ValueError('ENTRY_PATH_BINDING_UNSUPPORTED_V2: ' + entry)
     if v2:
@@ -273,8 +398,9 @@ def main(argv=None):
         print(str(error), file=sys.stderr)
         return 2
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
-    env['ORBIT_HIVE_SETTINGS'] = bound['settings_path']
-    if bound['catalog_database']:
+    if bound.get('settings_path'):
+        env['ORBIT_HIVE_SETTINGS'] = bound['settings_path']
+    if bound.get('catalog_database'):
         env['ORBIT_CATALOG_DATABASE'] = bound['catalog_database']
     else:
         env.pop('ORBIT_CATALOG_DATABASE', None)

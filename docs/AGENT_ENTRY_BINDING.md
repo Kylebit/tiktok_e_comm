@@ -84,8 +84,9 @@ separate contracts and remain unchanged.
 ## Version 2: R1 existing captured inputs
 
 `config/agent_entry.r1-v2.example.json` describes `orbit-agent-entry/v2`.
-Only `--entry preparation` accepts v2. Images, QA and delist return
-`ENTRY_PATH_BINDING_UNSUPPORTED_V2`; use v1 only when its original layout and
+The R1 profile accepts only `--entry preparation`. QA additionally accepts the
+separate existing-assessment profile described below. Images, delist and other
+QA modes return `ENTRY_PATH_BINDING_UNSUPPORTED_V2`; use v1 only when its original layout and
 authority contract actually hold. A whole mixed-root Agent workflow is still
 unsupported. The selected R1 script and its four source consumers must declare
 `R1_PATH_BINDING_CONTRACT = "orbit-r1-paths/v2"`; AST checks these constants and
@@ -135,3 +136,59 @@ Current formal 16d is unchanged and lacks these source capabilities. Its missing
 workbench remains missing. The metadata-only support matrix in the work package
 receipt records formal layout gaps and follow-up consumers; source tests do not
 make formal dispatch or a provider result complete.
+
+## Version 2: QA with an existing captured assessment
+
+Start from `config/agent_entry.qa-assessment-v2.example.json`. This mode consumes
+existing JSON inputs and writes local QA evidence. It does not instantiate a
+Lingshi client, initialize a paid context, upload assets or perform marketplace
+actions. It is not a readonly operation: the original producer phase lock,
+normalized assessment, signed receipt and any superseded signed receipt archive
+are local writes. Neither an existing assessment nor its path grants new authority.
+
+| Field | QA existing-assessment propagation |
+| --- | --- |
+| `schema`, `entry_mode` | `orbit-agent-entry/v2`, `qa-existing-assessment`; no other QA mode |
+| `source_root`, `expected_source_head` | Exact complete clean QA Git source; the checker and QA consumer must declare `QA_ASSESSMENT_BINDING_CONTRACT = "orbit-qa-assessment-paths/v2"` |
+| `state_dir` | Existing captured workbench JSON; `<offer>.json` must already exist |
+| `round1_reports_root` | Retained R1 input root; existing snapshot and state identity checks remain |
+| `r2_reports_root` | Existing generation and optional translation reports; never inferred from QA output or cwd |
+| `assessment_path` | Existing absolute captured assessment; argv must select exactly this file |
+| `qa_output_root` | Existing root; normalized assessment, signed receipt and signed attempt archives use `<offer>/` beneath it |
+| `phase_lock_root` | Original producer round2-phase lock root, also using `<offer>/`; independent QA output does not move this lock |
+| `r2_producer_mode` | Only `direct-cli-source-reports`; native/custom runtime producers are unsupported |
+| `r2_producer_source_root`, `expected_r2_producer_head` | Exact clean original direct producer Git source; metadata and AST verify its source-relative report and lock expression |
+
+Both `r2_reports_root` and `phase_lock_root` must equal
+`r2_producer_source_root/reports/product-preparation`. The original producer's
+`REPO_ROOT`, `_runtime_root(None)`, report directory and `round2-phase` lock
+expressions are statically checked without importing it. An unsupported source,
+HEAD, mapping or moved lock is BLOCKED. This proves the original direct CLI code
+path and declared roots; it does **not** establish native/custom runtime mappings,
+actual captured report provenance or current actor/producer state. Real inputs
+and those facts require their own existing evidence; this package does not infer
+them from the profile. No extra human business approval is introduced.
+
+The checker reads only the technical profile, source AST/Git metadata and path
+metadata. It requires no settings/config/catalog/release/report/workbench database
+because this subset does not consume them; these fields and
+`master_qa_reports_root` are rejected in this profile and reported unconsumed.
+The existing-assessment branch does not call the master-QA reader. Provider/localized
+QA still needs its separately bound original master evidence and paid history.
+
+Run `--entry qa --check-binding` first, then
+`--entry qa -- --offer-id <ID> --assessment <EXACT_ABSOLUTE_ASSESSMENT>`.
+Only those canonical full flags are accepted; abbreviations, alternate root/profile,
+model, paid-policy, upload and rework flags reject. Nonempty ambient ORBIT path,
+profile, database or settings overrides and `LINGSHI_IMAGE_QA_MODEL` reject rather
+than silently selecting another source. The child rechecks the frozen profile
+digest, selected source and original producer mapping before inputs and again
+under the original phase lock. Missing captured state/R1/generation/assessment
+stops before a lock/output write. Link/reparse input and output locations reject.
+The QA output root cannot overlap captured state/R1/R2 input roots or contain the
+assessment input. Existing phase-lock files and output archive paths also reject
+links/reparse aliases.
+Successful dispatch returns an absolute QA report path; output archives stay in
+the QA output tree. Existing QA business checks and native paid/service guards
+are preserved. Tests use synthetic source provenance and poison side-effect
+consumers; they do not prove formal inputs, deployment or a real QA result.

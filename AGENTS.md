@@ -37,6 +37,7 @@
 | --- | --- |
 | 逻辑职责、负责人确定方法、授权、状态和 Git | [THREAD_OPERATING_MODEL](docs/THREAD_OPERATING_MODEL.md) |
 | 本次任务的活状态、证据和接管顺序 | [ACTIVE_STATE_HANDOFF](docs/pm/ACTIVE_STATE_HANDOFF.md)（先核当前 Work Order 与现场身份） |
+| Agent/CLI实际来源与固定状态锚 | [AGENT_ENTRY_SOURCES](docs/pm/AGENT_ENTRY_SOURCES.md)（先读用户工作区根 ORBIT_STATUS.md） |
 | 2026-09-08 的五核心与旧任务决定 | [CURRENT_WORK_INDEX](docs/pm/CURRENT_WORK_INDEX.md)（仅历史快照，不是执行队列） |
 | 领域 producer/consumer 与模块边界 | [DOMAIN_OWNERSHIP](docs/DOMAIN_OWNERSHIP.md) |
 | 工单、恢复 ACK 与回执字段 | [DISPATCH_CONVENTION](docs/pm/DISPATCH_CONVENTION.md) |

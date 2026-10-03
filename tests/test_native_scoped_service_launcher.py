@@ -88,6 +88,46 @@ def _configured_market(signed_config):
     assert original['review_contract']['sole_human_gate'] == 'FINAL_MARKETPLACE_PUBLISH'
 
 
+def test_scoped_launcher_consumes_reviewed_successor_without_claiming_ready(images_task, monkeypatch, tmp_path):
+    """Original launcher consumer, synthetic profile/CLI and no HTTP listener."""
+    import hashlib
+    import os
+    from contextlib import nullcontext
+    from shared_platform import bounded_web_server
+    from shared_platform.native_profit_preparation import NativeProfitServiceConfig
+    from shared_platform.native_delisting_preparation import NativeDelistingServiceConfig
+    config, operations = _serve_seams(images_task, monkeypatch, tmp_path)
+    root = tmp_path / 'reviewed-bin'
+    executor = root / '2222222222222222' / 'codex.exe'
+    executor.parent.mkdir(parents=True)
+    executor.write_bytes(b'synthetic CLI; never executed')
+    config['agent_executable_discovery'] = {'bin_root': str(root),
+        'sha256': hashlib.sha256(executor.read_bytes()).hexdigest()}
+    monkeypatch.setenv('ORBIT_OPERATIONS_AGENT_EXECUTABLE', 'untrusted-ambient.exe')
+    profit_bindings = []
+    monkeypatch.setattr(NativeProfitServiceConfig, 'capture',
+        lambda profile, settings_root, executable: profit_bindings.append(executable))
+    monkeypatch.setattr(NativeDelistingServiceConfig, 'capture', lambda *_:None)
+    monkeypatch.setattr(lifetime, 'installed_native_services', lambda *_:nullcontext())
+    class SyntheticHTTP:
+        server_port = 0
+        def __init__(self, *_): self.closed = False
+        def serve_forever(self):
+            bound_path = os.environ.get('ORBIT_OPERATIONS_AGENT_EXECUTABLE')
+            assert bound_path == str(executor.resolve())
+            assert profit_bindings == [str(executor.resolve())]
+        def server_close(self): self.closed = True
+    monkeypatch.setattr(bounded_web_server, 'BoundedThreadingHTTPServer', SyntheticHTTP)
+    launch.serve(config, images_task['profile'].root)
+    ready = json.loads(Path(config['ready_path']).read_bytes())
+    assert ready['native_service']['agent_readiness'] == 'FIXED_EXECUTABLE_PRESENT_UNVERIFIED'
+    assert ready['native_service']['new_task_readiness'] == 'EXECUTABLE_PRESENT_UNVERIFIED'
+    binding = ready['native_service']['agent_executable_binding']
+    assert binding['path'] == str(executor.resolve()) and binding['source'] == 'controlled_discovery'
+    assert binding['cli_verified'] is binding['task_execution_verified'] is False
+    assert ready['worker_enabled'] is ready['provider_executors_initialized'] is False
+
+
 def test_formal_serve_registers_exact_new_task_and_one_native_decision_then_closes(images_task, monkeypatch, tmp_path):
     from shared_platform import publication_r3_image_bridge as bridge
     from test_b4b_release_compiler import policy, INCIDENTS

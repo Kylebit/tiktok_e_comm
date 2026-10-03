@@ -6,6 +6,10 @@
 
 旧通用 worker、历史 dispatcher 和旧任务批量接管仍关闭。候选正式启动器 `operations_launch.serve` 只有可信部署配置显式选择 `native_service_scope=explicit-new-task-and-decision/v1` 才注册原生服务；缺配置仍为原 web-only。固定 agent 可执行文件来自部署配置及精确文件身份，不能借 ambient 环境。ready 在注册成功后报告独立 scope 与能力，不把 `worker_enabled=False` 改成全局业务开放。
 
+执行器路径由 [agent_executable_binding](../shared_platform/agent_executable_binding.py) 只读核验。部署中的绝对 `agent_executable` 优先，可同时给出 `agent_executable_sha256`；显式路径缺失或摘要不符直接阻断，不自动改绑。只有省略显式路径并明确配置 `agent_executable_discovery={"bin_root":"<已核验的绝对 Codex bin 根>","sha256":"<已审定的 SHA256>"}` 才启用受控发现。bin 根须来自当前具名部署决定或已运行进程的可执行路径核验，不由程序猜测；最多检查32个直接目录项，只接受下一层16位十六进制版本目录中的唯一 `codex.exe`，不使用 PATH、cwd、递归搜索或最新目录排序。链接、歧义和未经审定的新二进制均阻断；相同已审定字节移动到新版本目录可重新解析。
+
+启动器把已解析的同一绝对路径传给原 Agent 环境绑定与利润配置消费者，并在 `native_service.agent_executable_binding` 保存这次路径/摘要观测。`PRESENT_UNVERIFIED`、`EXECUTABLE_PRESENT_UNVERIFIED` 与 `FIXED_EXECUTABLE_PRESENT_UNVERIFIED` 只表示文件绑定，不证明 CLI、auth、provider、新任务创建或业务可用；即使另做 `--version` 诊断成功，也须分别验真实任务入口。该检查不迁移部署或seal、不重启服务、不修改原任务授权或UNKNOWN恢复合同，既有领域执行前校验继续保留。
+
 显式 `/api/orbit/tasks` POST 真正新建的 publication 使用创建事务原 `explicit_new_post_preparation` 事件，profit 使用独立 `explicit_new_post_profit_readonly` 事件。两者分别固定原 task ID、请求范围、来源键和当前 release，不复用 publication scope 表示利润。幂等返回已有任务不补事件；同版本重启只核验对应事件与当前原任务，不扫描首页历史队列，不把旧版本或同月复用旧任务自动收养。started/UNKNOWN 先按原回执对账，不重新启动 child 或付费请求。新利润执行仅原只读统计与本地产物，沿固定配置、真实租约、原请求范围和固定 monthly 生产器校验；缺结算、历史成本或广告资料仍显示原具体缺项。
 
 首轮落盘由父服务调用原 R1 生产器，固定源码、任务数据、发布库父目录和 Offer 产物目录来自实际服务绑定，可位于不同本机盘；不接受网页自报目录或网络根。父服务持有 Windows 目录句柄，拒绝 reparse/多链接输出，并用独占新建临时文件的原写入器落盘、回读和冻结。该边界不是给 child 开 workspace-write：child 的只读观察结果仍不是完整准备回执。恢复复用原 task-owner/intent/prepared-reference/技术 decision/冻结回读校验，缺可信材料保持具体技术待办，不增加 COMMON 人工审核。

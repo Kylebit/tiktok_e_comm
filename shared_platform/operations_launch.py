@@ -13,6 +13,16 @@ def local_post_allowed(path):
     return path in {'/api/catalog/cost', '/api/orbit/tasks'}
 
 
+def bind_agent_executable(config):
+    """Replace ambient process binding only with inspected deployment metadata."""
+    from shared_platform.agent_executable_binding import inspect_agent_executable
+    os.environ.pop('ORBIT_OPERATIONS_AGENT_EXECUTABLE', None)
+    binding = inspect_agent_executable(config)
+    if binding['status'] == 'PRESENT_UNVERIFIED':
+        os.environ['ORBIT_OPERATIONS_AGENT_EXECUTABLE'] = binding['path']
+    return binding
+
+
 def bind_review_paths(config):
     """Preserve existing review evidence locations, without composing executors."""
     for key, variable in {'r2_review_runtime_root': 'ORBIT_R2_REVIEW_RUNTIME_ROOT',
@@ -252,14 +262,11 @@ def serve(config, root):
     os.environ['ORBIT_SHOPEE_RECOVERY_ENABLED'] = '0'
     os.environ.pop('ORBIT_OPERATIONS_AGENT_EXECUTABLE', None)
     agent_capability = 'NATIVE_FIXED_AGENT_EXECUTABLE_REQUIRED'
+    agent_binding = None
     if native_scope == SCOPE:
-        executable = config.get('agent_executable')
-        if isinstance(executable, str) and Path(executable).is_absolute() and Path(executable).is_file():
-            supplied = Path(executable)
-            info = supplied.lstat()
-            if (info.st_nlink == 1 and not getattr(info, 'st_file_attributes', 0) & 0x400):
-                os.environ['ORBIT_OPERATIONS_AGENT_EXECUTABLE'] = str(supplied.resolve(strict=True))
-                agent_capability = None
+        agent_binding = bind_agent_executable(config)
+        executable = agent_binding['path']
+        agent_capability = agent_binding['reason']
     os.environ['ORBIT_HIVE_SETTINGS'] = str(paths['settings'])
     os.environ['ORBIT_R3_CONFIG_ROOT'] = str(config.get('publication_runtime_config_root') or config['r3_config_root'])
     os.environ['TIKTOK_ECOMM_HOME'] = str(config['r3_config_root'])
@@ -357,6 +364,7 @@ def serve(config, root):
                     'delisting_scope':'EXPLICIT_NEW_POST_DELIST_EXACT_SCOPE',
                     'delisting_readiness':delisting_capability,
                     'historical_task_scan': False}
+                http.native_service_capability['agent_executable_binding'] = agent_binding
                 receipt['allowed_local_posts'] += sorted(POST_PATHS)
                 receipt['execution_mode'] = 'scoped-native'
                 receipt['native_service'] = http.native_service_capability

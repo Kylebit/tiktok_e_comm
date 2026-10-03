@@ -4,7 +4,7 @@ Agents may invoke `<SOURCE>/scripts/repo_bound_agent_entry.py` from any working 
 using an absolute `--profile` path and one of `preparation`, `images`, `qa`, or
 `delist`. The script uses the selected complete Git root's original CLI. A
 physical copy under a personal Skill directory is not a repository source.
-The selected source must declare `SETTINGS_BINDING_CONTRACT =
+For v1 and R1 v2, the selected source must declare `SETTINGS_BINDING_CONTRACT =
 "orbit-settings-binding/v1"` in `core/config.py`; the checker verifies this
 top-level constant using AST without importing it. An exact older source HEAD
 does not prove explicit settings support and is rejected without that capability.
@@ -85,7 +85,8 @@ separate contracts and remain unchanged.
 
 `config/agent_entry.r1-v2.example.json` describes `orbit-agent-entry/v2`.
 The R1 profile accepts only `--entry preparation`. QA additionally accepts the
-separate existing-assessment profile described below. Images, delist and other
+separate existing-assessment profile described below. Captured images status
+has its own narrow profile; delist and other
 QA modes return `ENTRY_PATH_BINDING_UNSUPPORTED_V2`; use v1 only when its original layout and
 authority contract actually hold. A whole mixed-root Agent workflow is still
 unsupported. The selected R1 script and its four source consumers must declare
@@ -192,3 +193,54 @@ Successful dispatch returns an absolute QA report path; output archives stay in
 the QA output tree. Existing QA business checks and native paid/service guards
 are preserved. Tests use synthetic source provenance and poison side-effect
 consumers; they do not prove formal inputs, deployment or a real QA result.
+
+## Version 2: existing captured images status
+
+Use `config/agent_entry.images-status-v2.example.json` with
+`entry_mode=images-captured-status`. This mode projects existing local R2 status
+to stdout and can create/open the original producer phase-lock file. It is a
+local-write operation, not a read-only task or provider reconciliation.
+
+| Field | Captured status consumption |
+| --- | --- |
+| `source_root`, `expected_source_head` | Exact complete clean images source; wrapper and consumer declare `IMAGES_STATUS_BINDING_CONTRACT = "orbit-images-status-paths/v2"` |
+| `state_dir` | Existing `<offer>.json`; explicit `load_state(state_dir=...)`, no bootstrap |
+| `round1_reports_root` | Retained `<offer>/round1-approved-snapshot.json`; existing R1 digest/freeze validation |
+| `r2_reports_root` | Required existing `<offer>/brand-image-generation.json` and optional `brand-image-translation.json`; report-only status projection |
+| `phase_lock_root` | Original direct CLI `round2-phase` lock; never relocated to source/cwd/output |
+| `r2_producer_mode`, `r2_producer_source_root`, `expected_r2_producer_head` | Only exact clean original `direct-cli-source-reports` producer; the unchanged QA AST proof checks its original source-relative lock expression |
+
+R2 input and lock roots must both be
+`r2_producer_source_root/reports/product-preparation`, just as for QA. This proves
+the code path and declared source/root relationship only; actual captured lineage,
+current producer/actor state and native/custom runtime mappings are not established.
+Native/custom producer profiles and unproven mappings reject. Existing paid/native
+guards and original direct producer expressions are preserved.
+
+Check binding first, then dispatch only
+`--entry images -- --offer-id <ID>` (canonical `--offer-id=<ID>` also works).
+Abbreviations, duplicate offer flags, root/profile/mode overrides, paid/model,
+generation, translation scope, retry, rework, upload and round3 flags reject.
+The internal frozen-profile route also checks its canonical argv. Nonempty
+ambient ORBIT path/root/dir/database/profile/settings overrides and
+`TIKTOK_E_COMM_ROOT` reject. Source and frozen profile digest are checked before
+capture reads and again under the original phase lock.
+The original unbound direct/paid/native parser retains its historical abbreviation
+behavior; only this frozen captured-status route enforces canonical flags.
+
+The checker is stdlib/Git/path metadata only, without domain import, business
+DB, provider or paid calls. This subset does not require or accept settings,
+config/data/output roots, catalog/release/report/workbench stores, Lingshi config,
+assessment/QA output, master-QA, checkpoint or history roots. It does not read
+checkpoint contents, paid ledger, localized review/pack history, asset bytes or
+embedded report references. In particular, an UNKNOWN report stays UNKNOWN;
+no historical count is reset and no provider result is inferred.
+
+Per-offer state/R1/generation captures must exist and validate before a lock
+write. An optional translation report, when present, must be a valid local
+object with status. Links/reparse capture and lock aliases reject. Under-lock
+drift can leave the already acquired persistent lock file; it stops the result
+without writing reports or initializing history. Existing legacy R1 plans retain
+the `LEGACY_R2_BRIDGE_REQUIRED` status; this mode does not perform that bridge.
+Synthetic validation proves path consumption and boundaries only; real input
+availability, capture provenance, deployed Agent use and provider state remain unverified.

@@ -1,0 +1,13 @@
+{
+  "schema": "orbit-agent-entry/v2",
+  "entry_mode": "images-captured-status",
+  "source_root": "E:/OrbitHive/selected-complete-images-source",
+  "expected_source_head": "0000000000000000000000000000000000000000",
+  "state_dir": "D:/OrbitHive/selected-captured-state/data/new_product_workbench",
+  "round1_reports_root": "D:/OrbitHive/selected-retained-r1/reports/product-preparation",
+  "r2_producer_mode": "direct-cli-source-reports",
+  "r2_producer_source_root": "D:/OrbitHive/selected-original-direct-producer",
+  "expected_r2_producer_head": "0000000000000000000000000000000000000000",
+  "r2_reports_root": "D:/OrbitHive/selected-original-direct-producer/reports/product-preparation",
+  "phase_lock_root": "D:/OrbitHive/selected-original-direct-producer/reports/product-preparation"
+}

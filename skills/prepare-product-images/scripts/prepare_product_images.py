@@ -19,6 +19,7 @@ from typing import Any, Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+IMAGES_STATUS_BINDING_CONTRACT = 'orbit-images-status-paths/v2'
 if __name__ == "__main__" and (not (REPO_ROOT / '.git').exists() or not all((REPO_ROOT / name).is_file() for name in (
     "core/config.py", "modules/sourcing/new_product_workbench.py",
     "shared_platform/publication_rounds.py",
@@ -88,8 +89,12 @@ TARGET_LOCALE = {
 }
 
 
-def _brand_generation_report_path(offer_id: str, *, runtime=None) -> Path:
+def _brand_generation_report_path(offer_id: str, *, runtime=None, reports_root=None) -> Path:
     _runtime_root(runtime)
+    if reports_root is not None:
+        if runtime is not None:
+            raise ValueError('IMAGES_CAPTURED_STATUS_MODE_ONLY')
+        return Path(reports_root) / str(offer_id) / 'brand-image-generation.json'
     return (
         _runtime_root(runtime)
         / "reports"
@@ -444,9 +449,9 @@ def prepare_manual_source_public_assets(offer_id: str) -> dict[str, Any]:
     )
 
 
-def _brand_generation_summary(offer_id: str, *, runtime=None) -> dict[str, Any] | None:
+def _brand_generation_summary(offer_id: str, *, runtime=None, reports_root=None) -> dict[str, Any] | None:
     _runtime_root(runtime)
-    path = _brand_generation_report_path(offer_id, runtime=runtime)
+    path = _brand_generation_report_path(offer_id, runtime=runtime, reports_root=reports_root)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, TypeError, ValueError):
@@ -517,8 +522,12 @@ def _brand_translation_plan_path(offer_id: str, *, runtime=None) -> Path:
     )
 
 
-def _brand_translation_report_path(offer_id: str, *, runtime=None) -> Path:
+def _brand_translation_report_path(offer_id: str, *, runtime=None, reports_root=None) -> Path:
     _runtime_root(runtime)
+    if reports_root is not None:
+        if runtime is not None:
+            raise ValueError('IMAGES_CAPTURED_STATUS_MODE_ONLY')
+        return Path(reports_root) / str(offer_id) / 'brand-image-translation.json'
     return (
         _runtime_root(runtime)
         / "reports"
@@ -2243,7 +2252,101 @@ def _verify_asset_bytes(raw: bytes, expected_digest: str) -> None:
         raise ValueError('approved source artifact bytes drifted')
 
 
-def run(args: argparse.Namespace, *, runtime=None) -> dict[str, Any]:
+def _image_status_result(offer_id, round1, generation, translated_path):
+    """The original report-only status projection; no referenced history is read."""
+    if translated_path.is_file():
+        report=json.loads(translated_path.read_text(encoding='utf-8'))
+        return {'offer_id':str(offer_id),'status':report['status'],'platform_writes':0,'external_generation_count':0}
+    return {'offer_id':str(offer_id),'status':generation['status'] if generation else 'BRAND_IMAGE_GENERATION_REQUIRED',
+            'planned_brand_image_count':sum(len(b.get('generated_assets') or []) for b in round1['image_plan'].get('brand_plans') or []),
+            'completed_brand_image_count':len((generation or {}).get('assets') or []),'platform_writes':0,'external_generation_count':0}
+
+
+def _checked_status_binding(args, *, runtime=None, arguments=None):
+    profile=getattr(args,'binding_profile',None)
+    supplied=getattr(args,'binding_profile_sha256',None)
+    if profile is None and supplied is None:
+        return None
+    if profile is None or supplied is None or runtime is not None:
+        raise ValueError('IMAGES_FROZEN_STATUS_BINDING_REQUIRED')
+    if hashlib.sha256(profile.read_bytes()).hexdigest() != supplied:
+        raise ValueError('IMAGES_PROFILE_DIGEST_CHANGED')
+    from scripts.repo_bound_agent_entry import check_binding, check_arguments
+    bound=check_binding(profile,'images')
+    if bound.get('entry_mode') != 'images-captured-status' or Path(bound['source_root']) != REPO_ROOT:
+        raise ValueError('IMAGES_SOURCE_BINDING_MISMATCH')
+    if bound['profile_sha256'] != supplied:
+        raise ValueError('IMAGES_PROFILE_DIGEST_CHANGED')
+    defaults={'image_provider':'lingshi','approved_by':'orbit-product-publication-default-v1',
+        'retry_failure_code':'OCR_LANGUAGE','rework_authorized_by':'','retry_authorized_by':''}
+    for name,value in vars(args).items():
+        if name not in ('offer_id','binding_profile','binding_profile_sha256') and value != defaults.get(name):
+            if value is not False:
+                raise ValueError('IMAGES_CAPTURED_STATUS_MODE_ONLY')
+    if arguments is not None:
+        # The internal frozen-profile route also rejects explicit defaults and abbreviations.
+        seen=set(); index=0
+        while index<len(arguments):
+            option,separator,_value=arguments[index].partition('=')
+            if option not in ('--offer-id','--binding-profile','--binding-profile-sha256') or option in seen:
+                raise ValueError('IMAGES_CAPTURED_STATUS_MODE_ONLY')
+            seen.add(option); index += 1 if separator else 2
+        if seen != {'--offer-id','--binding-profile','--binding-profile-sha256'}:
+            raise ValueError('IMAGES_FROZEN_STATUS_BINDING_REQUIRED')
+    check_arguments(bound,'images',['--offer-id',str(args.offer_id)])
+    return bound
+
+
+def _captured_status_inputs(offer_id, binding):
+    from scripts.repo_bound_agent_entry import checked_path
+    from modules.sourcing.new_product_workbench import load_state
+    from shared_platform.publication_rounds import validate_round2_input
+    for name,path in (
+        ('STATE',Path(binding['state_dir'])/(offer_id+'.json')),
+        ('R1',Path(binding['round1_reports_root'])/offer_id/'round1-approved-snapshot.json'),
+        ('R2_GENERATION',_brand_generation_report_path(offer_id,reports_root=binding['r2_reports_root']))):
+        checked_path(str(path),'IMAGES_CAPTURED_'+name)
+    state=load_state(offer_id,state_dir=Path(binding['state_dir']))
+    round1=validate_round2_input(offer_id,state,reports_root=Path(binding['round1_reports_root']))
+    generation=_brand_generation_summary(offer_id,reports_root=binding['r2_reports_root'])
+    if not generation or not isinstance(generation.get('status'),str) or not generation['status']:
+        raise ValueError('IMAGES_CAPTURED_R2_GENERATION_INVALID')
+    translated=_brand_translation_report_path(offer_id,reports_root=binding['r2_reports_root'])
+    if translated.exists() or translated.is_symlink():
+        checked_path(str(translated),'IMAGES_CAPTURED_R2_TRANSLATION')
+        report=json.loads(translated.read_text(encoding='utf-8'))
+        if not isinstance(report,dict) or not isinstance(report.get('status'),str) or not report['status']:
+            raise ValueError('IMAGES_CAPTURED_R2_TRANSLATION_INVALID')
+    return round1,generation,translated
+
+
+def _run_captured_status(args, binding, *, runtime=None):
+    if runtime is not None or _checked_status_binding(args) != binding:
+        raise ValueError('IMAGES_FROZEN_STATUS_BINDING_REQUIRED')
+    from scripts.repo_bound_agent_entry import checked_path
+    from modules.sourcing.image_generation_checkpoint import business_lock, digest
+    offer_id=str(args.offer_id)
+    # Missing/invalid captured inputs stop before even creating a phase lock.
+    _captured_status_inputs(offer_id,binding)
+    phase_root=Path(binding['phase_lock_root'])/offer_id
+    phase_digest=digest({'scope':'round2-phase','offer_id':offer_id})
+    lock_path=phase_root/f'.lingshi-{phase_digest[:24]}.lock'
+    if lock_path.exists() or lock_path.is_symlink():
+        checked_path(str(lock_path),'IMAGES_PHASE_LOCK')
+    with business_lock(phase_root,phase_digest):
+        if _checked_status_binding(args) != binding:
+            raise ValueError('IMAGES_FROZEN_BINDING_CHANGED')
+        round1,generation,translated=_captured_status_inputs(offer_id,binding)
+        if (round1.get('image_plan',{}).get('translation_plan') or {}).get('status') != 'DEFERRED_UNTIL_ALL_IMAGES_GENERATED':
+            return {'offer_id':offer_id,'status':'LEGACY_R2_BRIDGE_REQUIRED',
+                'next_action':'Bind the existing approved legacy review to R2 paid context; original provider receipts are retained.',
+                'platform_writes':0,'external_generation_count':0}
+        return _image_status_result(offer_id,round1,generation,translated)
+
+
+def run(args: argparse.Namespace, *, runtime=None, binding=None) -> dict[str, Any]:
+    if binding is not None:
+        return _run_captured_status(args,binding,runtime=runtime)
     _runtime_root(runtime)
     if runtime is not None:
         runtime.require_offer(args.offer_id)
@@ -2317,12 +2420,7 @@ def run(args: argparse.Namespace, *, runtime=None) -> dict[str, Any]:
             return {'offer_id':str(args.offer_id),'status':'TRANSLATION_SCOPE_APPROVED','approved_task_count':plan['approved_task_count'],
                     'platform_writes':0,'external_generation_count':0,'translation_plan':str(_brand_translation_plan_path(args.offer_id, runtime=runtime))}
         translated_path=_brand_translation_report_path(args.offer_id, runtime=runtime)
-        if translated_path.is_file():
-            report=json.loads(translated_path.read_text(encoding='utf-8'))
-            return {'offer_id':str(args.offer_id),'status':report['status'],'platform_writes':0,'external_generation_count':0}
-        return {'offer_id':str(args.offer_id),'status':generation['status'] if generation else 'BRAND_IMAGE_GENERATION_REQUIRED',
-                'planned_brand_image_count':sum(len(b.get('generated_assets') or []) for b in round1['image_plan'].get('brand_plans') or []),
-                'completed_brand_image_count':len((generation or {}).get('assets') or []),'platform_writes':0,'external_generation_count':0}
+        return _image_status_result(args.offer_id,round1,generation,translated_path)
 
 
 def main( *, runtime=None) -> int:
@@ -2388,9 +2486,12 @@ def main( *, runtime=None) -> int:
         type=Path,
         help="Optional durable JSON mapping for legacy generated artifacts without a provider result URL.",
     )
+    parser.add_argument('--binding-profile',type=Path,help=argparse.SUPPRESS)
+    parser.add_argument('--binding-profile-sha256',help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
-        result = run(args, runtime=runtime)
+        binding = _checked_status_binding(args,runtime=runtime,arguments=sys.argv[1:])
+        result = run(args, runtime=runtime, binding=binding)
     except Exception as error:
         print(
             json.dumps(

@@ -12,8 +12,18 @@ See that source's `docs/AGENT_ENTRY_BINDING.md`: version 1 preserves source-rela
 config/data/reports and rejects independent roots. Personal physical copies do
 not establish source identity; the check does not grant paid or business authority.
 Version 2 supports R1 captured-input preparation and the narrowly bound QA
-`qa-existing-assessment` mode. Images and provider/model QA remain unsupported;
-an explicit Lingshi discovery path does not propagate their paths.
+`qa-existing-assessment` and images `images-captured-status` modes. Paid image
+phases and provider/model QA remain unsupported by v2; an explicit Lingshi
+discovery path does not propagate their paths.
+For captured image status use `config/agent_entry.images-status-v2.example.json`.
+It accepts only canonical `--offer-id`, consumes existing state, retained R1,
+generation and optional translation reports, and writes only the original direct
+CLI producer's phase lock; its result is stdout. Missing/invalid captures stop
+before creating a lock. It does not bootstrap state, read checkpoint/paid history,
+resolve embedded artifact paths, query providers or initialize a paid ledger.
+The declared producer lock mapping has the same limited proof as QA below;
+native/custom producers and unproven mapping reject. Preserve existing UNKNOWN
+reports: this projection is not provider reconciliation or execution readiness.
 For existing-assessment QA use `config/agent_entry.qa-assessment-v2.example.json`
 from the selected source. It requires separate captured state, retained R1 and
 R2 input reports, the existing assessment, QA output and the original direct
@@ -36,6 +46,9 @@ the selected source wrapper, with the original phase arguments after `--`:
 ```powershell
 <PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images --check-binding
 <PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images -- --offer-id <OFFER_ID>
+# Captured status has its own narrow v2 profile; no paid/translation/rework flags.
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_STATUS_PROFILE> --entry images --check-binding
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_STATUS_PROFILE> --entry images -- --offer-id <OFFER_ID>
 <PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry qa --check-binding
 # Provider/model QA below requires the original v1 layout and existing authority.
 <PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry qa -- --offer-id <OFFER_ID> --model <APPROVED_MODEL> --paid-policy <EXISTING_POLICY>
@@ -56,9 +69,12 @@ The bundled `historical-autopilot-policy.example.json` is inactive source eviden
 
 ## Execute one phase
 
-The generation/status/model-QA phase commands below retain the original v1 or
-governed native contract. They are not enabled by the v2 assessment profile.
-That profile accepts only canonical `--offer-id` and `--assessment`; model,
+The generation/model-QA phase commands below retain the original v1 or
+governed native contract. The v2 captured-status profile only enables step 1
+when state/R1/generation captures already exist; missing captures stop without
+upstream reads or state creation. Other phases are not enabled by that profile
+or the v2 assessment profile.
+The v2 assessment profile accepts only canonical `--offer-id` and `--assessment`; model,
 paid-policy, upload, rework and alternate root/profile flags reject. Its existing
 assessment branch does not consume a separate master-QA input field.
 

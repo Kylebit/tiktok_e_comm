@@ -29,6 +29,7 @@ SETTINGS_CONTRACT = 'orbit-settings-binding/v1'
 R1_CONTRACT = 'orbit-r1-paths/v2'
 AGENT_ENTRY_BINDING_CONTRACT = 'orbit-agent-entry/v2'
 QA_ASSESSMENT_BINDING_CONTRACT = 'orbit-qa-assessment-paths/v2'
+IMAGES_STATUS_BINDING_CONTRACT = 'orbit-images-status-paths/v2'
 R1_CONTRACT_FILES = ('modules/sourcing/new_product_workbench.py',
     'modules/sourcing/pipeline.py', 'modules/sourcing/manual_product_intake.py',
     'shared_platform/release_control.py', ENTRIES['preparation'])
@@ -141,6 +142,15 @@ def check_arguments(bound, entry, arguments):
                 path = Path(bound['source_root']) / path
             if not path.resolve().is_relative_to(Path(bound['output_root'])):
                 raise ValueError('ENTRY_OUTPUT_OUTSIDE_BOUND_ROOT')
+    if bound.get('entry_mode') == 'images-captured-status' and arguments:
+        if len(arguments) == 2 and arguments[0] == '--offer-id':
+            offer = arguments[1]
+        elif len(arguments) == 1 and arguments[0].startswith('--offer-id='):
+            offer = arguments[0].partition('=')[2]
+        else:
+            raise ValueError('IMAGES_STATUS_CANONICAL_OFFER_ARGUMENT_REQUIRED')
+        if re.fullmatch(r'[0-9]+', offer) is None:
+            raise ValueError('IMAGES_STATUS_OFFER_ID_INVALID')
     if bound.get('entry_mode') == 'qa-existing-assessment' and arguments:
         values = {}
         index = 0
@@ -265,6 +275,69 @@ def check_qa_assessment_binding(path, raw, profile):
         'domain_imported':False,'sql_connections':0,'provider_calls':0,'business_calls':0,'auth_writes':0,'paid_calls':0}
 
 
+def check_images_status_binding(path, raw, profile):
+    allowed = {'schema','entry_mode','source_root','expected_source_head','state_dir',
+        'round1_reports_root','r2_reports_root','phase_lock_root','r2_producer_mode',
+        'r2_producer_source_root','expected_r2_producer_head'}
+    if set(profile)-allowed:
+        raise ValueError('IMAGES_STATUS_PROFILE_FIELD_UNSUPPORTED: '+','.join(sorted(set(profile)-allowed)))
+    if profile.get('r2_producer_mode') != 'direct-cli-source-reports':
+        raise ValueError('IMAGES_STATUS_R2_PRODUCER_MODE_UNSUPPORTED')
+    root = checked_path(profile.get('source_root'),'SOURCE_ROOT',directory=True)
+    producer = checked_path(profile.get('r2_producer_source_root'),'IMAGES_PRODUCER_SOURCE_ROOT',directory=True)
+    for selected,expected,role,files in (
+        (root,profile.get('expected_source_head'),'SOURCE',(*SOURCE_FILES,ENTRIES['images'],'scripts/repo_bound_agent_entry.py')),
+        (producer,profile.get('expected_r2_producer_head'),'IMAGES_PRODUCER_SOURCE',(*SOURCE_FILES,ENTRIES['images']))):
+        for relative in files:
+            checked_path(str(selected/relative),role+'_FILE')
+        if Path(git(selected,'rev-parse','--show-toplevel')).resolve() != selected:
+            raise ValueError(role+'_MUST_BE_GIT_TOP_LEVEL')
+        git(selected,'ls-files','--error-unmatch','--',*files)
+        if not isinstance(expected,str) or not re.fullmatch(r'[0-9a-f]{40}',expected):
+            raise ValueError(role+'_EXPECTED_HEAD_REQUIRED')
+        if git(selected,'rev-parse','HEAD') != expected:
+            raise ValueError(role+'_HEAD_MISMATCH')
+        if git(selected,'status','--porcelain=v1','-uall'):
+            raise ValueError(role+'_DIRTY')
+    for relative in (ENTRIES['images'],'scripts/repo_bound_agent_entry.py'):
+        source_constant_contract(root/relative,'IMAGES_STATUS_BINDING_CONTRACT',IMAGES_STATUS_BINDING_CONTRACT,
+            'SOURCE_IMAGES_STATUS_CAPABILITY_MISSING: '+relative)
+    # Keep the same original direct producer proof used by QA. No native/custom mapping.
+    direct_producer_lock_contract(producer)
+    fields = {name:str(checked_path(profile.get(name),'IMAGES_CAPTURED_'+name.upper(),directory=True))
+        for name in ('state_dir','round1_reports_root','r2_reports_root','phase_lock_root')}
+    original = producer/'reports/product-preparation'
+    if Path(fields['r2_reports_root']) != original or Path(fields['phase_lock_root']) != original:
+        raise ValueError('IMAGES_ORIGINAL_PRODUCER_PHASE_LOCK_UNPROVEN')
+    for key,value in os.environ.items():
+        if value and (key in ('ORBIT_HIVE_SETTINGS','TIKTOK_E_COMM_ROOT') or
+            (key.startswith('ORBIT_') and key.endswith(('_ROOT','_PATH','_DIR','_DATABASE','_PROFILE')))):
+            raise ValueError('ENV_BINDING_UNSUPPORTED_IMAGES_STATUS: '+key)
+    scopes = {'source_root':'exact clean images source','expected_source_head':'images source identity',
+        'state_dir':'existing captured JSON state','round1_reports_root':'retained R1 snapshot input',
+        'r2_reports_root':'existing generation and optional translation reports',
+        'phase_lock_root':'original direct producer round2-phase lock',
+        'r2_producer_source_root':'statically verified original direct CLI source path',
+        'expected_r2_producer_head':'original direct producer source identity','r2_producer_mode':'direct CLI only'}
+    propagation = {name:{'supported':True,'scope':scope} for name,scope in scopes.items()}
+    for name in ('settings_path','config_root','data_root','output_root','qa_output_root','assessment_path',
+        'catalog_database','release_store_path','report_store_path','workbench_store_path','lingshi_config_path',
+        'checkpoint_root','history_root','master_qa_reports_root'):
+        propagation[name] = {'supported':False,'scope':'not consumed or accepted by captured status subset'}
+    return {'status':'AGENT_ENTRY_LAYOUT_BINDING_VALIDATED','schema':profile['schema'],
+        'entry_mode':'images-captured-status','profile_path':str(path),'profile_sha256':hashlib.sha256(raw).hexdigest(),
+        'source_root':str(root),'source_head':profile['expected_source_head'],'entry':str(root/ENTRIES['images']),
+        'r2_producer_source_root':str(producer),'expected_r2_producer_head':profile['expected_r2_producer_head'],
+        'r2_producer_mode':profile['r2_producer_mode'],**fields,
+        'images_status_binding_contract':IMAGES_STATUS_BINDING_CONTRACT,
+        'supported_layout':'existing captured images status only; explicit state/R1/R2 and original direct producer lock',
+        'field_propagation':propagation,'settings_override_supported':False,'separate_data_output_supported':False,
+        'producer_proof':'direct CLI code path plus declared roots/HEAD only; native/custom runtime and actual capture lineage not established',
+        'dispatch_preflight':'layout/source only; per-offer existing captures and R1 validity checked on dispatch',
+        'local_writes':['original direct producer phase lock'],'result_output':'stdout only',
+        'domain_imported':False,'sql_connections':0,'provider_calls':0,'business_calls':0,'auth_writes':0,'paid_calls':0}
+
+
 def check_binding(profile_path, entry):
     path = checked_path(str(profile_path), 'PROFILE')
     try:
@@ -277,6 +350,8 @@ def check_binding(profile_path, entry):
     v2 = profile['schema'] == 'orbit-agent-entry/v2'
     if v2 and entry == 'qa' and profile.get('entry_mode') == 'qa-existing-assessment':
         return check_qa_assessment_binding(path, raw, profile)
+    if v2 and entry == 'images' and profile.get('entry_mode') == 'images-captured-status':
+        return check_images_status_binding(path, raw, profile)
     if v2 and entry != 'preparation':
         raise ValueError('ENTRY_PATH_BINDING_UNSUPPORTED_V2: ' + entry)
     if v2:

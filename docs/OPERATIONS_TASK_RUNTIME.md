@@ -4,6 +4,10 @@
 
 本段说明新的隔离候选源码。下文涉及 49289/web-only、七条旧审核 POST、workspace-write agent、全局 worker 未接的描述保留为 **截至 2026-09-22 的历史合同与审计**，不能作为当前候选的操作要求，也不能据此开启全局业务执行。
 
+通用 `ControlledAgentBridge.prepare` 在创建本地产物或启动 CLI 前筛查已发现的本地继承配置：user/project TOML 中启用的 MCP、hooks/notify、未核 profile/plugin/app 输入、旁置 hooks.json，以及存在但未核的 managed 配置均返回具体 `blocked` 原因。路径仅接受本机绝对路径（Windows 限普通盘符，先拒绝 UNC/device 路径，不探测远程目录）；解析、路径或环境/配置漂移失败也阻断。读取有界，不回传配置内容，不清空 `CODEX_HOME`、改变 model/provider/auth 或跳过 execpolicy；最小合成本地配置保留原 prepared/timeout UNKNOWN 合同。
+
+本地再次扫描没有把 mutable 配置锁至 Codex 读取瞬间，snapshot 也不是完整 source/config 隔离。本地门禁通过不证明 built-in/apps/cloud 插件缺席、完整 runtime 隔离、实际 Windows sandbox、零外部副作用或 session 就绪；自动指令读取、auth/session bookkeeping 和同用户文件替换仍须单独核验。此处仅通用 prepare 接线，monthly/images/R1 的原门禁与授权不变。
+
 旧通用 worker、历史 dispatcher 和旧任务批量接管仍关闭。候选正式启动器 `operations_launch.serve` 只有可信部署配置显式选择 `native_service_scope=explicit-new-task-and-decision/v1` 才注册原生服务；缺配置仍为原 web-only。固定 agent 可执行文件来自部署配置及精确文件身份，不能借 ambient 环境。ready 在注册成功后报告独立 scope 与能力，不把 `worker_enabled=False` 改成全局业务开放。
 
 执行器路径由 [agent_executable_binding](../shared_platform/agent_executable_binding.py) 只读核验。部署中的绝对 `agent_executable` 优先，可同时给出 `agent_executable_sha256`；显式路径缺失或摘要不符直接阻断，不自动改绑。只有省略显式路径并明确配置 `agent_executable_discovery={"bin_root":"<已核验的绝对 Codex bin 根>","sha256":"<已审定的 SHA256>"}` 才启用受控发现。bin 根须来自当前具名部署决定或已运行进程的可执行路径核验，不由程序猜测；最多检查32个直接目录项，只接受下一层16位十六进制版本目录中的唯一 `codex.exe`，不使用 PATH、cwd、递归搜索或最新目录排序。链接、歧义和未经审定的新二进制均阻断；相同已审定字节移动到新版本目录可重新解析。

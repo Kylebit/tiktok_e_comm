@@ -303,9 +303,21 @@ class ControlledAgentBridge:
                                   lease_token=lease_token, timeout=timeout)
 
     def prepare(self, task: dict, output_dir: Path, *, timeout: int = 300) -> dict:
+        """Screen local inherited integrations; this is not full isolation."""
+        from shared_platform.readonly_agent_config_guard import (
+            ReadonlyAgentConfigBlocked, capture_local_config, verify_local_config,
+        )
+        try:
+            inherited = capture_local_config(self.profile.root)
+        except ReadonlyAgentConfigBlocked as error:
+            return {"status": "blocked", "reason": str(error)}
         output_dir = output_dir.resolve()
         if not output_dir.is_relative_to(self.profile.data_root):
             raise ValueError("agent output must stay inside operations data root")
+        try:
+            verify_local_config(inherited, self.profile.root)
+        except ReadonlyAgentConfigBlocked as error:
+            return {"status": "blocked", "reason": str(error)}
         output_dir.mkdir(parents=True, exist_ok=True)
         result_path = output_dir / "agent-result.json"
         schema_path = output_dir / "agent-result.schema.json"
@@ -313,6 +325,10 @@ class ControlledAgentBridge:
                   "properties": {"summary": {"type": "string"}, "missing_inputs": {"type": "array", "items": {"type": "string"}},
                                  "evidence_paths": {"type": "array", "items": {"type": "string"}}},
                   "required": ["summary", "missing_inputs", "evidence_paths"]}
+        try:
+            verify_local_config(inherited, self.profile.root)
+        except ReadonlyAgentConfigBlocked as error:
+            return {"status": "blocked", "reason": str(error)}
         schema_path.write_text(json.dumps(schema), encoding="utf-8")
         prompt = ("Perform only read-only preparation for this Orbit task. Read applicable project instructions and Skill. "
                   "No credential refresh, paid calls, commerce writes, file modifications, or child agents. "
@@ -321,8 +337,13 @@ class ControlledAgentBridge:
         argv = [self.executable, "exec", "--sandbox", "read-only", "--json", "--color", "never",
                 "--output-schema", str(schema_path), "--output-last-message", str(result_path), "-"]
         try:
+            verify_local_config(inherited, self.profile.root)
+        except ReadonlyAgentConfigBlocked as error:
+            return {"status": "blocked", "reason": str(error)}
+        try:
             result = subprocess.run(argv, input=prompt, cwd=self.profile.root, capture_output=True,
-                                    text=True, encoding="utf-8", timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                    text=True, encoding="utf-8", timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                                    env=inherited.environment)
         except subprocess.TimeoutExpired as error:
             return {"status": "unknown", "reason": "agent_timeout_reconcile_session_before_retry",
                     "session_id": _session_id(error.stdout)}

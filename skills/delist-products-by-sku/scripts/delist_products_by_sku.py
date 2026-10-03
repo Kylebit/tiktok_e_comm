@@ -123,8 +123,8 @@ def _local_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
     return out
 
 
-def _historical_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
-    """Recover exact storefront identities from durable publication evidence.
+def _cached_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Parse durable publication candidates without authentication or shop I/O.
 
     Historical evidence is only an identity seed. Every recovered product is
     still re-read from TikTok before it can become executable.
@@ -186,6 +186,12 @@ def _historical_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
                         "identity_source": str(path.relative_to(REPO_ROOT)).replace("\\", "/"),
                         "action": "DEACTIVATE_PRODUCT",
                     }
+    return list(identities.values())
+
+
+def _historical_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Bind cached identity seeds to authorized shops during live planning."""
+    identities = _cached_tiktok_rows(skus)
     if not identities:
         return []
 
@@ -201,8 +207,8 @@ def _historical_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
         if label:
             by_target[label] = shop
     out: list[dict[str, Any]] = []
-    for label, row in identities.items():
-        shop = by_target.get(label)
+    for row in identities:
+        shop = by_target.get(row["target_label"])
         if not shop:
             continue
         row["shop_id"] = str(shop.get("id") or shop.get("shop_id") or "")
@@ -551,7 +557,7 @@ def build_plan(skus: tuple[str, ...], *, live: bool = True) -> dict[str, Any]:
     ]
     known_tiktok_labels = live_tiktok_labels | {row["target_label"] for row in local_tiktok}
     historical_tiktok = [
-        row for row in _historical_tiktok_rows(skus)
+        row for row in (_historical_tiktok_rows(skus) if live else _cached_tiktok_rows(skus))
         if row["target_label"] not in known_tiktok_labels
     ]
     known_tiktok_labels.update(row["target_label"] for row in historical_tiktok)
@@ -584,12 +590,16 @@ def build_plan(skus: tuple[str, ...], *, live: bool = True) -> dict[str, Any]:
                 "target_label": label,
                 "platform": label.split(":", 1)[0],
                 "requested_skus": list(skus),
-                "status": "NEEDS_PROVIDER_DISCOVERY" if needs_provider_discovery else "NOT_FOUND",
+                "status": (
+                    "NEEDS_PROVIDER_DISCOVERY" if needs_provider_discovery else
+                    "NOT_FOUND" if live else "BLOCKED_MISSING_IDENTITY"
+                ),
                 "executable": False,
                 "reason": (
                     "official provider discovery is required before a negative result"
                     if needs_provider_discovery
-                    else "no exact listing identity in current canonical evidence"
+                    else "no exact listing identity in current canonical evidence" if live
+                    else "no cached identity; official provider discovery has not been performed"
                 ),
             })
             continue
@@ -611,6 +621,7 @@ def build_plan(skus: tuple[str, ...], *, live: bool = True) -> dict[str, Any]:
         row["status"] = (
             "BLOCKED_MIXED_PRODUCT" if mixed else
             "BLOCKED_INCOMPLETE_SKU_SET" if not complete else
+            "BLOCKED_LIVE_READ_REQUIRED" if not live else
             "NEEDS_PROVIDER_EXECUTION" if provider_only else
             "BLOCKED_LIVE_READ" if row.get("live_read_error") else
             "READY"
@@ -625,6 +636,12 @@ def build_plan(skus: tuple[str, ...], *, live: bool = True) -> dict[str, Any]:
         "expected_targets": list(ALL_TARGETS),
         "targets": targets,
     }
+    if not live:
+        body["planning_mode"] = "OFFLINE_DIAGNOSTIC"
+        for row in targets:
+            row["blocked"] = True
+            row["executable"] = False
+            row.setdefault("reason", "cached candidates are diagnostic only; a live plan with official identity and status readback is required")
     body["plan_digest"] = _digest(body)
     return body
 
@@ -722,6 +739,8 @@ def _execute_one(row: Mapping[str, Any], *, call_guard=None, tiktok_runtime=None
 
 def execute(plan: Mapping[str, Any], *, operation_owner=None, call_guard=None, tiktok_runtime=None) -> dict[str, Any]:
     _verify_plan(plan)
+    if plan.get("planning_mode") == "OFFLINE_DIAGNOSTIC":
+        raise ValueError("OFFLINE_DIAGNOSTIC_PLAN_NOT_EXECUTABLE")
     from shared_platform.operations_domain_guard import begin_delisting, finish_delisting
     guard = begin_delisting(plan, REPO_ROOT, operation_owner=operation_owner)
     if guard is not None and not guard[2]['acquired']:

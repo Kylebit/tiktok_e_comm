@@ -37,3 +37,13 @@ v1 仅支持 source 内 data/reports 布局，异址明确拒绝；v2 当前只�
 ```
 
 默认写入 `reports/product-delisting/<SKU组合>/`。执行前向用户复述精确 SKU 和范围；用户本轮已经明确要求下架时，不需要重复索取一次相同授权。
+
+`plan --no-live` is an offline diagnostic mode. It does not authenticate,
+refresh tokens, query shops or contact providers, but it can read local caches
+and write `delist-plan.json` in the report directory. Cached matches are only
+candidates: every target remains blocked and non-executable, and missing local
+evidence does not prove a listing is absent at the provider. `execute` rejects
+an `OFFLINE_DIAGNOSTIC` plan before acquiring the operation ledger. Build a live
+plan with fresh official identity/status readback within the already authorized
+exact SKU/store scope; this is evidence collection, not another business approval.
+Version 2 delist dispatch remains unsupported.

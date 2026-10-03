@@ -312,6 +312,7 @@ def _local_seller_sku_reservations(
     project_root: Path,
     *,
     exclude_offer_id: str,
+    state_dir: str | Path | None = None,
 ) -> tuple[dict[str, str], ...]:
     """Read approved, legacy-locked, and verified-claim reservations.
 
@@ -321,7 +322,7 @@ def _local_seller_sku_reservations(
     range. Both facts must remain active until their legacy lifecycle is
     explicitly reconciled.
     """
-    state_dir = project_root / "data" / "new_product_workbench"
+    state_dir = Path(state_dir) if state_dir is not None else project_root / "data" / "new_product_workbench"
     if not state_dir.is_dir():
         return ()
     states: dict[str, Mapping[str, Any]] = {}
@@ -1095,6 +1096,9 @@ def _apply_store_level_pricing(
         }
 
 
+R1_PATH_BINDING_CONTRACT = 'orbit-r1-paths/v2'
+
+
 def build_release_dashboard(
     *,
     offer_id: object = DEFAULT_OFFER_ID,
@@ -1108,16 +1112,24 @@ def build_release_dashboard(
     strict_catalog: bool = False,
     frozen_pricing: dict | None = None,
     frozen_round1: Mapping[str, Any] | None = None,
+    data_root: str | Path | None = None,
+    state_dir: str | Path | None = None,
+    source_outputs_root: str | Path | None = None,
+    content_outputs_root: str | Path | None = None,
+    release_store_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build the complete local release rehearsal without side effects."""
     clean_offer_id = _clean_offer_id(offer_id)
     project_root = configured_release_evidence_root(root)
-    state_path = project_root / "data" / "new_product_workbench" / f"{clean_offer_id}.json"
+    scoped_source = any(value is not None for value in (data_root,state_dir,source_outputs_root))
+    data_dir = Path(data_root) if data_root is not None else project_root/'data'
+    states_dir = Path(state_dir) if state_dir is not None else data_dir/'new_product_workbench'
+    state_path = states_dir / f"{clean_offer_id}.json"
     state = _read_json(state_path)
     if str(state.get("offer_id") or "").strip() != clean_offer_id:
         raise ValueError("workbench offer identity does not match the requested offer_id")
     review = state.get("review") if isinstance(state.get("review"), Mapping) else {}
-    db_path = Path(database_path or project_root / "data" / "shop.db")
+    db_path = Path(database_path or data_dir / "shop.db")
     missing_catalog = catalog_optional and not strict_catalog and not db_path.exists()
     known_skus = set() if missing_catalog else _known_seller_skus(db_path, strict=strict_catalog)
     tiktok_skus = set() if missing_catalog else _known_tiktok_seller_skus(db_path, strict=strict_catalog)
@@ -1125,16 +1137,17 @@ def build_release_dashboard(
         _local_seller_sku_reservations(
             project_root,
             exclude_offer_id=clean_offer_id,
+            state_dir=states_dir,
         )
     )
     from shared_platform.release_store import ReleaseStore
 
-    release_store_path = Path(
-        report_store_path or project_root / "data" / "orbit_platform.db"
+    ledger_path = Path(
+        release_store_path or report_store_path or data_dir / "orbit_platform.db"
     )
-    if report_store is not None and Path(report_store.path).resolve() != release_store_path.resolve():
+    if report_store is not None and Path(report_store.path).resolve() != ledger_path.resolve():
         raise ValueError("dashboard report Store must match report_store_path")
-    release_store = report_store if report_store is not None else ReleaseStore(release_store_path)
+    release_store = report_store if report_store is not None else ReleaseStore(ledger_path)
     listing_copy_state = (
         state.get("listing_copy")
         if isinstance(state.get("listing_copy"), Mapping)
@@ -1302,15 +1315,13 @@ def build_release_dashboard(
         }
         else next_seller_skus
     )
-    source = (
-        _source_summary(clean_offer_id)
-        if project_root.resolve() == Path(ROOT).resolve()
-        else (
-            state.get("source")
-            if isinstance(state.get("source"), Mapping)
-            else {}
-        )
-    )
+    if scoped_source:
+        source = _source_summary(clean_offer_id, state_dir=states_dir,
+                                 data_root=data_dir, source_outputs_root=source_outputs_root)
+    elif project_root.resolve() == Path(ROOT).resolve():
+        source = _source_summary(clean_offer_id)
+    else:
+        source = state.get('source') if isinstance(state.get('source'), Mapping) else {}
     selected_title_sku_keys = {
         str(value) for value in (review.get("selected_sku_keys") or ())
     }
@@ -1382,7 +1393,8 @@ def build_release_dashboard(
             raise ValueError(
                 "content collect-box identity is not explicitly linked to the requested offer"
             )
-    package_dir = project_root / "outputs" / "image_suite_from_miaoshou" / collect_box_id
+    content_root = Path(content_outputs_root) if content_outputs_root is not None else project_root/'outputs/image_suite_from_miaoshou'
+    package_dir = content_root / collect_box_id
     review_package_path = package_dir / "review_package.json"
     review_package_available = review_package_path.is_file()
     review_package = (
@@ -2047,7 +2059,7 @@ def build_release_dashboard(
 
     latest_weekly = latest_weekly_profit_summary(
         report_store_path
-        or project_root / "data" / "orbit_platform.db"
+        or data_dir / "orbit_platform.db"
     )
     source_skus: list[dict[str, Any]] = []
     seen_source_sku_keys: set[str] = set()

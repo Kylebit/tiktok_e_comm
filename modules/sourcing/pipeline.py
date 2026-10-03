@@ -72,8 +72,11 @@ def scrape_path(offer_id: str) -> Path:
     return SOURCING_DIR / f"{offer_id}.json"
 
 
-def load_scrape(offer_id: str) -> dict:
-    p = scrape_path(offer_id)
+R1_PATH_BINDING_CONTRACT = 'orbit-r1-paths/v2'
+
+
+def load_scrape(offer_id: str, *, sourcing_dir: Path | None = None) -> dict:
+    p = Path(sourcing_dir) / f'{offer_id}.json' if sourcing_dir is not None else scrape_path(offer_id)
     if not p.is_file():
         raise FileNotFoundError(f"未找到采集数据: {p}")
     return json.loads(p.read_text(encoding="utf-8"))

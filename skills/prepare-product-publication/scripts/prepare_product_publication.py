@@ -9,6 +9,7 @@ deterministic failure instead of silently crossing the first-round boundary.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -17,6 +18,7 @@ from typing import Any, Callable, Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+R1_PATH_BINDING_CONTRACT = 'orbit-r1-paths/v2'
 if __name__ == "__main__" and (not (REPO_ROOT / '.git').exists() or not all((REPO_ROOT / name).is_file() for name in (
     "core/config.py", "modules/sourcing/new_product_workbench.py",
     "shared_platform/publication_rounds.py",
@@ -658,14 +660,10 @@ def _parse_targets(raw: str) -> list[str]:
     return _unique_text(raw.split(","))
 
 
-def _default_output_path(offer_id: str) -> Path:
-    return (
-        REPO_ROOT
-        / "reports"
-        / "product-preparation"
-        / _clean_text(offer_id)
-        / "first-review.json"
-    )
+def _default_output_path(offer_id: str, output_root: Path | None = None) -> Path:
+    from shared_platform.publication_rounds import report_dir
+    reports = (output_root or REPO_ROOT/'reports')/'product-preparation'
+    return report_dir(_clean_text(offer_id), reports_root=reports)/'first-review.json'
 
 
 def _write_text_atomic(path: Path, text_value: str) -> None:
@@ -683,7 +681,9 @@ def _write_text_atomic(path: Path, text_value: str) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument('--binding-profile', type=Path, help=argparse.SUPPRESS)
+    parser.add_argument('--binding-profile-sha256', help=argparse.SUPPRESS)
     parser.add_argument("--offer-id", required=True)
     parser.add_argument("--targets", required=True, help="Comma-separated exact target labels")
     parser.add_argument("--output", type=Path)
@@ -703,13 +703,13 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _read_category_reference(path: Path | None, offer_id: str, targets: list[str]):
+def _read_category_reference(path: Path | None, offer_id: str, targets: list[str], output_root: Path | None = None):
     from shared_platform.round1_category_evidence import shopee_targets, read_receipt, CategoryEvidenceError
     if not shopee_targets({'target_selection': {'requested': targets}}):
         return None
     if not offer_id.isdigit():
         raise PreparationError('offer_id must contain digits for category evidence')
-    source = path or REPO_ROOT / 'reports' / 'product-preparation' / offer_id / 'shopee-category-review.json'
+    source = path or _default_output_path(offer_id, output_root).parent / 'shopee-category-review.json'
     if path is None and not source.is_file():
         return None
     try:
@@ -718,12 +718,50 @@ def _read_category_reference(path: Path | None, offer_id: str, targets: list[str
         return {'schema_version': 'invalid-category-reference'}
 
 
+def _captured_preview_builder(bound) -> PreviewBuilder:
+    def dashboard(offer_id: str):
+        from scripts.repo_bound_agent_entry import checked_path
+        state_path = Path(bound['state_dir'])/f'{offer_id}.json'
+        if not state_path.is_file():
+            raise PreparationError('R1_CAPTURED_STATE_MISSING: existing captured state is required; no bootstrap')
+        checked_path(str(state_path), 'R1_CAPTURED_STATE')
+        from shared_platform.release_control import build_release_dashboard
+        return build_release_dashboard(offer_id=offer_id, root=Path(bound['source_root']),
+            database_path=Path(bound['catalog_database']),
+            **{name:Path(bound[name]) for name in ('data_root','state_dir','source_outputs_root',
+                'content_outputs_root','release_store_path','report_store_path')})
+    return dashboard
+
+
+def _checked_cli_binding(args):
+    if args.binding_profile is None and args.binding_profile_sha256 is None:
+        return None
+    if args.binding_profile is None or args.binding_profile_sha256 is None:
+        raise PreparationError('R1_FROZEN_BINDING_REQUIRED')
+    raw = args.binding_profile.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != args.binding_profile_sha256:
+        raise PreparationError('R1_PROFILE_DIGEST_CHANGED')
+    from scripts.repo_bound_agent_entry import check_binding, check_arguments
+    bound = check_binding(args.binding_profile, 'preparation')
+    if bound['schema'] != 'orbit-agent-entry/v2' or Path(bound['source_root']) != REPO_ROOT:
+        raise PreparationError('R1_SOURCE_BINDING_MISMATCH')
+    if bound['profile_sha256'] != args.binding_profile_sha256:
+        raise PreparationError('R1_PROFILE_DIGEST_CHANGED')
+    if args.output:
+        check_arguments(bound, 'preparation', ['--output', str(args.output)])
+    return bound
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if re.fullmatch(r"[0-9]+", args.offer_id) is None:
             raise PreparationError("offer_id must contain ASCII digits only")
-        standard = _default_output_path(args.offer_id).parent
+        bound = _checked_cli_binding(args)
+        output_root = Path(bound['output_root']) if bound else None
+        standard = _default_output_path(args.offer_id, output_root).parent
+        if bound and not standard.resolve().is_relative_to(output_root):
+            raise PreparationError('ENTRY_OUTPUT_OUTSIDE_BOUND_ROOT')
         image_path = args.image_plan or (standard/'first-review-image-plan.json' if (standard/'first-review-image-plan.json').is_file() else None)
         candidate_path = args.candidate_plan or (standard/'first-review-candidate-plan.json' if (standard/'first-review-candidate-plan.json').is_file() else None)
         image_plan = (
@@ -733,13 +771,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         packet = prepare_offer(
             offer_id=args.offer_id,
+            preview_builder=_captured_preview_builder(bound) if bound else None,
             requested_targets=_parse_targets(args.targets),
             execute_miaoshou=args.execute_miaoshou,
             confirm_miaoshou_write=args.confirm_miaoshou_write,
             skip_miaoshou=args.skip_miaoshou,
             image_execution_plan=image_plan,
             candidate_plan=json.loads(candidate_path.read_text(encoding='utf-8')) if candidate_path else None,
-            category_receipt=(_read_category_reference(args.category_review, args.offer_id, _parse_targets(args.targets))
+            category_receipt=(_read_category_reference(args.category_review, args.offer_id, _parse_targets(args.targets), output_root)
                               if not args.category_observation or args.category_review else None),
             category_source_region=args.category_source_region,
             category_observation=args.category_observation,
@@ -757,7 +796,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     rendered = json.dumps(packet, ensure_ascii=False, indent=2)
-    output = args.output or _default_output_path(args.offer_id)
+    output = args.output or _default_output_path(args.offer_id, output_root)
+    if bound and not output.resolve().is_relative_to(output_root):
+        raise PreparationError('ENTRY_OUTPUT_OUTSIDE_BOUND_ROOT')
     _write_text_atomic(output, rendered + "\n")
     print(rendered)
     return 0

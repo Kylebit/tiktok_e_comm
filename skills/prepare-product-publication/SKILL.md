@@ -9,10 +9,14 @@ description: "Prepare an auditable round-1 candidate for one Product Center Offe
 
 For a direct Agent CLI, select a complete Git source and explicit settings/data/
 report profile as described in `docs/AGENT_ENTRY_BINDING.md` in that source.
-Run its `scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry preparation --check-binding`,
+Run `<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry preparation --check-binding`,
 then pass the existing arguments after `--`. A personal physical Skill copy is
 not a source root. Version 1 preserves source-relative data/reports and rejects
-independent roots; a binding check grants no business authority.
+independent roots. Version 2 supports R1 existing captured inputs with explicit
+state, data, source capture, content metadata and report paths. Missing captured
+state is BLOCKED; this mode never imports a server or collects upstream inputs.
+Its Lingshi path is metadata discovery only. Other v2 entries are unsupported.
+A binding check grants no business authority and does not prove facts ready.
 
 ## Existing-product takeover
 
@@ -64,7 +68,8 @@ Ozon from TikTok, or all stores from an Offer ID.
 Run:
 
 ```powershell
-.venv\Scripts\python.exe skills\prepare-product-publication\scripts\prepare_product_publication.py --offer-id <OFFER_ID> --targets <COMMA_SEPARATED_TARGETS>
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry preparation --check-binding
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry preparation -- --offer-id <OFFER_ID> --targets <COMMA_SEPARATED_TARGETS>
 ```
 
 When image work is in scope, create one explicit

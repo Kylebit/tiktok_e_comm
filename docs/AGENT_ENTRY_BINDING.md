@@ -1,6 +1,6 @@
 # Explicit Agent CLI binding
 
-Agents may invoke `scripts/repo_bound_agent_entry.py` from any working directory
+Agents may invoke `<SOURCE>/scripts/repo_bound_agent_entry.py` from any working directory
 using an absolute `--profile` path and one of `preparation`, `images`, `qa`, or
 `delist`. The script uses the selected complete Git root's original CLI. A
 physical copy under a personal Skill directory is not a repository source.
@@ -51,8 +51,10 @@ input paths for plans/policies. R1's existing `--output` may select a single rep
 file within the bound `output_root` but does not redirect workbench state,
 snapshots, image reports, or paid ledgers. The original standalone R1 CLI can
 select an independent single-file output; v1 rejects that path. R2/QA/delist have
-no general data/output-root or workdir argument. Root/workdir arguments passed
+no general data/output-root or workdir argument in this source revision. Root/workdir arguments passed
 after `--` are rejected by the binding entry, including `--repo-root`.
+Abbreviations that could select root/workdir/technical binding flags are rejected;
+the wrapper and R1 parsers disable argparse abbreviation.
 
 The child fixes `ORBIT_HIVE_SETTINGS` and `ORBIT_CATALOG_DATABASE` from the profile
 and discards ambient `GIT_*` checkout overrides. Existing path overrides must
@@ -79,8 +81,57 @@ process. With no explicit selection it uses this source's settings; no historica
 C-workspace fallback is shipped. Existing profit pins and Supply routing are
 separate contracts and remain unchanged.
 
-Current formal mixed-root deployment has independent configuration, catalog,
-release/report/workbench and evidence roots. This version does not redirect those
-consumers and must not be described as making the whole Agent workflow usable.
-The metadata-only entry matrix in the work package receipt identifies remaining
-consumer changes for a bounded follow-up.
+## Version 2: R1 existing captured inputs
+
+`config/agent_entry.r1-v2.example.json` describes `orbit-agent-entry/v2`.
+Only `--entry preparation` accepts v2. Images, QA and delist return
+`ENTRY_PATH_BINDING_UNSUPPORTED_V2`; use v1 only when its original layout and
+authority contract actually hold. A whole mixed-root Agent workflow is still
+unsupported. The selected R1 script and its four source consumers must declare
+`R1_PATH_BINDING_CONTRACT = "orbit-r1-paths/v2"`; AST checks these constants and
+Git verifies the files are tracked under the exact clean HEAD. Older c4/16d
+sources cannot claim this propagation merely by selecting an exact HEAD.
+
+| Field | R1 v2 propagation |
+| --- | --- |
+| `source_root`, `expected_source_head` | Exact complete clean source, original R1 CLI; same identity contract as v1 |
+| `config_root`, `settings_path` | Independent existing config directory containing selected settings; `core.config` selection/cache guards retained |
+| `data_root` | Independent captured sourcing JSON and manual-intake records |
+| `state_dir` | Independent existing workbench JSON and local SKU reservations |
+| `source_outputs_root` | Explicit existing source capture directory for sea previews/common captures; no cwd or second data-root inference |
+| `content_outputs_root` | Explicit existing `image_suite_from_miaoshou` directory for content metadata |
+| `output_root` | Existing report directory; packet and default category/image/candidate sidecars use `product-preparation/<offer>` through `publication_rounds.report_dir` |
+| `catalog_database` | Required existing catalog path used by dashboard |
+| `release_store_path` | Required existing release lineage/reservation and captured category observation database |
+| `report_store_path` | Required existing report history database, independently passed to weekly summary |
+| `workbench_store_path` | Optional existing path fixed through its established fresh-process environment contract; not consumed by this R1 dashboard and not a readiness requirement |
+| `lingshi_config_path` | Optional existing file, metadata discovery only; no configuration contents loaded or provider call, and no image/QA propagation |
+
+`config_root` is not a claim that every provider/auth configuration consumer has
+been redirected. Check-binding reads no settings contents or business DB. Its
+`field_propagation` reports the supported scope; optional discovery fields are
+explicitly marked unconsumed. No directories or databases are created to satisfy
+the check. Supplying a nonexistent optional workbench path fails; omitting it
+does not create one or assert that the formal workbench exists.
+
+Dispatch passes a SHA-256 frozen profile to the original R1 CLI, which rechecks
+the digest, exact source and environment before using scoped paths. These hidden
+technical flags cannot be supplied after the wrapper's `--`. The child fixes
+existing release/report/workbench overrides to profile paths; inherited values
+must already match them, while other unsupported path/profile overrides fail.
+Settings/catalog use the explicit profile selection as in v1. `--output` stays
+inside the bound report root. Business plan/target arguments retain their original
+meaning and authorization.
+
+R1 v2 requires an existing per-offer captured JSON state. If it is missing, the
+CLI returns `R1_CAPTURED_STATE_MISSING` and never imports server/bootstrap code.
+It reads only existing captures through scoped consumers; it does not collect
+upstream data, mutate global ROOT, generate images, write marketplace state or
+initialize workbench/release/report stores. Missing commercial facts keep the
+existing candidate blockers. Later technical freeze, R2/R3 snapshots, paid
+ledgers and provider readiness are outside this propagation package.
+
+Current formal 16d is unchanged and lacks these source capabilities. Its missing
+workbench remains missing. The metadata-only support matrix in the work package
+receipt records formal layout gaps and follow-up consumers; source tests do not
+make formal dispatch or a provider result complete.

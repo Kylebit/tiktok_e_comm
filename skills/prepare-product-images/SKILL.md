@@ -6,18 +6,31 @@ description: Consume an immutable round-1 technical snapshot and prepare auditab
 # Prepare Product Images
 
 For a direct Agent CLI, use the explicitly selected complete source's
-`scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images --check-binding`
+`<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images --check-binding`
 (`--entry qa` for automated QA), then pass the original arguments after `--`.
 See that source's `docs/AGENT_ENTRY_BINDING.md`: version 1 preserves source-relative
 config/data/reports and rejects independent roots. Personal physical copies do
 not establish source identity; the check does not grant paid or business authority.
+Version 2 currently supports only R1 captured-input preparation and rejects
+images and QA; an explicit Lingshi discovery path does not propagate their paths.
 
 Before resuming an existing product, use the selected project's commit-bound
 `scripts/publication_takeover.py` as described in
 `docs/PUBLICATION_SOURCE_CONTRACT.md`. Preserve prior paid receipts and QA;
 the read-only result never starts a new task or converts generated assets to keep.
 
-Use `scripts/prepare_product_images.py` for R2 and `scripts/run_automated_image_qa.py` for visual QA. Keep the frozen R1 product, brand, target and source identities intact. Read [the local budget and recovery contract](references/paid-recovery.md) before handling unknown results, legacy records or technical drift.
+The internal CLIs are `scripts/prepare_product_images.py` for R2 and
+`scripts/run_automated_image_qa.py` for visual QA. Direct Agent execution uses
+the selected source wrapper, with the original phase arguments after `--`:
+
+```powershell
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images --check-binding
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images -- --offer-id <OFFER_ID>
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry qa --check-binding
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry qa -- --offer-id <OFFER_ID> --model <APPROVED_MODEL> --paid-policy <EXISTING_POLICY>
+```
+
+Keep the frozen R1 product, brand, target and source identities intact. Read [the local budget and recovery contract](references/paid-recovery.md) before handling unknown results, legacy records or technical drift.
 
 ## Authority and inputs
 
@@ -31,7 +44,7 @@ The bundled `historical-autopilot-policy.example.json` is inactive source eviden
 
 1. Run with only `--offer-id` to inspect local status. Help/status do not call paid providers. Legacy UI consumers without the existing R1/budget bridge return `PAID_CONTEXT_REQUIRED` or `LEGACY_R2_BRIDGE_REQUIRED` before a provider call.
 2. Validate the frozen brand roles and reuse plan. With applicable paid authority, run `--execute-brand-generation --paid-policy <existing-policy>`. Complete source bytes and frozen facts bind the technical plan and each checkpoint. Continue through automated master-image QA; a rendered review is an audit artifact, not a human gate.
-3. Run `run_automated_image_qa.py --offer-id <id> --model <approved-model> --paid-policy <existing-policy>` for master QA. Retain raw replies, exact artifact digests and the QA receipt. Passed QA belongs only to those artifacts and that R1 snapshot.
+3. Run the wrapper with `--entry qa -- --offer-id <id> --model <approved-model> --paid-policy <existing-policy>` for master QA after binding checks. Retain raw replies, exact artifact digests and the QA receipt. Passed QA belongs only to those artifacts and that R1 snapshot.
 4. Freeze the policy-selected numbered-image scope with `--approve-translation-images <numbers> --dimension-only-images <numbers-or-none>`. The CLI defaults to the governed technical actor `orbit-product-publication-default-v1`; an explicit `--approved-by Kyle` is blocked because this command has no independent conversation-receipt binding. Existing Kyle plans retain their original bytes and digest as historical evidence, but cannot authorize new R2 paid execution without independently verifiable provenance. This runtime currently has no trusted historical approval registry or automatic successor migration, so affected products remain blocked for new paid translation work. These plans do not grant final marketplace approval. An existing plan with different scope or authority is preserved and requires an explicit successor rather than an in-place rewrite. Route locales within frozen R1 targets; dimension-only images create no translation tasks.
 5. With matching paid authority, run `--execute-paid --paid-policy <existing-policy>`. OCR, text translation and localized image generation share the product ledger with masters and QA. Empty OCR regions are reused without a paid model request.
 6. Run localized QA using the exact passed master QA receipt and current localized artifacts. Preserve failures in factual alignment, OCR language or duplication as blockers or bounded rework evidence. Passed artifacts flow to R3 candidate compilation without an intermediate approval prompt.

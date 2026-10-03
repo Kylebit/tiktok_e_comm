@@ -5287,14 +5287,19 @@ def content_package_file(offer_id_or_url: str, *, artifact_id: str = "", report:
     return candidate if candidate.is_file() else None
 
 
-def _load_source(offer_id: str) -> dict[str, Any]:
+R1_PATH_BINDING_CONTRACT = 'orbit-r1-paths/v2'
+
+
+def _load_source(offer_id: str, *, state_dir=None, data_root=None, source_outputs_root=None) -> dict[str, Any]:
     try:
-        scrape = load_scrape(offer_id)
+        scrape = load_scrape(offer_id, sourcing_dir=Path(data_root)/'sourcing') if data_root is not None else load_scrape(offer_id)
     except FileNotFoundError:
         scrape = {}
-    sea = _load_json(OUTPUTS_DIR / f"sea_pipeline_preview_{offer_id}.json") or {}
-    common = _load_json(OUTPUTS_DIR / f"miaoshou_common_collect_{offer_id}.json") or {}
-    precollect = _load_json(STATE_DIR / f"{offer_id}_miaoshou.json") or {}
+    outputs = Path(source_outputs_root) if source_outputs_root is not None else OUTPUTS_DIR
+    states = Path(state_dir) if state_dir is not None else STATE_DIR
+    sea = _load_json(outputs / f"sea_pipeline_preview_{offer_id}.json") or {}
+    common = _load_json(outputs / f"miaoshou_common_collect_{offer_id}.json") or {}
+    precollect = _load_json(states / f"{offer_id}_miaoshou.json") or {}
     return {"scrape": scrape, "sea_preview": sea, "common_collect": common, "precollect": precollect}
 
 
@@ -6047,12 +6052,14 @@ def _apply_target_price_overrides(
     return result
 
 
-def _source_summary(offer_id: str) -> dict[str, Any]:
-    state = load_state(offer_id)
+def _source_summary(offer_id: str, *, state_dir=None, data_root=None, source_outputs_root=None) -> dict[str, Any]:
+    state = load_state(offer_id, state_dir=state_dir) if state_dir is not None else load_state(offer_id)
     if (state.get('source') or {}).get('source_mode') == 'manual_intake':
         from modules.sourcing.manual_product_intake import load_manual_source
-        return load_manual_source(offer_id, root=ROOT)
-    src = _load_source(offer_id)
+        return (load_manual_source(offer_id, root=ROOT, data_root=data_root) if data_root is not None
+                else load_manual_source(offer_id, root=ROOT))
+    src = (_load_source(offer_id, state_dir=state_dir, data_root=data_root, source_outputs_root=source_outputs_root)
+           if any(value is not None for value in (state_dir,data_root,source_outputs_root)) else _load_source(offer_id))
     scrape = src["scrape"]
     sea = src["sea_preview"]
     precollect = src["precollect"]

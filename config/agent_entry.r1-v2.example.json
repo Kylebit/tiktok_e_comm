@@ -1,0 +1,17 @@
+{
+  "schema": "orbit-agent-entry/v2",
+  "source_root": "E:/OrbitHive/selected-complete-source",
+  "expected_source_head": "0000000000000000000000000000000000000000",
+  "settings_path": "D:/OrbitHive/selected-configuration/config/settings.json",
+  "config_root": "D:/OrbitHive/selected-configuration/config",
+  "data_root": "D:/OrbitHive/selected-captured-inputs/data",
+  "state_dir": "D:/OrbitHive/selected-captured-inputs/data/new_product_workbench",
+  "source_outputs_root": "D:/OrbitHive/selected-source-captures/outputs",
+  "content_outputs_root": "D:/OrbitHive/selected-content/outputs/image_suite_from_miaoshou",
+  "output_root": "D:/OrbitHive/selected-report-evidence/reports",
+  "catalog_database": "D:/OrbitHive/selected-catalog/catalog.db",
+  "release_store_path": "D:/OrbitHive/selected-release-ledger/data/orbit_platform.db",
+  "report_store_path": "D:/OrbitHive/selected-report-history/data/orbit_platform.db",
+  "workbench_store_path": null,
+  "lingshi_config_path": null
+}

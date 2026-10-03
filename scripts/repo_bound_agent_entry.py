@@ -1,12 +1,13 @@
 """Check an explicit Agent CLI profile before dispatching an original entry.
 
 Only the standard library and Git metadata are used during check-binding.
-Version 1 deliberately preserves source-relative config/data/report layouts.
+Version 1 preserves source-relative layouts; version 2 scopes captured R1 inputs.
 """
 from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,11 @@ SOURCE_FILES = ('core/config.py', 'core/db.py',
                 'modules/sourcing/new_product_workbench.py',
                 'shared_platform/publication_rounds.py')
 SETTINGS_CONTRACT = 'orbit-settings-binding/v1'
+R1_CONTRACT = 'orbit-r1-paths/v2'
+AGENT_ENTRY_BINDING_CONTRACT = 'orbit-agent-entry/v2'
+R1_CONTRACT_FILES = ('modules/sourcing/new_product_workbench.py',
+    'modules/sourcing/pipeline.py', 'modules/sourcing/manual_product_intake.py',
+    'shared_platform/release_control.py', ENTRIES['preparation'])
 ROOT_ARGUMENTS = frozenset({'--repo-root', '--root', '--source-root', '--config-root',
     '--data-root', '--output-root', '--reports-root', '--workdir', '--cwd', '--project-root'})
 
@@ -56,20 +62,25 @@ def git(root, *arguments):
     return result.stdout.strip()
 
 
-def source_settings_contract(root):
+def source_constant_contract(path, name, expected, error):
     try:
-        module = ast.parse((root/'core/config.py').read_text(encoding='utf-8-sig'))
+        module = ast.parse(path.read_text(encoding='utf-8-sig'))
     except (OSError, ValueError, SyntaxError):
-        raise ValueError('SOURCE_SETTINGS_BINDING_CAPABILITY_MISSING') from None
+        raise ValueError(error) from None
     values = [node.value.value for node in module.body
               if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
-              and any(isinstance(target, ast.Name) and target.id == 'SETTINGS_BINDING_CONTRACT'
+              and any(isinstance(target, ast.Name) and target.id == name
                       for target in node.targets)]
-    if values != [SETTINGS_CONTRACT]:
-        raise ValueError('SOURCE_SETTINGS_BINDING_CAPABILITY_MISSING')
+    if values != [expected]:
+        raise ValueError(error)
 
 
-def check_environment(root):
+def source_settings_contract(root):
+    source_constant_contract(root/'core/config.py', 'SETTINGS_BINDING_CONTRACT',
+                            SETTINGS_CONTRACT, 'SOURCE_SETTINGS_BINDING_CAPABILITY_MISSING')
+
+
+def check_environment(root, scoped=None):
     # Existing consumer overrides, derived from their current source defaults.
     # Settings/catalog are fixed from the profile in the child, never inherited.
     defaults = {'ORBIT_WORKBENCH_STORE_PATH':root/'data/orbit_workbench.db',
@@ -80,6 +91,11 @@ def check_environment(root):
     relative = {'ORBIT_R3_POLICY_PATH':'config/product_publication_autopilot_policy.json',
                 'ORBIT_R3_INCIDENT_REGISTRY_PATH':'skills/publish-approved-product/references/incident-registry.json'}
     fixed = {'ORBIT_HIVE_SETTINGS', 'ORBIT_CATALOG_DATABASE'}
+    if scoped:
+        defaults.update({'ORBIT_RELEASE_STORE_PATH':Path(scoped['release_store_path']),
+                         'ORBIT_REPORT_STORE_PATH':Path(scoped['report_store_path'])})
+        if scoped.get('workbench_store_path'):
+            defaults['ORBIT_WORKBENCH_STORE_PATH'] = Path(scoped['workbench_store_path'])
     for key, value in os.environ.items():
         if not value or key in fixed:
             continue
@@ -93,20 +109,29 @@ def check_environment(root):
         elif key.startswith('ORBIT_') and key.endswith(('_ROOT', '_PATH', '_DATABASE', '_PROFILE')):
             # These runtime/provider/evidence/authority overrides are not covered
             # by v1. Preserve them by rejecting, never silently clear them.
-            raise ValueError('ENV_BINDING_UNSUPPORTED_V1: ' + key)
-    return {'profile_fixed': sorted(fixed), 'must_match_source_defaults': sorted(defaults),
+            raise ValueError(('ENV_BINDING_UNSUPPORTED_V2: ' if scoped else 'ENV_BINDING_UNSUPPORTED_V1: ') + key)
+    profile_overrides = {'ORBIT_RELEASE_STORE_PATH','ORBIT_REPORT_STORE_PATH'} if scoped else set()
+    if scoped and scoped.get('workbench_store_path'):
+        profile_overrides.add('ORBIT_WORKBENCH_STORE_PATH')
+    return {'profile_fixed': sorted(fixed | profile_overrides),
+            'must_match_source_defaults': sorted(set(defaults)-profile_overrides),
+            'must_match_profile': sorted(profile_overrides),
             'must_match_relative_defaults': sorted(relative),
-            'other_orbit_path_overrides': 'rejected; no independent-root support in v1'}
+            'other_orbit_path_overrides': 'rejected'}
 
 
 def check_arguments(bound, entry, arguments):
     for index, value in enumerate(arguments):
         option, separator, supplied = value.partition('=')
-        if option in ROOT_ARGUMENTS:
-            raise ValueError('ENTRY_ROOT_ARGUMENT_UNSUPPORTED_V1: ' + option)
+        output_alias = entry == 'preparation' and option.startswith('--o') and '--output'.startswith(option)
+        forbidden = ROOT_ARGUMENTS | {'--binding-profile', '--binding-profile-sha256'}
+        if option in forbidden or (option.startswith('--') and len(option)>2 and
+                any(flag.startswith(option) for flag in forbidden) and
+                not (output_alias and (bound['schema'].endswith('/v1') or option=='--output'))):
+            raise ValueError('ENTRY_ROOT_ARGUMENT_UNSUPPORTED: ' + option)
         # argparse accepts abbreviations. For R1, guard every output spelling
         # that the original parser can resolve to --output.
-        if entry == 'preparation' and option.startswith('--o') and '--output'.startswith(option):
+        if output_alias:
             if not separator:
                 if index + 1 >= len(arguments):
                     raise ValueError('ENTRY_OUTPUT_PATH_REQUIRED')
@@ -121,32 +146,63 @@ def check_arguments(bound, entry, arguments):
 def check_binding(profile_path, entry):
     path = checked_path(str(profile_path), 'PROFILE')
     try:
-        profile = json.loads(path.read_text(encoding='utf-8'))
+        raw = path.read_bytes()
+        profile = json.loads(raw.decode('utf-8'))
     except (ValueError, UnicodeError):
         raise ValueError('PROFILE_INVALID_JSON') from None
-    if not isinstance(profile, dict) or profile.get('schema') != 'orbit-agent-entry/v1':
+    if not isinstance(profile, dict) or profile.get('schema') not in ('orbit-agent-entry/v1','orbit-agent-entry/v2'):
         raise ValueError('PROFILE_SCHEMA_INVALID')
+    v2 = profile['schema'] == 'orbit-agent-entry/v2'
+    if v2 and entry != 'preparation':
+        raise ValueError('ENTRY_PATH_BINDING_UNSUPPORTED_V2: ' + entry)
+    if v2:
+        allowed = {'schema','source_root','expected_source_head','settings_path','config_root',
+            'data_root','output_root','catalog_database','state_dir','source_outputs_root',
+            'content_outputs_root','release_store_path','report_store_path',
+            'workbench_store_path','lingshi_config_path'}
+        unknown = set(profile)-allowed
+        if unknown:
+            raise ValueError('PROFILE_FIELD_UNSUPPORTED_V2: ' + ','.join(sorted(unknown)))
     root = checked_path(profile.get('source_root'), 'SOURCE_ROOT', directory=True)
     settings = checked_path(profile.get('settings_path'), 'SETTINGS_PATH')
     config = checked_path(profile.get('config_root'), 'CONFIG_ROOT', directory=True)
     data = checked_path(profile.get('data_root'), 'DATA_ROOT', directory=True)
     output = checked_path(profile.get('output_root'), 'OUTPUT_ROOT', directory=True)
     database = None
-    if entry == 'delist' or profile.get('catalog_database') is not None:
+    if v2 or entry == 'delist' or profile.get('catalog_database') is not None:
         database = checked_path(profile.get('catalog_database'), 'CATALOG_DATABASE')
     # These layouts are used by existing producer/consumer defaults. Reject
     # unsupported separation rather than pretending to redirect every consumer.
     for actual, expected, name in ((config, root/'config', 'CONFIG'),
                                    (data, root/'data', 'DATA'),
                                    (output, root/'reports', 'OUTPUT')):
-        if actual != expected.resolve():
+        if not v2 and actual != expected.resolve():
             raise ValueError('SEPARATE_' + name + '_ROOT_UNSUPPORTED_V1')
+    scoped = {}
+    if v2:
+        if not settings.is_relative_to(config):
+            raise ValueError('SETTINGS_OUTSIDE_CONFIG_ROOT_V2')
+        for name in ('state_dir','source_outputs_root','content_outputs_root',
+                     'release_store_path','report_store_path','workbench_store_path','lingshi_config_path'):
+            if name in ('workbench_store_path','lingshi_config_path') and profile.get(name) is None:
+                continue
+            scoped[name] = str(checked_path(profile.get(name), name.upper(),
+                directory=name in ('state_dir','source_outputs_root','content_outputs_root')))
     if not all((root/name).is_file() for name in SOURCE_FILES):
         raise ValueError('COMPLETE_AGENT_SOURCE_REQUIRED')
     for relative in SOURCE_FILES:
         checked_path(str(root/relative), 'SOURCE_FILE')
     source_settings_contract(root)
-    environment = check_environment(root)
+    if v2:
+        for relative in R1_CONTRACT_FILES:
+            checked_path(str(root/relative), 'R1_SOURCE_FILE')
+            source_constant_contract(root/relative, 'R1_PATH_BINDING_CONTRACT', R1_CONTRACT,
+                                     'SOURCE_R1_PATH_BINDING_CAPABILITY_MISSING: '+relative)
+        checker = checked_path(str(root/'scripts/repo_bound_agent_entry.py'), 'SOURCE_ENTRY_CHECKER')
+        source_constant_contract(checker, 'AGENT_ENTRY_BINDING_CONTRACT', 'orbit-agent-entry/v2',
+                                 'SOURCE_ENTRY_CHECKER_CAPABILITY_MISSING_V2')
+        git(root, 'ls-files', '--error-unmatch', '--', *R1_CONTRACT_FILES, 'scripts/repo_bound_agent_entry.py')
+    environment = check_environment(root, scoped if v2 else None)
     target = checked_path(str(root/ENTRIES[entry]), 'ENTRY')
     if not target.is_relative_to(root):
         raise ValueError('ENTRY_OUTSIDE_SOURCE')
@@ -161,7 +217,8 @@ def check_binding(profile_path, entry):
         raise ValueError('SOURCE_HEAD_MISMATCH')
     if git(root, 'status', '--porcelain=v1', '-uall'):
         raise ValueError('SOURCE_DIRTY')
-    return {'status': 'AGENT_ENTRY_LAYOUT_BINDING_VALIDATED', 'schema': profile['schema'],
+    result = {'status': 'AGENT_ENTRY_LAYOUT_BINDING_VALIDATED', 'schema': profile['schema'],
+            'profile_path':str(path), 'profile_sha256':hashlib.sha256(raw).hexdigest(),
             'source_root': str(root), 'source_head': head, 'entry': str(target),
             'settings_path': str(settings), 'config_root': str(config),
             'data_root': str(data), 'output_root': str(output),
@@ -172,10 +229,28 @@ def check_binding(profile_path, entry):
             'dispatch_preflight': 'path metadata and clean Git identity only; domain inputs/authority not checked',
             'domain_imported': False, 'sql_connections': 0, 'provider_calls': 0,
             'business_calls': 0, 'auth_writes': 0, 'paid_calls': 0}
+    if v2:
+        result.update(scoped)
+        result.update({'supported_layout':'R1 existing captured inputs only; independent explicit roots',
+            'separate_data_output_supported':True, 'r1_path_binding_contract':R1_CONTRACT,
+            'dispatch_preflight':'layout/source only; per-offer captured state and domain validity checked on dispatch',
+            'field_propagation':{name:{'supported':True,'scope':scope} for name,scope in {
+                'source_root':'exact source script', 'expected_source_head':'exact clean Git identity',
+                'settings_path':'core.config explicit selection',
+                'config_root':'settings containment and optional configuration discovery only',
+                'data_root':'sourcing and manual intake reads', 'state_dir':'workbench and SKU reservation reads',
+                'source_outputs_root':'source capture reads', 'content_outputs_root':'content metadata reads',
+                'output_root':'R1 packet and sidecar defaults', 'catalog_database':'catalog reads',
+                'release_store_path':'release lineage and category observation reads',
+                'report_store_path':'weekly report history reads'}.items()}})
+        result['field_propagation']['workbench_store_path'] = {'supported':False,
+            'scope':'optional existing path fixed in child environment; not consumed by R1 dashboard'}
+        result['field_propagation']['lingshi_config_path'] = {'supported':False,'scope':'metadata discovery only'}
+    return result
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('--profile', type=Path, required=True)
     parser.add_argument('--entry', choices=ENTRIES, required=True)
     parser.add_argument('--check-binding', action='store_true')
@@ -204,6 +279,14 @@ def main(argv=None):
         env['ORBIT_CATALOG_DATABASE'] = bound['catalog_database']
     else:
         env.pop('ORBIT_CATALOG_DATABASE', None)
+    if bound['schema'] == 'orbit-agent-entry/v2':
+        for key,field in (('ORBIT_RELEASE_STORE_PATH','release_store_path'),
+                          ('ORBIT_REPORT_STORE_PATH','report_store_path'),
+                          ('ORBIT_WORKBENCH_STORE_PATH','workbench_store_path')):
+            if bound.get(field):
+                env[key] = bound[field]
+        arguments = [*arguments, '--binding-profile', bound['profile_path'],
+                     '--binding-profile-sha256', bound['profile_sha256']]
     # subprocess list quoting preserves spaces/backslashes in argv on Windows;
     # os.execve's CRT path can split an argument containing spaces.
     return subprocess.call([sys.executable, '-I', '-B', bound['entry'], *arguments],

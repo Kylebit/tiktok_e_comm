@@ -242,10 +242,14 @@ def resolve_manual_intake_image(offer_id, image_name, *, root=ROOT):
         return None
 
 
-def load_manual_source(offer_id, *, root=ROOT):
+R1_PATH_BINDING_CONTRACT = 'orbit-r1-paths/v2'
+
+
+def load_manual_source(offer_id, *, root=ROOT, data_root=None):
     if not isinstance(offer_id,str) or not re.fullmatch(r'[0-9]{1,32}',offer_id):
         raise ManualIntakeError('invalid local identity')
-    record = _read(_safe(root, f'data/product_intake/{offer_id}/record.json'))
+    record = _read(_safe(data_root, f'product_intake/{offer_id}/record.json') if data_root is not None
+                   else _safe(root, f'data/product_intake/{offer_id}/record.json'))
     if record.get('offer_id') != offer_id or record.get('source_authority') != 'manual-intake':
         raise ManualIntakeError('manual source record identity conflicts')
     return deepcopy(_projections(record)[f'{offer_id}.json']['source'])

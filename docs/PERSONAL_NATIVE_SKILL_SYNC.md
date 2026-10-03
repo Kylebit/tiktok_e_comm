@@ -8,7 +8,7 @@
 
 真实 slug 是 `manage-profit-settlement`。个人目录当前缺失。其原 scripts/profit_report.py、月度 builder 必须找到父链 `domains/data_operations/profit_settlement`，整树 copy 到个人目录不能提供这个条件。
 
-可用的最小个人安装方案是将这个新 slug 建为同 Windows 用户可核验的 Junction，明确指向选定完整 runtime 的 `domains/data_operations/skills/manage-profit-settlement`，安装前核目标完整 SHA、目录身份与个人目标不存在，保留 junction 原路径/Target 回执。这样原脚本的 resolve() 才落回完整领域工程。当前正式16d源正在使用必须保留，不自动归档。这是已准备的安装方案，尚未创建该个人 junction；不宣称利润个人 Skill 已安装。
+可用的最小个人安装方案是将这个新 slug 建为同 Windows 用户可核验的 Junction，明确指向选定完整 runtime 的 `domains/data_operations/skills/manage-profit-settlement`，安装前核目标完整 SHA、目录身份与个人目标不存在，保留 junction 原路径/Target 回执。这样原脚本的 resolve() 才落回完整领域工程。当前正式16d源正在使用必须保留，不自动归档。2026-10-03 已按此方案实际创建新个人 Junction，完整21文件 raw/normalized 与冻结16d匹配，原入口 resolve() 与父链均落回完整16d工程；未导入域/provider或执行利润任务。回滚仅移除此新 Junction，不能递归删除其目标。
 
 仓库中的 `scripts/repo_bound_profit_entry.py` 已提供真正可调用入口：`--runtime-root` 与 `--expected-runtime-file-sha` 必须明确提供；`--check-binding` 仅文件核验，完全不导入域/provider。入口只选择原 report、TikTok monthly、Shopee monthly、weekly 脚本，并将显式参数原样交给原脚本；不自动计算/批准、不补月份/店铺/成本/FX，不授新历史任务权。
 

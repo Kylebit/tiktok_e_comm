@@ -5,15 +5,18 @@ ENTRIES={'report':'profit_report.py','tiktok-monthly':'build_tiktok_monthly_from
 def main():
  p=argparse.ArgumentParser();p.add_argument('--runtime-root',type=Path,required=True);p.add_argument('--expected-runtime-file-sha',required=True);p.add_argument('--entry',choices=ENTRIES,default='report');p.add_argument('--check-binding',action='store_true');p.add_argument('arguments',nargs=argparse.REMAINDER);a=p.parse_args()
  root=a.runtime_root
- assert root.is_absolute()
+ if not root.is_absolute():raise SystemExit('ABSOLUTE_RUNTIME_REQUIRED')
  for x in(root,*root.parents):
-  if x.exists():assert not stat.S_ISLNK(x.lstat().st_mode) and not getattr(x.lstat(),'st_file_attributes',0)&0x400
- manifest=root/'config/tool_runtime_manifest.json';assert hashlib.sha256(manifest.read_bytes()).hexdigest()==a.expected_runtime_file_sha
- assert json.loads(manifest.read_text(encoding='utf8'))['schema']=='orbit-tool-runtime/v1'
- domain=root/'domains/data_operations/profit_settlement';assert (domain/'cli.py').is_file()
- target=root/'domains/data_operations/skills/manage-profit-settlement/scripts'/ENTRIES[a.entry];assert target.is_file()
+  if x.exists() and (stat.S_ISLNK(x.lstat().st_mode) or getattr(x.lstat(),'st_file_attributes',0)&0x400):raise SystemExit('RUNTIME_REPARSE_REJECTED')
+ manifest=root/'config/tool_runtime_manifest.json'
+ if hashlib.sha256(manifest.read_bytes()).hexdigest()!=a.expected_runtime_file_sha:raise SystemExit('RUNTIME_MANIFEST_CHANGED')
+ if json.loads(manifest.read_text(encoding='utf8')).get('schema')!='orbit-tool-runtime/v1':raise SystemExit('RUNTIME_MANIFEST_SCHEMA_INVALID')
+ domain=root/'domains/data_operations/profit_settlement'
+ if not (domain/'cli.py').is_file():raise SystemExit('COMPLETE_PROFIT_DOMAIN_REQUIRED')
+ target=root/'domains/data_operations/skills/manage-profit-settlement/scripts'/ENTRIES[a.entry]
+ if not target.is_file():raise SystemExit('ORIGINAL_PROFIT_ENTRY_MISSING')
  # Original wrappers resolve their actual full-repository parent themselves.
- assert target.resolve().is_relative_to(root.resolve())
+ if not target.resolve().is_relative_to(root.resolve()):raise SystemExit('PROFIT_ENTRY_OUTSIDE_RUNTIME')
  if a.check_binding:
   print(json.dumps({'status':'REPO_BOUND_ENTRY_RESOLVES','runtime_root':str(root),'entry':str(target),'entry_sha256':hashlib.sha256(target.read_bytes()).hexdigest(),'domain_imported':False,'provider_calls':0,'business_calls':0}));return
  args=a.arguments

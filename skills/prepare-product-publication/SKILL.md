@@ -103,8 +103,11 @@ rejects a missing or changed policy. Never map the legacy
 `stock_per_model_sku` field to this policy or silently rewrite an approved
 snapshot; a different quantity needs a separately reviewed contract.
 
-If no local workbench exists, the client may perform the existing upstream
+Only the original entry and Version 1 retain the existing bootstrap contract:
+if no local workbench exists, the client may perform the existing upstream
 read and a local workbench-state write once. These are not provider mutations.
+Version 2 requires existing captured state; if it is missing, stop with
+`R1_CAPTURED_STATE_MISSING` without reading upstream or creating state.
 If requested targets are missing, return `DECISION_REQUIRED`; never silently
 restore defaults.
 

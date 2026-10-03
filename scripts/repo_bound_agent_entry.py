@@ -123,15 +123,14 @@ def check_environment(root, scoped=None):
 def check_arguments(bound, entry, arguments):
     for index, value in enumerate(arguments):
         option, separator, supplied = value.partition('=')
-        output_alias = entry == 'preparation' and option.startswith('--o') and '--output'.startswith(option)
+        output_option = entry == 'preparation' and option == '--output'
         forbidden = ROOT_ARGUMENTS | {'--binding-profile', '--binding-profile-sha256'}
         if option in forbidden or (option.startswith('--') and len(option)>2 and
                 any(flag.startswith(option) for flag in forbidden) and
-                not (output_alias and (bound['schema'].endswith('/v1') or option=='--output'))):
+                not output_option):
             raise ValueError('ENTRY_ROOT_ARGUMENT_UNSUPPORTED: ' + option)
-        # argparse accepts abbreviations. For R1, guard every output spelling
-        # that the original parser can resolve to --output.
-        if output_alias:
+        # R1 disables argparse abbreviation; metadata accepts the same full flag.
+        if output_option:
             if not separator:
                 if index + 1 >= len(arguments):
                     raise ValueError('ENTRY_OUTPUT_PATH_REQUIRED')

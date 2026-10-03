@@ -330,3 +330,88 @@ def test_cli_requires_execute_and_exact_plan_id() -> None:
             platform="tiktok",
             request=lambda *_args, **_kwargs: pytest.fail("must not call HTTP"),
         )
+
+
+def test_target_scoped_recovery_requires_one_matching_platform() -> None:
+    never = lambda *_args, **_kwargs: pytest.fail("must not call HTTP")
+
+    with pytest.raises(ValueError, match="one platform"):
+        publication.run_publication(
+            offer_id=OFFER_ID,
+            plan_id=PLAN_ID,
+            platform="all",
+            target_scope=("tiktok:MX",),
+            request=never,
+        )
+    with pytest.raises(ValueError, match="selected platform"):
+        publication.run_publication(
+            offer_id=OFFER_ID,
+            plan_id=PLAN_ID,
+            platform="tiktok",
+            target_scope=("shopee:PH",),
+            request=never,
+        )
+    with pytest.raises(ValueError, match="unique"):
+        publication.run_publication(
+            offer_id=OFFER_ID,
+            plan_id=PLAN_ID,
+            platform="tiktok",
+            target_scope=("tiktok:MX", "tiktok:MX"),
+            request=never,
+        )
+
+
+def test_retry_requires_target_scope_and_forwards_exact_run_id() -> None:
+    retry_run_id = "product-center-ozon-prior-zero-write"
+
+    with pytest.raises(ValueError, match="target-scoped single-platform"):
+        publication.run_publication(
+            offer_id=OFFER_ID,
+            plan_id=PLAN_ID,
+            platform="ozon",
+            retry_of_run_id=retry_run_id,
+            request=lambda *_args, **_kwargs: pytest.fail("must not call HTTP"),
+        )
+
+    calls: list[dict | None] = []
+
+    def request(url: str, *, payload=None, timeout_seconds=0):
+        del timeout_seconds
+        calls.append(payload)
+        if payload is not None:
+            assert url.endswith("/publish-ozon")
+            assert payload == {
+                "offer_id": OFFER_ID,
+                "plan_id": PLAN_ID,
+                "target_scope": ["ozon:RU"],
+                "retry_of_run_id": retry_run_id,
+            }
+            return _start("OZON", "product-center-ozon-exact-retry")
+        return _report("OZON", "product-center-ozon-exact-retry", "FAILED")
+
+    result = publication.run_publication(
+        offer_id=OFFER_ID,
+        plan_id=PLAN_ID,
+        platform="ozon",
+        target_scope=("ozon:RU",),
+        retry_of_run_id=retry_run_id,
+        request=request,
+        poll_interval_seconds=0.01,
+        poll_timeout_seconds=1,
+    )
+
+    assert result["platforms"][0]["run_id"] == "product-center-ozon-exact-retry"
+    assert sum(payload is not None for payload in calls) == 1
+
+
+def test_retry_rejects_unsafe_or_ambiguous_run_id_before_http() -> None:
+    for invalid in ("", " prior", "prior/run", "x" * 129):
+        with pytest.raises(ValueError, match="exact safe run id"):
+            publication.run_publication(
+                offer_id=OFFER_ID,
+                plan_id=PLAN_ID,
+                platform="shopee",
+                target_scope=("shopee:PH",),
+                retry_of_run_id=invalid,
+                request=lambda *_args, **_kwargs: pytest.fail("must not call HTTP"),
+            )

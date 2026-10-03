@@ -71,6 +71,25 @@ class SkillArchitectureTests(unittest.TestCase):
             source = (SCRIPTS / name).read_text(encoding="utf-8")
             self.assertIn("DEPRECATED COMPATIBILITY", source, name)
 
+    def test_chinese_mirror_preserves_single_final_review_contract(self) -> None:
+        chinese = (ROOT / "references" / "SKILL.zh-CN.md").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "唯一一次最终审核与独立执行",
+            "不得因为进入新的会话",
+            "再次要求同一份批准",
+            "各目标店铺都是独立任务",
+            "不得阻止其他",
+            "final-publication-approval/v1",
+        ):
+            self.assertIn(required, chinese)
+
+    def test_default_repo_is_derived_from_the_skill_checkout(self) -> None:
+        common = (SCRIPTS / "_common.py").read_text(encoding="utf-8")
+        self.assertIn("Path(__file__).resolve().parents[3]", common)
+        self.assertNotIn("Desktop\\\\Agent_PR\\\\tiktok_e_comm", common)
+
     def test_nine_thin_tools_exist(self) -> None:
         self.assertEqual(
             [name for name in REQUIRED_TOOLS if not (SCRIPTS / name).is_file()],
@@ -274,17 +293,19 @@ class SkillArchitectureTests(unittest.TestCase):
             encoding="utf-8"
         )
         for text in (shopee, incidents):
+            normalized = " ".join(text.split()).casefold()
             self.assertIn(
                 "omit `item_name` and `description`",
-                text.casefold(),
+                normalized,
             )
             for required in (
-                "English for PH/MY",
-                "Thai for TH",
-                "Vietnamese for VN",
+                "english only for ph",
+                "malay for my",
+                "thai for th",
+                "vietnamese for vn",
                 "duplicate",
             ):
-                self.assertIn(required, text)
+                self.assertIn(required, normalized)
         for required in (
             "不得主动发送",
             "TH 必须回读为泰语",

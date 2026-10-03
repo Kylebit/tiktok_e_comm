@@ -310,14 +310,16 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     """Replace one JSON file atomically so restarts cannot leave a partial file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    claimed = False
     try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            claimed = True
             json.dump(payload, handle, ensure_ascii=False, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
-        if temporary.exists():
+        if claimed and temporary.exists():
             temporary.unlink(missing_ok=True)
 
 
@@ -842,8 +844,8 @@ def _dedupe_urls(urls: list[str]) -> list[str]:
     return out
 
 
-def load_state(offer_id: str) -> dict[str, Any]:
-    state = _load_json(_state_path(offer_id)) or {}
+def load_state(offer_id: str, *, state_dir: Path | None = None) -> dict[str, Any]:
+    state = _load_json(_state_path(offer_id) if state_dir is None else Path(state_dir) / f"{offer_id}.json") or {}
     state["_revision"] = max(0, int(state.get("_revision") or 0))
     return state
 
@@ -908,7 +910,7 @@ def _mirror_content_state_to_collect_box_owner(
         _write_json_atomic(_state_path(owner_id), owner)
 
 
-def save_state(offer_id: str, state: dict[str, Any]) -> dict[str, Any]:
+def save_state(offer_id: str, state: dict[str, Any], *, mirror_content: bool = True) -> dict[str, Any]:
     with _state_write_lock(offer_id):
         current = _load_json(_state_path(offer_id)) or {}
         current_revision = max(0, int(current.get("_revision") or 0))
@@ -919,7 +921,8 @@ def save_state(offer_id: str, state: dict[str, Any]) -> dict[str, Any]:
         state["updated_at"] = _now()
         state["_revision"] = current_revision + 1
         _write_json_atomic(_state_path(offer_id), state)
-    _mirror_content_state_to_collect_box_owner(offer_id, state)
+    if mirror_content:
+        _mirror_content_state_to_collect_box_owner(offer_id, state)
     return state
 
 
@@ -1182,12 +1185,20 @@ def generate_localized_image_review(
     ocr_engine=None,
     model_call=None,
     image_generator=None,
+    paid_context=None,
+    approved_bridge=None,
 ) -> dict[str, Any]:
     """Generate every pending locale image; never publish or alter a ReleasePlan."""
+    from shared_platform.publication_paid_requests import require_paid_context, legacy_consumer_binding, PaidRequestBlocked
+    governed = True
+    if governed:
+        require_paid_context(paid_context)
+        if not isinstance(approved_bridge,dict):
+            raise PaidRequestBlocked('LEGACY_R2_BRIDGE_REQUIRED: existing UI awaits approved input and budget wiring')
 
     from modules.sourcing.localized_image_auto_translation import translate_image_regions
     from modules.sourcing.localized_image_ocr import detect_english_text_regions
-    from modules.sourcing.localized_image_toapis_generation import (
+    from modules.sourcing.localized_image_lingshi_generation import (
         generate_localized_reference_image,
     )
 
@@ -1208,11 +1219,26 @@ def generate_localized_image_review(
         row for row in project.get("tasks") or []
         if row.get("status") in {"PENDING_GENERATION", "RETRY_REQUESTED"}
     ]
+    if approved_bridge.get('legacy_snapshot_digest')!=project.get('approved_snapshot_digest'):
+        raise PaidRequestBlocked('legacy bridge does not bind the existing approved review input')
+    for task in pending:
+        if task.get('status')=='RETRY_REQUESTED' and not any(row.get('source_url')==task['source_url'] and row.get('locale')==task['locale'] and row.get('rework_basis') for row in approved_bridge.get('tasks') or []):
+            raise PaidRequestBlocked('LEGACY_REWORK_BRIDGE_REQUIRED: bind old artifact/task and existing rework intent before retry')
     if not pending:
         return localized_image_review_summary(offer_id)
     source_urls = list(dict.fromkeys(str(row["source_url"]) for row in pending))
     if set(source_bytes_by_url) != set(source_urls):
         raise ValueError("selected source image bytes are incomplete")
+    if governed:
+        legacy_root=LOCALIZED_IMAGE_REVIEWS_DIR/offer_id/'toapis-generation'
+        if legacy_root.exists() and any(legacy_root.iterdir()):
+            raise PaidRequestBlocked('LEGACY_PROVIDER_RECONCILIATION_REQUIRED: preserved ToAPI checkpoints must be mapped; changing folders is not migration')
+        for url,raw in source_bytes_by_url.items():
+            binding=legacy_consumer_binding(paid_context,offer_id=offer_id,bridge=approved_bridge,source_url=url)
+            row=next(r for r in approved_bridge['tasks'] if r['source_url']==url)
+            if hashlib.sha256(raw).hexdigest()!=str(row['source_digest']).removeprefix('sha256:'):
+                raise PaidRequestBlocked('legacy approved source bytes changed')
+        paid_context.ensure_ready()
     generator = image_generator or generate_localized_reference_image
 
     # Freeze OCR/model output before the first paid image request.  Translation
@@ -1271,7 +1297,8 @@ def generate_localized_image_review(
             if not regions:
                 raise ValueError("selected localized image has no detected English text")
             translated = (
-                translate_image_regions(regions)
+                translate_image_regions(regions, paid_context=paid_context,
+                    business_identity=legacy_consumer_binding(paid_context,offer_id=offer_id,bridge=approved_bridge,source_url=source_url))
                 if model_call is None
                 else translate_image_regions(regions, model_call=model_call)
             )
@@ -1288,6 +1315,7 @@ def generate_localized_image_review(
                         "source_digest": hashlib.sha256(source_bytes).hexdigest(),
                         "locale": locale,
                         "translations": [dict(row) for row in translations],
+                        "translation_receipt":dict(translated['receipt']),
                     }
                 )
         if {row["task_id"] for row in frozen_tasks} != {
@@ -1333,14 +1361,27 @@ def generate_localized_image_review(
         translations = frozen.get("translations")
         if not isinstance(translations, list) or not translations:
             raise ValueError("localized translation plan is incomplete")
+        from modules.sourcing import localized_image_auto_translation as translator
+        text_receipt=frozen.get('translation_receipt') or {}
+        text_business=legacy_consumer_binding(paid_context,offer_id=offer_id,bridge=approved_bridge,source_url=source_url)
+        paid_context.validate_receipt_binding(text_receipt.get('paid_request'),purpose='image_translation',business=text_business,model=translator.MODEL)
+        raw=paid_context._raw(text_receipt['paid_request']['key'])
+        content=((raw.get('choices') or [{}])[0].get('message') or {}).get('content') if raw else None
+        source_rows=translator._source_rows(translations)
+        if (text_receipt.get('source_digest')!=translator._digest(source_rows)
+                or translator._validated_translations(translator._json_object(content),source_rows)[task['locale']]!=translations):
+            raise PaidRequestBlocked('frozen translations differ from their durable paid raw response')
         generated = generator(
             source_url=source_url,
             source_bytes=source_bytes,
             locale=str(task["locale"]),
             translations=translations,
             checkpoint_dir=(
-                LOCALIZED_IMAGE_REVIEWS_DIR / offer_id / "toapis-generation"
+                LOCALIZED_IMAGE_REVIEWS_DIR / offer_id / "lingshi-generation"
             ),
+            **({'paid_context':paid_context,'business_identity':legacy_consumer_binding(paid_context,
+                offer_id=offer_id,bridge=approved_bridge,source_url=source_url,locale=str(task['locale']))} if governed else {}),
+            **({'rework_basis':next(row['rework_basis'] for row in approved_bridge['tasks'] if row['source_url']==source_url and row['locale']==task['locale'])} if task.get('status')=='RETRY_REQUESTED' else {}),
         )
         items.append(
             {
@@ -1351,7 +1392,7 @@ def generate_localized_image_review(
             }
         )
     store.save_generation_bundle(
-        offer_id, expected_revision=expected, items=items
+        offer_id, expected_revision=expected, items=items,paid_context=paid_context,approved_bridge=approved_bridge
     )
     return localized_image_review_summary(offer_id)
 
@@ -1596,13 +1637,21 @@ def auto_translate_localized_images(
     model_call=None,
     image_generator=None,
     confirm_paid_generation: bool = False,
+    paid_context=None,
+    approved_bridge=None,
 ) -> dict[str, Any]:
     """Translate text and generate localized reference images without platform writes."""
+    from shared_platform.publication_paid_requests import require_paid_context, legacy_consumer_binding, PaidRequestBlocked
+    governed = True
+    if governed:
+        require_paid_context(paid_context)
+        if not isinstance(approved_bridge,dict):
+            raise PaidRequestBlocked('LEGACY_R2_BRIDGE_REQUIRED: existing UI awaits approved input and budget wiring')
 
     from modules.sourcing.localized_image_auto_translation import (
         translate_image_regions,
     )
-    from modules.sourcing.localized_image_toapis_generation import (
+    from modules.sourcing.localized_image_lingshi_generation import (
         RENDERER,
         generate_localized_reference_image,
     )
@@ -1619,6 +1668,12 @@ def auto_translate_localized_images(
     if expected != int(project.get("revision") or 0):
         raise ValueError("localized image revision has changed")
     automatic = project.get("automatic_translation") or {}
+    if governed:
+        from modules.sourcing.image_generation_checkpoint import digest
+        if approved_bridge.get('legacy_base_digest')!=digest(project.get('base_package')):
+            raise PaidRequestBlocked('legacy bridge does not bind the existing approved source package')
+        for source_url in (project.get('base_package') or {}).get('ordered_image_urls') or []:
+            legacy_consumer_binding(paid_context,offer_id=offer_id,bridge=approved_bridge,source_url=source_url)
     if (
         automatic.get("status") == "AUTO_PREVIEW_READY"
         and automatic.get("renderer") == RENDERER
@@ -1626,6 +1681,16 @@ def auto_translate_localized_images(
         return _localized_project_result(offer_id)
     if confirm_paid_generation is not True:
         raise ValueError("explicit paid localized image generation confirmation is required")
+    if governed:
+        legacy_root=LOCALIZED_IMAGE_PACKS_DIR/offer_id/'toapis-generation'
+        if legacy_root.exists() and any(legacy_root.iterdir()):
+            raise PaidRequestBlocked('LEGACY_PROVIDER_RECONCILIATION_REQUIRED: preserved ToAPI checkpoints must be mapped; changing folders is not migration')
+        for url,raw in source_bytes_by_url.items():
+            binding=legacy_consumer_binding(paid_context,offer_id=offer_id,bridge=approved_bridge,source_url=url)
+            row=next(r for r in approved_bridge['tasks'] if r['source_url']==url)
+            if hashlib.sha256(raw).hexdigest()!=str(row['source_digest']).removeprefix('sha256:'):
+                raise PaidRequestBlocked('legacy approved source bytes changed')
+        paid_context.ensure_ready()
     generator = image_generator or generate_localized_reference_image
     source_urls = list((project.get("base_package") or {}).get("ordered_image_urls") or [])
     inventory = (project.get("text_inventory") or {}).get("images") or {}
@@ -1678,7 +1743,8 @@ def auto_translate_localized_images(
                 "receipt": reusable_receipt,
             }
         elif model_call is None:
-            translated = translate_image_regions(regions)
+            translated = translate_image_regions(regions, paid_context=paid_context,
+                    business_identity=legacy_consumer_binding(paid_context,offer_id=offer_id,bridge=approved_bridge,source_url=source_url))
         else:
             translated = translate_image_regions(regions, model_call=model_call)
         generated = {
@@ -1688,8 +1754,10 @@ def auto_translate_localized_images(
                 locale=locale,
                 translations=translations,
                 checkpoint_dir=(
-                    LOCALIZED_IMAGE_PACKS_DIR / offer_id / "toapis-generation"
+                    LOCALIZED_IMAGE_PACKS_DIR / offer_id / "lingshi-generation"
                 ),
+                **({'paid_context':paid_context,'business_identity':legacy_consumer_binding(paid_context,
+                    offer_id=offer_id,bridge=approved_bridge,source_url=source_url,locale=locale)} if governed else {}),
             )
             for locale, translations in translated["translations"].items()
             if regions
@@ -1713,6 +1781,7 @@ def auto_translate_localized_images(
         offer_id,
         expected_revision=expected,
         items=items,
+        paid_context=paid_context,approved_bridge=approved_bridge,
     )
     return _localized_project_result(offer_id)
 
@@ -3927,6 +3996,8 @@ def sync_generated_image_to_miaoshou(
     title, SKU map, prices, variants, dimensions, inventory, claiming, and
     publishing are deliberately outside this operation.
     """
+    from shared_platform.native_common_edit_boundary import require_managed_transport
+    require_managed_transport(post)
     offer_id = resolve_offer_key(offer_id_or_url)
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(artifact_id or "")):
         raise ValueError("invalid generated image identifier")
@@ -4210,6 +4281,8 @@ def _write_ordered_images_to_miaoshou_unlocked(
     image order in ``notes``. Other product fields are preserved. The function
     performs a read-back verification and never claims or publishes a product.
     """
+    from shared_platform.native_common_edit_boundary import require_managed_transport
+    require_managed_transport(post)
     offer_id = resolve_offer_key(offer_id_or_url)
     state = load_state(offer_id)
     content = state.setdefault("content_package", {})
@@ -4536,6 +4609,8 @@ def write_approved_generated_images_to_miaoshou(offer_id_or_url: str, *, post=No
     accept the otherwise image-only write. It never claims, publishes, or
     changes title, SKU, price, variants, dimensions, or inventory.
     """
+    from shared_platform.native_common_edit_boundary import require_managed_transport
+    require_managed_transport(post)
     offer_id = resolve_offer_key(offer_id_or_url)
     state = load_state(offer_id)
     content = state.setdefault("content_package", {})
@@ -5901,7 +5976,82 @@ def price_review(
     }
 
 
+def _apply_target_price_overrides(
+    pricing: dict[str, Any], overrides: Any
+) -> dict[str, Any]:
+    """Apply an exact, evidence-backed list price to one store target."""
+
+    result = deepcopy(pricing)
+    if overrides in (None, {}):
+        return result
+    if not isinstance(overrides, dict):
+        raise ValueError("target price overrides must be a mapping")
+
+    rows: dict[str, dict[str, Any]] = {
+        str(row.get("id") or "").strip().lower(): row
+        for row in (result.get("sea") or [])
+        if isinstance(row, dict) and str(row.get("id") or "").strip()
+    }
+    if isinstance(result.get("mx"), dict):
+        rows["mx"] = result["mx"]
+    if isinstance(result.get("uk"), dict):
+        rows["gb"] = result["uk"]
+
+    required = {
+        "list_price", "currency", "authority", "evidence_digest",
+        "source_product_id", "reason",
+    }
+    for raw_target, raw_override in overrides.items():
+        target = str(raw_target or "").strip().lower()
+        if target not in rows:
+            raise ValueError(f"unknown target price override: {target}")
+        if not isinstance(raw_override, dict) or set(raw_override) != required:
+            raise ValueError(f"invalid target price override shape: {target}")
+        row = rows[target]
+        currency = str(raw_override.get("currency") or "").strip().upper()
+        if currency != str(row.get("currency") or "").strip().upper():
+            raise ValueError(f"target price override currency mismatch: {target}")
+        try:
+            amount = float(raw_override.get("list_price"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid target price override amount: {target}") from exc
+        digest = str(raw_override.get("evidence_digest") or "").strip()
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError(f"invalid target price override amount: {target}")
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+            raise ValueError(f"invalid target price override evidence: {target}")
+        if not all(
+            str(raw_override.get(field) or "").strip()
+            for field in ("authority", "source_product_id", "reason")
+        ):
+            raise ValueError(f"incomplete target price override evidence: {target}")
+
+        row["list_price"] = round(amount, 2)
+        row["list_price_raw_local"] = round(amount, 2)
+        row["price_override"] = deepcopy(raw_override)
+        row["pricing_authority"] = str(raw_override["authority"])
+
+        section_id = f"SEA_{row.get('shop')}_{row.get('region')}"
+        for section in ((result.get("audit") or {}).get("sections") or []):
+            if not isinstance(section, dict) or section.get("section") != section_id:
+                continue
+            rate = float((result.get("rates") or {}).get(currency) or 0)
+            audit_rows = section.get("rows") or []
+            if audit_rows and len(audit_rows[0]) > 11:
+                audit_rows[0][11] = (
+                    f"{_money(amount, currency)}\n{_cny(round(amount * rate, 2))}"
+                )
+            notes = list(section.get("notes") or [])
+            notes.append("挂牌价继承自同店官方 A 链；营销活动不在本次范围。")
+            section["notes"] = notes
+    return result
+
+
 def _source_summary(offer_id: str) -> dict[str, Any]:
+    state = load_state(offer_id)
+    if (state.get('source') or {}).get('source_mode') == 'manual_intake':
+        from modules.sourcing.manual_product_intake import load_manual_source
+        return load_manual_source(offer_id, root=ROOT)
     src = _load_source(offer_id)
     scrape = src["scrape"]
     sea = src["sea_preview"]
@@ -7072,6 +7222,8 @@ def _filter_miaoshou_variant_maps(
 
 def write_miaoshou_draft(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
     """Write an approved draft to the common collect box, without claiming or publishing it."""
+    from shared_platform.native_common_edit_boundary import require_managed_transport
+    require_managed_transport(post)
     prepared = prepare_miaoshou_draft(offer_id_or_url)
     if not prepared.get("ready"):
         raise RuntimeError("妙手草稿仍有阻塞项: " + "; ".join(prepared.get("blockers") or []))
@@ -7315,6 +7467,8 @@ def _resolve_shop_detail_id(
 
 def ensure_common_sequential_skus(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
     """Assign sequential four-digit SKU numbers while preserving all other approved fields."""
+    from shared_platform.native_common_edit_boundary import require_managed_transport
+    require_managed_transport(post)
     offer_id = resolve_offer_key(offer_id_or_url)
     if post is None:
         from modules.miaoshou.client import post_open

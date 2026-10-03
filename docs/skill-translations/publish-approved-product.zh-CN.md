@@ -1,15 +1,23 @@
-<!-- source_sha256: f5845610f65792aa4bc1abc4723cc23eb6f9672a32aaaf2136c0c9cc80c22d5e -->
+<!-- source_sha256: b91bb9cccdd45eefb7e6b726bd4690e07c66b94139072baed90b8d389a9af7dc -->
+
+> 历史译本（2026-09-22 标注）：此 source_sha256 与当前英文 Skill 不一致。旧 closure HTTP 命令不可执行；请读当前英文 `SKILL.md` 和 `docs/AGENT_HANDOFF.md`。
+
+> 2026-09-29 合同提示（以下仍是历史译文，不是执行权威）：妙手 COMMON 技术写入及官方回读后，Kyle 在商品发布前端审阅完整冻结全目标候选并只批准一次。未来经服务端验证的本机前端回执可独立构成唯一终审，无需在会话中再次确认；裸页面按钮和客户端自报字段不构成授权。当前正式业务仍为 HOLD，具体条件以当前英文 `SKILL.md`、有效工单和现场门禁为准。
 
 ### 元数据
 
 - `name`: `publish-approved-product`
-- `description`: 对已经批准的商品发布中心 Offer 执行第 05–07 阶段，使用三个独立工作流检查已批准的逐 SKU 快照、通过妙手发布 TikTok、创建 Shopee 全球商品、通过官方 API 发布 Ozon、执行平台专属回读、如实分类结果，并只保留已经确认的事故经验。当用户要求发布、重试、检查或诊断已完成 01–04 阶段的 Offer ID 时使用。
+- `description`: 对已经批准的商品发布中心 Offer，通过独立的 TikTok、Shopee 和 Ozon 工作流执行第 05–07 阶段；检查冻结事实，执行平台专属发布/回读，或准备并记录绑定精确计划的本地业务关闭。用于发布、重试、检查或关闭已完成 01–04 阶段的已批准 Offer ID。
 
 ### 发布已批准商品
 
+接管时，按仓库根 `docs/PUBLICATION_SOURCE_CONTRACT.md` 使用所选项目中绑定提交的 `scripts/publication_takeover.py`。它只读取已有证据，不恢复发布 run，也不授予商城操作权限。其来源绑定须与历史数据分别保存。
+
+本译文的脚本简称与 `references/` 相对 canonical `skills/publish-approved-product` 目录；显式 `skills/`、`scripts/sync_product_publication_skills.py` 和 `reports/` 路径相对仓库根。
+
 只使用已批准的商品发布中心快照作为公共输入。TikTok、Shopee 和 Ozon 是独立任务。一个平台的历史状态、失败、警告或回读绝不能阻止另一个平台。
 
-Kyle 在会话中的明确批准是唯一人工批准权威。页面按钮绝不是批准权威。发布前，Agent 必须通过确定性商品发布中心边界持久化精确批准 revision 与 plan；缺失或过期技术事实可以阻止执行，但不得要求 Kyle 在另一个页面重复同一批准。
+此历史段落的“会话是唯一批准权威”表述已失效；以开头的 2026-09-29 合同提示及当前英文 `SKILL.md` 为准。
 
 ### 必需架构
 
@@ -133,6 +141,12 @@ Shopee 必须先完成并验证全球商品。只有已批准快照明确选择 
 7. 使用确定性代码写入已确认站点类目和必填属性，然后在 dispatch 前回读精确草稿。
 
 不能仅因为元数据识别妙手预填类目就保留它。fallback 有效的原因只能是：用户已明确批准该产品家族 fallback，且官方站点树当前允许。
+
+### 本地业务关闭
+
+使用 `scripts/close_product_publication.py` 执行只读 doctor/prepare/latest，以及显式本地 record 动作。它调用现有商品发布中心关闭服务，不执行发布。读取 canonical 的 `references/closure.md`，了解可移植命令、精确 prepared-input 交接与响应丢失恢复。
+
+保留返回的完整目标阻断项与来源身份；下方发布四态摘要不能代替关闭证据。
 
 ### 用户可见结果
 

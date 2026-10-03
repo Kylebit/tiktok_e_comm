@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 import pytest
 
@@ -24,7 +25,7 @@ def _report(**overrides):
     return payload
 
 
-def test_store_persists_one_run_and_one_local_inbox_item_idempotently(tmp_path):
+def test_store_persists_one_run_without_notification_table_idempotently(tmp_path):
     path = tmp_path / "orbit.db"
     store = ReportRunStore(path)
 
@@ -33,16 +34,10 @@ def test_store_persists_one_run_and_one_local_inbox_item_idempotently(tmp_path):
     repeated = store.store_report_run(repeated_payload)
 
     assert first.report_created is True
-    assert first.inbox_created is True
     assert repeated.report_created is False
-    assert repeated.inbox_created is False
     assert len(store.list_report_runs()) == 1
-    inbox = store.list_inbox(status="unread")
-    assert len(inbox) == 1
-    assert inbox[0]["report_run_id"] == "weekly-profit-abc"
-    assert inbox[0]["title"] == "周度利润简报已生成 · 2026-07-20 – 2026-07-26"
-    assert inbox[0]["payload"]["negative_profit_count"] == 1
-    json.dumps(inbox, ensure_ascii=False)
+    with sqlite3.connect(path) as conn:
+        assert not conn.execute("SELECT name FROM sqlite_master WHERE name='orbit_inbox'").fetchall()
 
 
 def test_store_survives_reopen_and_flags_review_runs(tmp_path):
@@ -58,9 +53,7 @@ def test_store_survives_reopen_and_flags_review_runs(tmp_path):
 
     reopened = ReportRunStore(path)
     assert reopened.list_report_runs()[0]["status"] == "needs_review"
-    item = reopened.list_inbox()[0]
-    assert item["severity"] == "warning"
-    assert item["payload"]["quality_issue_count"] == 1
+    assert reopened.list_report_runs()[0]["payload"]["quality_issues"] == [{"code": "missing_cost"}]
 
 
 def test_reading_missing_store_is_side_effect_free(tmp_path):
@@ -68,8 +61,47 @@ def test_reading_missing_store_is_side_effect_free(tmp_path):
     store = ReportRunStore(path)
 
     assert store.list_report_runs() == []
-    assert store.list_inbox() == []
     assert not path.exists()
+
+
+@pytest.mark.parametrize("has_report_table", [False, True])
+def test_list_report_runs_closes_readonly_connection(
+    tmp_path, monkeypatch, has_report_table
+):
+    path = tmp_path / "orbit.db"
+    if has_report_table:
+        ReportRunStore(path).store_report_run(_report())
+    else:
+        connection = sqlite3.connect(path)
+        connection.close()
+    store = ReportRunStore(path)
+    opened = []
+    original_connect = store._connect_readonly
+
+    def tracked_connect():
+        connection = original_connect()
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(store, "_connect_readonly", tracked_connect)
+    try:
+        assert len(store.list_report_runs()) == int(has_report_table)
+        assert len(opened) == 1
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            opened[0].execute("SELECT 1")
+    finally:
+        for connection in opened:
+            connection.close()
+
+
+def test_new_report_preserves_existing_historical_inbox_rows(tmp_path):
+    path = tmp_path / "historical.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE orbit_inbox (inbox_id TEXT PRIMARY KEY, payload_json TEXT)")
+        conn.execute("INSERT INTO orbit_inbox VALUES ('historical', '{\"fact\":1}')")
+    ReportRunStore(path).store_report_run(_report())
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT * FROM orbit_inbox").fetchall() == [('historical', '{"fact":1}')]
 
 
 @pytest.mark.parametrize(

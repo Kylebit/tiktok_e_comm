@@ -192,3 +192,17 @@ After an accepted update, those official reads can briefly expose the prior
 stored copy. A nonterminal mismatch after `ACCEPTED` is **平台处理中** until
 bounded readback converges; an official failed status is **发布失败**. Never
 resubmit merely because the first read is stale.
+
+## Confirmed incident: terminal volume-weight validation must not be re-imported
+
+Production recovery must read the exact approved offer IDs before import. If
+official readback already contains those offers, classify their current states
+first: exact created variants are PUBLISHED, nonterminal variants are
+PROCESSING, and terminal validation failures are FAILED with zero writes.
+Never blindly re-import an existing terminal offer.
+
+Persist the sanitized official validation code and field. For
+`ML_INCORRECT_VOLUME_WEIGHT` on `weight`, preserve the approved per-SKU weight
+and package dimensions. Change them only from new authoritative product facts;
+otherwise the next action is Ozon support. Automatic envelope inflation,
+category-average substitution, or repeated import is forbidden.

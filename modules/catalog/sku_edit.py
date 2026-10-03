@@ -530,7 +530,7 @@ def _find_ozon_map_key(data: dict, match_key: str) -> str | None:
 def _save_ozon_local(match_key: str, seller_sku: str) -> None:
     base = ozon_data_dir()
     if not base:
-        raise ValueError("未配置 feishu.ozon_data_dir")
+        raise ValueError("未配置 ozon.data_dir")
     path = Path(base) / "tk_sku_map.json"
     data: dict = {}
     if path.is_file():

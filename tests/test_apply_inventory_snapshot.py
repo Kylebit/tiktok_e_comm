@@ -38,3 +38,64 @@ def test_inventory_identity_rejects_cross_country_and_truncated_values():
             pass
         else:
             raise AssertionError(f"expected {value!r} to be rejected")
+
+
+def test_exact_duplicate_inventory_identity_is_blocked_without_position_identity():
+    row = {
+        "seller_sku": "880006",
+        "warehouse": "VN8805",
+        "stock": 39,
+        "available": 39,
+        "allocated": 0,
+        "frozen": 0,
+        "inbound": 0,
+    }
+
+    try:
+        MODULE.aggregate_snapshot({"records": [row, dict(row)]})
+    except ValueError as exc:
+        assert str(exc) == (
+            "BLOCKED_INVENTORY: duplicate raw inventory identity lacks source position identity"
+        )
+    else:
+        raise AssertionError("expected duplicate inventory identity to fail closed")
+
+
+def test_conflicting_duplicate_inventory_identity_fails_closed():
+    first = {
+        "seller_sku": "880006",
+        "warehouse": "VN8805",
+        "stock": 39,
+        "available": 39,
+        "allocated": 0,
+        "frozen": 0,
+        "inbound": 0,
+    }
+    second = {**first, "available": 38, "allocated": 1}
+
+    try:
+        MODULE.aggregate_snapshot({"records": [first, second]})
+    except ValueError as exc:
+        assert str(exc) == (
+            "BLOCKED_INVENTORY: duplicate raw inventory identity lacks source position identity"
+        )
+    else:
+        raise AssertionError("expected conflicting duplicate inventory identity to fail closed")
+
+
+def test_same_sku_in_different_warehouses_remains_isolated():
+    row = {
+        "seller_sku": "880006",
+        "warehouse": "VN8805",
+        "stock": 39,
+        "available": 39,
+        "allocated": 0,
+        "frozen": 0,
+        "inbound": 0,
+    }
+    other = {**row, "warehouse": "TH8806", "seller_sku": "990006", "stock": 7, "available": 7}
+
+    facts = MODULE.aggregate_snapshot({"records": [row, other]})
+
+    assert facts["VN"]["0006"]["available"] == 39
+    assert facts["TH"]["0006"]["available"] == 7

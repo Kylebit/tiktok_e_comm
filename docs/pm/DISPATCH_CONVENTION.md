@@ -1,136 +1,60 @@
-# 派发任务约定（Dispatch Convention）
+# 派单与回执格式
 
-本约定适用于 CEO 向固定 `00`–`05` 线程派发的正式工作，以及固定线程
-对临时 Agent 的有界辅助派发。Codex 任务消息和 Git 证据是事实来源；
-飞书、EigenFlux、邮件等只可作为可选通知镜像，不得成为执行前置依赖。
+职责、授权、状态和 Git 规则统一见[线程治理](../THREAD_OPERATING_MODEL.md)。此页只定义可恢复的工作包记录；字段可以来自本轮明确消息和已审工单，不因缺少重复模板文字再索批。确实缺失权限或决定时仅暂停依赖动作并推进独立部分。
 
-## 分派原则
+## Work Order
 
-1. CEO 默认负责拆分、审查、集成和发布，不默认包办业务实现。
-2. 单域工作派给对应固定线程；涉及两个以上业务域时，必须给所有相关
-   固定线程分别建立 Work Order，并明确合同交接和集成顺序。
-3. 固定 `00`–`05` 优先于临时 Agent。临时 Agent 不取得领域所有权，
-   不替代固定线程的 ACK、commit、测试和回传。
-4. 正式 UI 由所属域实现，`00` 负责独立真实浏览器验收。验收发现问题
-   回到所属域修复，不能形成第二条业务实现路径。
-5. 外部平台写入只能派给 `03 渠道运营` 单线执行，并由 CEO 监督。
-   未明确授权时均为只读或 dry-run。
-
-CEO 可直接编码的有限例外、线程职责和状态语义见
-[`../THREAD_OPERATING_MODEL.md`](../THREAD_OPERATING_MODEL.md)。
-
-## Work Order 最小字段
-
-每条正式派发必须包含：
-
-| 字段 | 要求 |
+| 字段 | 内容 |
 | --- | --- |
-| `work_order_id` | 唯一、稳定，例如 `WO-20260727-GOV-001` |
-| `owner` | 固定线程编号、领域名和目标 task/thread ID |
-| `outcome` | 可验收的业务或治理结果，而非操作步骤堆叠 |
-| `scope` | 允许修改的文件、模块、数据与明确禁止范围 |
-| `inputs` | 上游合同、fixture、文档或已有提交 |
-| `base` | 正式仓库、基线 commit、独立 worktree、branch |
-| `outputs` | 文件、合同、报告或可运行产物 |
-| `acceptance` | 必跑测试、浏览器场景、失败门槛和人工验收点 |
-| `external_write` | `none`、`dry-run` 或经批准的精确目标与动作 |
-| `host_approval_policy` | 固定线程本地工程/测试/只读验收默认且应写明 `never` |
-| `no_escalation` | 默认 `true`；命令触发宿主审批时放弃并采用非升级等价路径 |
-| `git_policy` | commit 要求；push 默认 `forbidden`，除非明确授权 |
-| `handoff` | 回传对象、格式、风险和下一责任人 |
+| work_order_id / revision | 稳定工单 ID 与本次范围修订 |
+| owner | 当前执行 task_id / agent ID、逻辑职责；不用旧标题代替 |
+| outcome / scope | 可验收结果、精确文件/函数/数据范围及排除项 |
+| inputs | 已交上游精确提交/schema/工件、未交缺口与 producer |
+| base | 已核验仓库、exact base commit、独立 worktree 和 branch |
+| outputs | 交付路径与合同、报告或资产清单 |
+| acceptance | 受影响验证集合、浏览器范围、失败条件与未覆盖项 |
+| authority | 已授权本地动作；外部业务写、auth_writes、付费/上传分别记录范围与证据，无则 none |
+| host_policy | 本次实际工具权限/no_escalation；不覆盖宿主策略 |
+| git_policy | commit 要求、push/服务替换是否明确获准 |
+| handoff | 回传接收者、下一负责人和可执行 next_action |
+| current_state_source | 当前计划/协调状态/验收回执的路径、`as_of` 与 supersedes；不引用旧 active 图标代替 |
+| repeat_work_check | 已完成且不得重复的结果、继续项、可归档候选；若返工，写明新证据或范围变化 |
+| approval_reuse | 可复用的批准回执及其冻结对象/阶段/目标/动作/限制；只有这些字段变化才列新的决定缺口 |
+| authority_receipt_ref / reusable_scope | 原批准证据引用；`actor`、`action_class`、精确对象/目标、候选/快照 digest、限制/预算和到期/撤销条件 |
 
-缺少 `owner`、`base`、`scope`、`acceptance`、`external_write`、
-`host_approval_policy` 或 `no_escalation` 时，
-执行线程只能 ACK 后澄清或保持只读，不能自行扩大权限。
+UI 附加字段：实际页面/端口身份、桌面/窄屏、主操作与错误/unknown态、独立浏览器审查者、网络隔离。外部业务动作附加字段按[授权规则](../THREAD_OPERATING_MODEL.md#authority)记录精确平台/目标/动作、冻结批准、preflight、幂等/数量、恢复和正式回读。
 
-`host_approval_policy`/`no_escalation` 管理宿主工具调用，不替代
-`external_write` 所表达的业务授权。即使 Kyle 已批准业务动作，固定线程
-也不得用该批准请求普通 shell、pytest、worktree、Git 或只读验收的宿主
-escalation。预计触发审批的命令必须改写为非升级、非破坏的等价路径。
-只有确实需要 Kyle 完成的外部业务授权，或无安全替代方案的高风险必要
-动作，才作为明确决策上报；不得把工具审批提示转交 Kyle 代为处理。
+<a id="resume"></a>
+## ACK 与中断恢复
 
-## ACK 与状态
-
-执行线程使用同一个 Work Order ID 回复 ACK，并报告：
+1. 中断、上下文压缩或重新接管后，先读当前有效工单/协调状态与最后实际回执；确认原包是否已交付、转交或变更。旧问题和附件不能替换当前目标。
+2. 核验实际 root、base/HEAD、owner/task_id、允许写入、已完成证据、next_action，并列出已完成不重复/继续/待决定。先检查已有命令/测试进程结果，不重复启动仍运行的任务；保留先前有效产物。
+3. 回复下面的短 ACK，随即执行同范围的第一条实际命令/编辑，并保存结果。这是内部接管检查，不增加用户批准。
+4. 交付后回传工件与 next_owner/next_action；若后续包已派且授权清晰则接续。协调者核对 ACK、首动作与产物；纠偏送达、心跳或 turn completed 都不能替代这一闭环。
 
 ```text
-ACK
-git_top_level: ...
-branch: ...
-head: ...
-status: clean | existing-changes-described
-authority: read-only | code-write | external-write-exact-scope
-host_approval_policy: never
-no_escalation: true
+work_order_id / revision:
+owner / task_id:
+git_top_level / branch:
+base / HEAD / status-uall:
+authority / host_policy:
+last_verified_receipt / completed:
+repeat_work_check / approval_reuse:
+next_action / first_actual_command:
 ```
-
-状态只由消息和证据推进：
-
-`DRAFT → DISPATCHED → ACKED → RUNNING → DELIVERED → REVIEWED → INTEGRATED → ACCEPTED`
-
-`BLOCKED` 和 `CANCELLED` 可从任一未完成状态进入。`BLOCKED` 必须对应
-无法通过安全替代路径消除的业务决定或依赖；宿主命令显示
-`waitingOnApproval` 不构成业务 `BLOCKED`。执行线程应取消或放弃该命令，
-改用非升级路径并继续其余可完成步骤。任务标题、
-`active/idle/notLoaded`、分支名或静态看板文案都不能自动推进状态。
-
-## 单 writer 与 Git
-
-- 每个代码 Work Order 使用独立 worktree 和独立 branch。
-- 开始编辑前必须核验 Git top-level、branch、HEAD 和 status。
-- 一个 worktree/branch 同时只有一个 writer；并行任务不得编辑重叠文件。
-- 已有修改属于原作者。不得通过 reset、clean、checkout 覆盖或强行吸收。
-- 测试使用当前独立 worktree 内的 Work Order 专用 `basetemp`。临时测试
-  目录无需为提交删除；可以忽略或保留，并通过精确文件列表暂存交付。
-  禁止为了“干净”递归删除临时目录，禁止为清理请求宿主 escalation。
-- 长期代码、文档、修复和重构交付必须形成聚焦 commit，并回传 hash。
-- 只读审查、无文件变化的探针不制造空 commit。
-- `git push` 默认禁止；只有 Kyle 或正式发布流程在 Work Order 中明确
-  授权后才允许。
-
-## UI 与外部写入附加字段
-
-正式 UI Work Order 还必须写明：
-
-- 页面/路由及所属域；
-- 桌面和窄屏 viewport；
-- 主操作、异步反馈、错误态与 `unknown/unavailable` 语义；
-- `00` 独立浏览器验收人；
-- 浏览器 console/page error、computed visibility、overflow 和外网阻断。
-
-外部平台写入 Work Order 还必须写明：
-
-- 由 `03` 执行的唯一 writer；
-- 平台、店铺/租户、对象和精确动作；
-- Kyle 的明确批准证据；
-- dry-run/preflight、幂等键、预期变更数；
-- 回滚或恢复办法及审计产物。
-
-上述任一字段缺失时不得写入。CEO、`00`/`01`/`02`/`04`/`05` 和临时
-Agent 均不得代替 `03` 执行。
 
 ## 交付回执
 
-固定线程的 `DELIVERED` 回执至少包含：
-
 ```text
-work_order_id:
-owner:
-outcome:
-changed_files:
-contract_or_migration_impact:
-tests_and_browser_evidence:
-source_branch:
-source_commit:
-external_writes: 0 | exact audited writes
-remaining_risks:
-next_owner: CEO
+work_order_id / revision / owner:
+outcome_and_exact_scope:
+changed_files / contract_or_migration_impact:
+source_branch / source_commit / parent_base:
+validation_commands_and_environment / artifact_paths:
+actual_results / skipped_or_not_run / known_failures:
+business_writes / auth_writes / paid_calls / uploads:
+protected_WIP_and_artifacts / clean_or_described_changes:
+remaining_risks / next_owner / next_action:
 ```
 
-CEO 的 Integration Receipt 记录源提交到主分支提交的映射、集成方式、
-完整回归、外部写入证据、例外及到期日。`DELIVERED` 不等于
-`INTEGRATED`，`INTEGRATED` 也不等于 Kyle 已 `ACCEPTED`。
-
-进展可镜像到飞书等系统，但镜像失败不得阻止本地安全开发、回传或验收，
-也不得覆盖 Codex Work Order 与 Git 证据。
+组合回执另列 source→重放 commit 映射、最终 head、冲突取舍和受影响组合验证。状态含义见[状态表](../THREAD_OPERATING_MODEL.md#可观察状态)；局部交付与最终发布范围必须区分。

@@ -29,6 +29,7 @@ if str(SCRIPT_DIR) not in sys.path:
 import build_weekly_from_evidence as weekly_helpers
 from domains.data_operations.profit_settlement.audit import audit_profit_report
 from domains.data_operations.profit_settlement.cost_policy import resolve_temporary_cost_policy
+from domains.data_operations.profit_settlement.monthly_missing_cost_scope import monthly_cost_period
 from domains.data_operations.profit_settlement.local_catalog import load_local_catalog
 from domains.data_operations.profit_settlement.render import render_profit_report_html
 from domains.data_operations.profit_settlement.settlement_evidence_adapter import (
@@ -65,7 +66,9 @@ def main(argv=None) -> int:
     catalog = load_local_catalog(args.project_root / "data" / "shop.db")
     adapted = adapt_settlement_evidence(evidence, catalog, period_kind="monthly")
     required_skus = {str(row.get("canonical_sku") or "") for row in adapted.rows}
-    cost_policy = resolve_temporary_cost_policy(catalog, required_skus)
+    required_skus.discard('')
+    period_start, period_end = monthly_cost_period(site, args.start, args.end)
+    cost_policy = resolve_temporary_cost_policy(catalog, required_skus, period_start=period_start, period_end=period_end, allow_conflict_high=False)
     resolved_catalog = replace(
         catalog,
         costs_by_sku={
@@ -121,6 +124,15 @@ def main(argv=None) -> int:
     ]
     payload["source"]["evidence_reconciliation"] = adapted.payload()["reconciliation"]
     payload["source"]["settlement_evidence_snapshot_id"] = evidence.get("snapshot_id")
+    historical_inputs = {sku: list(catalog.cost_records_by_sku.get(sku, ())) for sku in sorted(required_skus)}
+    payload['source']['historical_cost_inputs'] = {'mode':'traceable_internal_sku_legacy_observations','period_start':period_start.isoformat(),'period_end_exclusive':period_end.isoformat(),'historical_cost_confirmed':False,'candidates_by_internal_sku':historical_inputs,'conflict_sku_count':sum(i['code']=='conflicting_cost_requires_approval' and i['canonical_sku'] in required_skus for i in cost_policy.issues)}
+    for sku, records in historical_inputs.items():
+        if sku in cost_policy.values and any(c.get('historical_cost_basis') == 'undated_legacy_observation' for c in records):
+            payload['assumption_warnings'].append({'code':'undated_legacy_cost_observation','canonical_sku':sku,'message':'Original undated legacy cost observation used as an explicit unperiodized input; historical applicability is not confirmed.'})
+    for item in cost_policy.issues:
+        if item['canonical_sku'] in required_skus:
+            payload['quality_issues'].append({'code':item['code'],'record_id':item['canonical_sku'],'field':'cost','message':item['message']})
+            payload['status']='needs_review'
     payload["source"]["actual_advertising_usage"] = (
         "not_provided_operator_approved_estimate_used"
     )

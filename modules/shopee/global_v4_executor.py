@@ -16,15 +16,19 @@ from decimal import Decimal, InvalidOperation
 import re
 from typing import Any, Protocol
 
-from domains.product_operations import validate_approved_publication_snapshot
-from modules.shopee.skill_regions import REGIONAL_TARGETS, selected_region_targets
+from domains.product_operations.approved_publication_snapshot import publication_content_for_target
+from domains.product_operations import (
+    validate_approved_publication_snapshot,
+)
+from modules.shopee.skill_regions import REGIONAL_TARGETS, selected_region_targets, _require_frozen_regional_copy
+from shared_platform.publication_write_budget import PublicationWriteBudgetExceeded
 
 
 class ShopeeGlobalV4Error(RuntimeError):
     """The frozen master cannot be safely converged or officially verified."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class UpdateReceipt:
     """Exact evidence for one attempted in-place global-item update."""
 
@@ -189,14 +193,36 @@ def project_shopee_global_v4_command(
 
     frozen = validate_approved_publication_snapshot(snapshot).payload()
     master = _mapping(frozen.get("shopee_global_master"), "Shopee global master")
-    if master.get("schema_version") != "shopee-global-master/v1":
+    master_schema = master.get("schema_version")
+    if master_schema not in {"shopee-global-master/v1", "shopee-global-master/v2"}:
         raise ShopeeGlobalV4Error("Shopee global master schema is invalid")
     product = _mapping(frozen.get("product"), "approved Shopee product")
     main_category = deepcopy(
         _mapping(product.get("main_category"), "approved main category")
     )
+    categories_by_target = _mapping(
+        frozen.get("categories_by_target"), "approved target categories"
+    )
+    approved_shopee_categories = []
+    for target_label, target in categories_by_target.items():
+        if not str(target_label).startswith("shopee:"):
+            continue
+        target_row = _mapping(target, "approved Shopee target category")
+        approved_shopee_categories.append(
+            deepcopy(_mapping(target_row.get("category"), "approved Shopee category"))
+        )
+    if not approved_shopee_categories or any(
+        category != approved_shopee_categories[0]
+        for category in approved_shopee_categories[1:]
+    ):
+        raise ShopeeGlobalV4Error(
+            "Shopee approved target category coverage is unavailable or ambiguous"
+        )
     price_source = deepcopy(
         _mapping(master.get("price_source"), "Shopee master price source")
+    )
+    master_content = publication_content_for_target(
+        frozen, str(price_source.get("target_label") or "")
     )
     product_images = _https_urls(product.get("images"), "approved Shopee image")
     skus = _rows(frozen.get("skus"), "approved Shopee SKUs")
@@ -210,23 +236,34 @@ def project_shopee_global_v4_command(
             raise ShopeeGlobalV4Error("Shopee master price identity is ambiguous")
         prices[model_sku] = _decimal(row.get("amount"), "Shopee master price")
 
-    image_positions = _rows(
-        master.get("variant_image_positions"), "Shopee variant image positions"
+    image_field = (
+        "variant_image_positions"
+        if master_schema == "shopee-global-master/v1"
+        else "variant_image_bindings"
     )
+    image_positions = _rows(master.get(image_field), f"Shopee {image_field}")
     images_by_sku: dict[str, str] = {}
     for row in image_positions:
         model_sku = _text(row.get("model_sku"), "Shopee model SKU", max_length=128)
         url = _text(row.get("image_url"), "Shopee variant image", max_length=2048)
-        position = row.get("position")
-        if (
-            model_sku in images_by_sku
-            or type(position) is not int
-            or position < 0
-            or position >= len(product_images)
-            or product_images[position] != url
-        ):
+        position_conflicts = False
+        if master_schema == "shopee-global-master/v1":
+            position = row.get("position")
+            position_conflicts = (
+                type(position) is not int
+                or position < 0
+                or position >= len(product_images)
+                or product_images[position] != url
+            )
+        if model_sku in images_by_sku or position_conflicts:
             raise ShopeeGlobalV4Error("Shopee variant image identity conflicts")
         images_by_sku[model_sku] = url
+    if len(images_by_sku) > 1 and len(set(images_by_sku.values())) != len(
+        images_by_sku
+    ):
+        raise ShopeeGlobalV4Error(
+            "Shopee multi-SKU variant images must be distinct"
+        )
 
     variation_names: list[str] | None = None
     models: list[dict[str, Any]] = []
@@ -293,11 +330,14 @@ def project_shopee_global_v4_command(
         # one official publishable CNSC leaf and the exact master source to
         # resolve one merchant identity.
         "main_category": main_category,
+        "approved_category": approved_shopee_categories[0],
         "price_source": price_source,
         "product": {
-            "title": _text(product.get("title"), "Shopee title", max_length=255),
+            "title": _text(master_content.get("title"), "Shopee title", max_length=255),
             "description": _text(
-                product.get("description"), "Shopee description", max_length=5000
+                master_content.get("description"),
+                "Shopee description",
+                max_length=5000,
             ),
             "images": product_images,
         },
@@ -629,6 +669,7 @@ class ShopeeGlobalV4Resolver:
     def __init__(self, *, runtime: ShopeeGlobalV4Runtime) -> None:
         self._runtime = runtime
         self._write_counts: dict[tuple[str, str], int | None] = {}
+        self._created_global_items: dict[tuple[str, str], str] = {}
 
     @staticmethod
     def _key(request: object) -> tuple[str, str]:
@@ -639,6 +680,18 @@ class ShopeeGlobalV4Resolver:
 
     def write_count(self, request: object) -> int | None:
         return self._write_counts.get(self._key(request), 0)
+
+    def created_in_run(self, request: object, global_item_id: str) -> bool:
+        """Prove that this exact run created the returned Global item.
+
+        Regional recovery scans are necessary after an unknown prior dispatch,
+        but are both wasteful and potentially unbounded for a Global item that
+        was created and verified by the same in-memory run.
+        """
+
+        return self._created_global_items.get(self._key(request)) == str(
+            global_item_id
+        ).strip()
 
     def __call__(self, request: object) -> str:
         key = self._key(request)
@@ -652,12 +705,15 @@ class ShopeeGlobalV4Resolver:
         labels = getattr(request, "target_labels", None)
         if (
             not isinstance(labels, tuple)
-            or labels != expected_targets
             or not labels
+            or len(labels) != len(set(labels))
+            or any(label not in expected_targets for label in labels)
             or any(label not in REGIONAL_TARGETS for label in labels)
         ):
             raise ShopeeGlobalV4Error("Shopee regional target scope conflicts")
         validate_approved_publication_snapshot(snapshot)
+        for label in labels:
+            _require_frozen_regional_copy(snapshot, label)
         command = project_shopee_global_v4_command(snapshot)
         model_skus = [row["model_sku"] for row in command["models"]]
         all_images = list(command["product"]["images"])
@@ -705,15 +761,9 @@ class ShopeeGlobalV4Resolver:
                 ):
                     upload_count = 0
                     if master_image_drift:
-                        try:
-                            raw_bindings, upload_count = (
-                                self._runtime.checkpointed_upload_global_images(
-                                    request, tuple(all_images)
-                                )
-                            )
-                        except Exception:
-                            self._write_counts[key] = None
-                            raise
+                        raw_bindings, upload_count = self._upload_images(
+                            request, key, tuple(all_images)
+                        )
                     else:
                         raw_bindings = item.get("approved_image_bindings")
                     if (
@@ -737,6 +787,7 @@ class ShopeeGlobalV4Resolver:
                         )
                     self._write_counts[key] = upload_count
                     if title_drift or master_image_drift or parcel_drift:
+                        self._reserve_shared(request, "update_global_item")
                         try:
                             receipt = _validated_update_receipt(
                                 self._runtime.update_existing_global_item(
@@ -760,6 +811,7 @@ class ShopeeGlobalV4Resolver:
                             raise
                         self._write_counts[key] += receipt.attempted_count
                     if variation_drift:
+                        self._reserve_shared(request, "update_global_tier")
                         try:
                             tier_receipt = _validated_update_receipt(
                                 self._runtime.update_existing_global_tier_variation(
@@ -791,6 +843,7 @@ class ShopeeGlobalV4Resolver:
                             raise
                         self._write_counts[key] += tier_receipt.attempted_count
                     if price_drift:
+                        self._reserve_shared(request, "update_global_models")
                         try:
                             model_receipt = _validated_update_receipt(
                                 self._runtime.update_existing_global_models(
@@ -866,19 +919,18 @@ class ShopeeGlobalV4Resolver:
         for row in command["models"]:
             if row["variant_image_url"] not in all_images:
                 all_images.append(row["variant_image_url"])
-        try:
-            raw_bindings = self._runtime.upload_global_images(tuple(all_images))
-        except Exception:
-            self._write_counts[key] = None
-            raise
-        self._write_counts[key] = 1
+        raw_bindings, upload_count = self._upload_images(
+            request, key, tuple(all_images)
+        )
+        if type(upload_count) is not int or upload_count < 0:
+            raise ShopeeGlobalV4Error("Shopee image upload count is invalid")
+        self._write_counts[key] = upload_count
         if not isinstance(raw_bindings, Mapping) or set(raw_bindings) != set(all_images):
             raise ShopeeGlobalV4Error("Shopee uploaded image identity coverage conflicts")
         bindings = {
             url: _text(raw_bindings[url], "Shopee image identity", max_length=255)
             for url in all_images
         }
-        self._runtime.persist_image_identities(request, deepcopy(bindings))
         create_payload = {
             "category": preparation["category"],
             "required_attributes": preparation["required_attributes"],
@@ -894,13 +946,15 @@ class ShopeeGlobalV4Resolver:
             # can take that seed without re-reading or equalising SKU prices.
             "models": deepcopy(command["models"]),
         }
+        self._reserve_shared(request, "create_global_item")
         try:
             raw_global_item_id = self._runtime.create_global_item(create_payload)
         except Exception:
             self._write_counts[key] = None
             raise
-        self._write_counts[key] = 2
+        self._write_counts[key] = upload_count + 1
         global_item_id = _identity(raw_global_item_id, "Shopee global item identity")
+        self._created_global_items[key] = global_item_id
         self._runtime.persist_global_identity(
             request, global_item_id, list(model_skus)
         )
@@ -916,6 +970,7 @@ class ShopeeGlobalV4Resolver:
                 for row in command["models"]
             ],
         }
+        self._reserve_shared(request, "initialize_models")
         try:
             raw_model_identities = self._runtime.initialize_global_models(
                 global_item_id, model_payload
@@ -923,7 +978,7 @@ class ShopeeGlobalV4Resolver:
         except Exception:
             self._write_counts[key] = None
             raise
-        self._write_counts[key] = 3
+        self._write_counts[key] = upload_count + 2
         if (
             not isinstance(raw_model_identities, Mapping)
             or set(raw_model_identities) != set(model_skus)
@@ -956,6 +1011,31 @@ class ShopeeGlobalV4Resolver:
             expected_required_attributes=(preparation["required_attributes"] if preparation["category"]["id"] == "101157" else None),
         )
         return global_item_id
+
+    def _upload_images(self, request: object, key: tuple, images: tuple[str, ...]):
+        try:
+            return self._runtime.checkpointed_upload_global_images(request, images)
+        except PublicationWriteBudgetExceeded as error:
+            # The official runtime records completed uploads before a local denial.
+            count = getattr(error, "completed_image_upload_count", 0)
+            self._write_counts[key] = count if type(count) is int and count >= 0 else None
+            raise
+        except Exception as error:
+            count = getattr(error, "completed_image_upload_count", None)
+            local = getattr(error, "image_upload_outcome_unknown", None) is False
+            self._write_counts[key] = count if local and type(count) is int and count >= 0 else None
+            raise
+
+    @staticmethod
+    def _reserve_shared(request: object, operation: str) -> None:
+        ledger = getattr(request, "write_budget_ledger", None)
+        if ledger is None:
+            if getattr(request, "release_candidate", None) is not None:
+                raise ShopeeGlobalV4Error(
+                    "approved publication request is missing its write budget ledger"
+                )
+            return
+        ledger.reserve_shared(operation)
 
 
 __all__ = [

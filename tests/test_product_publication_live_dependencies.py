@@ -1256,15 +1256,38 @@ def test_stored_ozon_localized_copy_uses_exact_offer_revision_path(tmp_path: Pat
 
 
 class _ObservedDraftTransport:
-    def __init__(self, observer, calls, *, unknown_claim: bool = False):
+    def __init__(
+        self,
+        observer,
+        calls,
+        *,
+        unknown_claim: bool = False,
+        rejected_stage=None,
+    ):
         self.observer = observer
         self.calls = calls
         self.unknown_claim = unknown_claim
+        self.rejected_stage = rejected_stage
 
     def claim_or_create(self, *, target, ordinal):
         self.calls.append(("claim", target["target_label"], ordinal))
         if self.unknown_claim:
             fact = DraftWriteFact("CLAIM_OR_CREATE", "UNKNOWN")
+        elif self.rejected_stage == "claim":
+            fact = DraftWriteFact(
+                "CLAIM_OR_CREATE",
+                "REJECTED",
+                provider_code="CLAIM.INVALID",
+                provider_field_path="shopIds[0]",
+                provider_reason="claim rejected",
+            )
+        elif self.rejected_stage == "save":
+            fact = DraftWriteFact(
+                "IDENTITY_OBSERVED",
+                "ACCEPTED",
+                detail_id=str(7001 + ordinal),
+                shop_id=str(target["shop_id"]),
+            )
         else:
             fact = DraftWriteFact(
                 "CLAIM_OR_CREATE",
@@ -1277,11 +1300,23 @@ class _ObservedDraftTransport:
 
     def save_draft(self, *, identity, draft):
         self.calls.append(("save", identity["target_label"], draft["target_label"]))
-        fact = DraftWriteFact(
-            "SAVE_DRAFT",
-            "ACCEPTED",
-            detail_id=identity["detail_id"],
-            shop_id=identity["shop_id"],
+        fact = (
+            DraftWriteFact(
+                "SAVE_DRAFT",
+                "REJECTED",
+                detail_id=identity["detail_id"],
+                shop_id=identity["shop_id"],
+                provider_code="FIELD.INVALID",
+                provider_field_path="skuMap[0].imgUrls[6]",
+                provider_reason="save rejected",
+            )
+            if self.rejected_stage == "save"
+            else DraftWriteFact(
+                "SAVE_DRAFT",
+                "ACCEPTED",
+                detail_id=identity["detail_id"],
+                shop_id=identity["shop_id"],
+            )
         )
         self.observer(identity["target_label"], fact)
         return fact
@@ -1811,3 +1846,88 @@ def test_tiktok_unknown_claim_checkpoint_prevents_blind_retry(tmp_path):
     assert first["external_write_count"] is None
     assert second["external_write_count"] is None
     assert calls == calls_after_first
+
+
+@pytest.mark.parametrize("rejected_stage", ("claim", "save"))
+def test_tiktok_rejected_checkpoint_prevents_blind_retry_and_keeps_diagnostics(
+    tmp_path, rejected_stage
+):
+    calls = []
+    store = TikTokV4DraftCheckpointStore(tmp_path)
+    preparer = DurableTikTokV4DraftPreparer(
+        checkpoint_store=store,
+        category_resolver=CategoryResolver(),
+        transport_factory=lambda _request, observer: _ObservedDraftTransport(
+            observer, calls, rejected_stage=rejected_stage
+        ),
+    )
+    request = _tiktok_request()
+
+    first = preparer(request)
+    calls_after_first = list(calls)
+    second = preparer(request)
+
+    assert first["external_write_count"] == 0
+    assert second["external_write_count"] == 0
+    assert calls == calls_after_first
+    for receipt in (first, second):
+        for row in receipt["targets"]:
+            assert row["status"] == "FAILED"
+            assert row["provider_code"] in {"CLAIM.INVALID", "FIELD.INVALID"}
+            assert row["provider_field_path"] in {
+                "shopIds[0]",
+                "skuMap[0].imgUrls[6]",
+            }
+            assert row["provider_reason"].endswith("rejected")
+
+
+def test_tiktok_rejected_preparation_reports_request_attempted_without_confirmed_write(
+    tmp_path,
+):
+    calls = []
+    store = TikTokV4DraftCheckpointStore(tmp_path)
+    preparer = DurableTikTokV4DraftPreparer(
+        checkpoint_store=store,
+        category_resolver=CategoryResolver(),
+        transport_factory=lambda _request, observer: _ObservedDraftTransport(
+            observer, calls, rejected_stage="save"
+        ),
+    )
+    request = _tiktok_request()
+
+    result = build_tiktok_v4_executor(
+        collectbox_context_resolver=None,
+        draft_preparer=preparer,
+        category_resolver=CategoryResolver(),
+        publisher=SimpleNamespace(
+            preflight=lambda *_args: pytest.fail("publish preflight must not run"),
+            publish=lambda *_args: pytest.fail("publish must not run"),
+        ),
+        storefront_readback=TikTokUnavailableStorefrontReadback(),
+    )(request)
+
+    assert result["external_write_count"] == 0
+    assert all(row["status"] == "FAILED" for row in result["targets"])
+    assert all(row["evidence"]["request_attempted"] is True for row in result["targets"])
+    assert all(row["evidence"]["external_write_count"] == 0 for row in result["targets"])
+
+
+def test_tiktok_checkpoint_roundtrips_sanitized_rejection_diagnostics(tmp_path):
+    store = TikTokV4DraftCheckpointStore(tmp_path)
+    request = _tiktok_request()
+    fact = DraftWriteFact(
+        "SAVE_DRAFT",
+        "REJECTED",
+        detail_id="7001",
+        shop_id="7676267",
+        provider_code="FIELD.INVALID",
+        provider_field_path="skuMap[0].imgUrls[6]",
+        provider_reason="invalid image [redacted-url] token=[redacted]",
+    )
+
+    store.record_fact(request, "tiktok:LH_PH", fact)
+    event = store.target_events(request, "tiktok:LH_PH")[-1]
+
+    assert event["provider_code"] == "FIELD.INVALID"
+    assert event["provider_field_path"] == "skuMap[0].imgUrls[6]"
+    assert event["provider_reason"] == "invalid image [redacted-url] token=[redacted]"

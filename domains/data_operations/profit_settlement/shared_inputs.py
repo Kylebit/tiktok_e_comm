@@ -11,11 +11,12 @@ import json
 from typing import Any
 
 
-def _decimal(value: object) -> Decimal | None:
+def _decimal(value):
     if value is None or isinstance(value, bool) or str(value).strip() == "":
         return None
     try:
-        return Decimal(str(value))
+        amount = Decimal(str(value))
+        return amount if amount.is_finite() else None
     except (InvalidOperation, ValueError):
         return None
 

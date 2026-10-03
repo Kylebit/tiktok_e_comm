@@ -1,0 +1,43 @@
+{
+  "source_commit": "c50d3d31d55004aacdd32c96c6d5bd7ded9356bb",
+  "producer": "shared_platform/publication_rounds.py::build_round1_snapshot then skills/prepare-product-images/scripts/prepare_product_images.py::run and run_automated_image_qa.py::run",
+  "scope": "Captured real producer outputs with synthetic fixture facts and fake lowest provider/download I/O; 14 masters, 7 localized, 5 QA requests. JSON formatting only changed. No COMMON or final marketplace plan exists.",
+  "files": [
+    {
+      "path": "round1-approved-snapshot.json",
+      "raw_source_sha256": "5fa1e4e44fb6ec35f16aa141283d95e968d511fc60b80b311c08e78e96b08f18",
+      "fixture_sha256": "2575049165d74b692cc3d52d62406751732f3dd93beccc37f84f6d7871dab511",
+      "bytes": 3104
+    },
+    {
+      "path": "first-review.json",
+      "raw_source_sha256": "ff2929cafe53b3f457674878828efc5411b82884ca0b7df241af3357feda33e8",
+      "fixture_sha256": "aafd162923a50e0662e1c41c69756295f96b228e3bfd0f974c72abb2c1d65366",
+      "bytes": 2323
+    },
+    {
+      "path": "brand-image-generation.json",
+      "raw_source_sha256": "5fad32a973c8914c77b54efda7771756fe2764ae994d92f1fe8dd7e5acd9ebb6",
+      "fixture_sha256": "5fad32a973c8914c77b54efda7771756fe2764ae994d92f1fe8dd7e5acd9ebb6",
+      "bytes": 23095
+    },
+    {
+      "path": "brand-image-translation-plan.json",
+      "raw_source_sha256": "6a6b3caef85cead7d2850de5a64755869879ca8cf936b0f5638931a349b17321",
+      "fixture_sha256": "8176504a008a2bd1bd621c84737810cc492a49e398742265df213696a5550841",
+      "bytes": 2266
+    },
+    {
+      "path": "brand-image-translation.json",
+      "raw_source_sha256": "770dfd9da1794e0e4de6c45ccf91762433be60797f8ac9e8068afb2848f0c6a3",
+      "fixture_sha256": "770dfd9da1794e0e4de6c45ccf91762433be60797f8ac9e8068afb2848f0c6a3",
+      "bytes": 26234
+    },
+    {
+      "path": "automated-image-qa.json",
+      "raw_source_sha256": "9b7cd1e9757b6a81664421af7ef98c120de7e787144c1a1ec8a843456a9a48b8",
+      "fixture_sha256": "6003de98af6014c4d6e679f931eb3b079f32ff27bb3b59fe31a2d4b3295d2716",
+      "bytes": 2627
+    }
+  ]
+}

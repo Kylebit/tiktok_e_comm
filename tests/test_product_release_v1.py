@@ -21,6 +21,34 @@ from domains.product_operations import (
 )
 from shared_platform import release_control, release_store
 from shared_platform.release_store import ReleaseStore
+from shared_platform.publication_common_write_admission import inspect_common_write_admission as _REAL_COMMON_ADMISSION
+
+
+@pytest.fixture(autouse=True)
+def isolated_optional_reports(tmp_path, monkeypatch):
+    """Legacy fixtures must never consult real first-review reports."""
+    monkeypatch.setattr(product_server, "ROOT", tmp_path)
+    # This suite exercises historical provider/recovery mechanics using
+    # synthetic plans. Its future technical authority exists only in tests;
+    # production admission remains UNKNOWN/BLOCKED for every COMMON Offer.
+    from shared_platform import publication_common_write_admission as admission
+    monkeypatch.setattr(admission, 'inspect_common_write_admission',
+        lambda plan, **context: {'status': 'READY', 'binding': {
+            'offer_id': plan['product_id'], 'plan_id': plan['plan_id'],
+            'payload_digest': plan['payload_digest']},
+            'receipt_digest': 'synthetic-legacy-fixture'})
+
+
+def _fixture_target_price(target, model="0952"):
+    """Explicit synthetic per-model facts; no ready-only price shortcuts."""
+    currency = {"MX": "MXN", "GB": "GBP", "PH": "PHP", "MY": "MYR",
+                "TH": "THB", "VN": "VND", "SG": "SGD"}.get(target.split(":")[1].removeprefix("LH_"), "CNY")
+    row = {"model_sku": model, "variant_key": "default", "list_price": "40", "currency": currency}
+    if target.startswith("shopee:"):
+        row["global_original_price_cny"] = "40.95"
+    if target == "ozon:RU":
+        row.update(currency="CNY", old_price_cny="60")
+    return {"status": "ready", "sku_prices": [row]}
 
 
 def _dashboard() -> dict:
@@ -93,6 +121,16 @@ def _dashboard() -> dict:
             "revision": 41,
             "title": approved_title,
             "category": {"name": "贴饰 > 墙贴"},
+            # Complete synthetic facts, following the actual COMMON producer's
+            # commercial contract. The server still builds and validates v4;
+            # no precomputed _approved_publication_snapshot_inputs are injected.
+            "cost_cny": "2", "weight_kg": "0.1", "package_cm": [20, 10, 1],
+            "selected_sku_keys": ["default"],
+            "sku_commercial_facts": {"default": {
+                "cost_cny": "2", "weight_kg": "0.1", "package_cm": [20, 10, 1]}},
+            "source_skus": [{"key": "default", "label": "Blue", "model_sku": "0952",
+                "price_cny": "2", "image_urls": ["https://assets.example/main.jpg"],
+                "commercial_facts": {"cost_cny": "2", "weight_kg": "0.1", "package_cm": [20, 10, 1]}}],
             "actual_product_approved": True,
             "actual_approval": {
                 "approval_id": "product-approval:v1",
@@ -122,8 +160,8 @@ def _dashboard() -> dict:
             "status": "ready",
             "schema_version": "pricing-v1",
             "target_pricing": {
-                "miaoshou:COMMON": {"status": "ready"},
-                "tiktok:MX": {"status": "ready"},
+                "miaoshou:COMMON": _fixture_target_price("miaoshou:COMMON"),
+                "tiktok:MX": _fixture_target_price("tiktok:MX"),
             },
             "workbench_exchange_rates": {"MXN": 2.1},
             "shopee_exchange_rates": {},
@@ -171,7 +209,7 @@ def _dashboard() -> dict:
             "input_signature": copy_signature,
             "current_input_signature": copy_signature,
             "semantic_master_en": approved_title,
-            "shopee_description_en": "",
+            "shopee_description_en": "Decorative PVC dog wall sticker, 34 x 58 cm.",
             "candidates": [
                 {
                     "channel": "tiktok",
@@ -256,10 +294,10 @@ def test_existing_unsafe_tiktok_failure_does_not_block_pristine_targets(
     ]
     dashboard["publication_scope"]["selected_labels"] = targets
     dashboard["pricing_review"]["target_pricing"] = {
-        "miaoshou:COMMON": {"status": "ready"},
-        "tiktok:LH_MY": {"status": "ready"},
+        "miaoshou:COMMON": _fixture_target_price("miaoshou:COMMON"),
+        "tiktok:LH_MY": _fixture_target_price("tiktok:LH_MY"),
         "shopee:MY": {
-            "status": "ready",
+            **_fixture_target_price("shopee:MY"),
             "target_site": "MY",
             "derived_preview": {
                 "global_original_price_cny": 40.95,
@@ -268,7 +306,7 @@ def test_existing_unsafe_tiktok_failure_does_not_block_pristine_targets(
                 "exchange_rate_cny_per_local": 1.2409,
             },
         },
-        "ozon:RU": {"status": "ready"},
+        "ozon:RU": _fixture_target_price("ozon:RU"),
     }
     dashboard["omnichannel_preview"]["targets"] = [
         {
@@ -557,9 +595,7 @@ def _two_tiktok_dashboard() -> dict:
         "tiktok:GB",
         "tiktok:MX",
     ]
-    dashboard["pricing_review"]["target_pricing"]["tiktok:GB"] = {
-        "status": "ready"
-    }
+    dashboard["pricing_review"]["target_pricing"]["tiktok:GB"] = _fixture_target_price("tiktok:GB")
     dashboard["omnichannel_preview"]["targets"].insert(
         1,
         {
@@ -604,7 +640,7 @@ def _six_tiktok_category_dashboard(category_name: str) -> dict:
     dashboard["product"]["category"] = {"name": category_name}
     dashboard["publication_scope"]["selected_labels"] = targets
     dashboard["pricing_review"]["target_pricing"] = {
-        target: {"status": "ready"} for target in targets
+        target: _fixture_target_price(target) for target in targets
     }
     dashboard["omnichannel_preview"]["targets"] = [
         {
@@ -656,7 +692,7 @@ def test_release_plan_binds_approved_wall_sticker_category_to_six_tiktok_sites()
         dashboard
     )
 
-    assert blockers == []
+    assert blockers == [], blockers
     decisions = payload["approved_tiktok_category_decisions"]
     assert set(decisions) == set(SIX_TIKTOK_CATEGORY_TARGETS)
     for target in SIX_TIKTOK_CATEGORY_TARGETS:
@@ -717,6 +753,15 @@ def test_release_plan_binds_each_sku_commercial_fact_and_target_price():
         {"variant_key": "short", "list_price": "286", "currency": "MXN"},
         {"variant_key": "long", "list_price": "399", "currency": "MXN"},
     ]
+    assignment = SkuAssignment(seller_sku="0952", model_skus=(
+        ModelSkuAssignment(variant_key="short", model_sku="0963"),
+        ModelSkuAssignment(variant_key="long", model_sku="0964")))
+    source = resolve_source_product_identity(**dashboard["_source_identity_inputs"]).identity
+    finalized = finalize_new_source_sku_reservation(source_identity=source, assignment=assignment)
+    dashboard["_sku_lineage"].update(assignment=assignment.payload(), reservation=finalized.reservation.payload())
+    dashboard["sku_lineage"].update(assignment=assignment.payload(), reservation_digest=finalized.reservation.reservation_digest)
+    for model, row in zip(["0963", "0964"], dashboard["pricing_review"]["target_pricing"]["tiktok:MX"]["sku_prices"]):
+        row["model_sku"] = model
     dashboard["pricing_review"]["sku_pricing"] = [
         {"variant_key": "short", "model_sku": "0963"},
         {"variant_key": "long", "model_sku": "0964"},
@@ -726,10 +771,22 @@ def test_release_plan_binds_each_sku_commercial_fact_and_target_price():
         dashboard
     )
 
-    assert blockers == []
-    assert payload["product_facts"]["sku_commercial_facts"] == (
-        dashboard["product"]["sku_commercial_facts"]
-    )
+    assert blockers == [], blockers
+    expected_commercial = {
+        "short": {
+            **dashboard["product"]["sku_commercial_facts"]["short"],
+            "specification": {"option": "35 x 140 cm"},
+            "image_urls": ["https://assets.example/main.jpg"],
+            "cost": {"amount": "15", "currency": "CNY"},
+        },
+        "long": {
+            **dashboard["product"]["sku_commercial_facts"]["long"],
+            "specification": {"option": "35 x 300 cm"},
+            "image_urls": ["https://assets.example/main.jpg"],
+            "cost": {"amount": "22", "currency": "CNY"},
+        },
+    }
+    assert payload["product_facts"]["sku_commercial_facts"] == expected_commercial
     assert [
         row["commercial_facts"]
         for row in payload["product_facts"]["selected_skus"]
@@ -741,6 +798,182 @@ def test_release_plan_binds_each_sku_commercial_fact_and_target_price():
         "sku_prices"
     ][1]["list_price"] == "399"
     assert payload["pricing"]["sku_pricing"][1]["model_sku"] == "0964"
+
+
+@pytest.mark.parametrize("field", [
+    "price", "stock", "image", "target", "approval", "nested_revision",
+])
+def test_revision_churn_never_hides_frozen_business_drift(field):
+    original, blockers = product_server._release_plan_payload_from_dashboard(_dashboard())
+    assert blockers == [], blockers
+    original["product_facts"]["stock"] = 5
+    original["product_facts"]["revision"] = 7
+    original["plan_id"] = product_server._v4_release_plan_id(original)
+    changed = deepcopy(original)
+    changed["product_revision"] += 1
+    if field == "price":
+        changed["pricing"]["selected_targets"]["tiktok:MX"]["sku_prices"][0]["list_price"] = "999"
+    elif field == "stock":
+        changed["product_facts"]["stock"] = 6
+    elif field == "image":
+        changed["product_facts"]["image_urls"] = ["https://assets.example/other.jpg"]
+    elif field == "target":
+        changed["targets"] = ["miaoshou:COMMON"]
+    elif field == "approval":
+        changed["content_approval_fingerprint"] = "different-approval"
+    else:
+        changed["product_facts"]["revision"] = 8
+    changed["plan_id"] = product_server._v4_release_plan_id(changed)
+    assert not product_server._approved_plan_matches_current_payload(
+        {"payload": original}, {"payload": changed}
+    )
+
+
+@pytest.mark.parametrize("forged_side", ["persisted", "current", "both", "missing"])
+def test_revision_comparison_rejects_forged_derived_plan_id(forged_side):
+    original, blockers = product_server._release_plan_payload_from_dashboard(_dashboard())
+    assert blockers == [], blockers
+    changed = deepcopy(original)
+    changed["product_revision"] += 1
+    changed["plan_id"] = product_server._v4_release_plan_id(changed)
+    if forged_side in {"persisted", "both"}:
+        original["plan_id"] = "omnichannel:" + "0" * 64
+    if forged_side in {"current", "both"}:
+        changed["plan_id"] = "omnichannel:" + "0" * 64
+    if forged_side == "missing":
+        original.pop("plan_id")
+        changed.pop("plan_id")
+    assert not product_server._approved_plan_matches_current_payload(
+        {"payload": original}, {"payload": changed}
+    )
+
+
+def test_common_unknown_with_revision_churn_keeps_original_identity_and_no_retry(tmp_path, monkeypatch):
+    """Explicit historical unknown seed; no legacy APPROVED write authority."""
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
+    monkeypatch.setattr(release_control, "build_release_dashboard", lambda **_kwargs: dashboard)
+    from shared_platform import publication_common_write_admission as admission
+    monkeypatch.setattr(admission, 'inspect_common_write_admission', _REAL_COMMON_ADMISSION)
+    calls = []
+    monkeypatch.setattr(release_adapters, "write_miaoshou_common_from_plan",
+                        lambda payload: calls.append(payload['product_id']) or pytest.fail('Legacy UNKNOWN cannot dispatch EDIT'))
+    request = _request(product_server._product_workspace_view(dashboard))
+    assert product_server._approve_release_plan_locally(
+        {**request, "approved_by": "Kyle", "user_approved": True})[0] == 200
+    original = store.get_plan(request['plan_id'])
+    run = store.start_run(request['plan_id'])
+    store.begin_target(run['run_id'], 'miaoshou:COMMON')
+    store.record_target_failure(run['run_id'], 'miaoshou:COMMON', error='owned historical lost response',
+        failure_evidence={'source':'owned-historical-normalized-fixture','verified':False,
+            'save_accepted':False,'write_outcome':'unknown_after_dispatch',
+            'external_writes_performed':['miaoshou:COMMON:immutable_plan_write']})
+    retained = store.get_run(run['run_id'])
+    for churn in (False, True):
+        if churn:dashboard['product']['revision'] += 1
+        status, blocked = product_server._prepare_miaoshou_release({**request,'confirm_miaoshou_write':True})
+        assert status == 409, blocked
+        assert blocked['external_writes_performed'] == []
+        assert store.get_plan(request['plan_id']) == original
+        assert store.get_run(run['run_id']) == retained
+    assert calls == []
+    common = next(row for row in retained['targets'] if row['target_label']=='miaoshou:COMMON')
+    assert common['status']=='FAILED'
+    assert common['latest_failure_evidence']['evidence']['write_outcome']=='unknown_after_dispatch'
+    assert 'native_common_observation' not in common['latest_failure_evidence']['evidence']
+
+
+@pytest.mark.parametrize("mutation", [
+    "none", "reorder", "extra", "forged", "preview_mismatch", "duplicate", "missing",
+])
+def test_store_target_order_recovery_requires_original_hash(mutation):
+    raw, blockers = product_server._release_plan_payload_from_dashboard(_two_tiktok_dashboard())
+    assert blockers == [], blockers
+    stored = release_store.preview_release_plan(raw)
+    assert raw["targets"] == ["miaoshou:COMMON", "tiktok:GB", "tiktok:MX"]
+    assert stored["payload"]["targets"] == ["miaoshou:COMMON", "tiktok:MX", "tiktok:GB"]
+    current = deepcopy(raw)
+    current["product_revision"] += 1
+    if mutation == "reorder":
+        current["targets"] = list(reversed(current["targets"]))
+    elif mutation == "extra":
+        current["targets"].append("tiktok:HB_MY")
+    current["plan_id"] = product_server._v4_release_plan_id(current)
+    if mutation == "forged":
+        current["plan_id"] = "omnichannel:" + "0" * 64
+    preview = deepcopy(release_store.preview_release_plan(current))
+    if mutation == "preview_mismatch":
+        preview["payload"]["product_facts"]["title"] = "changed"
+    elif mutation == "duplicate":
+        current["targets"].append(current["targets"][0])
+        current["plan_id"] = product_server._v4_release_plan_id(current)
+    elif mutation == "missing":
+        current.pop("targets")
+        current["plan_id"] = product_server._v4_release_plan_id(current)
+    assert product_server._approved_plan_matches_current_payload(
+        stored, preview, current_source_payload=current
+    ) is (mutation == "none")
+
+
+@pytest.mark.parametrize("identity", [
+    "existing_same_id", "historical_raw_id", "existing_different",
+    "unrecoverable", "business_drift", "same_forged_id",
+])
+def test_persisted_legacy_category_backfill_through_common_entry(
+    tmp_path, monkeypatch, identity,
+):
+    from shared_platform import publication_common_write_admission as admission
+    monkeypatch.setattr(admission, "inspect_common_write_admission", _REAL_COMMON_ADMISSION)
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _six_tiktok_category_dashboard("贴饰 > 墙贴")
+    monkeypatch.setattr(release_control, "build_release_dashboard", lambda **_kwargs: dashboard)
+    current, blockers = product_server._release_plan_payload_from_dashboard(dashboard)
+    assert blockers == [], blockers
+    legacy = deepcopy(current)
+    legacy.pop("approved_tiktok_category_decisions")
+    if identity == "existing_different":
+        legacy["approved_tiktok_category_decisions"] = {"tiktok:GB": {"category_id": "wrong"}}
+    elif identity == "unrecoverable":
+        legacy["product_facts"]["category"]["name"] = "unmapped"
+    elif identity == "business_drift":
+        legacy["product_facts"]["stock"] = 99
+    elif identity == "same_forged_id":
+        legacy["plan_id"] = "omnichannel:" + "0" * 64
+    if identity == "historical_raw_id":
+        legacy["plan_id"] = product_server._v4_release_plan_id(legacy)
+    persisted = store.create_plan(legacy)
+    store.approve_plan(
+        persisted["plan_id"], approved_by="Kyle", user_approved=True,
+        confirmation_token=persisted["confirmation_token"],
+    )
+    frozen = store.get_plan(persisted["plan_id"])
+    calls = []
+
+    def write(payload):
+        calls.append(payload["product_id"])
+        return _verified_common_plan_write(payload)
+
+    monkeypatch.setattr(release_adapters, "write_miaoshou_common_from_plan", write)
+    request = _request(product_server._product_workspace_view(dashboard))
+    request.update(plan_id=persisted["plan_id"], confirmation_token=persisted["confirmation_token"])
+    status, response = product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )
+    if identity in {"existing_same_id", "historical_raw_id"}:
+        # Deterministic category compatibility never supplies current native EDIT authority.
+        assert status == 409 and response["error"] == "COMMON_TECHNICAL_ADMISSION_BLOCKED", response
+        assert response["external_writes_performed"] == []
+        assert response["execution_authority"] is False
+        assert calls == []
+        assert not frozen["payload"].get("r3_stage_binding", {}).get("native_preparation_source")
+    else:
+        assert status == 409, response
+        assert response["error"] == "approved ReleasePlan no longer matches current facts"
+        assert response["external_writes_performed"] == []
+        assert calls == []
+    assert store.get_plan(persisted["plan_id"]) == frozen
 
 
 def test_legacy_approved_plan_accepts_deterministic_tiktok_category_backfill():
@@ -756,7 +989,7 @@ def test_legacy_approved_plan_accepts_deterministic_tiktok_category_backfill():
     persisted_plan = {"payload": legacy_payload}
     current_preview = {"payload": current_payload}
 
-    assert blockers == []
+    assert blockers == [], blockers
     assert legacy_payload["product_facts"]["category"] == (
         current_payload["product_facts"]["category"]
     )
@@ -780,7 +1013,7 @@ def test_legacy_tiktok_category_backfill_rejects_present_or_business_drift():
     wrong_category = deepcopy(current_payload)
     wrong_category["product_facts"]["category"] = {"name": "other"}
 
-    assert blockers == []
+    assert blockers == [], blockers
     assert not product_server._approved_plan_matches_current_payload(
         {"payload": legacy_payload},
         {"payload": wrong_binding},
@@ -799,7 +1032,7 @@ def test_release_plan_unmapped_product_category_is_deferred_to_each_tiktok_targe
     )
 
     assert "approved_tiktok_category_decisions" not in payload
-    assert blockers == []
+    assert blockers == [], blockers
 
 
 def _single_shopee_dashboard() -> dict:
@@ -807,7 +1040,7 @@ def _single_shopee_dashboard() -> dict:
     targets = ["miaoshou:COMMON", "shopee:PH"]
     dashboard["publication_scope"]["selected_labels"] = targets
     dashboard["pricing_review"]["target_pricing"] = {
-        "miaoshou:COMMON": {"status": "ready"},
+        "miaoshou:COMMON": _fixture_target_price("miaoshou:COMMON"),
         "shopee:PH": {
             "status": "ready",
             "target_site": "PH",
@@ -856,6 +1089,16 @@ def _approve_shopee_global_fixture(dashboard, monkeypatch):
     )
     from tests.test_shopee_global_plan import _base_args
 
+    # Freeze the single CNSC price source separately from regional prices.
+    selected = [t for t in dashboard["publication_scope"]["selected_labels"] if t.startswith("shopee:")]
+    master = selected[0]
+    source = {"region": master.split(":")[1], "target_key": "synthetic:" + master}
+    dashboard["pricing_review"]["master_price_source"] = source
+    for target in selected:
+        row = dashboard["pricing_review"]["target_pricing"][target]
+        if "sku_prices" not in row:
+            row["sku_prices"] = _fixture_target_price(target)["sku_prices"]
+        row["source"] = source if target == master else {"region": target.split(":")[1], "target_key": "synthetic:" + target}
     dashboard["product"].setdefault("weight_kg", 0.02)
     dashboard["product"].setdefault("package_cm", [58, 34, 0.02])
     payload, _blockers = product_server._release_plan_payload_from_dashboard(
@@ -910,7 +1153,7 @@ def _approve_shopee_global_fixture(dashboard, monkeypatch):
             "confirm_approved_shopee_global_plan": True,
         }
     )
-    assert status == 200
+    assert status == 200, _response
 
 
 def _executable_registry(execute):
@@ -2338,7 +2581,7 @@ def test_operational_revision_drift_after_first_adapter_allows_second(
         mutation=mutate,
     )
 
-    assert status == 200
+    assert status == 200, response
     assert calls == ["tiktok:GB", "tiktok:MX"]
     assert response["completed"] is True
 

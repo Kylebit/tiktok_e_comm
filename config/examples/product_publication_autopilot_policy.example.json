@@ -1,0 +1,23 @@
+{
+  "schema_version": "autopilot-policy/v1",
+  "status": "DRAFT",
+  "template_only": true,
+  "note": "Non-executable example. Populate from attributable current authority; do not copy an old ACTIVE policy or invent a new spending cap.",
+  "authority": {"kind": "", "approved_by": "", "approved_at": "", "scope": ""},
+  "automatic_steps": [],
+  "paid_models": {
+    "provider": "lingshi",
+    "allowed_purposes": [],
+    "maximum_confirmed_requests_per_product": null,
+    "automatic_paid_retry": true,
+    "maximum_automatic_paid_retries_per_task": 3,
+    "unknown_outcome_policy": "STOP_AND_RECONCILE",
+    "retry_requires": ["KNOWN_FAILED_OUTCOME", "EXACT_FAILED_ASSET", "DURABLE_RETRY_ATTEMPT"]
+  },
+  "write_budgets": {
+    "TIKTOK": {"shared_maximum": 0, "per_target_maximum": 0},
+    "SHOPEE": {"shared_maximum": 0, "per_target_maximum": 0},
+    "OZON": {"shared_maximum": 0, "per_target_maximum": 0}
+  },
+  "final_marketplace_publish": {"requires_user_approval": true, "approval_kind": "FINAL_MARKETPLACE_PUBLISH"}
+}

@@ -4,14 +4,55 @@ import unittest
 from typing import Optional
 from unittest.mock import patch
 
+import pytest
+
 from modules.miaoshou import client as miaoshou_client
 from modules.miaoshou.client import (
     MiaoshouBusinessRejectedError,
+    _business_rejection_details,
     post_open,
     request_web,
     web_batch_set_tiktok_price,
     web_claim_to_shop,
 )
+
+
+def test_business_rejection_extracts_only_sanitized_structured_details() -> None:
+    code, field_path, reason = _business_rejection_details(
+        {
+            "result": "failed",
+            "code": "FIELD.INVALID",
+            "data": {
+                "fieldPath": "skuMap[0].imgUrls[6]",
+                "message": (
+                    "invalid image https://provider.example/raw "
+                    "token=super-secret"
+                ),
+                "rawResponse": {"credential": "must-not-escape"},
+            },
+        }
+    )
+
+    assert code == "FIELD.INVALID"
+    assert field_path == "skuMap[0].imgUrls[6]"
+    assert reason == "invalid image [redacted-url] token=[redacted]"
+    assert "rawResponse" not in reason
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "Authorization: Bearer live-bearer-secret",
+        "Bearer live-bearer-secret",
+        "Api-Key=live-api-secret",
+        "client_secret: live-client-secret",
+    ),
+)
+def test_provider_reason_redacts_complete_authorization_secrets(reason: str) -> None:
+    sanitized = miaoshou_client.sanitize_provider_reason(reason)
+
+    assert "live-" not in sanitized
+    assert "[redacted]" in sanitized
 
 
 class _FakeResponse:

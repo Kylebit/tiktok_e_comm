@@ -1,88 +1,34 @@
-from pathlib import Path
+"""Current captured behavior; assertion migration is documented.
 
+Image/prices/lineage, waterfall and sample display regressions now live in the
+existing test_u05_sku_evidence, test_u05_waterfall, test_u05_sample_audit and real
+finance browser tests. Do not duplicate these with implementation-string checks.
+"""
+from pathlib import Path
+from html.parser import HTMLParser
+import hashlib
 from modules.finance import sku_profit_shopee, sku_profit_tk
 from modules.finance.sku_profit_model import enrich_comp, mark_outliers
+from test_u05_sku_evidence import scenario,request
 
+ROOT=Path(__file__).resolve().parents[1]
 
-ROOT = Path(__file__).resolve().parents[1]
+def test_captured_sku_review_does_not_write_input_evidence(tmp_path):
+    profile,_,identity=scenario(tmp_path,'ready')
+    before={p.relative_to(tmp_path):hashlib.sha256(p.read_bytes()).hexdigest() for p in tmp_path.rglob('*') if p.is_file()}
+    status,value=request(profile,identity)
+    assert status==200 and value['estimate'] and value['approval_status']=='ESTIMATE_ONLY'
+    after={p.relative_to(tmp_path):hashlib.sha256(p.read_bytes()).hexdigest() for p in tmp_path.rglob('*') if p.is_file()}
+    assert before==after,'Captured review must not write cost, price or source inputs'
 
-
-def _sources() -> tuple[str, str, str]:
-    html = (ROOT / "web/profit_center.html").read_text(encoding="utf-8")
-    script = (ROOT / "web/static/profit_center.js").read_text(encoding="utf-8")
-    css = (ROOT / "web/static/profit_center.css").read_text(encoding="utf-8")
-    return html, script, css
-
-
-def test_profit_center_is_read_only_and_has_no_legacy_probe_escape_hatch():
-    html, script, _ = _sources()
-
-    assert "打开高级利润探针" not in html
-    assert 'href="/sku-profit"' not in html
-    assert "只读分析 · 不写回成本与定价" in html
-    assert "/api/profit-center/weekly" in script
-    assert "/api/sku-profit" in script
-    assert 'method: "POST"' not in script
-    assert "fetchJson(`/api/sku-profit?" in script
-
-
-def test_sku_evidence_exposes_image_price_and_cost_lineage():
-    _, script, css = _sources()
-
-    assert "/api/proxy-image?url=" in script
-    assert "data-product-image" in script
-    assert "近单实付中位价" in script
-    assert "当前商品标价" in script
-    assert "recent_comp_median_paid" in script
-    assert "优先：平台 SKU ID 精确匹配" in script
-    assert "响应只标注 sku_costs" in script
-    assert "Shopee Seller SKU 尾四位 → TikTok Seller SKU 尾四位" in script
-    assert "sku_costs_via_tk_seller_sku_tail4" in script
-    assert ".product-image" in css
-    assert ".price-evidence-grid" in css
-    assert ".lineage-card" in css
-
-
-def test_profit_waterfalls_preserve_available_breakdown_and_missing_evidence():
-    _, script, css = _sources()
-
-    for field in (
-        "goods_local",
-        "logistics_local",
-        "commission_local",
-        "transaction_local",
-        "extra_local",
-        "creator_local",
-        "affiliate_local",
-        "ad_local",
-        "seller_tax_local",
-        "fixed_fee_local",
-        "extra_cap_hit",
-    ):
-        assert f"breakdown.{field}" in script
-
-    assert "平台结算扣减（合并）" in script
-    assert "页面不会自行伪造拆分" in script
-    assert "当前缺失 / 未暴露证据" in script
-    assert ".waterfall-row" in css
-    assert ".missing-evidence" in css
-
-
-def test_returned_posterior_samples_are_filterable_paginated_and_visualized():
-    _, script, css = _sources()
-
-    assert "posterior.recent_comps" in script
-    assert "<canvas" in script
-    assert "data-sample-filter" in script
-    assert "data-sample-search" in script
-    assert 'data-page-action="prev"' in script
-    assert 'data-page-action="next"' in script
-    assert "接口只返回最近" in script
-    assert "下表完整展示接口实际返回的每一条" in script
-    assert ".distribution-canvas" in css
-    assert ".sample-table-wrap" in css
-    assert ".pagination" in css
-
+def test_legacy_probe_escape_hatch_is_absent():
+    # Inspect real links; current browser also checks the served DOM.
+    class Links(HTMLParser):
+        def __init__(self):super().__init__();self.hrefs=[]
+        def handle_starttag(self,tag,attrs):
+            if tag=='a':self.hrefs.append(dict(attrs).get('href'))
+    parser=Links();parser.feed((ROOT/'web/profit_center.html').read_text(encoding='utf-8'))
+    assert '/sku-profit' not in parser.hrefs,'Legacy SKU probe must not be offered by the current finance page'
 
 def test_both_profit_probes_return_every_collected_posterior_sample(monkeypatch):
     samples = mark_outliers(

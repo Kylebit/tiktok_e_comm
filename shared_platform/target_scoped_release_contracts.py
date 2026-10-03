@@ -1358,6 +1358,7 @@ def _planned_ozon_command(payload: Mapping[str, Any]) -> dict[str, Any]:
     required_text = {
         field: str(action.get(field) or "").strip()
         for field in (
+            "product_id",
             "expected_listing_digest",
             "inventory_snapshot_id",
             "inventory_snapshot_revision_or_digest",
@@ -1374,23 +1375,34 @@ def _planned_ozon_command(payload: Mapping[str, Any]) -> dict[str, Any]:
             "successor_plan_stock_decision_required",
             "Ozon successor plan requires a positive desired stock quantity",
         )
+    warehouse_id = action.get("warehouse_id")
+    if (
+        isinstance(warehouse_id, bool)
+        or not isinstance(warehouse_id, int)
+        or warehouse_id <= 0
+    ):
+        raise TargetScopedCommandUnavailable(
+            "successor_plan_stock_decision_required",
+            "Ozon successor plan requires an exact warehouse identity",
+        )
     if (
         str(action.get("schema_version") or "")
-        != "ozon-existing-product-stock-command/v1"
+        != "ozon-existing-product-stock-command/v2"
         or str(action.get("warehouse_policy") or "")
-        != "single_active_non_kgt"
+        != "exact_active_non_kgt"
     ):
         raise TargetScopedCommandUnavailable(
             "successor_plan_stock_decision_required",
             "Ozon successor plan stock schema or warehouse policy is invalid",
         )
     return {
-        "schema_version": "ozon-existing-product-stock-command/v1",
-        "builder_policy_version": "target-scoped-ozon-stock/v1",
+        "schema_version": "ozon-existing-product-stock-command/v2",
+        "builder_policy_version": "target-scoped-ozon-stock/v2",
         "target_label": "ozon:RU",
         "operation_kind": OZON_EXISTING_PRODUCT_STOCK_RECONCILIATION,
         "seller_sku": seller_sku,
         "offer_id": offer_id,
+        "product_id": required_text["product_id"],
         "existing_product_only": True,
         "forbid_import": True,
         "forbid_create": True,
@@ -1398,11 +1410,12 @@ def _planned_ozon_command(payload: Mapping[str, Any]) -> dict[str, Any]:
             "expected_listing_digest"
         ],
         "desired_stock_quantity": stock,
+        "warehouse_id": warehouse_id,
         "inventory_snapshot_id": required_text["inventory_snapshot_id"],
         "inventory_snapshot_revision_or_digest": required_text[
             "inventory_snapshot_revision_or_digest"
         ],
-        "warehouse_policy": "single_active_non_kgt",
+        "warehouse_policy": "exact_active_non_kgt",
     }
 
 

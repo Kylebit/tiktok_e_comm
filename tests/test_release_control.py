@@ -1630,8 +1630,8 @@ def test_latest_weekly_summary_ignores_newer_non_weekly_report(tmp_path):
             "quality_issues": [],
         }
 
-    store.store_report_run(payload("weekly-1", "weekly_profit_digest"), add_to_inbox=False)
-    store.store_report_run(payload("monthly-1", "monthly_profit_close"), add_to_inbox=False)
+    store.store_report_run(payload("weekly-1", "weekly_profit_digest"))
+    store.store_report_run(payload("monthly-1", "monthly_profit_close"))
 
     assert latest_weekly_profit_summary(store.path)["run_id"] == "weekly-1"
 

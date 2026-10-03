@@ -12,14 +12,22 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 from typing import NamedTuple
 from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if not (ROOT / 'shared_platform' / 'capability_runtime.py').is_file():
+    raise RuntimeError('Skill sync requires the bundled shared_platform/capability_runtime.py beside its trusted launcher')
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from shared_platform.capability_runtime import checked_path, preflight_write_paths, ToolPlanError
 DEFAULT_SOURCE = ROOT / "skills" / "publish-approved-product"
-DEFAULT_DESTINATION = Path.home() / ".codex" / "skills" / "publish-approved-product"
+# Resolve the legacy personal default only when that CLI route is selected.
+# Importing full-file manifest helpers must not discover a personal root.
+DEFAULT_DESTINATION = Path("~") / ".codex" / "skills" / "publish-approved-product"
 _IGNORED_DIRS = frozenset({"__pycache__", ".pytest_cache"})
 _IGNORED_SUFFIXES = frozenset({".pyc", ".pyo"})
 _NORMALIZED_TEXT_SUFFIXES = frozenset({".md", ".py", ".yaml", ".yml", ".json"})
@@ -57,7 +65,7 @@ def _skill_files(root: Path) -> list[Path]:
 
 
 def build_manifest(root: str | Path) -> SkillManifest:
-    source = Path(root).resolve()
+    source = checked_path(Path(root), '.').resolve()
     hashes: dict[str, str] = {}
     for path in _skill_files(source):
         relative = path.relative_to(source).as_posix()
@@ -101,23 +109,40 @@ def check_parity(source: str | Path, destination: str | Path) -> dict[str, objec
     }
 
 
+def installation_paths(canonical: SkillManifest, target: Path):
+    """All final and same-directory atomic temporary filenames, before any write."""
+    paths = [('directory', target)]
+    for relative in canonical.files:
+        path = target.joinpath(*PureRelativePath(relative).parts)
+        paths.append(('file', path))
+        paths.append(('temporary_file_template', path.with_name('.'+path.name+'.'+'0'*32+'.tmp')))
+    return paths
+
+
+def preflight_install(canonical: SkillManifest, target: Path) -> dict:
+    return preflight_write_paths(target, installation_paths(canonical, target), operation='skill-install')
+
+
 def sync_install(source: str | Path, destination: str | Path) -> SkillManifest:
     canonical = build_manifest(source)
-    target = Path(destination).resolve()
-    target.mkdir(parents=True, exist_ok=True)
-    for relative in canonical.files:
-        source_file = canonical.root.joinpath(*PureRelativePath(relative).parts)
-        destination_file = target.joinpath(*PureRelativePath(relative).parts)
-        destination_file.parent.mkdir(parents=True, exist_ok=True)
-        temp_file = destination_file.with_name(
-            f".{destination_file.name}.{uuid4().hex}.tmp"
-        )
-        try:
+    target = checked_path(Path(destination), '.').resolve()
+    preflight_install(canonical, target)
+    completed = []; temp_file = None
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        for relative in canonical.files:
+            source_file = canonical.root.joinpath(*PureRelativePath(relative).parts)
+            destination_file = target.joinpath(*PureRelativePath(relative).parts)
+            destination_file.parent.mkdir(parents=True, exist_ok=True)
+            temp_file = destination_file.with_name(f".{destination_file.name}.{uuid4().hex}.tmp")
             temp_file.write_bytes(source_file.read_bytes())
             os.replace(temp_file, destination_file)
-        finally:
-            if temp_file.exists():
-                temp_file.unlink()
+            completed.append(relative)
+    except OSError as error:
+        raise ToolPlanError('SKILL_INSTALL_IO_INTERRUPTED', destination_root=str(target),
+                            completed_files=completed, possible_partial_temp=str(temp_file) if temp_file else None,
+                            errno=error.errno, winerror=getattr(error, 'winerror', None),
+                            recovery='Retain installation and any temporary file. Inspect source/target parity and the listed completed files before selecting an explicit restore or new destination; no automatic cleanup or retry.') from error
     parity = check_parity(canonical.root, target)
     if not parity["ok"]:
         raise ValueError(
@@ -147,12 +172,17 @@ def main() -> int:
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--install", action="store_true")
     args = parser.parse_args()
+    args.destination = args.destination.expanduser()
 
-    if args.install:
-        manifest = sync_install(args.source, args.destination)
-        result = {"ok": True, "installed_digest": manifest.digest}
-    else:
-        result = check_parity(args.source, args.destination)
+    try:
+        if args.install:
+            manifest = sync_install(args.source, args.destination)
+            result = {"ok": True, "installed_digest": manifest.digest}
+        else:
+            preflight_install(build_manifest(args.source), checked_path(args.destination, '.'))
+            result = check_parity(args.source, args.destination)
+    except ToolPlanError as error:
+        result = error.diagnostic
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0 if result["ok"] else 1
 

@@ -1,0 +1,106 @@
+{
+  "schema_version": "product-family-rule-pack/v1",
+  "rule_pack_version": "wall-sticker/2026-08-27.2",
+  "language": "zh-CN",
+  "product_family": "wall_sticker",
+  "name_zh": "墙贴与装饰贴纸",
+  "match": {
+    "main_category_ids": ["wall-sticker", "decorative-wall-sticker"],
+    "category_ids": ["600338", "101157", "17027906"],
+    "semantic_terms": ["wall sticker", "wall decal", "decorative sticker", "墙贴", "装饰贴纸"],
+    "exclude_terms": ["wallpaper roll", "墙纸卷", "卷装墙纸"]
+  },
+  "platforms": {
+    "TIKTOK": {
+      "category_ids": ["600338"],
+      "category_name_zh": "家居用品 > 家居装饰 > 装饰贴纸"
+    },
+    "SHOPEE": {
+      "category_ids": ["101157"],
+      "category_name_zh": "墙纸与墙贴"
+    },
+    "OZON": {
+      "category_ids": ["17027906"],
+      "category_name_zh": "家居与花园 > 装饰与室内 > 室内贴纸",
+      "type_id": "91971"
+    }
+  },
+  "target_locales": {
+    "PH": "en",
+    "MY": "ms",
+    "TH": "th",
+    "VN": "vi",
+    "MX": "es",
+    "GB": "en",
+    "RU": "ru"
+  },
+  "image_policy": {
+    "minimum_images_per_brand": 7,
+    "dual_brand_total_minimum": 14,
+    "required_roles": [
+      "cover_scene",
+      "installed_detail",
+      "scene_1",
+      "scene_2",
+      "scene_3",
+      "assembled_size",
+      "piece_layout_or_instructions"
+    ],
+    "cover_must_be_installed_scene": true,
+    "cover_product_frame_share_pct": [45, 60],
+    "forbidden_cover_forms": [
+      "wallpaper_roll",
+      "loose_printed_sheet",
+      "white_background_packshot",
+      "packaging_flat_lay"
+    ],
+    "minimum_distinct_scene_camera_families": 3,
+    "dimension_only_translation_required": false,
+    "translation_after_brand_generation": true,
+    "composition_reference_is_not_product_truth": true
+  },
+  "brand_role_sets": {
+    "livelyhive-sea": [
+      "cover_scene",
+      "installed_detail",
+      "scene_1",
+      "scene_2",
+      "scene_3",
+      "assembled_size",
+      "piece_layout_or_instructions"
+    ],
+    "homebloom-sea": [
+      "cover_scene",
+      "installed_detail",
+      "scene_1",
+      "scene_2",
+      "scene_3",
+      "assembled_size",
+      "piece_layout_or_instructions"
+    ]
+  },
+  "claim_policy": {
+    "terms": {
+      "self_adhesive": ["self-adhesive", "self adhesive", "peel and stick"],
+      "waterproof": ["waterproof"],
+      "removable": ["removable"],
+      "washable": ["washable"],
+      "easy_installation": ["easy installation", "easy to install"]
+    },
+    "verified_claim_keys": ["self_adhesive"]
+  },
+  "pricing_policy": {
+    "higher_cost_variant_must_not_have_lower_price": true,
+    "exact_formula_requires_frozen_pricing_digest": true
+  },
+  "reference_policy": {
+    "product_truth_controls": ["design", "piece_count", "colors", "motifs", "dimensions", "proportions"],
+    "composition_reference_controls": ["room_type", "camera_angle", "framing", "product_prominence"],
+    "never_copy_from_composition_reference": ["product_design", "person_identity", "logo", "badge", "text", "watermark"]
+  },
+  "sources": {
+    "business_knowledge": "publication-review-knowledge-base.md",
+    "confirmation": "2026-08-23 用户对 SKU 0983 最终审核退回及 0021/0026 同类商品回读",
+    "maintenance_rule": "只有经过自动 QA、人工终审和正式发布回读验证的规则才升级为 CONFIRMED"
+  }
+}

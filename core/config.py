@@ -13,6 +13,10 @@ FALLBACK_CONFIG_PATHS = [
 ]
 
 _cache = None
+# Non-secret provenance of the loaded cache; health must never infer it from
+# the next settings_path() selection or initialize configuration to obtain it.
+_cache_source = None
+_cache_source_stat = None
 
 
 def settings_path() -> Path:
@@ -28,7 +32,7 @@ def settings_base_dir() -> Path:
 
 
 def load_settings() -> dict:
-    global _cache
+    global _cache, _cache_source, _cache_source_stat
     if _cache is not None:
         return _cache
     path = settings_path()
@@ -39,6 +43,9 @@ def load_settings() -> dict:
         )
     with path.open(encoding="utf-8") as f:
         _cache = json.load(f)
+    _cache_source = path.resolve()
+    stat = path.stat()
+    _cache_source_stat = (stat.st_size, stat.st_mtime_ns)
     return _cache
 
 

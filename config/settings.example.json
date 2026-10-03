@@ -130,24 +130,6 @@
     "note": "90天0单 + 28天CTR低于店铺中位 + 不在促销中"
   },
 
-  "feishu": {
-    "enabled": false,
-    "webhook_url": "",
-    "console_base_url": "http://127.0.0.1:8765",
-    "ozon_data_dir": "../ozon/webapp/data",
-    "digest_hour": 8,
-    "note": "自定义机器人 Webhook = 单向日报；feishu_app = 双向 @ 交互"
-  },
-
-  "feishu_app": {
-    "enabled": false,
-    "app_id": "",
-    "app_secret": "",
-    "verification_token": "",
-    "encrypt_key": "",
-    "note": "企业自建应用 = 双向 @ 交互。配置后运行 python3 main.py feishu bot 或 HTTP /api/feishu/event"
-  },
-
   "shopee": {
     "enabled": false,
     "environment": "test",
@@ -163,7 +145,7 @@
     "client_id": "",
     "api_key": "",
     "data_dir": "../ozon/webapp/data",
-    "note": "留空 client_id/api_key 时自动读 ozon/webapp/app.py；data_dir 默认可用 feishu.ozon_data_dir"
+    "note": "留空 client_id/api_key 时自动读 ozon/webapp/app.py；共享数据路径在 ozon.data_dir 配置"
   },
 
   "catalog_sync": {

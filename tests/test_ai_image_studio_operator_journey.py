@@ -86,6 +86,7 @@ const strategyNodes = [
   Object.assign(fakeNode("strategy:ai"), {value: "ai_assisted"}),
 ];
 const document = {
+  addEventListener() {},
   querySelector(selector) {
     const recipe = selector.match(
       /^\.recipe-count\[data-recipe-type="([^"]+)"\]$/

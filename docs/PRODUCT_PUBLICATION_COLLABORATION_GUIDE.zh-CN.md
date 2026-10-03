@@ -3,146 +3,66 @@
 本手册用于上下文丢失、切换 Agent、应用重启或任务中断后的继续执行。
 三项英文 Skill 是执行权威；本手册只说明 Kyle 与 Agent 如何配合。
 
-## 一条主线
+## 唯一人工审核
 
-一个商品始终只走三轮：
+一个商品仍按三段产物推进，但只有一次常规人工审核：
 
-1. `prepare-product-publication`：第一轮准备和商品发布中心审核。
-2. `prepare-product-images`：可选图片生成、唯一一次妙手同步、会话批准和发布交接。
-3. `publish-approved-product`：按冻结快照分别发布 TikTok、Shopee、Ozon。
+1. `prepare-product-publication` 生成 R1 商品事实、类目、文案、价格和图片计划候选，外部写入为零；
+2. `prepare-product-images` 在既有付费授权和预算内生成、复用、本地化并自动质检图片，妙手和商城写入为零；
+3. `publish-approved-product` 完成妙手精确回读、零写入预检并冻结完整发布候选，然后在真正商城发布前请求一次 `FINAL_MARKETPLACE_PUBLISH`。
 
-只有商品发布中心 `/new-product?offer_id=<OFFER_ID>` 是 Kyle 的审核页面。
-其他页面都是技术状态或预览页面，不要求点击批准按钮。Kyle 在会话中说
-“通过”“继续”“开始下一轮”或“开始发布”，即表示批准当前已展示的冻结范围。
+R1/R2 的页面、候选包、图片预览、QA 结果以及兼容字段中的 `approved`
+只用于审计和技术冻结，不是人工批准。Agent 不应要求 Kyle 说“第一轮通过”、
+“图片通过”或“开始第三轮”。事实冲突、无安全类目、QA 未解决等问题应显示为
+阻断；已有规则能解决的步骤继续自动推进。
 
-## 开始前
+最终审核必须在商品发布前端显示完整且不可变的候选：Offer、revision、plan、
+SKU、目标店铺、文案、价格、库存规则、图片路由、配套动作和摘要。Kyle 在会话
+中明确批准后，系统持久化与 `candidate_digest + snapshot_digest + 完整有序目标`
+绑定的 `final-marketplace-approval/v1` 回执。页面按钮仅记录/展示该事实，不能自行
+产生授权。
 
-启动并检查本地服务：
+## 自动推进与授权边界
 
-```powershell
-.venv\Scripts\python.exe scripts\product_publication_runtime.py --start
-.venv\Scripts\python.exe scripts\product_publication_runtime.py --status
-```
+Agent 在以下条件同时满足时连续完成 R1、R2 和最终候选编译，不停下来索批：
 
-检查三项 Skill 已安装且与仓库一致：
+- Offer ID、目标店铺和任务范围明确；
+- 事实、类目、价格、图片与 QA 可由来源证据和现行规则唯一确定；
+- 付费模型用途、提供商、单商品预算和重试仍在现有明确授权内；
+- R1/R2 不写妙手、商城草稿或商城商品。
 
-```powershell
-.venv\Scripts\python.exe scripts\sync_product_publication_skills.py --check
-```
+下列情况需要新的明确输入或授权，但不得伪装成常规“阶段审核”：
 
-新 Agent 接管时，先运行：
+- 缺失或冲突的高风险商品事实，或者没有安全类目候选；
+- 冻结候选发生变化，或目标范围扩大；
+- 新的付费用途/提供商/预算超出现有授权；
+- 引入候选中没有列明的新外部写入类型。
+
+## 最终批准后的连续执行
+
+有效最终批准回执存在后，Agent 必须先校验并复用回执，再继续独立的平台执行、
+只读回读和恢复，不得因为换会话、换 Agent、切换平台、平台仍在处理、只读回读、
+异步收敛或候选预算内的技术重试而再次询问。
+
+以下变化会使原回执失效并需要新的最终审核：候选摘要变化、目标扩张、SKU/文案/
+图片/价格/折扣/库存或仓库规则变化、既有授权外的新付费动作、以及新的外部写入
+类型。若只是从不可变已批准谱系恢复被系统缺陷遗漏的同一事实，使用受控 continuation
+回执，并证明 `no_scope_expansion=true`。
+
+未知写入结果必须先回读对账，不能盲目重发。一个平台失败不能阻止其余已批准平台，
+每个目标分别保留提交和官方回读证据。妙手同步成功不等于商城发布成功。
+
+## 接管与状态报告
+
+新 Agent 先执行当前仓库的只读接管检查：
 
 ```powershell
 .venv\Scripts\python.exe scripts\product_publication_runtime.py --takeover-check
 .venv\Scripts\python.exe scripts\product_publication_workflow.py --offer-id <OFFER_ID>
 ```
 
-该命令只读，不访问平台，不修复数据，只输出当前阶段和唯一下一条命令。
+接管必须核对真实仓库、HEAD、服务身份、Skill parity、Offer、冻结候选和最终批准
+回执。不要依赖聊天标题或旧阶段文案猜测，也不要重复已确认的付费或外部写入。
 
-## 第一轮：准备商品
-
-Kyle 推荐说法：
-
-> `offer ID <OFFER_ID>，发布到 <精确店铺清单>，开始第一轮。`
-
-Agent 必须：
-
-- 使用精确 Offer ID 和精确店铺清单，不自行补 HomeBloom、Shopee 或 Ozon；
-- 核对 SKU、类目、价格、标题、发布规格、成本、重量和包裹尺寸；
-- 提出图片计划，但翻译位置和双内容组由 Kyle 决定；
-- 把结果写入 `reports/product-preparation/<OFFER_ID>/first-review.json`；
-- 明确报告：妙手写入 `0`、平台写入 `0`。
-
-第一轮禁止：妙手更新、付费图片调用、认领、创建店铺草稿和平台发布。
-
-Kyle 审核完推荐说法：
-
-> `第一轮通过，开始第二轮。`
-
-## 第二轮：图片、妙手和冻结交接
-
-Agent 先执行只读预检：
-
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <OFFER_ID>
-```
-
-有已选翻译任务时，Kyle 的“开始第二轮”授权已选范围内的付费生成；Agent 执行：
-
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <OFFER_ID> --execute-paid --confirm-paid-generation
-```
-
-没有翻译任务时，付费任务数必须为 `0`，流程直接继续，不能为了完整流程而生成图片。
-
-第二轮只允许一次妙手公共采集箱更新，并必须官方回读：
-
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <OFFER_ID> --execute-miaoshou --confirm-miaoshou-write
-```
-
-Kyle 在会话中说“通过”或“继续”后，Agent 记录批准：
-
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <OFFER_ID> --approve-all --approved-by Kyle
-```
-
-最后冻结发布交接：
-
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <OFFER_ID> --finalize-release-handoff
-```
-
-新生成的 ToAPIs 图片使用已持久化的公开 HTTPS 结果地址。旧任务若没有该字段，
-Agent 必须要求一份精确 uploaded-assets manifest；不能伪造 URL 或静默重复上传。
-
-成功必须产生：
-
-- `workflow-handoff.json` 状态 `READY_TO_PUBLISH`；
-- 一个精确已批准的 v4 `plan_id` 与 `snapshot_digest`；
-- 妙手确认写入总数恰好 `1`；
-- 平台写入总数 `0`；
-- 有翻译任务时，所有目标站点的图片语言路由完整；
-- 无翻译任务时，直接使用精确基础快照，不创建无意义图片 successor。
-
-## 第三轮：正式发布
-
-Kyle 推荐说法：
-
-> `开始发布。`
-
-Agent 先运行只读状态命令取得精确 `plan_id`，再使用唯一生产入口：
-
-```powershell
-.venv\Scripts\python.exe skills\publish-approved-product\scripts\product_center_publication.py --offer-id <OFFER_ID> --plan-id <PLAN_ID> --platform all --execute
-```
-
-三个平台独立启动和分类。一个平台失败不能阻止另外两个平台；未知结果不能盲目重发。
-Agent 对 Kyle 只报告：发布成功、平台处理中、部分成功、发布失败，以及必要的脱敏原因。
-
-## 中断、换 Agent 或重启
-
-Kyle 推荐说法：
-
-> `检查 <OFFER_ID> 当前进度并继续。`
-
-新 Agent 必须按顺序：
-
-1. 运行 runtime `--takeover-check`，一次核对双服务身份、三项 Skill parity、Git 跟踪状态和真实发布入口；
-2. 若仅有服务未启动，运行 runtime `--start` 后再次执行 `--takeover-check`；
-3. 运行 `product_publication_workflow.py --offer-id ...`；
-4. 只执行输出的唯一下一条命令；
-5. 不依赖聊天历史猜测，不重复已经确认的外部写入。
-
-出现 `RECONCILIATION_REQUIRED` 时停止所有写入，先核对持久化回执和官方状态。
-
-## 每轮 Agent 必须报告
-
-- Offer ID、当前 revision、精确目标店铺；
-- 当前阶段和下一阶段；
-- 本轮付费调用数、妙手确认写入数、平台确认写入数；
-- plan ID、snapshot digest 或明确说明尚未生成；
-- 未解决的最小决定或脱敏技术阻断；
-- 是否可由另一个 Agent 仅凭本地持久化状态继续。
-
-任何时候都不得把“妙手采集箱更新成功”描述成“平台发布成功”。
+每次报告只需列明：Offer 与候选身份、完整目标、当前阻断或逐目标结果、本轮付费/
+妙手/商城确认写入数、最终回执是否有效、以及下一步能否在现有授权内自动继续。

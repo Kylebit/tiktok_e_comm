@@ -64,6 +64,9 @@ def test_homebloom_target_is_a_first_class_independent_publish_target():
         "expected_price": "90",
         "expected_weight_kg": "0.1",
         "expected_package_cm": ["20", "20", "3"],
+        "expected_title": "Approved HomeBloom title",
+        "expected_description": "Approved HomeBloom description",
+        "expected_images": ["https://example.invalid/homebloom-approved.jpg"],
         "expected_sku_parcels": {},
         "expected_currency": "PHP",
         "expected_category_id": "600338",
@@ -95,6 +98,9 @@ def test_one_missing_store_identity_does_not_block_another_store_snapshot():
         "expected_price": "20",
         "expected_weight_kg": "0.1",
         "expected_package_cm": ["20", "20", "3"],
+        "expected_title": "Approved LivelyHive title",
+        "expected_description": "Approved LivelyHive description",
+        "expected_images": ["https://example.invalid/livelyhive-approved.jpg"],
         "expected_sku_parcels": {},
         "expected_currency": "MYR",
         "expected_category_id": "600338",
@@ -124,6 +130,9 @@ def test_one_missing_store_identity_does_not_block_another_store_snapshot():
 
         def draft_matches(self, target, draft):
             return True
+
+        def prepare_approved_draft(self, target, draft):
+            return {"target": target, "draft": draft}
 
         def save_approved_draft(self, target, draft):
             raise AssertionError("exact draft must not be rewritten")

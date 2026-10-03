@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SHOPEE 利润报表</title><style>
+body{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172126}main{margin:auto;padding:20px}h1{margin:4px 0}.meta{color:#64748b}.cards{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:10px;margin:16px 0}.card,section{background:#fff;border:1px solid #dfe6e9;border-radius:10px;padding:12px}.card strong{display:block;font-size:19px;margin-top:4px}.status,.warning{display:inline-block;padding:3px 8px;border-radius:999px;background:#fff3cd}.warning{background:#ffe4b5;color:#7c4700;font-size:11px}.order-filter{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:10px 0;padding:10px 12px;background:#fff;border:1px solid #dfe6e9;border-radius:10px}.order-filter label{display:flex;align-items:center;gap:6px}.order-filter input,.order-filter button{font:inherit;padding:5px 8px;border:1px solid #b8c4ca;border-radius:6px;background:#fff}.order-filter button{cursor:pointer}.filter-summary{font-weight:700}.daily-order-counts{display:flex;flex-wrap:wrap;gap:6px;width:100%}.daily-order-count{padding:3px 7px;border-radius:999px;background:#e8f4ff;color:#164e78;font-variant-numeric:tabular-nums}.table-scroll-top{overflow-x:auto;overflow-y:hidden;height:16px;margin-bottom:4px;background:#eef3f4;border:1px solid #dfe6e9;border-radius:7px}.table-scroll-top>div{height:1px}.table{overflow:auto;max-height:72vh;background:#fff;border:1px solid #dfe6e9;border-radius:10px}table{border-collapse:collapse;min-width:max-content;width:100%}th,td{padding:7px 9px;border-bottom:1px solid #edf1f2;text-align:left;vertical-align:top;white-space:nowrap}th{position:sticky;top:0;z-index:3;background:#eef3f4}.sort-button{border:0;padding:0;background:transparent;color:inherit;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}.sort-button:focus-visible{outline:2px solid #2563eb;outline-offset:3px;border-radius:2px}tfoot td{position:sticky;bottom:0;background:#e8f4ff;font-weight:700;border-top:2px solid #4b9bd8}td.num{text-align:right;font-variant-numeric:tabular-nums}td.product{white-space:normal;min-width:220px;max-width:300px}tr.assumption{background:#fffaf0}tr.local-fulfillment{background:#effaf1}tr.negative{background:#fff5f5}img{width:48px;height:48px;object-fit:cover;border-radius:7px;background:#eee}code{font-size:11px}ul{margin:6px 0;padding-left:20px}@media(max-width:800px){.cards{grid-template-columns:1fr 1fr}main{padding:10px}}
+</style></head><body><main>
+<header><span class="status">ready</span><h1>SHOPEE monthly 订单级利润明细</h1><p class="meta">2026-07-01 至 2026-07-31 · realized_settlement_with_estimated_ads · 2 个已结算订单行 · 页面金额统一显示两位小数，JSON 保留原始 Decimal 精度</p></header>
+<div class="cards"><div class="card"><span>总成交额（用户实付）CNY</span><strong>180.00</strong></div><div class="card"><span>净结算 CNY</span><strong>180.00</strong></div><div class="card"><span>商品成本 CNY</span><strong>35.00</strong></div><div class="card"><span>广告成本 CNY</span><strong>39.60</strong></div><div class="card"><span>本土履约费 CNY</span><strong>8.00</strong></div><div class="card"><span>利润 CNY</span><strong>97.40</strong></div><div class="card"><span>整体利润率（利润/用户实付）</span><strong>54.11%</strong></div></div><p class="meta">本报表外部成本全部为本土履约费：2 个本土父订单 × CNY 4.00 = CNY 8.00。平台佣金、交易费、税费等已包含在净结算中，不在此重复扣除。</p>
+<section><h2>阻断性质量问题</h2><ul><li>无阻断性质量问题</li></ul><h2>临时假设警告</h2><ul><li>无临时假设</li></ul><p class="meta">report_id=shopee-profit-july-synthetic · idempotency_key=synthetic-only</p></section>
+<h2>订单明细（每项费用独立成列）</h2>
+<div class="order-filter" data-role="order-date-filter">
+<label>下单日期从 <input type="date" data-role="order-date-start"></label>
+<label>至 <input type="date" data-role="order-date-end"></label>
+<button type="button" data-role="order-date-reset">清除筛选</button>
+<span class="filter-summary" data-role="filtered-order-summary"></span>
+<span class="meta">筛选只改变页面显示和底部筛选合计，不修改审计 JSON 或整期合计。</span>
+<div class="daily-order-counts" data-role="daily-order-counts" aria-live="polite"></div>
+</div>
+<div class="table-scroll-top" data-role="order-table-top-scroll" aria-label="订单明细顶部横向滚动条"><div></div></div>
+<div class="table" data-role="order-table-scroll"><table><thead><tr><th>结算时间</th><th><button type="button" class="sort-button" data-sort="order-created-at" aria-sort="none" title="点击按下单时间升序或降序排列">下单时间 <span aria-hidden="true">↕</span></button></th><th>订单 ID</th><th>国家</th><th>发货方式</th><th>主图</th><th>Seller SKU</th><th>净结算(CNY)</th><th>商品总成本(CNY)</th><th>广告费(CNY)</th><th>本土履约费(CNY)</th><th>利润(CNY)</th><th>利润率(利润/用户实付)</th><th>规格</th><th>数量</th><th>单件重量(g)</th><th>计费重量(g)</th><th>联盟营销佣金(AMS)</th><th>商品折后成交额</th><th>买家现金实付商品金额</th><th>净结算(当地)</th><th>最新汇率(CNY/当地)</th><th>汇率更新时间</th><th>汇率来源</th><th>单件成本(CNY)</th><th>广告基数(当地)</th><th>广告比例</th><th>广告比例来源</th><th>广告费(当地)</th><th>外部成本合计(CNY)</th><th>平台佣金 [commission]</th><th>成本/FX/结算证据</th><th>商品名称</th></tr></thead><tbody><tr class="local-fulfillment" data-order-created-at="2026-07-25T10:00:00+07:00" data-order-id="SYNTHETIC-ORDER-1" data-sort-tie="SYNTHETIC-ORDER-1::SYNTHETIC-ORDER-1:1" data-sum-values="{&quot;advertising_cny&quot;:{&quot;value&quot;:&quot;22&quot;},&quot;ams&quot;:{&quot;cny&quot;:&quot;0&quot;,&quot;currency&quot;:&quot;&quot;,&quot;local&quot;:&quot;0&quot;},&quot;buyer_cash_cny&quot;:{&quot;value&quot;:&quot;100&quot;},&quot;buyer_cash_local&quot;:{&quot;value&quot;:&quot;100&quot;},&quot;external_costs_cny&quot;:{&quot;value&quot;:&quot;4&quot;},&quot;fee:commission&quot;:{&quot;cny&quot;:&quot;10&quot;,&quot;currency&quot;:&quot;THB&quot;,&quot;local&quot;:&quot;10&quot;},&quot;local_fulfillment_cost_cny&quot;:{&quot;value&quot;:&quot;4&quot;},&quot;product_cost_cny&quot;:{&quot;value&quot;:&quot;20&quot;},&quot;product_sales_local&quot;:{&quot;value&quot;:&quot;100&quot;},&quot;profit_cny&quot;:{&quot;value&quot;:&quot;54&quot;},&quot;settlement_cny&quot;:{&quot;value&quot;:&quot;100&quot;}}"><td class="">2026-07-30 08:00:00（UTC+07:00）</td><td class="">2026-07-25 10:00:00（UTC+07:00）</td><td class="">SYNTHETIC-ORDER-1</td><td class="">TH</td><td class="">本土发货</td><td class=""><span class="meta">无主图</span></td><td class="">0021</td><td class="num">100.00</td><td class="num">20.00</td><td class="num">22.00</td><td class="num">4.00</td><td class="num">54.00</td><td class="num">54.00%</td><td class="product">A</td><td class="num">1</td><td class="num">100.00</td><td class="num">100.00</td><td class="">0.00 当地 / CNY 0.00</td><td class="num">100.00</td><td class="num">100.00</td><td class="num">100.00</td><td class="num">1.00000000</td><td class="">2026-08-01 00:00:00（UTC+00:00）</td><td class="product">synthetic-fx</td><td class="num">20.00</td><td class="num">100.00</td><td class="num">22.00%</td><td class="product">人工月报覆盖</td><td class="num">22.00</td><td class="num">4.00</td><td class="num">10.00 THB<br><small>CNY 10.00</small></td><td class="product">成本: synthetic-catalog<br>synthetic-v1<br>FX: synthetic-fx @ 2026-08-01T00:00:00Z<br>结算: synthetic-snapshot-v1<br>结算事实: —</td><td class="product">Synthetic product A</td></tr><tr class="local-fulfillment" data-order-created-at="2026-07-26T11:00:00+07:00" data-order-id="SYNTHETIC-ORDER-2" data-sort-tie="SYNTHETIC-ORDER-2::SYNTHETIC-ORDER-2:1" data-sum-values="{&quot;advertising_cny&quot;:{&quot;value&quot;:&quot;17.6&quot;},&quot;ams&quot;:{&quot;cny&quot;:&quot;0&quot;,&quot;currency&quot;:&quot;&quot;,&quot;local&quot;:&quot;0&quot;},&quot;buyer_cash_cny&quot;:{&quot;value&quot;:&quot;80&quot;},&quot;buyer_cash_local&quot;:{&quot;value&quot;:&quot;80&quot;},&quot;external_costs_cny&quot;:{&quot;value&quot;:&quot;4&quot;},&quot;fee:commission&quot;:{&quot;cny&quot;:&quot;8&quot;,&quot;currency&quot;:&quot;THB&quot;,&quot;local&quot;:&quot;8&quot;},&quot;local_fulfillment_cost_cny&quot;:{&quot;value&quot;:&quot;4&quot;},&quot;product_cost_cny&quot;:{&quot;value&quot;:&quot;15&quot;},&quot;product_sales_local&quot;:{&quot;value&quot;:&quot;80&quot;},&quot;profit_cny&quot;:{&quot;value&quot;:&quot;43.4&quot;},&quot;settlement_cny&quot;:{&quot;value&quot;:&quot;80&quot;}}"><td class="">2026-07-31 08:00:00（UTC+07:00）</td><td class="">2026-07-26 11:00:00（UTC+07:00）</td><td class="">SYNTHETIC-ORDER-2</td><td class="">TH</td><td class="">本土发货</td><td class=""><img src="https://example.invalid/not-loaded.jpg" alt="商品主图" loading="lazy"></td><td class="">0022</td><td class="num">80.00</td><td class="num">15.00</td><td class="num">17.60</td><td class="num">4.00</td><td class="num">43.40</td><td class="num">54.25%</td><td class="product">B</td><td class="num">1</td><td class="num">120.00</td><td class="num">120.00</td><td class="">0.00 当地 / CNY 0.00</td><td class="num">80.00</td><td class="num">80.00</td><td class="num">80.00</td><td class="num">1.00000000</td><td class="">2026-08-01 00:00:00（UTC+00:00）</td><td class="product">synthetic-fx</td><td class="num">15.00</td><td class="num">80.00</td><td class="num">22.00%</td><td class="product">人工月报覆盖</td><td class="num">17.60</td><td class="num">4.00</td><td class="num">8.00 THB<br><small>CNY 8.00</small></td><td class="product">成本: synthetic-catalog<br>synthetic-v1<br>FX: synthetic-fx @ 2026-08-01T00:00:00Z<br>结算: synthetic-snapshot-v1<br>结算事实: —</td><td class="product">Synthetic product B</td></tr></tbody><tfoot><tr><td class="num" data-role="visible-total-label">合计</td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num" data-total-key="settlement_cny" data-total-format="money">180.00</td><td class="num" data-total-key="product_cost_cny" data-total-format="money">35.00</td><td class="num" data-total-key="advertising_cny" data-total-format="money">39.60</td><td class="num" data-total-key="local_fulfillment_cost_cny" data-total-format="money">8.00</td><td class="num" data-total-key="profit_cny" data-total-format="money">97.40</td><td class="num" data-total-key="profit_margin" data-total-format="margin">54.11%</td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num" data-total-key="ams" data-total-format="localized">0.00 当地 / CNY 0.00</td><td class="num" data-total-key="product_sales_local" data-total-format="money">180.00</td><td class="num" data-total-key="buyer_cash_local" data-total-format="money">180.00</td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num" data-total-key="external_costs_cny" data-total-format="money">8.00</td><td class="num" data-total-key="fee:commission" data-total-format="pair">18.00<br><small>CNY 18.00</small></td><td></td><td></td></tr></tfoot></table></div>
+</main><script>
+(() => {
+  const top = document.querySelector('[data-role="order-table-top-scroll"]');
+  const body = document.querySelector('[data-role="order-table-scroll"]');
+  const spacer = top && top.firstElementChild;
+  if (!top || !body || !spacer) return;
+  let syncing = false;
+  const resize = () => { spacer.style.width = `${body.scrollWidth}px`; };
+  const mirror = (source, target) => {
+    if (syncing) return;
+    syncing = true;
+    target.scrollLeft = source.scrollLeft;
+    requestAnimationFrame(() => { syncing = false; });
+  };
+  top.addEventListener('scroll', () => mirror(top, body), {passive: true});
+  body.addEventListener('scroll', () => mirror(body, top), {passive: true});
+  window.addEventListener('resize', resize);
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(body.querySelector('table'));
+  resize();
+
+  const orderTimeButton = body.querySelector('[data-sort="order-created-at"]');
+  const tbody = body.querySelector('tbody');
+  const startInput = document.querySelector('[data-role="order-date-start"]');
+  const endInput = document.querySelector('[data-role="order-date-end"]');
+  const resetButton = document.querySelector('[data-role="order-date-reset"]');
+  const filterSummary = document.querySelector('[data-role="filtered-order-summary"]');
+  const dailyCounts = document.querySelector('[data-role="daily-order-counts"]');
+  const totalLabel = body.querySelector('[data-role="visible-total-label"]');
+  const totalCells = Array.from(body.querySelectorAll('tfoot [data-total-key]'));
+  const wholePeriodTotals = new Map(totalCells.map(cell => [cell, cell.innerHTML]));
+  const renderPair = (cell, local, cny, currency, localized) => {
+    cell.replaceChildren();
+    if (localized) {
+      cell.append(document.createTextNode(`${local.toFixed(2)} ${currency || '当地'} / CNY ${cny.toFixed(2)}`));
+      return;
+    }
+    cell.append(document.createTextNode(local.toFixed(2)), document.createElement('br'));
+    const detail = document.createElement('small');
+    detail.textContent = `CNY ${cny.toFixed(2)}`;
+    cell.append(detail);
+  };
+  const updateVisibleTotals = (visibleRows, filterActive) => {
+    if (!filterActive) {
+      wholePeriodTotals.forEach((html, cell) => { cell.innerHTML = html; });
+      if (totalLabel) totalLabel.textContent = '合计';
+      return;
+    }
+    const totals = new Map();
+    visibleRows.forEach(row => {
+      let values = {};
+      try { values = JSON.parse(row.dataset.sumValues || '{}'); } catch (_error) { values = {}; }
+      Object.entries(values).forEach(([key, value]) => {
+        const current = totals.get(key) || {value: 0, local: 0, cny: 0, currency: ''};
+        current.value += Number(value.value || 0);
+        current.local += Number(value.local || 0);
+        current.cny += Number(value.cny || 0);
+        current.currency ||= value.currency || '';
+        totals.set(key, current);
+      });
+    });
+    totalCells.forEach(cell => {
+      const value = totals.get(cell.dataset.totalKey) || {value: 0, local: 0, cny: 0, currency: ''};
+      if (cell.dataset.totalFormat === 'margin') {
+        const profit = totals.get('profit_cny')?.value || 0;
+        const buyerCash = totals.get('buyer_cash_cny')?.value || 0;
+        cell.textContent = buyerCash ? `${(profit / buyerCash * 100).toFixed(2)}%` : '—';
+      } else if (cell.dataset.totalFormat === 'localized') renderPair(cell, value.local, value.cny, value.currency, true);
+      else if (cell.dataset.totalFormat === 'pair') renderPair(cell, value.local, value.cny, value.currency, false);
+      else cell.textContent = value.value.toFixed(2);
+    });
+    if (totalLabel) totalLabel.textContent = '筛选合计';
+  };
+  const applyDateFilter = () => {
+    if (!tbody) return;
+    const start = startInput ? startInput.value : '';
+    const end = endInput ? endInput.value : '';
+    const filterActive = Boolean(start || end);
+    const visibleRows = [];
+    const ordersByDay = new Map();
+    Array.from(tbody.querySelectorAll('tr')).forEach(row => {
+      const date = (row.dataset.orderCreatedAt || '').slice(0, 10);
+      const visible = !filterActive || (Boolean(date) && (!start || date >= start) && (!end || date <= end));
+      row.hidden = !visible;
+      if (!visible) return;
+      visibleRows.push(row);
+      if (date) {
+        if (!ordersByDay.has(date)) ordersByDay.set(date, new Set());
+        ordersByDay.get(date).add(row.dataset.orderId || row.dataset.sortTie || '');
+      }
+    });
+    const uniqueOrders = new Set(visibleRows.map(row => row.dataset.orderId || row.dataset.sortTie || ''));
+    if (filterSummary) filterSummary.textContent = `显示 ${uniqueOrders.size} 个订单，${visibleRows.length} 个商品单位行`;
+    if (dailyCounts) {
+      dailyCounts.replaceChildren(...Array.from(ordersByDay.entries())
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([date, orderIds]) => {
+          const chip = document.createElement('span');
+          chip.className = 'daily-order-count';
+          chip.textContent = `${date}：${orderIds.size} 单`;
+          return chip;
+        }));
+    }
+    updateVisibleTotals(visibleRows, filterActive);
+  };
+  if (startInput) startInput.addEventListener('input', applyDateFilter);
+  if (endInput) endInput.addEventListener('input', applyDateFilter);
+  if (resetButton) resetButton.addEventListener('click', () => {
+    if (startInput) startInput.value = '';
+    if (endInput) endInput.value = '';
+    applyDateFilter();
+  });
+  applyDateFilter();
+  if (orderTimeButton && tbody) {
+    orderTimeButton.addEventListener('click', () => {
+      const direction = orderTimeButton.getAttribute('aria-sort') === 'ascending'
+        ? 'descending' : 'ascending';
+      const multiplier = direction === 'ascending' ? 1 : -1;
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort((left, right) => {
+        const leftTime = left.dataset.orderCreatedAt || '';
+        const rightTime = right.dataset.orderCreatedAt || '';
+        if (!leftTime && !rightTime) return (left.dataset.sortTie || '').localeCompare(right.dataset.sortTie || '');
+        if (!leftTime) return 1;
+        if (!rightTime) return -1;
+        const timeOrder = leftTime.localeCompare(rightTime);
+        return timeOrder ? timeOrder * multiplier : (left.dataset.sortTie || '').localeCompare(right.dataset.sortTie || '');
+      });
+      rows.forEach(row => tbody.appendChild(row));
+      orderTimeButton.setAttribute('aria-sort', direction);
+      orderTimeButton.querySelector('span').textContent = direction === 'ascending' ? '↑' : '↓';
+    });
+  }
+})();
+</script></body></html>

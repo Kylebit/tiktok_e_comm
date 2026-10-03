@@ -207,22 +207,79 @@ def _historical_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
     return out
 
 
-def _live_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
+def _live_tiktok_rows(skus: tuple[str, ...], targets=None, *, call_guard=None, tiktok_runtime=None) -> list[dict[str, Any]]:
     """Discover exact active products from the official API, independent of DB sync."""
-    from scripts.audit_uncovered_discounts import (
-        _all_active_products, _default_transport, _seller_skus, _shop_rows,
-    )
+    from core import auth, shops
+    from core.api_client import post
 
     out: list[dict[str, Any]] = []
-    for shop in _shop_rows(_default_transport().list_shops()):
+    if call_guard: call_guard()
+    token = tiktok_runtime.tiktok_token() if tiktok_runtime else auth.access_token()
+    for shop in (tiktok_runtime.tiktok_shops(token) if tiktok_runtime else shops.list_shops(token)):
         name = str(shop.get("name") or shop.get("shop_name") or "")
         region = str(shop.get("region") or shop.get("region_code") or "").upper()
         target = _shop_target(name, region)
         cipher = str(shop.get("cipher") or shop.get("shop_cipher") or "")
         if not target or not cipher:
             continue
-        for product in _all_active_products(cipher):
-            all_skus = sorted({_tail4(value) for value in _seller_skus(product) if _tail4(value)})
+        if targets is not None and target not in targets:
+            continue
+        products: list[Mapping[str, Any]] = []
+        page_token = ""
+        seen_tokens: set[str] = set()
+        declared_total: int | None = None
+        while True:
+            if page_token in seen_tokens:
+                raise RuntimeError("TikTok active-product cursor repeated")
+            seen_tokens.add(page_token)
+            query = {"shop_cipher": cipher, "page_size": "100"}
+            if page_token:
+                query["page_token"] = page_token
+            if call_guard: call_guard()
+            send = (lambda path, token, query, body: tiktok_runtime.tiktok_request('POST',path,token,query,body)) if tiktok_runtime else post
+            response = send(
+                "/product/202309/products/search",
+                token,
+                query,
+                {"status": "ACTIVATE"},
+            )
+            if response.get("code") != 0:
+                raise RuntimeError("TikTok active-product search failed")
+            data = response.get("data")
+            rows = data.get("products") if isinstance(data, Mapping) else None
+            total = data.get("total_count") if isinstance(data, Mapping) else None
+            next_token = data.get("next_page_token") if isinstance(data, Mapping) else None
+            if (
+                not isinstance(rows, list)
+                or any(not isinstance(row, Mapping) for row in rows)
+                or type(total) is not int
+                or total < 0
+                or type(next_token) is not str
+                or (declared_total is not None and total != declared_total)
+            ):
+                raise RuntimeError("TikTok active-product search shape invalid")
+            declared_total = total
+            products.extend(rows)
+            print(
+                f"live-plan {target}: {len(products)}/{declared_total} active products",
+                file=sys.stderr,
+                flush=True,
+            )
+            if not next_token:
+                if len(products) != declared_total:
+                    raise RuntimeError("TikTok active-product search incomplete")
+                break
+            page_token = next_token
+        for product in products:
+            sku_rows = product.get("skus")
+            if not isinstance(sku_rows, list) or any(
+                not isinstance(row, Mapping) for row in sku_rows
+            ):
+                raise RuntimeError("TikTok active-product SKU shape invalid")
+            all_skus = sorted({
+                _tail4(row.get("seller_sku"))
+                for row in sku_rows if _tail4(row.get("seller_sku"))
+            })
             if not set(all_skus) & set(skus):
                 continue
             out.append({
@@ -286,48 +343,86 @@ def _durable_miaoshou_tiktok_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]
     return out
 
 
-def _live_shopee_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
+def _live_shopee_rows(skus: tuple[str, ...], targets=None, *, call_guard=None, tiktok_runtime=None) -> list[dict[str, Any]]:
     """Discover exact active Shopee items and models through the official API."""
+    from concurrent.futures import ThreadPoolExecutor
+
     from modules.shopee.auth import ensure_shop_token
     from modules.shopee.shops import SEA_REGIONS, sync_shop_ids
-    from scripts.audit_uncovered_shopee_discounts import _active_items, _item_cards
+    from modules.shopee.sync import _fetch_item_ids, _fetch_items_base, _rows_from_item
 
+    if call_guard: call_guard()
     shop_ids = {key.upper(): int(value) for key, value in sync_shop_ids().items()}
     out: list[dict[str, Any]] = []
     for region in sorted(SEA_REGIONS):
+        if targets is not None and f'shopee:{region}' not in targets:
+            continue
         shop_id = shop_ids.get(region)
         if not shop_id:
             continue
-        request_ids: list[str] = []
+        if call_guard: call_guard()
         token = ensure_shop_token(shop_id)
-        cards = _item_cards(
-            shop_id,
-            token,
-            _active_items(shop_id, token, request_ids),
-            request_ids,
+        if call_guard: call_guard()
+        item_ids = _fetch_item_ids(shop_id, token,call_guard=call_guard) if call_guard else _fetch_item_ids(shop_id, token)
+        print(
+            f"live-plan shopee:{region}: {len(item_ids)} active item identities",
+            file=sys.stderr,
+            flush=True,
         )
-        for item in cards:
-            all_skus = sorted({_tail4(value) for value in item.get("seller_skus") or [] if _tail4(value)})
-            if not set(all_skus) & set(skus):
-                continue
-            out.append({
-                "target_label": f"shopee:{region}",
-                "platform": "shopee",
-                "store_name": f"Shopee {region}",
-                "shop_id": str(shop_id),
-                "product_id": str(item.get("product_id") or ""),
-                "title": str(item.get("title") or ""),
-                "requested_skus": sorted(set(all_skus) & set(skus)),
-                "all_product_skus": all_skus,
-                "current_status": "NORMAL",
-                "identity_source": "shopee_official_active_item_and_models",
-                "action": "UNLIST_ITEM",
-            })
+        if call_guard: call_guard()
+        items = _fetch_items_base(shop_id, token, item_ids,call_guard=call_guard) if call_guard else _fetch_items_base(shop_id, token, item_ids)
+        if {
+            int(item.get("item_id")) for item in items if item.get("item_id") is not None
+        } != set(item_ids):
+            raise RuntimeError("Shopee active-item snapshot is incomplete")
+        def fetch_models(item):
+            if call_guard: call_guard()
+            model_rows, _ = _rows_from_item(
+                shop_id, region, token, item, use_cache=False, **({'call_guard':call_guard} if call_guard else {})
+            )
+            return item, model_rows
+
+        # These are independent provider reads. Keep concurrency bounded to
+        # reduce wall time without changing write budgets or using cache state.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            observed_items = pool.map(fetch_models, items)
+            for item_index, observed in enumerate(observed_items, 1):
+                item, model_rows = observed
+                all_skus = sorted({
+                    _tail4(row.get("seller_sku"))
+                    for row in model_rows if _tail4(row.get("seller_sku"))
+                })
+                if item_index % 50 == 0 or item_index == len(items):
+                    print(
+                        f"live-plan shopee:{region}: {item_index}/{len(items)} item details",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                if not set(all_skus) & set(skus):
+                    continue
+                out.append({
+                    "target_label": f"shopee:{region}",
+                    "platform": "shopee",
+                    "store_name": f"Shopee {region}",
+                    "shop_id": str(shop_id),
+                    "product_id": str(item.get("item_id") or ""),
+                    "title": str(item.get("item_name") or ""),
+                    "requested_skus": sorted(set(all_skus) & set(skus)),
+                    "all_product_skus": all_skus,
+                    "current_status": "NORMAL",
+                    "identity_source": "shopee_official_active_item_and_models",
+                    "action": "UNLIST_ITEM",
+                })
     return out
 
 
 def _shopee_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
     path = REPO_ROOT / "data" / "shopee_global_sku_map.json"
+    if not path.is_file():
+        # This file is a legacy identity cache, not provider evidence.  A clean
+        # checkout may legitimately omit it; live planning must still continue
+        # through the official Shopee discovery performed above.
+        return []
     data = json.loads(path.read_text(encoding="utf-8"))
     out: list[dict[str, Any]] = []
     for global_id, entry in data.items():
@@ -383,13 +478,15 @@ def _ozon_rows(skus: tuple[str, ...]) -> list[dict[str, Any]]:
     return out
 
 
-def _live_verify(row: dict[str, Any]) -> dict[str, Any]:
+def _live_verify(row: dict[str, Any], *, call_guard=None, tiktok_runtime=None) -> dict[str, Any]:
     platform = row["platform"]
     try:
+        if call_guard: call_guard()
         if platform == "tiktok":
             from core import auth
             from modules.products.sync import _fetch_product_detail
-            detail = _fetch_product_detail(auth.access_token(), row["shop_cipher"], row["product_id"])
+            detail = (tiktok_runtime.tiktok_detail(tiktok_runtime.tiktok_token(),row['shop_cipher'],row['product_id'])
+                      if tiktok_runtime else _fetch_product_detail(auth.access_token(), row["shop_cipher"], row["product_id"]))
             live_skus = sorted({_tail4(sku.get("seller_sku")) for sku in detail.get("skus") or [] if _tail4(sku.get("seller_sku"))})
             row["all_product_skus"] = live_skus
             row["requested_skus"] = sorted(set(live_skus) & set(row["requested_skus"]))
@@ -400,14 +497,18 @@ def _live_verify(row: dict[str, Any]) -> dict[str, Any]:
             from modules.shopee.client import shop_get
             shop_id = int(row["shop_id"])
             token = ensure_shop_token(shop_id)
-            base = shop_get("/api/v2/product/get_item_base_info", shop_id, token, {"item_id_list": row["product_id"]})
+            if call_guard: call_guard()
+            base = shop_get("/api/v2/product/get_item_base_info", shop_id, token, {"item_id_list": row["product_id"]},
+                            **({'call_guard':call_guard} if call_guard else {}))
             if base.get("error"):
                 raise RuntimeError(base.get("message") or str(base))
             items = (base.get("response") or {}).get("item_list") or []
             if len(items) != 1:
                 raise RuntimeError("official item identity not unique")
             item = items[0]
-            models = shop_get("/api/v2/product/get_model_list", shop_id, token, {"item_id": int(row["product_id"])})
+            if call_guard: call_guard()
+            models = shop_get("/api/v2/product/get_model_list", shop_id, token, {"item_id": int(row["product_id"])},
+                              **({'call_guard':call_guard} if call_guard else {}))
             if models.get("error"):
                 raise RuntimeError(models.get("message") or str(models))
             model_rows = (models.get("response") or {}).get("model") or []
@@ -421,7 +522,10 @@ def _live_verify(row: dict[str, Any]) -> dict[str, Any]:
         elif platform == "ozon":
             from modules.ozon.client import ozon_post
             from modules.ozon.product_lifecycle import fetch_offer_info
-            info = fetch_offer_info(ozon_post, row["offer_id"])
+            def bound_post(*args,**kwargs):
+                if call_guard: call_guard()
+                return ozon_post(*args,**kwargs)
+            info = fetch_offer_info(bound_post, row["offer_id"])
             if info is None:
                 row["current_status"] = "NOT_FOUND"
             else:
@@ -467,13 +571,21 @@ def build_plan(skus: tuple[str, ...], *, live: bool = True) -> dict[str, Any]:
     for label in ALL_TARGETS:
         matches = by_target.get(label, [])
         if not matches:
+            needs_provider_discovery = (
+                label.startswith("tiktok:HB_")
+                or (label.startswith("shopee:") and not live)
+            )
             targets.append({
                 "target_label": label,
                 "platform": label.split(":", 1)[0],
                 "requested_skus": list(skus),
-                "status": "NEEDS_PROVIDER_DISCOVERY" if label.startswith("tiktok:HB_") else "NOT_FOUND",
+                "status": "NEEDS_PROVIDER_DISCOVERY" if needs_provider_discovery else "NOT_FOUND",
                 "executable": False,
-                "reason": "no exact listing identity in current canonical evidence",
+                "reason": (
+                    "official provider discovery is required before a negative result"
+                    if needs_provider_discovery
+                    else "no exact listing identity in current canonical evidence"
+                ),
             })
             continue
         if len(matches) != 1:
@@ -520,11 +632,15 @@ def _verify_plan(plan: Mapping[str, Any]) -> None:
         raise ValueError("plan digest mismatch")
 
 
-def _execute_one(row: Mapping[str, Any]) -> dict[str, Any]:
-    result = {"target_label": row["target_label"], "attempted": False, "external_write_count": 0}
+def _execute_one(row: Mapping[str, Any], *, call_guard=None, tiktok_runtime=None) -> dict[str, Any]:
+    result = {"target_label": row["target_label"], "product_id": row.get("product_id"),
+              "requested_skus": list(row.get("requested_skus") or []),
+              "all_product_skus": list(row.get("all_product_skus") or []),
+              "attempted": False, "external_write_count": 0}
     if row.get("status") != "READY" or row.get("executable") is not True:
         return {**result, "outcome": row.get("status") or "BLOCKED", "verified": False}
     try:
+        if call_guard: call_guard()
         if row["platform"] == "tiktok":
             from core import auth
             from modules.products.deactivate import push_deactivate
@@ -533,11 +649,19 @@ def _execute_one(row: Mapping[str, Any]) -> dict[str, Any]:
             if current in DOWN_TIKTOK:
                 return {**result, "outcome": "VERIFIED_ALREADY_DELISTED", "verified": True}
             result["attempted"] = True
-            ok, error = push_deactivate(auth.access_token(), row["shop_cipher"], [row["product_id"]])
+            if call_guard: call_guard()
+            if tiktok_runtime:
+                response=tiktok_runtime.tiktok_request('POST','/product/202309/products/deactivate',
+                    tiktok_runtime.tiktok_token(),{'shop_cipher':row['shop_cipher']},{'product_ids':[row['product_id']]})
+                ok,error=response.get('code')==0,'official TikTok deactivation not confirmed'
+            else:
+                ok, error = push_deactivate(auth.access_token(), row["shop_cipher"], [row["product_id"]])
             result["external_write_count"] = 1
             if not ok:
                 raise RuntimeError(error)
-            detail = _fetch_product_detail(auth.access_token(), row["shop_cipher"], row["product_id"])
+            if call_guard: call_guard()
+            detail = (tiktok_runtime.tiktok_detail(tiktok_runtime.tiktok_token(),row['shop_cipher'],row['product_id'])
+                      if tiktok_runtime else _fetch_product_detail(auth.access_token(), row["shop_cipher"], row["product_id"]))
             status = str(detail.get("product_status") or detail.get("status") or "").upper()
             result["readback_status"] = status
             result["verified"] = status in DOWN_TIKTOK
@@ -546,14 +670,18 @@ def _execute_one(row: Mapping[str, Any]) -> dict[str, Any]:
             from modules.shopee.client import shop_get, shop_post
             shop_id, item_id = int(row["shop_id"]), int(row["product_id"])
             token = ensure_shop_token(shop_id)
+            if call_guard: call_guard()
             if str(row.get("current_status") or "").upper() == "UNLIST":
                 return {**result, "outcome": "VERIFIED_ALREADY_DELISTED", "verified": True}
             result["attempted"] = True
-            response = shop_post("/api/v2/product/unlist_item", shop_id, token, {"item_list": [{"item_id": item_id, "unlist": True}]})
+            response = shop_post("/api/v2/product/unlist_item", shop_id, token, {"item_list": [{"item_id": item_id, "unlist": True}]},
+                                 **({'call_guard':call_guard} if call_guard else {}))
             result["external_write_count"] = 1
             if response.get("error"):
                 raise RuntimeError(response.get("message") or str(response))
-            base = shop_get("/api/v2/product/get_item_base_info", shop_id, token, {"item_id_list": str(item_id)})
+            if call_guard: call_guard()
+            base = shop_get("/api/v2/product/get_item_base_info", shop_id, token, {"item_id_list": str(item_id)},
+                            **({'call_guard':call_guard} if call_guard else {}))
             if base.get("error"):
                 raise RuntimeError(base.get("message") or str(base))
             items = (base.get("response") or {}).get("item_list") or []
@@ -566,11 +694,14 @@ def _execute_one(row: Mapping[str, Any]) -> dict[str, Any]:
             if str(row.get("current_status") or "").upper() == "ARCHIVED":
                 return {**result, "outcome": "VERIFIED_ALREADY_DELISTED", "verified": True}
             result["attempted"] = True
-            response = archive_offer(ozon_post, int(row["product_id"]))
+            def bound_post(*args,**kwargs):
+                if call_guard: call_guard()
+                return ozon_post(*args,**kwargs)
+            response = archive_offer(bound_post, int(row["product_id"]))
             result["external_write_count"] = 1
             if response.get("result") is not True:
                 raise RuntimeError(str(response))
-            info = fetch_offer_info(ozon_post, row["offer_id"])
+            info = fetch_offer_info(bound_post, row["offer_id"])
             result["readback_status"] = "ARCHIVED" if info and info.get("is_archived") else "ACTIVE_OR_UNKNOWN"
             result["verified"] = bool(info and info.get("is_archived"))
         if result.get("verified"):
@@ -584,10 +715,14 @@ def _execute_one(row: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def execute(plan: Mapping[str, Any]) -> dict[str, Any]:
+def execute(plan: Mapping[str, Any], *, operation_owner=None, call_guard=None, tiktok_runtime=None) -> dict[str, Any]:
     _verify_plan(plan)
-    results = [_execute_one(row) for row in plan.get("targets") or []]
-    return {
+    from shared_platform.operations_domain_guard import begin_delisting, finish_delisting
+    guard = begin_delisting(plan, REPO_ROOT, operation_owner=operation_owner)
+    if guard is not None and not guard[2]['acquired']:
+        raise ValueError('existing delisting operation requires readback, not replay')
+    results = [(_execute_one(row,call_guard=call_guard,tiktok_runtime=tiktok_runtime) if call_guard or tiktok_runtime else _execute_one(row)) for row in plan.get("targets") or []]
+    result = {
         "schema_version": "product-delist-execution/v1",
         "created_at": _now(),
         "plan_digest": plan["plan_digest"],
@@ -596,9 +731,19 @@ def execute(plan: Mapping[str, Any]) -> dict[str, Any]:
         "verified_count": sum(row.get("verified") is True for row in results),
         "targets": results,
     }
+    finish_delisting(
+        guard,
+        result,
+        target_labels={
+            row["target_label"]
+            for row in plan.get("targets") or []
+            if row.get("status") == "READY" and row.get("executable") is True
+        },
+    )
+    return result
 
 
-def readback(plan: Mapping[str, Any]) -> dict[str, Any]:
+def readback(plan: Mapping[str, Any], *, call_guard=None, tiktok_runtime=None) -> dict[str, Any]:
     """Read current provider state without rebuilding or replacing the plan.
 
     The immutable plan digest identifies the authorized target set.  Dynamic
@@ -619,10 +764,10 @@ def readback(plan: Mapping[str, Any]) -> dict[str, Any]:
                 "current_status": row.get("current_status"),
             })
             continue
-        live = _live_verify(row)
+        live = _live_verify(row,call_guard=call_guard,tiktok_runtime=tiktok_runtime) if call_guard or tiktok_runtime else _live_verify(row)
         status = str(live.get("current_status") or "").upper()
         platform = str(live.get("platform") or "")
-        verified = (
+        verified = not live.get('live_read_error') and (
             status in DOWN_TIKTOK if platform == "tiktok" else
             status == "UNLIST" if platform == "shopee" else
             status == "ARCHIVED" if platform == "ozon" else

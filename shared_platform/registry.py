@@ -24,7 +24,7 @@ DOMAIN_REGISTRATIONS: tuple[DomainRegistration, ...] = (
         (
             "/new-product",
             "/catalog",
-            "/costs",
+
             "/sourcing",
             "/api/product-workspace",
             "/api/catalog",
@@ -36,26 +36,17 @@ DOMAIN_REGISTRATIONS: tuple[DomainRegistration, ...] = (
     ),
     DomainRegistration(
         "content_operations", (),
-        ("/titles", "/images", "/api/titles", "/api/images", "/api/proxy-image"),
+        ("/api/titles", "/api/images", "/api/proxy-image"),
         ("modules.products.titles", "modules.products.images", "modules.sourcing.image_workbench"),
     ),
     DomainRegistration(
-        "channel_operations", ("shopee", "ozon", "rus", "affiliate"),
+        "channel_operations", ("shopee", "ozon", "rus"),
         (
-            "/ozon",
-            "/mx",
-            "/uk",
-            "/promotions",
-            "/deactivate",
             "/api/ozon",
             "/api/rus",
-            "/api/mx",
-            "/api/uk",
-            "/api/promotions",
-            "/api/deactivate",
             "/api/shopee",
         ),
-        ("modules.ozon", "modules.shopee", "modules.miaoshou", "modules.affiliate"),
+        ("modules.ozon", "modules.shopee", "modules.miaoshou"),
     ),
     DomainRegistration(
         "supply_chain_operations", (), (),
@@ -79,7 +70,7 @@ DOMAIN_REGISTRATIONS: tuple[DomainRegistration, ...] = (
         ("modules.finance", "modules.ads", "modules.pricing"),
     ),
     DomainRegistration(
-        "shared_platform", ("init", "auth", "status", "tokens", "serve", "sync", "digest", "feishu"),
+        "shared_platform", ("init", "auth", "status", "tokens", "serve", "sync"),
         (
             "/",
             "/release",
@@ -88,8 +79,6 @@ DOMAIN_REGISTRATIONS: tuple[DomainRegistration, ...] = (
             "/api/health",
             "/api/orbit",
             "/api/release",
-            "/api/digest",
-            "/api/feishu",
         ),
         ("core", "modules.hub", "modules.products.server"),
     ),

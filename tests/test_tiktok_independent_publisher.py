@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from shared_platform.product_description_media import miaoshou_rich_description
+
 from domains.channel_operations.tiktok_publisher import (
     APPROVED_TIKTOK_PUBLISH_SNAPSHOT_SCHEMA,
     TIKTOK_PREFLIGHT_RECEIPT_SCHEMA,
@@ -157,7 +159,9 @@ def _draft_response(target: str, row: dict) -> dict:
         "sizeChart": "",
         "sizeChartType": "",
         "title": row["expected_title"],
-        "notes": row["expected_description"],
+        "notes": miaoshou_rich_description(
+            row["expected_description"], row["expected_images"]
+        ),
         "notesText": row["expected_description"],
         "imgUrls": list(row["expected_images"]),
         "skuMap": sku_map,
@@ -190,6 +194,9 @@ class FakeLowestTransport:
 
     def __call__(self, path: str, body: dict) -> dict:
         self.calls.append((path, body))
+        if path == WAREHOUSE_GET_PATH:
+            shop_id = str(body["shopIds"][0])
+            return _warehouse_response(shop_id)
         if path == CATEGORY_METADATA_PATH:
             return _gb_metadata_response()
         detail_id = str(body["detailIds"][0] if "detailIds" in body else body["detailId"])
@@ -224,7 +231,7 @@ def test_l1_preflight_reads_exact_six_drafts_and_never_writes():
     assert [row["status"] for row in receipt["targets"]] == [
         "READY", "READY", "READY", "READY", "READY", "REPAIR_REQUIRED"
     ]
-    assert len(fake.calls) == 7
+    assert len(fake.calls) == 18
     assert all(
         path not in {SAVE_SITE_DRAFT_PATH, SAVE_SHOP_DRAFT_PATH, PUBLISH_PATH}
         for path, _body in fake.calls
@@ -267,7 +274,9 @@ def test_l1_preflight_accepts_miaoshou_post_submit_projection_omissions():
         sku.pop("packageWidth")
         sku.pop("packageHeight")
 
-    transport = MiaoshouTikTokTransport(post=lambda _path, _body: projected)
+    transport = MiaoshouTikTokTransport(
+        post=_with_default_mainland_warehouse(lambda _path, _body: projected)
+    )
     target = snapshot["targets"][0]
     draft = transport.read_draft(target)
 
@@ -285,7 +294,7 @@ def test_miaoshou_transport_uses_ceiled_provider_dimensions_for_save_and_readbac
             saved.append(body)
         return {"result": "success", "code": "success", "data": {}}
 
-    transport = MiaoshouTikTokTransport(post=post)
+    transport = MiaoshouTikTokTransport(post=_with_default_mainland_warehouse(post))
     draft = {
         "info": {
             "cid": APPROVED_CATEGORY_ID,
@@ -340,7 +349,9 @@ def test_miaoshou_transport_repairs_and_verifies_frozen_copy_and_images():
         }
     )
     transport = MiaoshouTikTokTransport(
-        post=lambda _path, body: saved.append(deepcopy(body)) or {"code": 0}
+        post=_with_default_mainland_warehouse(
+            lambda _path, body: saved.append(deepcopy(body)) or {"code": 0}
+        )
     )
 
     assert transport.draft_matches(target, {"info": stale_info}) is False
@@ -349,7 +360,9 @@ def test_miaoshou_transport_repairs_and_verifies_frozen_copy_and_images():
 
     saved_info = saved[0]["siteCollectItemInfo"]
     assert saved_info["title"] == target["expected_title"]
-    assert saved_info["notes"] == target["expected_description"]
+    assert saved_info["notes"] == miaoshou_rich_description(
+        target["expected_description"], target["expected_images"]
+    )
     assert saved_info["notesText"] == target["expected_description"]
     assert saved_info["imgUrls"] == target["expected_images"]
     assert transport.draft_matches(target, {"info": saved_info}) is True
@@ -383,14 +396,15 @@ def test_miaoshou_transport_repairs_and_verifies_frozen_copy_and_images():
         assert transport.post_submit_draft_matches(target, {"info": drifted}) is False
 
 
-def test_miaoshou_transport_converges_and_verifies_frozen_variant_display_name():
+@pytest.mark.parametrize("specification_name", ["option", "Size"])
+def test_miaoshou_transport_converges_and_verifies_frozen_variant_display_name(specification_name):
     target = _snapshot(targets=("tiktok:LH_PH",))["targets"][0]
     variant = ";PH15-004;44cm宽*3米长（单卷+纸管+塑封）;"
     raw_key = ";type-1;dimension-1;"
     target.update(
         {
             "expected_variant_model_skus": {variant: "0969"},
-            "expected_variant_specifications": {variant: {"option": "44cm*3m"}},
+            "expected_variant_specifications": {variant: {specification_name: "44cm*3m"}},
             "expected_sku_prices": {"0969": target["expected_price"]},
             "expected_sku_parcels": {
                 variant: {"weight_kg": "0.1", "package_cm": ["20", "20", "3"]}
@@ -406,7 +420,9 @@ def test_miaoshou_transport_converges_and_verifies_frozen_variant_display_name()
     ]
     saved: list[dict] = []
     transport = MiaoshouTikTokTransport(
-        post=lambda _path, body: saved.append(deepcopy(body)) or {"code": 0}
+        post=_with_default_mainland_warehouse(
+            lambda _path, body: saved.append(deepcopy(body)) or {"code": 0}
+        )
     )
 
     assert transport.draft_matches(target, {"info": info}) is False
@@ -421,9 +437,15 @@ def test_miaoshou_transport_converges_and_verifies_frozen_variant_display_name()
     omitted["skuMap"][raw_key].pop("specification")
     assert transport.draft_matches(target, {"info": omitted}) is False
     assert transport.post_submit_draft_matches(target, {"info": omitted}) is True
+    normalized = deepcopy(omitted)
+    normalized["skuPropertyList"][1]["attrName"] = "Size"
+    assert transport.post_submit_draft_matches(target, {"info": normalized}) is False
+    assert transport.post_save_draft_matches(target, {"info": normalized}) is True
     drifted = deepcopy(saved_info)
     drifted["skuPropertyList"][1]["attrValueList"][0]["attrValue"] = "source drift"
     assert transport.post_submit_draft_matches(target, {"info": drifted}) is False
+    normalized["skuPropertyList"][1]["attrValueList"][0]["attrValue"] = "source drift"
+    assert transport.post_save_draft_matches(target, {"info": normalized}) is False
 
 
 def test_miaoshou_save_binds_unique_current_shop_warehouse_and_preserves_stock():
@@ -437,7 +459,10 @@ def test_miaoshou_save_binds_unique_current_shop_warehouse_and_preserves_stock()
             assert body == {"shopIds": [target["shop_id"]]}
             return {"data": {"shopWarehouseList": [{
                 "shopId": target["shop_id"],
-                "warehouseList": [{"warehouseId": "my-default", "warehouseName": "The Chinese mainland Pickup Warehouse", "warehouseEffectStatus": "1", "isDefault": "1"}],
+                "warehouseList": [
+                    {"warehouseId": "my-default", "warehouseName": "The Chinese mainland Pickup Warehouse", "warehouseEffectStatus": "1", "isDefault": "1"},
+                    {"warehouseId": "my-local", "warehouseName": "Malaysia Local Warehouse", "warehouseEffectStatus": "1", "isDefault": "0"},
+                ],
             }]}}
         saved.append(deepcopy(body))
         return {"code": 0}
@@ -449,7 +474,7 @@ def test_miaoshou_save_binds_unique_current_shop_warehouse_and_preserves_stock()
     row = saved[0]["siteCollectItemInfo"]["skuMap"]["default"]
     assert row["stock"] == 300
     assert row["shopIdToWarehouseIdAndStockMap"] == {
-        target["shop_id"]: {"my-default": "300"}
+        target["shop_id"]: {"my-local": "0", "my-default": "300"}
     }
 
 
@@ -616,7 +641,11 @@ def test_missing_delivery_option_is_repaired_before_submit(target: str):
             response["data"][container].pop("deliveryOptionSetType")
         return response
 
-    publisher = TikTokPublisher(transport=MiaoshouTikTokTransport(post=post))
+    publisher = TikTokPublisher(
+        transport=MiaoshouTikTokTransport(
+            post=_with_default_mainland_warehouse(post)
+        )
+    )
 
     receipt = publisher.publish(snapshot)
 
@@ -654,7 +683,11 @@ def test_invalid_size_chart_is_removed_before_submit(target: str):
             response["data"][container]["sizeChartType"] = "image"
         return response
 
-    publisher = TikTokPublisher(transport=MiaoshouTikTokTransport(post=post))
+    publisher = TikTokPublisher(
+        transport=MiaoshouTikTokTransport(
+            post=_with_default_mainland_warehouse(post)
+        )
+    )
 
     receipt = publisher.publish(snapshot)
 
@@ -724,7 +757,11 @@ def test_l1_repair_rejection_is_reported_and_does_not_stop_later_target():
             )
         return response
 
-    publisher = TikTokPublisher(transport=MiaoshouTikTokTransport(post=post))
+    publisher = TikTokPublisher(
+        transport=MiaoshouTikTokTransport(
+            post=_with_default_mainland_warehouse(post)
+        )
+    )
     receipt = publisher.publish(snapshot, publisher.preflight(snapshot))
     outcomes = {row["target_label"]: row for row in receipt["targets"]}
 
@@ -807,7 +844,11 @@ def test_l1_provider_reason_is_redacted_before_receipt():
         row = snapshot["targets"][0]
         return _draft_response("tiktok:GB", row)
 
-    publisher = TikTokPublisher(transport=MiaoshouTikTokTransport(post=post))
+    publisher = TikTokPublisher(
+        transport=MiaoshouTikTokTransport(
+            post=_with_default_mainland_warehouse(post)
+        )
+    )
     result = publisher.publish(snapshot, publisher.preflight(snapshot))["targets"][0]
 
     assert result["outcome"] == "REJECTED"
@@ -829,7 +870,9 @@ def test_l1_provider_reason_is_bounded_and_code_rejects_non_ascii():
         return _draft_response("tiktok:GB", snapshot["targets"][0])
 
     result = TikTokPublisher(
-        transport=MiaoshouTikTokTransport(post=post)
+        transport=MiaoshouTikTokTransport(
+            post=_with_default_mainland_warehouse(post)
+        )
     ).publish(snapshot)["targets"][0]
 
     assert result["provider_code"] == "business_rejected"
@@ -850,7 +893,11 @@ def test_l1_transport_unknown_keeps_only_confirmed_external_writes():
             return {"result": "success", "code": "200", "message": "Success"}
         return _draft_response("tiktok:GB", snapshot["targets"][0])
 
-    publisher = TikTokPublisher(transport=MiaoshouTikTokTransport(post=post))
+    publisher = TikTokPublisher(
+        transport=MiaoshouTikTokTransport(
+            post=_with_default_mainland_warehouse(post)
+        )
+    )
     result = publisher.publish(snapshot, publisher.preflight(snapshot))["targets"][0]
 
     assert result["outcome"] == "UNKNOWN"
@@ -994,7 +1041,11 @@ def test_red_multisku_prices_are_written_per_model_sku():
             return {"result": "success", "code": "200", "message": "Success"}
         raise AssertionError(path)
 
-    publisher = TikTokPublisher(transport=MiaoshouTikTokTransport(post=post))
+    publisher = TikTokPublisher(
+        transport=MiaoshouTikTokTransport(
+            post=_with_default_mainland_warehouse(post)
+        )
+    )
     publisher.publish(snapshot, publisher.preflight(snapshot))
     saved = next(body for path, body in calls if path == SAVE_SHOP_DRAFT_PATH)
     saved_rows = saved["shopCollectItemInfo"]["skuMap"]
@@ -1076,7 +1127,9 @@ def test_red_opaque_gb_variants_bind_to_approved_model_sku_and_price():
         raise AssertionError(path)
 
     receipt = TikTokPublisher(
-        transport=MiaoshouTikTokTransport(post=post)
+        transport=MiaoshouTikTokTransport(
+            post=_with_default_mainland_warehouse(post)
+        )
     ).publish(snapshot)
 
     assert receipt["accepted_target_count"] == 1
@@ -1149,7 +1202,9 @@ def test_red_local_gb_variant_binding_failure_is_zero_write_rejection():
         raise AssertionError("a local binding failure must not call a write endpoint")
 
     result = TikTokPublisher(
-        transport=MiaoshouTikTokTransport(post=post)
+        transport=MiaoshouTikTokTransport(
+            post=_with_default_mainland_warehouse(post)
+        )
     ).publish(snapshot)["targets"][0]
 
     assert result["outcome"] == "REJECTED"
@@ -1217,7 +1272,9 @@ def test_red_gb_save_uses_official_required_category_attribute():
             return {"result": "success", "code": "200", "message": "Success"}
         raise AssertionError(path)
 
-    transport = MiaoshouTikTokTransport(post=post)
+    transport = MiaoshouTikTokTransport(
+        post=_with_default_mainland_warehouse(post)
+    )
     draft = transport.read_draft(row)
     transport.save_approved_draft(row, draft)
     saved = next(body for path, body in calls if path == SAVE_SHOP_DRAFT_PATH)
@@ -1268,7 +1325,9 @@ def test_red_gb_save_allows_category_with_no_mandatory_attributes():
             return {"result": "success", "code": "200", "message": "Success"}
         raise AssertionError(path)
 
-    transport = MiaoshouTikTokTransport(post=post)
+    transport = MiaoshouTikTokTransport(
+        post=_with_default_mainland_warehouse(post)
+    )
     draft = transport.read_draft(row)
     transport.save_approved_draft(row, draft)
     saved = next(body for path, body in calls if path == SAVE_SHOP_DRAFT_PATH)
@@ -1307,7 +1366,9 @@ def test_red_gb_metadata_preparation_failure_is_zero_write_rejection():
         raise AssertionError("pre-write preparation must not call a write endpoint")
 
     result = TikTokPublisher(
-        transport=MiaoshouTikTokTransport(post=post)
+        transport=MiaoshouTikTokTransport(
+            post=_with_default_mainland_warehouse(post)
+        )
     ).publish(snapshot)["targets"][0]
 
     assert result["outcome"] == "REJECTED"
@@ -1332,7 +1393,11 @@ def test_l1_gb_save_rejection_stops_submit():
             )
         return response
 
-    publisher = TikTokPublisher(transport=MiaoshouTikTokTransport(post=post))
+    publisher = TikTokPublisher(
+        transport=MiaoshouTikTokTransport(
+            post=_with_default_mainland_warehouse(post)
+        )
+    )
     receipt = publisher.publish(snapshot, publisher.preflight(snapshot))
     result = receipt["targets"][0]
 
@@ -1341,3 +1406,442 @@ def test_l1_gb_save_rejection_stops_submit():
     assert result["write_request_count"] == 1
     assert not [call for call in fake.calls if call[0] == PUBLISH_PATH]
     assert [call for call in fake.calls if call[0] == SAVE_SHOP_DRAFT_PATH]
+
+
+def _warehouse_response(
+    shop_id: str, *, local_warehouse_id: str | None = None
+) -> dict:
+    warehouses = [
+        {
+            "warehouseId": f"warehouse-{shop_id}",
+            "warehouseName": "The Chinese mainland Pickup Warehouse",
+            "warehouseEffectStatus": "1",
+        }
+    ]
+    if local_warehouse_id:
+        warehouses.append(
+            {
+                "warehouseId": local_warehouse_id,
+                "warehouseName": "Local Warehouse",
+                "warehouseEffectStatus": "1",
+            }
+        )
+    return {
+        "data": {
+            "shopWarehouseList": [
+                {"shopId": shop_id, "warehouseList": warehouses}
+            ]
+        }
+    }
+
+
+def _with_default_mainland_warehouse(post):
+    def wrapped(path, body):
+        if path == WAREHOUSE_GET_PATH:
+            return _warehouse_response(str(body["shopIds"][0]))
+        return post(path, body)
+
+    return wrapped
+
+
+def test_post_save_preflight_accepts_observed_miaoshou_normalization_without_save():
+    snapshot = _snapshot(targets=("tiktok:LH_PH",))
+    target = snapshot["targets"][0]
+    projected = _draft_response("tiktok:LH_PH", target)
+    info = projected["data"]["siteCollectItemInfo"]
+    info["title"] = "  Approved  frozen table runner  "
+    info["notesText"] = None
+    info["deliveryOptionSetType"] = None
+    info["sizeChartType"] = "image"
+
+    calls: list[str] = []
+
+    def post(path, _body):
+        calls.append(path)
+        if path == WAREHOUSE_GET_PATH:
+            return _warehouse_response(target["shop_id"])
+        if path == PUBLISH_PATH:
+            return {"result": "success", "code": "200", "message": "Success"}
+        return projected
+
+    publisher = TikTokPublisher(transport=MiaoshouTikTokTransport(post=post))
+    receipt = publisher.preflight_after_accepted_save(snapshot)
+
+    assert receipt["targets"] == [
+        {
+            "target_label": "tiktok:LH_PH",
+            "status": "READY",
+            "save_required": False,
+        }
+    ]
+    dispatch = publisher.publish(snapshot, receipt)
+    assert dispatch["accepted_target_count"] == 1
+    assert PUBLISH_PATH in calls
+    assert SAVE_SITE_DRAFT_PATH not in calls
+    assert SAVE_SHOP_DRAFT_PATH not in calls
+
+
+def test_post_save_preflight_still_repairs_core_price_drift():
+    snapshot = _snapshot(targets=("tiktok:LH_PH",))
+    target = snapshot["targets"][0]
+    projected = _draft_response("tiktok:LH_PH", target)
+    projected["data"]["siteCollectItemInfo"]["skuMap"]["default"]["price"] = "1"
+
+    transport = MiaoshouTikTokTransport(
+        post=_with_default_mainland_warehouse(lambda _path, _body: projected)
+    )
+    receipt = TikTokPublisher(transport=transport).preflight_after_accepted_save(
+        snapshot
+    )
+
+    row = receipt["targets"][0]
+    assert row["status"] == "REPAIR_REQUIRED"
+    assert row["save_required"] is True
+    assert row["prepared_save"]["body"]["ossMd5"] == "x" * 32
+
+
+def test_post_save_variant_match_accepts_only_trailing_parenthetical_normalization():
+    observed = "คู่ 2 ชิ้น · สูงประมาณ 22 ซม."
+    approved = observed + " (2 pcs)"
+    info = {
+        "skuPropertyList": [
+            {
+                "attrName": "Size",
+                "attrValueList": [
+                    {"attrValueId": "variant-1", "attrValue": observed}
+                ],
+            }
+        ],
+        "skuMap": {";variant-1;": {}},
+    }
+    expected = {
+        ";variant-1;": ({"option": approved}, approved),
+    }
+
+    assert MiaoshouTikTokTransport._variant_specifications_match(
+        info,
+        expected,
+        accept_provider_omission=True,
+        accept_provider_name_normalization=True,
+        accept_provider_value_normalization=True,
+    ) is True
+
+    info["skuPropertyList"][0]["attrValueList"][0]["attrValue"] = "source drift"
+    assert MiaoshouTikTokTransport._variant_specifications_match(
+        info,
+        expected,
+        accept_provider_omission=True,
+        accept_provider_name_normalization=True,
+        accept_provider_value_normalization=True,
+    ) is False
+
+
+def test_approved_variant_display_does_not_repeat_localized_quantity_number():
+    display = MiaoshouTikTokTransport._approved_variant_display(
+        {
+            "size": "3 แผ่น · ขนาดติดสำเร็จประมาณ 93.6 x 57.3 ซม.",
+            "quantity": "3 pcs",
+        }
+    )
+
+    assert display == "3 แผ่น · ขนาดติดสำเร็จประมาณ 93.6 x 57.3 ซม."
+    assert len(display) <= 50
+
+
+def test_approved_variant_display_keeps_distinct_quantity_number():
+    display = MiaoshouTikTokTransport._approved_variant_display(
+        {"size": "93.6 x 57.3 cm", "quantity": "3 pcs"}
+    )
+
+    assert display == "93.6 x 57.3 cm (3 pcs)"
+
+
+def test_miaoshou_transport_uses_exact_approved_two_warehouse_allocation():
+    target = _snapshot(targets=("tiktok:MX",))["targets"][0]
+    target.update(
+        {
+            "target_label": "tiktok:HB_TH",
+            "shop_id": "16770557",
+            "expected_price": "312.31",
+            "expected_sku_prices": {},
+            "expected_currency": "THB",
+        }
+    )
+    target["expected_warehouse_inventory"] = {
+        "schema_version": "miaoshou-tiktok-warehouse-allocation/v1",
+        "shop_id": target["shop_id"],
+        "warehouses": [
+            {
+                "warehouse_id": "7635880818728552209",
+                "warehouse_name": "瓯江口",
+                "stock": 500,
+            },
+            {
+                "warehouse_id": "7677806106640287506",
+                "warehouse_name": "TH8806",
+                "stock": 40,
+            },
+        ],
+        "total_stock": 540,
+        "source": "CONVERSATION_APPROVAL",
+        "approved_by": "Kyle",
+        "approved_at": "2026-08-30T00:00:00+08:00",
+    }
+    draft = _draft_response("tiktok:HB_TH", target)
+    info = draft["data"]["shopCollectItemInfo"]
+
+    def post(path: str, body: dict) -> dict:
+        assert path == WAREHOUSE_GET_PATH
+        assert body == {"shopIds": [target["shop_id"]]}
+        return {
+            "data": {
+                "shopWarehouseList": [
+                    {
+                        "shopId": target["shop_id"],
+                        "warehouseList": [
+                            {
+                                "warehouseId": "7635880818728552209",
+                                "warehouseName": "瓯江口",
+                                "warehouseEffectStatus": "1",
+                            },
+                            {
+                                "warehouseId": "7677806106640287506",
+                                "warehouseName": "TH8806",
+                                "warehouseEffectStatus": "1",
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+
+    transport = MiaoshouTikTokTransport(post=post)
+    prepared = transport.prepare_approved_draft(
+        target, {"info": info, "oss_md5": "revision"}
+    )
+    saved_info = prepared["body"]["siteCollectItemInfo"]
+    saved_row = next(iter(saved_info["skuMap"].values()))
+
+    assert saved_row["stock"] == 540
+    assert saved_row["shopIdToWarehouseIdAndStockMap"] == {
+        target["shop_id"]: {
+            "7635880818728552209": "500",
+            "7677806106640287506": "40",
+        }
+    }
+    assert transport.draft_matches(target, {"info": saved_info}) is True
+
+
+def test_miaoshou_transport_projects_approved_size_and_quantity_to_one_option():
+    target = _snapshot(targets=("tiktok:LH_PH",))["targets"][0]
+    variant = "manual-01"
+    raw_key = ";type-1;dimension-1;"
+    target.update(
+        {
+            "expected_variant_model_skus": {variant: "0983"},
+            "expected_variant_specifications": {
+                variant: {
+                    "size": "125 cm × 80 cm × 3 pcs",
+                    "quantity": "3 pcs",
+                }
+            },
+            "expected_sku_prices": {"0983": target["expected_price"]},
+            "expected_sku_parcels": {
+                variant: {"weight_kg": "0.14", "package_cm": ["40", "5", "5"]}
+            },
+        }
+    )
+    info = _draft_response("tiktok:LH_PH", target)["data"]["siteCollectItemInfo"]
+    row = info["skuMap"].pop(variant)
+    info["skuMap"] = {raw_key: row}
+    info["skuPropertyList"] = [
+        {
+            "attrName": "Product Type",
+            "attrValueList": [
+                {"attrValueId": "type-1", "attrValue": "Wall Sticker"}
+            ],
+        },
+        {
+            "attrName": "规格",
+            "attrValueList": [
+                {"attrValueId": "dimension-1", "attrValue": "125 cm x 80 cm (3pcs)"}
+            ],
+        },
+    ]
+    saved: list[dict] = []
+    transport = MiaoshouTikTokTransport(
+        post=_with_default_mainland_warehouse(
+            lambda _path, body: saved.append(deepcopy(body)) or {"code": 0}
+        )
+    )
+
+    transport.save_approved_draft(target, {"info": info, "oss_md5": "digest"})
+
+    saved_info = saved[0]["siteCollectItemInfo"]
+    assert saved_info["skuMap"][raw_key]["specification"] == {
+        "option": "125 cm × 80 cm × 3 pcs"
+    }
+    assert (
+        saved_info["skuPropertyList"][1]["attrValueList"][0]["attrValue"]
+        == "125 cm × 80 cm × 3 pcs"
+    )
+
+
+def test_miaoshou_transport_uses_the_property_that_uniquely_binds_all_models():
+    target = _snapshot(targets=("tiktok:LH_PH",))["targets"][0]
+    variants = ("pattern-a", "pattern-b", "pattern-c")
+    raw_keys = (";size-1;color-a;", ";size-1;color-b;", ";size-1;color-c;")
+    models = ("0984", "0985", "0986")
+    target.update(
+        {
+            "expected_variant_model_skus": dict(zip(variants, models)),
+            "expected_variant_specifications": {
+                variant: {"pattern": variant} for variant in variants
+            },
+            "expected_sku_prices": {
+                model: target["expected_price"] for model in models
+            },
+            "expected_sku_parcels": {
+                variant: {
+                    "weight_kg": "0.5",
+                    "package_cm": ["50", "10", "10"],
+                }
+                for variant in variants
+            },
+        }
+    )
+    info = _draft_response("tiktok:LH_PH", target)["data"]["siteCollectItemInfo"]
+    template = next(iter(info["skuMap"].values()))
+    info["skuMap"] = {
+        raw_key: {**deepcopy(template), "itemNum": model}
+        for raw_key, model in zip(raw_keys, models)
+    }
+    info["skuPropertyList"] = [
+        {
+            "attrName": "颜色",
+            "attrValueList": [
+                {"attrValueId": color, "attrValue": variant}
+                for color, variant in zip(
+                    ("color-a", "color-b", "color-c"), variants
+                )
+            ],
+        },
+        {
+            "attrName": "尺寸",
+            "attrValueList": [
+                {"attrValueId": "size-1", "attrValue": "50 x 80 cm"}
+            ],
+        },
+    ]
+    saved: list[dict] = []
+    transport = MiaoshouTikTokTransport(
+        post=_with_default_mainland_warehouse(
+            lambda _path, body: saved.append(deepcopy(body)) or {"code": 0}
+        )
+    )
+
+    transport.save_approved_draft(target, {"info": info, "oss_md5": "digest"})
+
+    saved_info = saved[0]["siteCollectItemInfo"]
+    assert saved_info["skuPropertyList"][0]["attrName"] == "Specification"
+    assert saved_info["skuPropertyList"][1]["attrName"] == "尺寸"
+    assert [
+        saved_info["skuMap"][raw_key]["specification"]["option"]
+        for raw_key in raw_keys
+    ] == list(variants)
+    assert transport.draft_matches(target, {"info": saved_info}) is True
+
+
+def test_homebloom_oujiangkou_is_the_exact_mainland_pickup_warehouse():
+    target = _snapshot(targets=("tiktok:LH_PH",))["targets"][0]
+    target.update(
+        {
+            "target_label": "tiktok:HB_PH",
+            "shop_id": "15173238",
+        }
+    )
+    info = _draft_response("tiktok:LH_PH", target)["data"]["siteCollectItemInfo"]
+    info["skuMap"]["default"].pop("shopIdToWarehouseIdAndStockMap")
+    saved: list[dict] = []
+
+    def post(path, body):
+        if path == WAREHOUSE_GET_PATH:
+            return {
+                "data": {
+                    "shopWarehouseList": [
+                        {
+                            "shopId": target["shop_id"],
+                            "warehouseList": [
+                                {
+                                    "warehouseId": "7635880818728601361",
+                                    "warehouseName": "瓯江口",
+                                    "warehouseEffectStatus": "1",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        saved.append(deepcopy(body))
+        return {"code": 0}
+
+    MiaoshouTikTokTransport(post=post).save_approved_draft(
+        target, {"info": info, "oss_md5": "digest"}
+    )
+
+    row = saved[0]["siteCollectItemInfo"]["skuMap"]["default"]
+    assert row["shopIdToWarehouseIdAndStockMap"] == {
+        target["shop_id"]: {"7635880818728601361": "300"}
+    }
+
+
+def test_oujiangkou_is_not_a_mainland_alias_for_non_homebloom_shop():
+    target = _snapshot(targets=("tiktok:LH_PH",))["targets"][0]
+    info = _draft_response("tiktok:LH_PH", target)["data"]["siteCollectItemInfo"]
+
+    def post(path, _body):
+        assert path == WAREHOUSE_GET_PATH
+        return {
+            "data": {
+                "shopWarehouseList": [
+                    {
+                        "shopId": target["shop_id"],
+                        "warehouseList": [
+                            {
+                                "warehouseId": "wrong-shop-alias",
+                                "warehouseName": "瓯江口",
+                                "warehouseEffectStatus": "1",
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+
+    with pytest.raises(TikTokPreWritePreparationError, match="China mainland"):
+        MiaoshouTikTokTransport(post=post).prepare_approved_draft(
+            target, {"info": info, "oss_md5": "digest"}
+        )
+
+
+def test_miaoshou_readback_rejects_any_positive_local_warehouse_stock():
+    target = _snapshot(targets=("tiktok:LH_MY",))["targets"][0]
+    info = _draft_response("tiktok:LH_MY", target)["data"]["siteCollectItemInfo"]
+    row = info["skuMap"]["default"]
+    row["shopIdToWarehouseIdAndStockMap"] = {
+        target["shop_id"]: {
+            f"warehouse-{target['shop_id']}": "300",
+            "my-local": "1",
+        }
+    }
+    transport = MiaoshouTikTokTransport(
+        post=lambda path, body: (
+            _warehouse_response(target["shop_id"], local_warehouse_id="my-local")
+            if path == WAREHOUSE_GET_PATH
+            else (_ for _ in ()).throw(AssertionError(path))
+        )
+    )
+
+    assert transport.draft_matches(target, {"info": info}) is False
+    row["shopIdToWarehouseIdAndStockMap"][target["shop_id"]]["my-local"] = "0"
+    assert transport.draft_matches(target, {"info": info}) is True

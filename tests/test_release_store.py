@@ -1,5 +1,9 @@
 import sqlite3
 import threading
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +22,47 @@ from shared_platform.release_store import (
     ReleaseStoreError,
     SkuReservationConflict,
 )
+
+
+def test_release_store_environment_pin_is_explicit_and_side_effect_free(tmp_path):
+    pinned = (tmp_path / "authoritative" / "orbit_platform.db").resolve()
+    root = Path(__file__).resolve().parents[1]
+    script = (
+        "from shared_platform.release_store import "
+        "DEFAULT_RELEASE_STORE_PATH, default_release_store; "
+        "print(DEFAULT_RELEASE_STORE_PATH); print(default_release_store().path)"
+    )
+    environment = dict(os.environ)
+    environment["ORBIT_RELEASE_STORE_PATH"] = str(pinned)
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=root,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.splitlines() == [str(pinned), str(pinned)]
+    assert not pinned.exists()
+
+
+def test_release_store_environment_pin_rejects_relative_path(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    environment = dict(os.environ)
+    environment["ORBIT_RELEASE_STORE_PATH"] = "relative/release.db"
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import shared_platform.release_store"],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "ORBIT_RELEASE_STORE_PATH must be an absolute path" in result.stderr
 
 
 def _plan(**overrides):
@@ -234,8 +279,8 @@ def test_plan_payload_digest_token_and_sku_reservation_are_immutable(tmp_path):
             _plan(
                 plan_id="omnichannel:other-product",
                 product_id="9999999999",
-                seller_sku="990946",
-                product_package_id="product:9999999999:990946",
+                seller_sku="770946",
+                product_package_id="product:9999999999:770946",
                 content_package_id="content:9999999999:r1",
             )
         )

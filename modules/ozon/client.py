@@ -14,6 +14,12 @@ BASE = "https://api-seller.ozon.ru"
 
 def ozon_post(path: str, body: dict, *, timeout: int = 90) -> dict:
     cid, key = ozon_credentials()
+    return ozon_post_bound(path,body,client_id=cid,api_key=key,timeout=timeout)
+
+
+def ozon_post_bound(path: str, body: dict, *, client_id: str, api_key: str, timeout: int = 90) -> dict:
+    """Use one already-bound account; never re-resolve default credentials."""
+    cid,key=client_id,api_key
     if not cid or not key:
         raise RuntimeError("未配置 Ozon Client-Id / Api-Key")
     url = f"{BASE}{path}"

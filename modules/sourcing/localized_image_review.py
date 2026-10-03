@@ -343,9 +343,16 @@ class LocalizedImageReviewStore:
         *,
         expected_revision: object,
         items: Sequence[Mapping[str, Any]],
+        paid_context=None,
+        approved_bridge: Mapping[str,Any] | None = None,
     ) -> dict[str, Any]:
         """Bind one paid result for every task currently requiring generation."""
 
+        from shared_platform.publication_paid_requests import require_paid_context,legacy_consumer_binding
+        from modules.sourcing.image_generation_checkpoint import digest as request_digest
+        from modules.sourcing.brand_image_lingshi_generation import MODEL_CANDIDATES
+        context=require_paid_context(paid_context)
+        if context.offer_id!=str(offer_id):raise LocalizedImageReviewError('paid result belongs to another product')
         with self._lock:
             project = self.load(offer_id)
             if not project:
@@ -375,37 +382,34 @@ class LocalizedImageReviewStore:
                 if (
                     not isinstance(receipt, Mapping)
                     or receipt.get("status") != "COMPLETED"
-                    or receipt.get("provider") != "toapis-images/v1"
-                    or receipt.get("model") != "gpt-image-2-official"
+                    or receipt.get("provider") != "lingshi-media/v1"
+                    or receipt.get("model") not in MODEL_CANDIDATES
                     or not str(receipt.get("task_id") or "").strip()
                     or not str(receipt.get("client_business_id") or "").strip()
                     or receipt.get("request_attempted") is not True
                     or receipt.get("outcome_unknown") is not False
                     or int(receipt.get("external_generation_count") or 0) != 1
-                    or receipt.get("output_digest") not in {None, digest}
+                    or receipt.get("output_digest") != digest
                     or (public_url and not public_url.startswith("https://"))
                     or not isinstance(translations, list)
                     or not translations
                 ):
                     raise LocalizedImageReviewError("localized generation receipt is invalid")
+                business=legacy_consumer_binding(context,offer_id=str(offer_id),bridge=approved_bridge,source_url=task['source_url'],locale=task['locale'])
+                paid=context.validate_receipt_binding(receipt.get('paid_request'),purpose='image_translation',
+                    business={'kind':'localized','business_digest':request_digest({'kind':'localized',**business})},model=receipt['model'])
+                original={key:value for key,value in receipt.items() if key!='paid_request'}
+                if paid.get('receipt_digest')!=request_digest(original):
+                    raise LocalizedImageReviewError('paid receipt differs from its completed checkpoint')
+                if task.get('status')=='RETRY_REQUESTED' and (task.get('generation_receipt') or {}).get('task_id')==receipt['task_id']:
+                    raise LocalizedImageReviewError('retry must bind a new authorized attempt, not the prior completed task')
                 artifact_id = f"localized-review-{digest[7:27]}"
                 prepared[task_id] = {
                     "artifact": artifact,
                     "artifact_id": artifact_id,
                     "output_digest": digest,
                     "translations": [dict(row) for row in translations],
-                    "generation_receipt": {
-                        "status": "COMPLETED",
-                        "provider": "toapis-images/v1",
-                        "model": "gpt-image-2-official",
-                        "task_id": str(receipt["task_id"]),
-                        "client_business_id": str(receipt["client_business_id"]),
-                        "request_attempted": True,
-                        "outcome_unknown": False,
-                        "external_generation_count": 1,
-                        "output_digest": digest,
-                        "public_url": public_url or None,
-                    },
+                    "generation_receipt": dict(receipt),
                 }
 
             for row in prepared.values():
@@ -431,6 +435,7 @@ class LocalizedImageReviewStore:
                 project.get("external_generation_count") or 0
             ) + len(prepared)
             project["status"] = "REVIEW_REQUIRED"
+            project['paid_requests']=context.summary()
             project.pop("approval", None)
             project.pop("publication_supplement", None)
             if project.get("approval_intent"):

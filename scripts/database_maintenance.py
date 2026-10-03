@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.database_maintenance import backup_database, inspect_database
-from domains.product_operations.catalog_database_audit import audit_catalog_database
+from domains.product_operations.catalog_database_audit import audit_catalog_database, failed_catalog_audit
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,6 +29,9 @@ def main(argv: list[str] | None = None) -> int:
         "quality", help="run the side-effect-free catalog quality audit"
     )
     quality.add_argument("--database", type=Path, default=ROOT / "data" / "shop.db")
+    quality.add_argument("--cost-view", choices=("current", "historical"), default="current",
+                         help="current SKU projection or original dated cost observations")
+    quality.add_argument("--identity-evidence", type=Path, help="explicit alias/history reference JSON; approval authority is not verified")
     quality.add_argument(
         "--fail-on-review",
         action="store_true",
@@ -41,8 +44,20 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result.payload(), ensure_ascii=False, indent=2))
         return 0 if result.ok else 2
     if args.command == "quality":
-        result = audit_catalog_database(args.database)
-        print(json.dumps(result.payload(), ensure_ascii=False, indent=2))
+        try:
+            evidence = json.loads(args.identity_evidence.read_text(encoding="utf-8")) if args.identity_evidence else None
+        except (OSError, ValueError):
+            result = failed_catalog_audit(args.database, "review_evidence_read_failed")
+        else:
+            result = audit_catalog_database(args.database, review_evidence=evidence,
+                                            cost_view=args.cost_view)
+        payload = result.payload()
+        if args.identity_evidence:
+            payload["source"]["review_evidence_path"] = str(args.identity_evidence.resolve())
+        payload["cli_exit_policy"] = "fail_on_review" if args.fail_on_review else "compatibility"
+        print(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False))
+        if result.status == "check_failed":
+            return 3
         return 2 if args.fail_on_review and result.needs_review else 0
 
     output = args.output or (

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>旧版利润结算 · OrbitHive</title>
+  <link rel="stylesheet" href="/static/profit_legacy.css">
+</head>
+<body>
+  <header class="notice">
+    <div>
+      <p class="eyebrow">已找回旧版页面结构，并接入冻结的真实历史部分结算</p>
+      <h1>订单级利润结算</h1>
+      <p><strong>当前默认展示 Shopee 泰国 7 月历史部分结算。</strong>共 428 个商品行、409 个脱敏订单；它不是完整 7 月利润报表。</p>
+      <p>缺少的历史成本、汇率、利润和下单时间保持“未具备”。结算日期筛选不会冒充下单日期筛选，也不会用当前目录成本重算历史。</p>
+    </div>
+    <nav aria-label="利润工具">
+      <a href="/profit-legacy-layout">两行合成布局对照</a>
+      <a href="/profit-archive">历史 JSON 导入工具</a>
+      <a href="/profit-review">当前快照复核工作台</a>
+    </nav>
+  </header>
+  <main>
+    <details class="history-basis" id="historicalReportBasis">
+      <summary>历史报表依据 <span>原文件、当时参数与适用限制</span></summary>
+      <p>原 Shopee HTML 只保留标题、记录数和内嵌 DATA，没有明细渲染器。下方现有明细展示已核实的 428 个商品行、409 个脱敏订单；本区提供历史来源参考，不参与利润计算。</p>
+      <div class="basis-grid">
+        <article>
+          <h2>原报表与窗口</h2>
+          <dl><dt>范围</dt><dd>Shopee TH · THB；原文件未保留可独立认证的 shop_id</dd><dt>源声明期间</dt><dd>2026-07-18 至 2026-07-31（旧边界为 UTC）</dd><dt>原件生成时间</dt><dd>2026-07-31 23:34:50 UTC</dd></dl>
+          <p>只对应当前部分明细，不与其他区间累加，也不代表完整七月。</p>
+        </article>
+        <article>
+          <h2>当时报表的汇率设置</h2>
+          <dl><dt>THB → CNY</dt><dd>0.2218 CNY / THB</dd><dt>原字段来源</dt><dd>DATA.rates.THB；exchangeRateSource = settings</dd><dt>有效日期</dt><dd>原件未提供官方汇率日期或结算汇兑凭证</dd></dl>
+          <p>这是原报表保存的配置值，不是已确认的七月实际结算汇率。当前明细的 FX、CNY 金额和利润仍为“未具备”。</p>
+        </article>
+        <article>
+          <h2>历史成本观察</h2>
+          <dl><dt>观察时间</dt><dd>2026-07-24 17:48:31 UTC</dd><dt>范围与来源</dt><dd>TH TikTok / Shopee；sku_costs，Shopee 记录注明通过 Seller SKU 尾四位匹配</dd><dt>仍缺的依据</dt><dd>成本生效期、采购批次及逐订单成本对应关系</dd></dl>
+          <p>观察时间不是成本生效时间。这里不把旧成本观察套用于全部七月，也不采用当前目录成本补齐。</p>
+        </article>
+      </div>
+      <details class="basis-checksums">
+        <summary>原文件名称与 SHA-256 核验</summary>
+        <p>在原项目的对应相对路径核对完整 SHA-256。页面不读取本机任意文件，不载入或执行原 HTML。</p>
+        <dl>
+          <dt>原 Shopee HTML</dt><dd><code>outputs/weekly_shopee_profit_20260718_20260731.html</code><code>32ec70b3456c9d84d847276f6bbc6833854d46163b1ca2b0fa1afdeca64f0a43</code></dd>
+          <dt>当前明细的原结算 JSON</dt><dd><code>outputs/shopee_escrow_TH_20260718_20260731.json</code><code>d37e4ef610e11ff2d62c8fdcc7b9e1e1a5a62d3108353dbd14de5e1021e9b24e</code></dd>
+          <dt>成本观察 JSON</dt><dd><code>outputs/sku_profit_th_90d_20260724_1748.json</code><code>b196e9321b183e29f3c5e2655439c60ae8f493b2101fe81446356c6af82c286f</code></dd>
+        </dl>
+        <p>来源核验日期：2026-09-09。本区不展示估算利润，不修改下方明细的成本、汇率或利润。</p>
+      </details>
+    </details>
+    <iframe
+      title="Shopee 泰国 7 月真实历史部分结算"
+      src="/profit-historical-partial"
+      sandbox="allow-scripts"
+    ></iframe>
+  </main>
+</body>
+</html>

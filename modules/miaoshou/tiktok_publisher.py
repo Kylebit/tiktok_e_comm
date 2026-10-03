@@ -20,6 +20,10 @@ from modules.miaoshou.tiktok_variant_binding import (
 )
 
 
+from modules.miaoshou.tiktok_warehouses import is_china_mainland_pickup_warehouse
+from shared_platform.product_description_media import miaoshou_rich_description
+
+
 READ_SITE_DRAFT_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/"
     "get_site_collect_item_info"
@@ -150,6 +154,8 @@ class MiaoshouTikTokTransport:
             target,
             draft,
             accept_post_submit_projection=True,
+            accept_provider_title_normalization=False,
+            accept_provider_specification_name_normalization=False,
         )
 
     def _draft_matches(
@@ -158,17 +164,32 @@ class MiaoshouTikTokTransport:
         draft: Mapping[str, object],
         *,
         accept_post_submit_projection: bool,
+        accept_provider_title_normalization: bool = False,
+        accept_provider_specification_name_normalization: bool = False,
+        accept_provider_specification_value_normalization: bool = False,
     ) -> bool:
         info = self._mapping(draft.get("info"), "draft info")
         expected_category = self._category_id(target, info)
         if str(info.get("cid") or "") != expected_category:
             return False
-        if str(info.get("title") or "") != self._target_text(
-            target, "expected_title"
-        ):
+        observed_title = str(info.get("title") or "").strip()
+        expected_title = self._target_text(target, "expected_title")
+        title_matches = observed_title == expected_title
+        if accept_provider_title_normalization and not title_matches:
+            # Accepted SAVE proves an attempted approved payload, not permission
+            # for different copy. Only harmless whitespace projection is known.
+            title_matches = re.sub(r"\s+", " ", observed_title) == re.sub(
+                r"\s+", " ", expected_title
+            ).strip()
+        if not title_matches:
             return False
         expected_description = self._target_text(target, "expected_description")
-        if str(info.get("notes") or "") != expected_description:
+        expected_images = self._target_images(target)
+        expected_notes = miaoshou_rich_description(
+            expected_description,
+            expected_images,
+        )
+        if str(info.get("notes") or "") != expected_notes:
             return False
         notes_text = info.get("notesText")
         notes_text_matches = str(notes_text or "") == expected_description
@@ -177,7 +198,6 @@ class MiaoshouTikTokTransport:
         )
         if not notes_text_matches and not notes_text_is_confirmed_projection:
             return False
-        expected_images = self._target_images(target)
         observed_images = info.get("imgUrls")
         if not isinstance(observed_images, list) or observed_images != expected_images:
             return False
@@ -215,6 +235,19 @@ class MiaoshouTikTokTransport:
         sku_map = self._sku_map(info)
         expected_by_key = self._expected_rows_by_draft_key(target, info, sku_map)
         try:
+            approved_warehouse_map, warehouse_id, zero_stock_warehouse_ids, approved_total = self._warehouse_allocation(
+                info,
+                shop_id=str(target["shop_id"]),
+                approved=target.get("expected_warehouse_inventory"),
+            )
+            warehouse_inventory_matches = self._warehouse_inventory_matches(
+                sku_map,
+                shop_id=str(target["shop_id"]),
+                mainland_warehouse_id=warehouse_id,
+                zero_stock_warehouse_ids=zero_stock_warehouse_ids,
+                approved_warehouse_map=approved_warehouse_map,
+                approved_total=approved_total,
+            )
             expected_specifications = self._bound_variant_specifications(
                 target, info, sku_map
             )
@@ -222,10 +255,16 @@ class MiaoshouTikTokTransport:
                 info,
                 expected_specifications,
                 accept_provider_omission=accept_post_submit_projection,
+                accept_provider_name_normalization=(
+                    accept_provider_specification_name_normalization
+                ),
+                accept_provider_value_normalization=(
+                    accept_provider_specification_value_normalization
+                ),
             )
         except TikTokPreWritePreparationError:
             return False
-        return specifications_match and all(
+        return warehouse_inventory_matches and specifications_match and all(
             (
                 expected_by_key[str(key)][0] is None
                 or str(row.get("itemNum") or "").strip()
@@ -260,9 +299,13 @@ class MiaoshouTikTokTransport:
             info["cid"] = category_id
             info["title"] = self._target_text(target, "expected_title")
             expected_description = self._target_text(target, "expected_description")
-            info["notes"] = expected_description
+            expected_images = self._target_images(target)
+            info["notes"] = miaoshou_rich_description(
+                expected_description,
+                expected_images,
+            )
             info["notesText"] = expected_description
-            info["imgUrls"] = self._target_images(target)
+            info["imgUrls"] = expected_images
             parent_weight, parent_package = self._parent_parcel(target)
             info["weight"] = float(parent_weight)
             info["packageLength"] = self._package_dimension(parent_package[0])
@@ -273,8 +316,10 @@ class MiaoshouTikTokTransport:
             expected_specifications = self._bound_variant_specifications(
                 target, info, sku_map
             )
-            warehouse_id = self._warehouse_id(
-                info, shop_id=str(target["shop_id"])
+            approved_warehouse_map, warehouse_id, zero_stock_warehouse_ids, approved_total = self._warehouse_allocation(
+                info,
+                shop_id=str(target["shop_id"]),
+                approved=target.get("expected_warehouse_inventory"),
             )
             updated_skus: dict[str, object] = {}
             for key, raw_row in sku_map.items():
@@ -292,15 +337,22 @@ class MiaoshouTikTokTransport:
                     row["packageLength"] = self._package_dimension(sku_package[0])
                     row["packageWidth"] = self._package_dimension(sku_package[1])
                     row["packageHeight"] = self._package_dimension(sku_package[2])
-                stock = raw_row.get("stock")
+                stock = approved_total if approved_total is not None else raw_row.get("stock")
                 if isinstance(stock, bool) or not str(stock or "").isdigit() or int(str(stock)) <= 0:
                     raise TikTokPreWritePreparationError(
                         "Miaoshou approved stock is unavailable",
                         code="warehouse_binding_invalid",
                     )
                 row["stock"] = int(str(stock))
+                warehouse_stock_map = dict(approved_warehouse_map or {})
+                if approved_warehouse_map is None:
+                    warehouse_stock_map = {
+                        local_warehouse_id: "0"
+                        for local_warehouse_id in zero_stock_warehouse_ids
+                    }
+                    warehouse_stock_map[warehouse_id] = str(int(str(stock)))
                 row["shopIdToWarehouseIdAndStockMap"] = {
-                    str(target["shop_id"]): {warehouse_id: str(int(str(stock)))}
+                    str(target["shop_id"]): warehouse_stock_map
                 }
                 updated_skus[str(key)] = row
             info["skuMap"] = updated_skus
@@ -494,7 +546,7 @@ class MiaoshouTikTokTransport:
             rows = group.get("warehouseList")
             if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
                 raise TikTokPreWritePreparationError("Miaoshou warehouse response is malformed", code="warehouse_binding_invalid")
-            active.extend(row for row in rows if str(row.get("warehouseEffectStatus") or "1") == "1" and str(row.get("warehouseId") or "").strip())
+            active.extend(row for row in rows if type(row.get("warehouseEffectStatus")) in (str, int) and str(row["warehouseEffectStatus"]) == "1" and str(row.get("warehouseId") or "").strip())
         mainland_pickup = [
             row for row in active
             if self._is_china_mainland_pickup_warehouse(row)
@@ -743,12 +795,13 @@ class MiaoshouTikTokTransport:
                     "approved variant display specification is invalid",
                     code="sku_price_binding_invalid",
                 )
-            display = specification.get("option")
+            display = cls._approved_variant_display(specification)
             if type(display) is not str or not display.strip():
                 raise TikTokPreWritePreparationError(
                     "approved variant display option is invalid",
                     code="sku_price_binding_invalid",
                 )
+            specification = {"option": display.strip()}
             specifications[str(variant)] = specification
         try:
             bindings = approved_variant_key_bindings(
@@ -791,50 +844,55 @@ class MiaoshouTikTokTransport:
                 "Miaoshou display specification projection is unavailable",
                 code="sku_price_binding_invalid",
             )
-        target_property = raw_properties[-1]
-        if not isinstance(target_property, dict):
-            raise TikTokPreWritePreparationError(
-                "Miaoshou final sale property is malformed",
-                code="sku_price_binding_invalid",
-            )
-        raw_values = target_property.get("attrValueList")
-        if not isinstance(raw_values, list) or not raw_values:
-            raise TikTokPreWritePreparationError(
-                "Miaoshou final sale property values are malformed",
-                code="sku_price_binding_invalid",
-            )
-        values_by_id: dict[str, dict[str, object]] = {}
-        for value in raw_values:
-            if not isinstance(value, dict):
-                raise TikTokPreWritePreparationError(
-                    "Miaoshou final sale property values are malformed",
-                    code="sku_price_binding_invalid",
-                )
-            value_id = value.get("attrValueId")
-            if type(value_id) is not str or not value_id.strip() or value_id in values_by_id:
-                raise TikTokPreWritePreparationError(
-                    "Miaoshou final sale property identity is ambiguous",
-                    code="sku_price_binding_invalid",
-                )
-            values_by_id[value_id] = value
         if set(expected) != set(str(key) for key in raw_skus):
             raise TikTokPreWritePreparationError(
                 "Miaoshou display specification SKU coverage is incomplete",
                 code="sku_price_binding_invalid",
             )
-        by_sku_key: dict[str, dict[str, object]] = {}
-        used_ids: set[str] = set()
-        for raw_key in expected:
-            value_ids = [part for part in raw_key.split(";") if part]
-            matching_ids = [value_id for value_id in value_ids if value_id in values_by_id]
-            if len(matching_ids) != 1 or matching_ids[0] in used_ids:
-                raise TikTokPreWritePreparationError(
-                    "Miaoshou final sale property binding is ambiguous",
-                    code="sku_price_binding_invalid",
-                )
-            used_ids.add(matching_ids[0])
-            by_sku_key[raw_key] = values_by_id[matching_ids[0]]
-        return target_property, by_sku_key
+        # Miaoshou does not guarantee that the last sale property distinguishes
+        # variants.  A common shape is ``Color`` (three distinct values) followed
+        # by ``Size`` (one shared value).  Select the last property that binds one
+        # unique value to every exact SKU key; never guess by list position.
+        for target_property in reversed(raw_properties):
+            if not isinstance(target_property, dict):
+                continue
+            raw_values = target_property.get("attrValueList")
+            if not isinstance(raw_values, list) or not raw_values:
+                continue
+            values_by_id: dict[str, dict[str, object]] = {}
+            malformed = False
+            for value in raw_values:
+                if not isinstance(value, dict):
+                    malformed = True
+                    break
+                value_id = value.get("attrValueId")
+                if (
+                    type(value_id) is not str
+                    or not value_id.strip()
+                    or value_id in values_by_id
+                ):
+                    malformed = True
+                    break
+                values_by_id[value_id] = value
+            if malformed:
+                continue
+            by_sku_key: dict[str, dict[str, object]] = {}
+            used_ids: set[str] = set()
+            for raw_key in expected:
+                value_ids = [part for part in raw_key.split(";") if part]
+                matching_ids = [
+                    value_id for value_id in value_ids if value_id in values_by_id
+                ]
+                if len(matching_ids) != 1 or matching_ids[0] in used_ids:
+                    break
+                used_ids.add(matching_ids[0])
+                by_sku_key[raw_key] = values_by_id[matching_ids[0]]
+            if len(by_sku_key) == len(expected):
+                return target_property, by_sku_key
+        raise TikTokPreWritePreparationError(
+            "Miaoshou final sale property binding is ambiguous",
+            code="sku_price_binding_invalid",
+        )
 
     @classmethod
     def _apply_variant_specifications(
@@ -859,7 +917,6 @@ class MiaoshouTikTokTransport:
                     code="sku_price_binding_invalid",
                 )
             row["specification"] = deepcopy(specification)
-        raw_properties[-1] = target_property
 
     @classmethod
     def _variant_specifications_match(
@@ -868,20 +925,41 @@ class MiaoshouTikTokTransport:
         expected: Mapping[str, tuple[dict[str, str], str]],
         *,
         accept_provider_omission: bool,
+        accept_provider_name_normalization: bool = False,
+        accept_provider_value_normalization: bool = False,
     ) -> bool:
         if not expected:
             return True
         target_property, values_by_sku_key = cls._display_value_by_sku_key(info, expected)
-        if target_property.get("attrName") != "Specification":
+        property_name = str(target_property.get("attrName") or "").strip()
+        if property_name != "Specification" and not (
+            accept_provider_name_normalization and property_name
+        ):
             return False
         raw_skus = info.get("skuMap")
         if not isinstance(raw_skus, Mapping):
             return False
         for raw_key, (specification, display) in expected.items():
             row = raw_skus.get(raw_key)
-            if not isinstance(row, Mapping) or values_by_sku_key[raw_key].get(
-                "attrValue"
-            ) != display:
+            observed_display = str(
+                values_by_sku_key[raw_key].get("attrValue") or ""
+            ).strip()
+            display_matches = observed_display == display
+            if accept_provider_value_normalization and not display_matches:
+                # Miaoshou can remove a redundant trailing parenthetical
+                # quantity from a value that already contains that quantity in
+                # the localized text.  Accept only this narrow prefix-preserving
+                # normalization after a target-scoped accepted SAVE receipt.
+                suffix = display[len(observed_display) :] if display.startswith(observed_display) else ""
+                suffix_match = re.fullmatch(r"\s*\(([^()]+)\)\s*", suffix)
+                display_matches = bool(
+                    observed_display
+                    and suffix_match
+                    and cls._contains_approved_quantity(
+                        observed_display, suffix_match.group(1)
+                    )
+                )
+            if not isinstance(row, Mapping) or not display_matches:
                 return False
             observed_specification = row.get("specification")
             if observed_specification is None and accept_provider_omission:
@@ -959,6 +1037,244 @@ class MiaoshouTikTokTransport:
         if not result.is_finite() or result <= 0:
             raise ValueError("Miaoshou price is malformed")
         return result
+
+
+    def post_save_draft_matches(
+        self, target: Mapping[str, object], draft: Mapping[str, object]
+    ) -> bool:
+        """Verify an accepted SAVE through Miaoshou's normalized projection.
+
+        This path is valid only when the caller holds a target-scoped accepted
+        SAVE receipt. Harmless title whitespace and the provider sale-property
+        label may normalize while retaining the exact approved category,
+        description media, variant values, SKUs, prices, parcels and stock.
+        """
+
+        return self._draft_matches(
+            target,
+            draft,
+            accept_post_submit_projection=True,
+            accept_provider_title_normalization=True,
+            accept_provider_specification_name_normalization=True,
+            accept_provider_specification_value_normalization=True,
+        )
+
+
+    def _warehouse_allocation(
+        self,
+        info: Mapping[str, object],
+        *,
+        shop_id: str,
+        approved: object = None,
+    ) -> tuple[dict[str, str] | None, str, tuple[str, ...], int | None]:
+        # Never trust a legacy/default binding: it may point at a local warehouse.
+        # The exact shop warehouse list is the authority for both the mainland
+        # pickup selection and the set of local warehouses that must be zeroed.
+        self._sku_map(info)
+        response = self._post(WAREHOUSE_GET_PATH, {"shopIds": [shop_id]})
+        data = self._mapping(response.get("data"), "warehouse data")
+        groups = data.get("shopWarehouseList")
+        if not isinstance(groups, list):
+            raise TikTokPreWritePreparationError(
+                "Miaoshou warehouse response is malformed",
+                code="warehouse_binding_invalid",
+            )
+        active: list[Mapping[str, object]] = []
+        for group in groups:
+            if not isinstance(group, Mapping):
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou warehouse response is malformed",
+                    code="warehouse_binding_invalid",
+                )
+            if str(group.get("shopId") or "") != shop_id:
+                continue
+            rows = group.get("warehouseList")
+            if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+                raise TikTokPreWritePreparationError("Miaoshou warehouse response is malformed", code="warehouse_binding_invalid")
+            active.extend(row for row in rows if type(row.get("warehouseEffectStatus")) in (str, int) and str(row["warehouseEffectStatus"]) == "1" and str(row.get("warehouseId") or "").strip())
+        active_ids = [str(row["warehouseId"]).strip() for row in active]
+        if len(active_ids) != len(set(active_ids)):
+            raise TikTokPreWritePreparationError(
+                "Miaoshou warehouse identity is duplicated or ambiguous",
+                code="warehouse_binding_invalid",
+            )
+        if approved is not None:
+            if not isinstance(approved, Mapping) or str(approved.get("shop_id") or "") != shop_id:
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou approved warehouse allocation is invalid",
+                    code="warehouse_binding_invalid",
+                )
+            approved_rows = approved.get("warehouses")
+            total = approved.get("total_stock")
+            if not isinstance(approved_rows, list) or not approved_rows or type(total) is not int or total <= 0:
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou approved warehouse allocation is invalid",
+                    code="warehouse_binding_invalid",
+                )
+            observed = {
+                str(row.get("warehouseId") or "").strip(): str(
+                    row.get("warehouseName") or row.get("name") or ""
+                ).strip()
+                for row in active
+            }
+            expected_names: dict[str, str] = {}
+            stock_map: dict[str, str] = {}
+            calculated_total = 0
+            for row in approved_rows:
+                if not isinstance(row, Mapping):
+                    raise TikTokPreWritePreparationError(
+                        "Miaoshou approved warehouse allocation is invalid",
+                        code="warehouse_binding_invalid",
+                    )
+                warehouse_id = str(row.get("warehouse_id") or "").strip()
+                name = str(row.get("warehouse_name") or "").strip()
+                stock = row.get("stock")
+                if not warehouse_id or not name or type(stock) is not int or stock < 0 or warehouse_id in stock_map:
+                    raise TikTokPreWritePreparationError(
+                        "Miaoshou approved warehouse allocation is invalid",
+                        code="warehouse_binding_invalid",
+                    )
+                expected_names[warehouse_id] = name
+                stock_map[warehouse_id] = str(stock)
+                calculated_total += stock
+            if set(observed) != set(stock_map) or observed != expected_names or calculated_total != total:
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou active warehouses do not match approved allocation",
+                    code="warehouse_binding_invalid",
+                )
+            return stock_map, "", (), total
+        mainland_pickup = [
+            row for row in active
+            if is_china_mainland_pickup_warehouse(row, shop_id=shop_id)
+        ]
+        if len(mainland_pickup) != 1:
+            raise TikTokPreWritePreparationError(
+                "Miaoshou China mainland pickup warehouse is unavailable",
+                code="warehouse_binding_invalid",
+            )
+        mainland_id = str(mainland_pickup[0]["warehouseId"]).strip()
+        zero_stock_ids = tuple(
+            sorted(
+                {
+                    str(row.get("warehouseId") or "").strip()
+                    for row in active
+                    if str(row.get("warehouseId") or "").strip() != mainland_id
+                }
+            )
+        )
+        return None, mainland_id, zero_stock_ids, None
+
+
+    @staticmethod
+    def _warehouse_inventory_matches(
+        sku_map: Mapping[str, Mapping[str, object]],
+        *,
+        shop_id: str,
+        mainland_warehouse_id: str,
+        zero_stock_warehouse_ids: tuple[str, ...],
+        approved_warehouse_map: Mapping[str, str] | None = None,
+        approved_total: int | None = None,
+    ) -> bool:
+        expected_warehouse_ids = set(approved_warehouse_map or {
+            mainland_warehouse_id: "0",
+            **{warehouse_id: "0" for warehouse_id in zero_stock_warehouse_ids},
+        })
+        for row in sku_map.values():
+            stock = row.get("stock")
+            if (
+                isinstance(stock, bool)
+                or not str(stock or "").isdigit()
+                or int(str(stock)) <= 0
+            ):
+                return False
+            by_shop = row.get("shopIdToWarehouseIdAndStockMap")
+            if not isinstance(by_shop, Mapping):
+                return False
+            warehouse_map = by_shop.get(shop_id)
+            if not isinstance(warehouse_map, Mapping):
+                return False
+            normalized = {
+                str(warehouse_id): str(quantity)
+                for warehouse_id, quantity in warehouse_map.items()
+            }
+            if set(normalized) != expected_warehouse_ids:
+                return False
+            if approved_warehouse_map is not None:
+                if approved_total is None or int(str(stock)) != approved_total or normalized != dict(approved_warehouse_map):
+                    return False
+            else:
+                if normalized.get(mainland_warehouse_id) != str(int(str(stock))):
+                    return False
+                if any(
+                    normalized.get(warehouse_id) != "0"
+                    for warehouse_id in zero_stock_warehouse_ids
+                ):
+                    return False
+        return True
+
+
+    @staticmethod
+    def _approved_variant_display(specification: Mapping[str, str]) -> str | None:
+        """Project approved structured facts into one storefront option label.
+
+        Product Center deliberately keeps size and quantity as separate facts.
+        Miaoshou/TikTok exposes one final-sale option label, so a multi-field
+        specification must be projected deterministically instead of requiring
+        an extra human-authored ``option`` field.  No new product fact is
+        inferred here: only already-approved values are combined.
+        """
+
+        by_name = {
+            str(key).strip().lower().replace("_", " "): value.strip()
+            for key, value in specification.items()
+            if type(key) is str and type(value) is str and value.strip()
+        }
+        explicit = by_name.get("option")
+        if explicit:
+            return explicit
+        size = next(
+            (
+                by_name[name]
+                for name in ("size", "dimensions", "dimension")
+                if by_name.get(name)
+            ),
+            None,
+        )
+        quantity = next(
+            (
+                by_name[name]
+                for name in ("quantity", "qty", "count")
+                if by_name.get(name)
+            ),
+            None,
+        )
+        if size:
+            if quantity:
+                localized_quantity_already_present = (
+                    MiaoshouTikTokTransport._contains_approved_quantity(size, quantity)
+                )
+                if not localized_quantity_already_present:
+                    return f"{size} ({quantity})"
+            return size
+        for name in ("pattern", "style", "quantity", "qty", "count"):
+            if by_name.get(name):
+                return by_name[name]
+        if len(by_name) == 1:
+            return next(iter(by_name.values()))
+        return None
+
+    @staticmethod
+    def _contains_approved_quantity(value: str, quantity: str) -> bool:
+        """Recognize a count with an explicit item unit, never a size number."""
+
+        units = r"(?:pcs?|pieces?|sheets?|keping|ชิ้น|แผ่น|tấm|miếng|个|件|张)"
+        approved = re.fullmatch(rf"\s*(\d+)\s*{units}\s*", quantity, re.I)
+        if not approved:
+            return False
+        return bool(re.search(
+            rf"(?<![\d.]){re.escape(approved.group(1))}\s*{units}(?![A-Za-z])",
+            value, re.I,
+        ))
 
 
 def production_tiktok_publisher():

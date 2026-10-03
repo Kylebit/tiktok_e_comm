@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -9,6 +10,7 @@ from shared_platform.product_publication_reports import (
     ProductPublicationReportIntegrityError,
     ProductPublicationReportStore,
 )
+from shared_platform.shopee_regional_recovery import _digest as recovery_digest
 
 
 def _report_payload(
@@ -237,9 +239,56 @@ def test_internal_v2_file_execution_identity_tamper_is_detected(tmp_path):
         store.get_report(report_id=stored.report_id, offer_id=payload["offer_id"])
 
 
+def test_internal_v2_recovery_authorization_is_stored_and_replayed(tmp_path):
+    payload = _report_payload(
+        report_id="publication-report:recovery-run",
+        run_id="recovery-run",
+        status="FAILED",
+    )
+    payload.update(
+        {
+            "schema_version": "product-publication-report/v2",
+            "execution_identity": {
+                "skill_digest": "1" * 64,
+                "git_commit": "2" * 40,
+                "code_digest": "3" * 64,
+            },
+            "targets": [],
+        }
+    )
+    recovery_authorization = {
+        "schema_version": "shopee-regional-recovery/v1",
+        "offer_id": payload["offer_id"],
+    }
+    recovery_authorization["manifest_digest"] = recovery_digest(
+        recovery_authorization
+    )
+    payload["recovery_authorization"] = recovery_authorization
+
+    store = _store(tmp_path)
+    first = store.store_report(payload)
+    second = store.store_report(payload)
+    replayed = store.get_report_by_run(run_id=payload["run_id"])
+
+    assert first.created is True
+    assert second.created is False
+    assert replayed["recovery_authorization"] == recovery_authorization
+
+
 def test_read_only_methods_do_not_create_database(tmp_path):
     store = _store(tmp_path)
     assert store.get_report(report_id="missing", offer_id="3838616043") is None
     assert store.list_reports(offer_id="3838616043", revision=31) == []
     assert store.latest_report(offer_id="3838616043", revision=31) is None
     assert not store.path.exists()
+
+
+def test_plan_ref_listing_keeps_malformed_index_fail_closed(tmp_path):
+    store = _store(tmp_path)
+    store.path.write_bytes(b"not a sqlite database")
+
+    with pytest.raises(sqlite3.DatabaseError):
+        store.list_report_refs_for_plan(
+            offer_id="3838616043",
+            plan_id="omnichannel:" + "a" * 64,
+        )

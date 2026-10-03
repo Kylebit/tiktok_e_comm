@@ -6,23 +6,19 @@ the installed `publish-approved-product` Skill. Runtime copies under
 
 ## Safe installation and parity
 
-Check the current installation without writing anything:
+Use the explicit runtime and destination in the [tool entry](tools/README.md)
+and its path preflight. Do not run a default personal-directory check or install
+merely to inspect this source. The old no-target CLI examples are compatibility
+forms for a separately scoped personal installation task.
 
-```powershell
-python scripts/sync_publish_approved_product_skill.py --check
-```
-
-Install or refresh the runtime copy from the repository explicitly:
-
-```powershell
-python scripts/sync_publish_approved_product_skill.py --install
-```
-
-The script hashes every canonical file (normalizing only UTF-8 text line
-endings so Git checkout policy cannot create false drift), ignores only
-Python/pytest runtime caches, writes managed files atomically, and refuses to
-declare parity while unmanaged or divergent source files remain. It does not
-launch the Skill or contact any commerce platform.
+An installable Skill tree does not establish runtime readiness; check the
+registered source and full workflow dependencies separately. The current
+[closure entry](AGENT_HANDOFF.md) requires the complete workflow runtime and
+its exact original evidence. The old personal HTTP closure reference is not
+the source contract and its `doctor` / `--base-url` examples do not apply.
+Parity uses the existing complete Skill manifest and LF-normalized text hashes;
+retain extras and partial results, and report exact diagnostics. Installation
+within an existing authorized scope does not require a second approval.
 
 ## WP1 report boundary
 

@@ -140,6 +140,14 @@ def _production_dashboard_with_exact_v4_inputs() -> dict:
     return dashboard
 
 
+def _dashboard_missing_approved_description() -> dict:
+    # The shared dashboard fixture now includes a valid description. Keep the
+    # legacy/unavailable projection cases explicit about the fact they omit.
+    dashboard = deepcopy(_dashboard())
+    dashboard["listing_copy"]["shopee_description_en"] = ""
+    return dashboard
+
+
 def _approved_full_store(tmp_path, monkeypatch):
     store = ReleaseStore(tmp_path / "release.db")
     dashboard = _production_dashboard_with_exact_v4_inputs()
@@ -180,7 +188,7 @@ def test_current_production_projection_reports_exact_missing_owned_facts(
     store = ReleaseStore(tmp_path / "release.db")
     monkeypatch.setattr(release_store, "default_release_store", lambda: store)
     payload, blockers = product_server._release_plan_payload_from_dashboard(
-        _dashboard()
+        _dashboard_missing_approved_description()
     )
     assert blockers == [
         "freeze_approved_publication_snapshot: approved description must be non-empty text"
@@ -411,7 +419,7 @@ def test_snapshot_build_failure_rolls_back_approval_and_plan_status(
 
 def test_main_category_never_backfills_target_provider_category():
     payload, blockers = product_server._release_plan_payload_from_dashboard(
-        _dashboard()
+        _dashboard_missing_approved_description()
     )
     assert blockers == [
         "freeze_approved_publication_snapshot: approved description must be non-empty text"
@@ -466,7 +474,7 @@ def test_tampered_snapshot_fails_internal_and_public_read(
 
 def test_declared_v4_with_missing_facts_fails_approval_atomically(tmp_path):
     payload, blockers = product_server._release_plan_payload_from_dashboard(
-        _dashboard()
+        _dashboard_missing_approved_description()
     )
     assert blockers == [
         "freeze_approved_publication_snapshot: approved description must be non-empty text"

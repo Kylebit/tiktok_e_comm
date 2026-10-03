@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from hashlib import sha256
 import json
 from typing import Iterable, Mapping
+
+from .monthly_missing_cost_scope import monthly_cost_period
+
+
+SITE_LOCAL_BASIS = 'site_local_order_created_at'
 
 
 def _canonical_status(value: object) -> str:
@@ -26,8 +31,20 @@ def build_coverage(
     settlement_snapshot_id: str,
     site: str = "TH",
     timezone_name: str = "Asia/Bangkok",
+    date_basis: str = "legacy_timestamp_date",
 ) -> dict:
-    """Return a redacted, deterministic coverage artifact."""
+    """Return a redacted coverage artifact; v2 binds site-local dates explicitly.
+
+    The default preserves historical v1 bytes. Existing v1 receipts must not
+    be relabelled as v2: rebuild from frozen original orders and reconcile.
+    """
+
+    if date_basis not in {'legacy_timestamp_date', SITE_LOCAL_BASIS}:
+        raise ValueError('unsupported coverage date basis')
+    site_zone = None
+    if date_basis == SITE_LOCAL_BASIS:
+        _, local_end = monthly_cost_period(site, start, end, timezone_name)
+        site_zone = local_end.tzinfo
 
     deduplicated = {}
     for raw in orders:
@@ -41,6 +58,11 @@ def build_coverage(
         }
 
     normalized = [deduplicated[key] for key in sorted(deduplicated)]
+    if site_zone is not None:
+        for order in normalized:
+            stamp = datetime.fromisoformat(order['order_created_at'].replace('Z', '+00:00'))
+            if stamp.tzinfo is None or not start <= stamp.astimezone(site_zone).date() <= end:
+                raise ValueError('coverage order is outside exact site-local created period')
     settled = []
     cancelled_with_settlement = []
     cancelled = []
@@ -62,6 +84,8 @@ def build_coverage(
         "site": site,
         "timezone": timezone_name,
     }
+    if site_zone is not None:
+        canonical_input['date_basis'] = SITE_LOCAL_BASIS
     checksum = sha256(
         json.dumps(
             canonical_input,
@@ -79,7 +103,8 @@ def build_coverage(
         "unsettled_non_cancelled": len(unsettled),
     }
     return {
-        "schema_version": "tiktok-order-settlement-coverage/v1",
+        "schema_version": "tiktok-order-settlement-coverage/v2" if site_zone is not None else "tiktok-order-settlement-coverage/v1",
+        **({'date_basis': SITE_LOCAL_BASIS} if site_zone is not None else {}),
         "status": "ready" if not unsettled else "needs_review",
         "platform": "tiktok",
         "site": site,

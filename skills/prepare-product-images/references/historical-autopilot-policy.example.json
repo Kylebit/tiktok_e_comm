@@ -1,0 +1,83 @@
+{
+  "schema_version": "autopilot-policy/v1",
+  "policy_id": "orbit-product-publication-default-v1",
+  "status": "INACTIVE_HISTORICAL_EXAMPLE",
+  "language": "zh-CN",
+  "authority": {
+    "kind": "standing_user_instruction",
+    "approved_by": "Kyle",
+    "approved_at": "2026-08-21",
+    "scope": "商品发布中间准备步骤自动执行，正式渠道发布前必须进行唯一最终审核"
+  },
+  "automatic_steps": [
+    "fact_normalization",
+    "category_candidate_resolution",
+    "title_and_copy_generation",
+    "pricing_compilation",
+    "brand_image_generation",
+    "image_quality_assurance",
+    "image_translation",
+    "translation_quality_assurance",
+    "miaoshou_common_baseline_sync",
+    "zero_write_release_simulation",
+    "final_release_candidate_compilation"
+  ],
+  "paid_models": {
+    "provider": "lingshi",
+    "allowed_purposes": [
+      "title_and_copy_generation",
+      "brand_image_generation",
+      "image_quality_assurance",
+      "image_translation",
+      "translation_quality_assurance",
+      "regional_copy_repair"
+    ],
+    "maximum_confirmed_requests_per_product": 40,
+    "unknown_outcome_policy": "STOP_AND_RECONCILE",
+    "automatic_paid_retry": true,
+    "maximum_automatic_paid_retries_per_task": 3,
+    "retry_requires": [
+      "KNOWN_FAILED_OUTCOME",
+      "EXACT_FAILED_ASSET",
+      "DURABLE_RETRY_ATTEMPT"
+    ]
+  },
+  "miaoshou": {
+    "common_baseline_sync_allowed": true,
+    "maximum_confirmed_writes_per_product": 1,
+    "requires_exact_readback": true,
+    "marketplace_draft_or_publish_not_authorized": true
+  },
+  "write_budgets": {
+    "TIKTOK": {
+      "shared_maximum": 1,
+      "per_target_maximum": 3
+    },
+    "SHOPEE": {
+      "shared_maximum": 3,
+      "per_target_maximum": 9
+    },
+    "OZON": {
+      "shared_maximum": 2,
+      "per_target_maximum": 0
+    }
+  },
+  "exception_escalation": {
+    "missing_or_conflicting_high_risk_fact": true,
+    "no_safe_category_candidate": true,
+    "policy_or_budget_exceeded": true,
+    "quality_assurance_unresolved": true,
+    "provider_capability_missing": true
+  },
+  "final_marketplace_publish": {
+    "requires_user_approval": true,
+    "approval_surface": "product-workspace",
+    "approval_kind": "FINAL_MARKETPLACE_PUBLISH",
+    "authorization_is_target_and_snapshot_scoped": true
+  },
+  "source_evidence": {
+    "source": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-baseline-recovery-20260905-fixed-00-r4\\restore-check\\main\\config\\product_publication_autopilot_policy.json",
+    "sha256": "be377a77dfd7f49a5a9cd5f6c706827b20eb65249d852cf60a139759db94ba43",
+    "effect": "Historical material only. This example grants no paid authority and is not the default policy path."
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "schema_version": "profit-report/shopee/v1",
+  "report_id": "shopee-profit-july-synthetic",
+  "idempotency_key": "synthetic-only",
+  "platform": "shopee",
+  "calculation_kind": "realized_settlement_with_estimated_ads",
+  "period_kind": "monthly",
+  "period": {"start": "2026-07-01", "end": "2026-07-31", "timezone": "+07:00"},
+  "status": "ready",
+  "totals": {"settlement_cny": "180", "product_cost_cny": "35", "advertising_cny": "39.6", "local_fulfillment_cost_cny": "8", "external_costs_cny": "8", "profit_cny": "97.4"},
+  "quality_issues": [],
+  "assumption_warnings": [],
+  "source": {"input_checksum": "synthetic-input-sha256", "local_fulfillment_charged_order_count": 2},
+  "advertising": {"mode": "estimated_rate", "rate": "0.22"},
+  "order_lines": [
+    {
+      "identity": {"platform": "shopee", "shop_id": "SYNTHETIC-TH", "region": "TH", "order_id": "SYNTHETIC-ORDER-1", "order_line_id": "SYNTHETIC-ORDER-1:1"},
+      "product": {"seller_sku": "0021", "canonical_sku": "0021", "product_name": "Synthetic product A", "variant_name": "A", "image_url": "data:image/png;base64,iVBORw0KGgo=", "quantity": "1", "unit_weight_g": "100", "billable_weight_g": "100"},
+      "occurred_at": "2026-07-25T10:00:00+07:00", "settled_at": "2026-07-30T08:00:00+07:00", "settlement_status": "settled",
+      "settlement": {"currency": "THB", "net_amount_local": "100", "net_amount_cny": "100", "product_sales_amount_local": "100", "buyer_cash_paid_product_amount_local": "100"},
+      "fx": {"rate_cny_per_local": "1", "source": "synthetic-fx", "as_of": "2026-08-01T00:00:00Z"},
+      "cost": {"unit_cost_cny": "20", "quantity": "1", "total_cny": "20", "source": "synthetic-catalog", "version": "synthetic-v1"},
+      "advertising": {"rate": "0.22", "input_source": "operator_monthly_override", "basis_amount_local": "100", "amount_local": "22", "amount_cny": "22"},
+      "fulfillment": {"mode": "local", "local_fulfillment_cost_cny": "4"},
+      "fee_items": [{"code": "commission", "label": "平台佣金", "amount": "10", "amount_cny": "10", "currency": "THB", "included_in_net_settlement": true}],
+      "external_costs_cny": "4", "profit_cny": "54", "source_snapshot_id": "synthetic-snapshot-v1", "source_settlement_facts": []
+    },
+    {
+      "identity": {"platform": "shopee", "shop_id": "SYNTHETIC-TH", "region": "TH", "order_id": "SYNTHETIC-ORDER-2", "order_line_id": "SYNTHETIC-ORDER-2:1"},
+      "product": {"seller_sku": "0022", "canonical_sku": "0022", "product_name": "Synthetic product B", "variant_name": "B", "image_url": "https://example.invalid/not-loaded.jpg", "quantity": "1", "unit_weight_g": "120", "billable_weight_g": "120"},
+      "occurred_at": "2026-07-26T11:00:00+07:00", "settled_at": "2026-07-31T08:00:00+07:00", "settlement_status": "settled",
+      "settlement": {"currency": "THB", "net_amount_local": "80", "net_amount_cny": "80", "product_sales_amount_local": "80", "buyer_cash_paid_product_amount_local": "80"},
+      "fx": {"rate_cny_per_local": "1", "source": "synthetic-fx", "as_of": "2026-08-01T00:00:00Z"},
+      "cost": {"unit_cost_cny": "15", "quantity": "1", "total_cny": "15", "source": "synthetic-catalog", "version": "synthetic-v1"},
+      "advertising": {"rate": "0.22", "input_source": "operator_monthly_override", "basis_amount_local": "80", "amount_local": "17.6", "amount_cny": "17.6"},
+      "fulfillment": {"mode": "local", "local_fulfillment_cost_cny": "4"},
+      "fee_items": [{"code": "commission", "label": "平台佣金", "amount": "8", "amount_cny": "8", "currency": "THB", "included_in_net_settlement": true}],
+      "external_costs_cny": "4", "profit_cny": "43.4", "source_snapshot_id": "synthetic-snapshot-v1", "source_settlement_facts": []
+    }
+  ]
+}

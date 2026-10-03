@@ -63,36 +63,56 @@ def import_from_cursor(path: Path | None = None) -> int:
     if not costs:
         print(f"  ⚠️  未从 {src} 读到成本数据")
         return 0
-    conn = connect()
-    now = int(time.time())
     n = 0
     for sku_id, cost in costs.items():
-        conn.execute(
-            """INSERT INTO sku_costs (sku_id, cost_cny, note, updated_at)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(sku_id) DO UPDATE SET
-                 cost_cny=excluded.cost_cny,
-                 note=CASE WHEN sku_costs.note='' OR sku_costs.note IS NULL
-                      THEN excluded.note ELSE sku_costs.note END,
-                 updated_at=excluded.updated_at""",
-            (sku_id, cost, "import:CURSOR", now),
-        )
+        save_cost(sku_id, cost, 'import:CURSOR')
         n += 1
-    conn.commit()
-    conn.close()
     print(f"  ✅ 已从 CURSOR 导入 {n} 条 SKU 成本（{src.name}）")
     return n
 
 
 def get_all_costs() -> dict[str, float]:
     conn = connect_readonly()
-    rows = conn.execute("SELECT sku_id, cost_cny FROM sku_costs").fetchall()
-    conn.close()
-    return {r["sku_id"]: float(r["cost_cny"]) for r in rows}
+    try:
+        rows = conn.execute("SELECT sku_id, cost_cny FROM sku_costs").fetchall()
+        result={r["sku_id"]: float(r["cost_cny"]) for r in rows}
+        from shared_platform.catalog_sku_costs import members,read_current
+        from shared_platform.catalog_cost_projection import _table,_owners
+        for row in members(conn):
+            i=row['identity']
+            if i['platform']=='ozon':continue
+            current=read_current(conn,i)
+            if current:
+                if current['amount'] is not None and len(_owners(conn,i['variant_id']))==1:result[i['variant_id']]=float(current['amount'])
+                else:result.pop(i['variant_id'],None)
+        return result
+    finally:conn.close()
 
 
 def save_cost(sku_id: str, cost_cny: float, note: str = "") -> None:
     init_db()
+    from core.db import db_path
+    from shared_platform.catalog_cost_projection import _owners, read_cost, save_manual
+    probe = connect_readonly()
+    try:
+        owners = _owners(probe, sku_id)
+        if len(owners) > 1:
+            raise ValueError("full catalog identity required for ambiguous sku_id")
+        if owners:
+            platform, shop, product, variant = next(iter(owners))
+            if platform not in {'tiktok', 'shopee'}:
+                raise ValueError('full supported catalog identity required')
+            table, shop_field, variant_field = ('products', 'shop_cipher', 'sku_id') if platform == 'tiktok' else ('shopee_products', 'shop_id', 'model_id')
+            row = probe.execute(f'SELECT seller_sku FROM {table} WHERE {shop_field}=? AND {variant_field}=?', (shop, variant)).fetchone()
+            full = dict(platform=platform, shop_key=shop, product_id=product, variant_id=variant, seller_sku=row['seller_sku'])
+            current = read_cost(probe, full)
+        else:
+            full = None
+    finally:
+        probe.close()
+    if full is not None:
+        save_manual(db_path(), full, cost_cny, current['version'] if current else 0)
+        return
     conn = connect()
     conn.execute(
         """INSERT INTO sku_costs (sku_id, cost_cny, note, updated_at)

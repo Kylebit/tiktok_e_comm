@@ -26,7 +26,7 @@ class AdaptedSettlementEvidence:
     site: str
     rows: tuple[Mapping[str, Any], ...]
     issues: tuple[EvidenceQualityIssue, ...]
-    reconciliation: Mapping[str, Decimal]
+    reconciliation: Mapping[str, Decimal | None]
     source: Mapping[str, Any]
 
     def payload(self) -> dict[str, Any]:
@@ -77,7 +77,6 @@ def adapt_settlement_evidence(
 
     official_total = _decimal(evidence.get("net_settlement_total_local"))
     if official_total is None:
-        official_total = Decimal("0")
         issues.append(_issue("missing_official_settlement_total", "report", "net_settlement_total_local"))
     rows: list[dict[str, Any]] = []
     related_adjustments: list[dict[str, Any]] = []
@@ -90,6 +89,9 @@ def adapt_settlement_evidence(
             issues.append(_issue("invalid_settlement_record", str(record_index), "orders"))
             continue
         record_id = _text(record.get("order_id")) or str(record_index)
+        if record.get("settlement_status") is not None and _text(record.get("settlement_status")).lower() != "settled":
+            issues.append(_issue("unsettled_record", record_id, "settlement_status"))
+            continue
         transaction_type = _text(record.get("transaction_type"))
         amount = _decimal(record.get("net_settlement_amount"))
         is_tiktok_actual_ads = (
@@ -122,7 +124,7 @@ def adapt_settlement_evidence(
             continue
         if amount is None:
             issues.append(_issue("missing_settlement", record_id, "net_settlement_amount"))
-            amount = Decimal("0")
+            continue
         buyer_paid = (
             _shopee_product_sales_total(record)
             if platform == "shopee"
@@ -131,8 +133,8 @@ def adapt_settlement_evidence(
             else _decimal(record.get("buyer_total_amount"))
         )
         if buyer_paid is None:
-            buyer_paid = Decimal("0")
             issues.append(_issue("missing_ad_basis", record_id, "buyer_paid_product_amount"))
+            continue
         buyer_cash_paid = (
             _shopee_buyer_cash_product_total(record)
             if platform == "shopee"
@@ -196,6 +198,13 @@ def adapt_settlement_evidence(
                     f"Settlement item maps to seller SKU {seller_sku}, but the cost snapshot has no positive unit cost",
                 ))
             metadata = _metadata(catalog, source_sku, seller_sku)
+            from .catalog_scope import catalog_scope_issue
+            declared_shop = _text(record.get("shop_id") or evidence.get("shop_id"))
+            if catalog_scope_issue(metadata, platform=platform, shop_id=declared_shop,
+                    site=site, currency=record.get("currency"), product_id=item.get("product_id")):
+                issues.append(_issue("catalog_scope_mismatch", f"{record_id}:{item_index}", "platform/shop/site/currency/product"))
+                metadata = {}
+                seller_sku = ""
             weight = dict(getattr(catalog, "weight_by_seller_sku", {}).get(seller_sku) or {})
             fee_items = []
             for component_index, component in enumerate(components):
@@ -209,7 +218,7 @@ def adapt_settlement_evidence(
             row = {
                 "platform": platform,
                 "region": site,
-                "shop_id": _text(metadata.get("shop_id")) or site,
+                "shop_id": _text(record.get("shop_id") or evidence.get("shop_id") or metadata.get("shop_id")),
                 "order_id": record_id,
                 "order_line_id": f"{record_id}:{item_index + 1}",
                 "settlement_status": "settled",
@@ -223,6 +232,7 @@ def adapt_settlement_evidence(
                 "platform_sku": source_sku,
                 "seller_sku": seller_sku,
                 "canonical_sku": seller_sku,
+                "catalog_identity": dict(metadata.get("identity") or {}),
                 "quantity": quantity,
                 "product_name": _text(item.get("product_name") or metadata.get("product_name")),
                 "variant_name": _text(item.get("variant_name") or metadata.get("variant_name")),
@@ -251,8 +261,8 @@ def adapt_settlement_evidence(
     included_total = sum(
         (Decimal(str(row["net_settlement_amount"])) for row in rows), Decimal("0")
     )
-    unallocated = official_total - included_total - excluded_actual_ads
-    if abs(unallocated) > RECONCILIATION_TOLERANCE_LOCAL:
+    unallocated = official_total - included_total - excluded_actual_ads if official_total is not None else None
+    if unallocated is not None and abs(unallocated) > RECONCILIATION_TOLERANCE_LOCAL:
         issues.append(EvidenceQualityIssue(
             "settlement_reconciliation_mismatch",
             "report",
@@ -693,6 +703,9 @@ def _seller_sku(platform, source_sku, item, catalog, overrides):
         return _canonical_sku(overrides[source_sku])
     explicit = _text(item.get("seller_sku"))
     if platform == "tiktok":
+        if explicit:
+            from shared_platform.internal_catalog_sku import internal_sku
+            return internal_sku(explicit)
         return _canonical_sku(getattr(catalog, "seller_sku_by_platform_sku", {}).get(source_sku))
     if platform == "shopee":
         value = explicit or source_sku
@@ -709,25 +722,25 @@ def _metadata(catalog, platform_sku, seller_sku):
 
 
 def _canonical_sku(value: object) -> str:
-    raw = _text(value)
-    return raw[-4:].zfill(4) if raw.isdigit() else raw
+    return str(value) if value is not None else ""
 
 
 def _empty_reconciliation():
     return {
-        "official_net_settlement_local": Decimal("0"),
-        "included_order_net_settlement_local": Decimal("0"),
-        "excluded_actual_advertising_local": Decimal("0"),
-        "unallocated_local": Decimal("0"),
+        "official_net_settlement_local": None,
+        "included_order_net_settlement_local": None,
+        "excluded_actual_advertising_local": None,
+        "unallocated_local": None,
         "tolerance_local": RECONCILIATION_TOLERANCE_LOCAL,
     }
 
 
-def _decimal(value: object) -> Decimal | None:
+def _decimal(value):
     if value is None or isinstance(value, bool) or str(value).strip() == "":
         return None
     try:
-        return Decimal(str(value))
+        amount = Decimal(str(value))
+        return amount if amount.is_finite() else None
     except (InvalidOperation, ValueError):
         return None
 

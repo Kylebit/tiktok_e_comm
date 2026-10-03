@@ -1,6 +1,9 @@
 """SQLite 本地库：商品、成本、结算、广告消耗、联盟记录。"""
 
+from __future__ import annotations
+
 import sqlite3
+import os
 from pathlib import Path
 
 from core.config import ROOT, get, settings_base_dir
@@ -86,6 +89,12 @@ CREATE TABLE IF NOT EXISTS affiliate_invites (
 
 
 def db_path() -> Path:
+    override = os.environ.get("ORBIT_CATALOG_DATABASE")
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            raise ValueError("ORBIT_CATALOG_DATABASE must be an absolute path")
+        return path.resolve()
     rel = get("database", "data/shop.db")
     p = Path(rel)
     return p if p.is_absolute() else settings_base_dir() / p

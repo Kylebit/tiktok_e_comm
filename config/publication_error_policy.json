@@ -1,0 +1,49 @@
+{
+  "schema_version": "publication-error-policy/v1",
+  "policy_id": "orbit-publication-error-policy-v1",
+  "status": "ACTIVE",
+  "classes": {
+    "LOCAL_VALIDATION": {
+      "automatic_repair_attempts": 1,
+      "automatic_retry_attempts": 0,
+      "readback_reconciliation_attempts": 0,
+      "requires_zero_confirmed_writes": true,
+      "next_action": "REPAIR_THEN_REVALIDATE"
+    },
+    "TRANSIENT_ZERO_WRITE": {
+      "automatic_repair_attempts": 0,
+      "automatic_retry_attempts": 2,
+      "readback_reconciliation_attempts": 0,
+      "requires_zero_confirmed_writes": true,
+      "next_action": "BOUNDED_RETRY"
+    },
+    "PROCESSING": {
+      "automatic_repair_attempts": 0,
+      "automatic_retry_attempts": 0,
+      "readback_reconciliation_attempts": 10,
+      "requires_zero_confirmed_writes": false,
+      "next_action": "READBACK_ONLY"
+    },
+    "UNKNOWN_WRITE": {
+      "automatic_repair_attempts": 0,
+      "automatic_retry_attempts": 0,
+      "readback_reconciliation_attempts": 3,
+      "requires_zero_confirmed_writes": false,
+      "next_action": "RECONCILE_BEFORE_ANY_RETRY"
+    },
+    "AUTH_OR_CAPABILITY": {
+      "automatic_repair_attempts": 0,
+      "automatic_retry_attempts": 0,
+      "readback_reconciliation_attempts": 0,
+      "requires_zero_confirmed_writes": false,
+      "next_action": "WAIT_FOR_EXTERNAL_CAPABILITY"
+    },
+    "PROVIDER_REJECTED": {
+      "automatic_repair_attempts": 0,
+      "automatic_retry_attempts": 0,
+      "readback_reconciliation_attempts": 1,
+      "requires_zero_confirmed_writes": false,
+      "next_action": "RECORD_INCIDENT_AND_STOP"
+    }
+  }
+}

@@ -325,6 +325,9 @@ def _validated_context(request: AdapterExecutionRequest) -> dict[str, Any]:
 
 
 def _candidate(payload: dict[str, Any], channel: str, site: str) -> str:
+    from shared_platform.native_sole_final_execution import _ACTIVE, _NativeExecution
+    if type(_ACTIVE.get()) is _NativeExecution:
+        return _native_frozen_target_title(payload, channel=channel, site=site)
     for row in ((payload.get("listing_copy") or {}).get("candidates") or ()):
         if not isinstance(row, dict):
             continue
@@ -337,6 +340,136 @@ def _candidate(payload: dict[str, Any], channel: str, site: str) -> str:
             if title:
                 return title
     raise RuntimeError(f"approved listing title candidate is missing for {channel}:{site}")
+
+
+def _tiktok_target_title(payload: dict[str, Any], site: str) -> str:
+    from shared_platform.native_sole_final_execution import _ACTIVE, _NativeExecution
+    if type(_ACTIVE.get()) is _NativeExecution:
+        return _native_frozen_target_title(payload, channel="tiktok", site=site,
+                                           target_label="tiktok:" + site)
+    return _candidate(payload, "tiktok", SITE_COUNTRIES[site])
+
+
+def _native_frozen_target_title(payload: dict[str, Any], *, channel: str, site: str,
+                                target_label: str | None = None) -> str:
+    frozen = _native_frozen_target(payload, channel=channel, site=site,
+                                   target_label=target_label)
+    title = frozen["copy"].get("title")
+    if type(title) is not str or not title.strip():
+        raise RuntimeError("NATIVE_TARGET_COPY_TITLE_REQUIRED")
+    return title.strip()
+
+
+def _native_frozen_target(payload: dict[str, Any], *, channel: str, site: str,
+                          target_label: str | None = None) -> dict[str, Any]:
+    """Re-read native decision/graph and consume exact frozen copy, without edits.
+
+    Shopee CNSC is its English global master, not a target country. It requires
+    exactly one frozen English Shopee target; country/brand ambiguities fail.
+    Legacy country-candidate callers retain their original contract.
+    """
+    from shared_platform.native_sole_final_execution import _ACTIVE, _NativeExecution, allows_native_run
+    active = _ACTIVE.get()
+    if type(active) is not _NativeExecution:
+        raise RuntimeError("NATIVE_TARGET_COPY_DECISION_REQUIRED")
+    from shared_platform.r3_frozen_review_producer import read_stored_domain_graph
+    from shared_platform.r3_common_source_facts import NativeCommonSourceReader
+    from shared_platform.publication_r3_image_bridge import TARGET_LOCALE
+    with active.store._connect_readonly() as db:
+        db.execute("BEGIN")
+        if not active.plan_id or not allows_native_run(db, active.plan_id):
+            raise RuntimeError("NATIVE_TARGET_COPY_DECISION_REQUIRED")
+        row = db.execute("SELECT status,payload_json FROM release_plans WHERE plan_id=?",
+                         (active.plan_id,)).fetchone()
+        if (row is None or row["status"] != "APPROVED"
+                or json.loads(row["payload_json"]) != payload):
+            raise RuntimeError("NATIVE_TARGET_COPY_PERSISTED_PAYLOAD_CHANGED")
+        graph = read_stored_domain_graph(db, active.plan_id,
+            native_reader=NativeCommonSourceReader(active.store))
+        binding = payload["r3_marketplace_binding"]
+        route = binding["route"]
+        if target_label is not None:
+            if target_label != channel + ":" + site:
+                raise RuntimeError("NATIVE_TARGET_COPY_EXACT_TARGET_REQUIRED")
+            labels = [target_label] if target_label in graph.targets else []
+        elif channel == "shopee" and site == "CNSC":
+            labels = [label for label in graph.targets if label.startswith("shopee:")
+                      and route["target_facts"][label]["copy"].get("language") == "en"]
+        elif channel == "tiktok":
+            labels = [label for label in graph.targets if label.startswith("tiktok:")
+                      and SITE_COUNTRIES.get(label.split(":", 1)[1]) == site]
+        else:
+            labels = [channel + ":" + site] if channel + ":" + site in graph.targets else []
+        if len(labels) != 1:
+            raise RuntimeError("NATIVE_TARGET_COPY_EXACT_TARGET_REQUIRED")
+        label = labels[0]
+        frozen = route["target_facts"].get(label)
+        projected = payload["product_facts"]["content_by_target"].get(label)
+        if (graph.marketplace_plan_id != active.plan_id or label not in graph.targets
+                or graph.round1_digest != binding["documents"]["round1_snapshot"]["snapshot_digest"]
+                or frozen is None or frozen.get("target") != label
+                or route["route_locales"].get(label) != TARGET_LOCALE[label]
+                or any(image.get("brand_id") != ("homebloom-sea" if label.startswith("tiktok:HB_") else "livelyhive-sea")
+                       for image in route["image_routes"].get(label, []))
+                or projected != {"title": frozen["copy"].get("title"),
+                                 "description": frozen["copy"].get("description"),
+                                 "locale": TARGET_LOCALE[label]}):
+            raise RuntimeError("NATIVE_TARGET_COPY_FROZEN_SCOPE_CHANGED")
+        return json.loads(json.dumps(frozen))
+
+
+def _tiktok_publish_price(payload: dict[str, Any], site: str) -> dict[str, Any]:
+    """Consume frozen publication prices, separately from discount evidence.
+
+    The existing Miaoshou site writer takes one price for every selected SKU.
+    Nonuniform frozen SKU prices therefore remain an explicit unsupported
+    capability; they are never collapsed to the first row or recalculated.
+    """
+    from shared_platform.native_sole_final_execution import _ACTIVE, _NativeExecution
+    label = "tiktok:" + site
+    if type(_ACTIVE.get()) is not _NativeExecution:
+        return _store_price(payload, label)
+    frozen = _native_frozen_target(payload, channel="tiktok", site=site,
+                                   target_label=label)
+    from modules.sourcing import new_product_workbench as workbench
+    country = SITE_COUNTRIES.get(site)
+    rule = workbench.SEA_REGION_RULES.get(country)
+    currency = (rule.currency if rule is not None else
+                workbench.MX_RULE['currency'] if country == 'MX' else
+                workbench.GB_RULE['currency'] if country == 'GB' else None)
+    if currency is None:
+        raise RuntimeError("NATIVE_TARGET_PRICE_REGION_UNSUPPORTED")
+    reviewed = payload["r3_marketplace_binding"]["documents"]["first_review"]["product_facts"]["skus"]
+    return _single_native_publish_price(
+        frozen, reviewed, _target_pricing(payload, label).get("sku_prices"), currency)
+
+
+def _single_native_publish_price(frozen, reviewed, projection, currency):
+    """Validate the exact verified rows for the existing scalar-price writer."""
+    rows = (frozen.get("price") or {}).get("sku_prices")
+    keys = [row.get("seller_sku") for row in reviewed]
+    if (type(rows) is not list or not rows or len(rows) != len(keys)
+            or any(type(key) is not str or not key for key in keys)
+            or len(set(keys)) != len(keys)
+            or any(type(row) is not dict for row in rows)
+            or [row.get("model_sku") for row in rows] != keys):
+        raise RuntimeError("NATIVE_TARGET_PRICE_EXACT_SKUS_REQUIRED")
+    published = []
+    for row in rows:
+        amount = _decimal(row.get("amount"))
+        if (type(row.get("amount")) not in (int, float, str)
+                or amount is None or not amount.is_finite() or amount <= 0
+                or row.get("currency") != currency):
+            raise RuntimeError("NATIVE_TARGET_PRICE_FROZEN_VALUE_INVALID")
+        published.append({"model_sku": row["model_sku"],
+                          "list_price": row["amount"], "currency": row["currency"]})
+    if projection != published:
+        raise RuntimeError("NATIVE_TARGET_PRICE_PROJECTION_CHANGED")
+    values = {_decimal(row["list_price"]) for row in published}
+    if len(values) != 1:
+        raise RuntimeError("NATIVE_TARGET_PRICE_PER_SKU_TRANSPORT_REQUIRED")
+    return {"list_price": published[0]["list_price"], "currency": currency,
+            "sku_prices": published}
 
 
 def _shopee_description(payload: dict[str, Any]) -> str:
@@ -478,6 +611,7 @@ def _tiktok_readback(
     expected_price: object,
     expected_image_count: int,
     expected_category_id: str,
+    cache_verified: bool = True,
 ) -> tuple[bool, dict[str, Any]]:
     token, shop = _tiktok_shop(region)
     cipher = str(shop.get("cipher") or shop.get("shop_cipher") or "")
@@ -566,7 +700,7 @@ def _tiktok_readback(
         "status": detail.get("status") or detail.get("product_status"),
         "checks": checks,
     }
-    if evidence["verified"]:
+    if evidence["verified"] and cache_verified:
         evidence["catalog_rows_upserted"] = _cache_verified_tiktok_listing(
             shop=shop,
             detail=detail,
@@ -714,8 +848,8 @@ def _miaoshou_submission_audit(
         for url in (payload.get("video_urls") or ())
         if str(url).strip()
     ]
-    pricing = _store_price(payload, f"tiktok:{site}")
-    title = _candidate(payload, "tiktok", country)
+    pricing = _tiktok_publish_price(payload, site)
+    title = _tiktok_target_title(payload, site)
     prepared_shop_ids = {
         str(value)
         for value in (
@@ -843,7 +977,7 @@ def _immutable_miaoshou_plan_draft(
     ) + "".join(f'<p><img src="{url}"></p>' for url in images)
     return {
         "commonCollectBoxDetailId": int(payload["product_id"]),
-        "title": _candidate(payload, "tiktok", country),
+        "title": _tiktok_target_title(payload, site),
         "itemNum": str(payload["seller_sku"]),
         "weight": float(facts.get("weight_kg") or 0),
         "packageLength": float(package_cm[0]),
@@ -1239,13 +1373,83 @@ def _immutable_miaoshou_common_draft(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _r3_common_frozen_sku_numbers(payload: dict[str, Any]) -> dict[str, str] | None:
+    binding = payload.get("r3_stage_binding")
+    if binding is None:
+        return None
+    if (binding.get("schema_version") != "r3-common-stage/v1"
+        or binding.get("execution_scope") != ["miaoshou:COMMON"]
+        or payload.get("targets") != ["miaoshou:COMMON"]):
+        raise ValueError("COMMON_STAGE_EXECUTION_SCOPE_CONFLICT")
+    rows = ((payload.get("sku_lineage") or {}).get("assignment") or {}).get("model_skus") or []
+    numbers = {str(row.get("variant_key") or "").strip(";"): str(row.get("model_sku") or "") for row in rows}
+    selected = (payload.get("product_facts") or {}).get("selected_skus") or []
+    expected = {str(row.get("key") or "").strip(";"): str(row.get("model_sku") or "") for row in selected}
+    if (not numbers or len(numbers) != len(rows) or len(expected) != len(selected)
+        or numbers != expected or any(not key or not value for key, value in numbers.items())):
+        raise ValueError("COMMON_FROZEN_MODEL_SKU_BINDING_CONFLICT")
+    return numbers
+
+
+def _r3_common_official_identity_matches(payload: dict[str, Any], detail: dict[str, Any]) -> bool:
+    """Reject every contradictory identity returned by the exact detail query.
+
+    Some legacy responses omit these fields. The request remains bound to the
+    approved COMMON ID; an absent field is not invented as a provider fact.
+    """
+    expected = {
+        "commonCollectBoxDetailId": str(payload['product_id']),
+        "commonCollectBoxId": str(payload['product_id']),
+        "id": str(payload['product_id']),
+        "sourceOfferId": str(payload['product_facts']['source_offer_id']),
+        "offerId": str(payload['product_facts']['source_offer_id']),
+        "sourceProductId": str(payload['product_facts']['source_offer_id']),
+    }
+    return all(key not in detail or str(detail[key]) == value for key, value in expected.items())
+
+
+def _r3_common_sku_logistics(payload):
+    """Frozen kilograms and centimetres for each exact provider variant key."""
+    numbers = _r3_common_frozen_sku_numbers(payload)
+    if numbers is None:
+        return None
+    facts = payload['product_facts']['sku_commercial_facts']
+    if not isinstance(facts, dict) or not all(isinstance(key, str) for key in facts):
+        raise ValueError('COMMON_FROZEN_SKU_LOGISTICS_REQUIRED')
+    by_provider_key = {key.strip(';'): row for key, row in facts.items()}
+    if len(by_provider_key) != len(facts) or not set(numbers).issubset(by_provider_key):
+        raise ValueError('COMMON_FROZEN_SKU_LOGISTICS_KEY_CONFLICT')
+    result = {}
+    for key in numbers:
+        row = by_provider_key[key]
+        values = [row['weight_kg'], *row['package_cm']]
+        if len(values) != 4:
+            raise ValueError('COMMON_FROZEN_SKU_LOGISTICS_REQUIRED')
+        numeric = [Decimal(str(value)) for value in values]
+        if any(not value.is_finite() or value <= 0 for value in numeric):
+            raise ValueError('COMMON_FROZEN_SKU_LOGISTICS_REQUIRED')
+        result[key] = dict(zip(('weight', 'packageLength', 'packageWidth', 'packageHeight'), map(float, numeric)))
+    return result
+
+
 def readback_miaoshou_common(
     payload: dict[str, Any],
     *,
     post=None,
+    observation_reader=None,
 ) -> dict[str, Any]:
     """Read and compare COMMON without editing Miaoshou or local state."""
 
+    if observation_reader is not None:
+        from modules.miaoshou.client import NativeCommonDetailObserver, CommonDetailObservation
+        if type(observation_reader) is not NativeCommonDetailObserver or post is not None:
+            raise ValueError('COMMON_SERVICE_OBSERVATION_READER_REQUIRED')
+        observation = observation_reader.observe(payload['product_id'])
+        if type(observation) is not CommonDetailObservation:
+            raise ValueError('COMMON_SERVICE_OBSERVATION_REQUIRED')
+        post = lambda path, body: observation.response()
+    else:
+        observation = None
     if post is None:
         from modules.miaoshou.client import post_open
 
@@ -1357,6 +1561,15 @@ def readback_miaoshou_common(
             or str(response_detail_id) == str(expected_detail_id)
         ),
     }
+    frozen_numbers = _r3_common_frozen_sku_numbers(payload)
+    if frozen_numbers is not None:
+        checks['selected_sku_numbers'] = (
+            len(actual_sku_map) == len(frozen_numbers)
+            and {str(key).strip(';'): str(row.get('itemNum') or '') for key, row in actual_sku_map.items()}
+            == frozen_numbers
+        )
+        checks['source_identity'] = _r3_common_official_identity_matches(payload, detail)
+        checks['detail_binding'] = checks['source_identity']
     comparison = {
         "title": {
             "expected": expected["title"],
@@ -1439,7 +1652,20 @@ def readback_miaoshou_common(
         for field, passed in checks.items()
         if not passed
     }
-    return {
+    logistics = _r3_common_sku_logistics(payload)
+    if logistics is not None:
+        actual_by_key = {str(key).strip(';'): row for key, row in actual_sku_map.items()}
+        wanted_by_key = {key: dict(fields, itemNum=frozen_numbers[key]) for key, fields in logistics.items()}
+        actual_logistics = {key: {field: row.get(field) for field in (*fields, 'itemNum')}
+            for key, fields in logistics.items() for row in [actual_by_key.get(key, {})]}
+        checks['sku_logistics'] = (set(actual_by_key) == set(logistics) and all(
+            actual_by_key[key].get('itemNum') == frozen_numbers[key]
+            and all(_numbers_equal(actual_by_key[key].get(field), value, '0.0001') for field, value in fields.items())
+            for key, fields in logistics.items()))
+        comparison['sku_logistics'] = {'expected': wanted_by_key, 'actual': actual_logistics}
+        if not checks['sku_logistics']:
+            field_diffs['sku_logistics'] = comparison['sku_logistics']
+    evidence = {
         "verified": all(checks.values()),
         "mode": "readback_reuse_no_write",
         "offer_id": str(payload["product_id"]),
@@ -1453,54 +1679,49 @@ def readback_miaoshou_common(
         "external_writes_performed": [],
         "source": "miaoshou_common_readonly_detail",
     }
+    if observation is not None:
+        comparison = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        evidence['native_common_observation'] = {**observation.receipt(),
+            'comparison_sha256': hashlib.sha256(comparison).hexdigest()}
+    return evidence
 
 
-def write_miaoshou_common_from_plan(
-    payload: dict[str, Any],
-    *,
-    post=None,
-    overwrite_guard: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Write one immutable COMMON draft, then exact-read it back."""
+def bind_native_common_readback(source: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+    """Preserve a verified observation while binding added business metadata.
 
+    Validate the original comparison before deriving a new one. This only
+    carries read evidence; it does not authenticate an account or grant budget.
+    """
+    packet = source.get('native_common_observation')
+    if packet is None:
+        if 'native_common_observation' in evidence:
+            raise ValueError('COMMON_OBSERVATION_SOURCE_REQUIRED')
+        return dict(evidence)
+    from modules.miaoshou.client import validate_common_observation_receipt
+    validate_common_observation_receipt(packet, detail_id=source.get('offer_id'))
+    original = {k:v for k,v in source.items()
+                if k not in ('native_common_observation', 'stored_common_lineage')}
+    if packet.get('comparison_sha256') != _miaoshou_value_digest(original):
+        raise ValueError('COMMON_OBSERVATION_COMPARISON_CHANGED')
+    if ('native_common_observation' in evidence
+            and evidence['native_common_observation'] != packet):
+        raise ValueError('COMMON_OBSERVATION_SOURCE_CHANGED')
+    if source.get('verified') is not True or evidence.get('verified') is not True:
+        raise ValueError('COMMON_OBSERVATION_VERIFIED_READBACK_REQUIRED')
+    if source.get('offer_id') != evidence.get('offer_id'):
+        raise ValueError('COMMON_OBSERVATION_IDENTITY_CHANGED')
+    bound = dict(evidence)
+    comparison = {k:v for k,v in bound.items()
+                  if k not in ('native_common_observation', 'stored_common_lineage')}
+    bound['native_common_observation'] = {**packet,
+        'comparison_sha256': _miaoshou_value_digest(comparison)}
+    return bound
+
+
+def _build_immutable_common_edit(payload, current):
+    """Original immutable adapter envelope builder, shared with the native gate."""
     from modules.sourcing import new_product_workbench as workbench
-
-    if post is None:
-        from modules.miaoshou.client import post_open
-
-        post = post_open
     draft = _immutable_miaoshou_common_draft(payload)
-    detail_id = int(draft["commonCollectBoxDetailId"])
-    current_response = post(
-        MIAOSHOU_COMMON_DETAIL_PATH,
-        {"commonCollectBoxDetailId": detail_id},
-    )
-    if current_response.get("result") != "success":
-        raise MiaoshouPreSubmitError(
-            "Miaoshou COMMON immutable write could not read current detail",
-            reason_code="common_detail_read_failed",
-        )
-    data = current_response.get("data") or {}
-    current = data.get("editCommonCollectBoxDetail")
-    oss_md5 = str(data.get("ossMd5") or "")
-    if not isinstance(current, dict) or not current or not oss_md5:
-        raise MiaoshouPreSubmitError(
-            "Miaoshou COMMON immutable write lacks editable detail or ossMd5",
-            reason_code="common_editable_detail_unavailable",
-        )
-    if overwrite_guard is not None:
-        if (
-            overwrite_guard.get("overwrite_allowed") is not True
-            or overwrite_guard.get("identity_exact") is not True
-            or overwrite_guard.get("readback_non_ambiguous") is not True
-            or not str(overwrite_guard.get("existing_detail_digest") or "")
-            or _miaoshou_detail_digest(current)
-            != str(overwrite_guard.get("existing_detail_digest"))
-        ):
-            raise MiaoshouPreSubmitError(
-                "Miaoshou COMMON changed after overwrite review; no edit was sent",
-                reason_code="common_overwrite_review_drift",
-            )
     current_sku_map = (
         current.get("skuMap")
         if isinstance(current.get("skuMap"), dict)
@@ -1529,11 +1750,19 @@ def write_miaoshou_common_from_plan(
         selected_skus,
         draft["itemNum"],
     )
+    frozen_numbers = _r3_common_frozen_sku_numbers(payload)
+    if frozen_numbers is not None:
+        if not _r3_common_official_identity_matches(payload, current):
+            raise ValueError("COMMON_OFFICIAL_IDENTITY_CONFLICT_BEFORE_EDIT")
+        if len(selected_skus) != len(frozen_numbers) or {str(key).strip(';') for key in selected_skus} != set(frozen_numbers):
+            raise ValueError("COMMON_FROZEN_MODEL_SKU_BINDING_CONFLICT")
+        sku_numbers = {key: frozen_numbers[str(key).strip(';')] for key in selected_skus}
     updated_skus: dict[str, Any] = {}
     expected_sku_labels = _expected_miaoshou_sku_labels(
         payload,
         selected_sku_keys,
     )
+    frozen_logistics = _r3_common_sku_logistics(payload)
     for key, value in selected_skus.items():
         sku = dict(value)
         sku.update(
@@ -1546,6 +1775,8 @@ def write_miaoshou_common_from_plan(
             }
         )
         normalized_key = str(key).strip(";")
+        if frozen_logistics is not None:
+            sku.update(frozen_logistics[normalized_key])
         expected_label = expected_sku_labels.get(normalized_key, normalized_key)
         label_fields = [
             field
@@ -1570,6 +1801,73 @@ def write_miaoshou_common_from_plan(
         updated[field] = draft[field]
     updated["skuMap"] = updated_skus
     workbench._filter_miaoshou_variant_maps(updated, updated_skus)  # noqa: SLF001
+    return updated
+
+
+def write_miaoshou_common_from_plan(
+    payload: dict[str, Any],
+    *,
+    post=None,
+    overwrite_guard: dict[str, Any] | None = None,
+    observation_reader=None,
+) -> dict[str, Any]:
+    """Write one immutable COMMON draft, then exact-read it back."""
+
+    from shared_platform.native_common_edit_boundary import require_managed_transport, CommonEditBlocked
+    require_managed_transport(post)
+
+    from modules.sourcing import new_product_workbench as workbench
+
+    if post is None:
+        from modules.miaoshou.client import post_open
+
+        post = post_open
+    draft = _immutable_miaoshou_common_draft(payload)
+    detail_id = int(draft["commonCollectBoxDetailId"])
+    try:
+        current_response = post(
+            MIAOSHOU_COMMON_DETAIL_PATH,
+            {"commonCollectBoxDetailId": detail_id},
+        )
+    except Exception as error:
+        from modules.miaoshou.client import MiaoshouLocalConfigMissing
+        if isinstance(error, MiaoshouLocalConfigMissing):
+            error.external_write_evidence = {
+                'schema_version': 'common-initial-config-failure/v1',
+                'source': 'miaoshou_local_config_loader',
+                'request_attempted': False, 'external_write_count': 0,
+                'external_writes_performed': [], 'write_outcome': 'not_dispatched',
+                'pre_submit_failure': True, 'submission_accepted': False,
+                'call_boundary': 'initial_common_detail_config_load',
+            }
+        raise
+    if current_response.get("result") != "success":
+        raise MiaoshouPreSubmitError(
+            "Miaoshou COMMON immutable write could not read current detail",
+            reason_code="common_detail_read_failed",
+        )
+    data = current_response.get("data") or {}
+    current = data.get("editCommonCollectBoxDetail")
+    oss_md5 = str(data.get("ossMd5") or "")
+    if not isinstance(current, dict) or not current or not oss_md5:
+        raise MiaoshouPreSubmitError(
+            "Miaoshou COMMON immutable write lacks editable detail or ossMd5",
+            reason_code="common_editable_detail_unavailable",
+        )
+    if overwrite_guard is not None:
+        if (
+            overwrite_guard.get("overwrite_allowed") is not True
+            or overwrite_guard.get("identity_exact") is not True
+            or overwrite_guard.get("readback_non_ambiguous") is not True
+            or not str(overwrite_guard.get("existing_detail_digest") or "")
+            or _miaoshou_detail_digest(current)
+            != str(overwrite_guard.get("existing_detail_digest"))
+        ):
+            raise MiaoshouPreSubmitError(
+                "Miaoshou COMMON changed after overwrite review; no edit was sent",
+                reason_code="common_overwrite_review_drift",
+            )
+    updated = _build_immutable_common_edit(payload, current)
     try:
         save_response = post(
             MIAOSHOU_COMMON_EDIT_PATH,
@@ -1579,6 +1877,8 @@ def write_miaoshou_common_from_plan(
                 "ossMd5": oss_md5,
             },
         )
+    except CommonEditBlocked:
+        raise
     except Exception as error:
         raise MiaoshouDraftVerificationError(
             (
@@ -1605,7 +1905,9 @@ def write_miaoshou_common_from_plan(
             f"{save_response.get('code')} {save_response.get('message') or ''}"
         )
     try:
-        readback = readback_miaoshou_common(payload, post=post)
+        readback = (readback_miaoshou_common(payload, post=post)
+                    if observation_reader is None else
+                    readback_miaoshou_common(payload, observation_reader=observation_reader))
     except Exception as error:
         raise MiaoshouDraftVerificationError(
             (
@@ -1662,7 +1964,7 @@ def _prepare_existing_miaoshou_target_from_plan(
     shop["warehouses"] = warehouse.get("data") or {}
     target_key = str(resolved["target_key"])
     region = SITE_COUNTRIES[site]
-    pricing = _store_price(payload, f"tiktok:{site}")
+    pricing = _tiktok_publish_price(payload, site)
     draft = _immutable_miaoshou_plan_draft(payload, site=site)
     category_id = "600338"
     write_state = {
@@ -2567,10 +2869,28 @@ def execute_tiktok_target(
     if site not in SITE_TARGET_KEYS:
         raise RuntimeError(f"unsupported governed TikTok site {site}")
     country = SITE_COUNTRIES[site]
-    expected_title = _candidate(payload, "tiktok", country)
-    expected_price = _store_price(payload, request.target_label).get("list_price")
+    expected_title = _tiktok_target_title(payload, site)
+    expected_price = _tiktok_publish_price(payload, site).get("list_price")
     if expected_price in (None, ""):
         raise RuntimeError(f"approved TikTok price is missing for {request.target_label}")
+
+    from shared_platform.native_sole_final_execution import _ACTIVE, _NativeExecution
+    active = _ACTIVE.get()
+    if (type(active) is _NativeExecution and active.plan_id == request.plan_id
+            and site in SEA_SITES):
+        # Native decisions retain the exact Miaoshou target claim, but this
+        # frozen source has no cross-domain official shop mapping. The legacy
+        # regional first-shop READ (and its automatic token refresh/cache/title
+        # repair) cannot establish this native target's official success.
+        prior_submission = _prior_unverified_tiktok_submission(request)
+        if prior_submission:
+            external_reference, submission = prior_submission
+        else:
+            external_reference, submission = _miaoshou_publish_target(payload, site=site)
+        return AdapterExecutionResult(True, False,
+            "Miaoshou accepted the exact native target; official shop mapping remains unverified",
+            external_reference, {**submission,
+                "official_readback_capability": "FROZEN_OFFICIAL_SHOP_MAPPING_UNAVAILABLE"}, True)
 
     if site in SUBMISSION_ONLY_TIKTOK_SITES:
         prior_submission = _prior_unverified_tiktok_submission(request)
@@ -2726,7 +3046,8 @@ def execute_tiktok_target(
                     ),
                 },
             ) from error
-        last_evidence = {**submission, **evidence, "poll_attempt": attempt + 1}
+        last_evidence = {**submission, **evidence, "accepted_submission": dict(submission),
+                         "poll_attempt": attempt + 1}
         if (
             title_repair is None
             and _tiktok_only_title_mismatch(evidence)
@@ -2761,6 +3082,7 @@ def execute_tiktok_target(
         f"TikTok {country} publish was accepted but exact API readback did not converge",
         external_reference,
         last_evidence,
+        True,
     )
 
 
@@ -4056,6 +4378,17 @@ def execute_shopee_target(
     context = _validated_context(request)
     payload = context["payload"]
     region = request.site.upper()
+    if region in {"MY", "TH", "VN"}:
+        return AdapterExecutionResult(
+            False, False,
+            "Legacy Shopee plans do not freeze regional copy. Use "
+            "prepare-product-publication and prepare-product-images, then the "
+            "approved v4 publication runner; this entry does not translate or write.",
+            None,
+            {"verified": False, "reason": "FROZEN_REGIONAL_COPY_REQUIRED",
+             "external_writes_performed": [], "external_write_count": 0,
+             "paid_request_count": 0, "target_label": request.target_label},
+        )
     title = _candidate(payload, "shopee", "CNSC")
     description = _shopee_description(payload)
     pricing = _target_pricing(payload, request.target_label)
@@ -4758,12 +5091,12 @@ def _ozon_reconciliation_result(
         "reconciliation_required": True,
     }
     return AdapterExecutionResult(
-        succeeded=True,
+        succeeded=False,
         readback_verified=False,
         detail=detail,
         external_reference=offer_id,
         readback_evidence=receipt,
-        submission_accepted=True,
+        submission_accepted=False,
     )
 
 
@@ -4844,9 +5177,6 @@ def execute_ozon_target(
             "Ozon automatic release requires an immutable Kyle-approved "
             "inventory decision; no default stock is allowed"
         ) from error
-    desired_stock_quantity = planned_stock_command[
-        "desired_stock_quantity"
-    ]
     title = _candidate(payload, "ozon", "RU")
     pricing = _target_pricing(payload, request.target_label)
     derived = pricing.get("derived_preview") or {}
@@ -4875,338 +5205,71 @@ def execute_ozon_target(
         expected_price=price_cny,
         expected_image_count=len(context["images"]),
     )
-    if verified:
-        return AdapterExecutionResult(
-            True,
-            True,
-            "existing Ozon listing exactly matches official API readback",
-            str(evidence.get("product_id") or offer_id),
-            evidence,
+    readback_summary = {
+        key: evidence[key]
+        for key in (
+            "verified",
+            "reason",
+            "item_count",
+            "product_id",
+            "is_created",
+            "checks",
+            "status",
         )
-    if _ozon_only_rich_content_declined(evidence):
-        if not evidence.get("is_created") or not evidence.get("product_id"):
-            return _ozon_reconciliation_result(
-                offer_id=offer_id,
-                detail=(
-                    "Ozon listing exists but product creation is not yet "
-                    "confirmed; Rich Content and stock writes were not attempted"
-                ),
-                evidence={
-                    "phase": "existing_product_creation",
-                    "existing_readback": evidence,
-                    "external_writes_performed": [],
-                },
-            )
-        repair_evidence = _repair_ozon_rich_content(
-            offer_id=offer_id,
-            title=expected_platform_title,
-            images=list(evidence.get("image_urls") or ()),
-            width_cm=width,
-            height_cm=height,
-        )
-        stock_evidence = _ozon_set_release_stock(
-            offer_id=offer_id,
-            stock=desired_stock_quantity,
-        )
-        for attempt in range(24):
-            if attempt:
-                time.sleep(10)
-            verified, repaired = _ozon_readback(
-                offer_id=offer_id,
-                expected_title=expected_platform_title,
-                expected_price=price_cny,
-                expected_image_count=len(context["images"]),
-            )
-            repaired["poll_attempt"] = attempt + 1
-            repaired["rich_content_repair"] = repair_evidence
-            repaired["stock_write"] = stock_evidence
-            if verified:
-                return AdapterExecutionResult(
-                    True,
-                    True,
-                    "Ozon legacy Rich Content was repaired and exact readback matched",
-                    str(repaired.get("product_id") or offer_id),
-                    repaired,
-                )
-        return AdapterExecutionResult(
-            True,
-            False,
-            "Ozon Rich Content repair completed but moderation did not converge",
-            offer_id,
-            repaired,
-        )
-    if _ozon_existing_listing_is_processing(evidence):
-        creation_evidence = (
-            {
-                "state": "created",
-                "offer_id": offer_id,
-                "product_id": evidence.get("product_id"),
-                "is_created": True,
-                "reused_readback": True,
-            }
-            if evidence.get("is_created") and evidence.get("product_id")
-            else _await_ozon_product_creation(offer_id=offer_id)
-        )
-        if creation_evidence.get("state") != "created":
-            return _ozon_reconciliation_result(
-                offer_id=offer_id,
-                detail=(
-                    "Existing Ozon import is still awaiting exact product "
-                    "creation; duplicate import and stock update were blocked"
-                ),
-                evidence={
-                    "phase": "existing_product_creation",
-                    "existing_readback": evidence,
-                    "creation": creation_evidence,
-                    "external_writes_performed": [],
-                },
-            )
-        stock_evidence = (
-            {"reused": True}
-            if evidence.get("has_stock")
-            else _ozon_set_release_stock(
-                offer_id=offer_id,
-                stock=desired_stock_quantity,
-            )
-        )
-        for attempt in range(24):
-            if attempt:
-                time.sleep(10)
-            verified, processing = _ozon_readback(
-                offer_id=offer_id,
-                expected_title=expected_platform_title,
-                expected_price=price_cny,
-                expected_image_count=len(context["images"]),
-            )
-            processing["poll_attempt"] = attempt + 1
-            processing["creation"] = creation_evidence
-            processing["stock_write"] = stock_evidence
-            if verified:
-                return AdapterExecutionResult(
-                    True,
-                    True,
-                    "existing Ozon listing completed moderation and exact readback matched",
-                    str(processing.get("product_id") or offer_id),
-                    processing,
-                )
-        return AdapterExecutionResult(
-            True,
-            False,
-            "Ozon listing is still processing after the official readback window",
-            offer_id,
-            processing,
-        )
-    if int(evidence.get("item_count") or 0) > 1:
-        return AdapterExecutionResult(
-            False,
-            False,
-            "Ozon official readback returned an ambiguous existing offer identity",
-            None,
-            {
-                **evidence,
-                "external_writes_performed": [],
-                "duplicate_import_blocked": True,
-            },
-        )
-    if evidence.get("product_id") or evidence.get("is_created"):
-        return AdapterExecutionResult(
-            False,
-            False,
-            "Existing Ozon offer does not match the immutable release payload",
-            str(evidence.get("product_id") or offer_id),
-            {
-                **evidence,
-                "external_writes_performed": [],
-                "duplicate_import_blocked": True,
-            },
-        )
-    durable_attempts = int(
-        ((context.get("target") or {}).get("attempts") or 1)
-    )
-    if durable_attempts > 1:
-        return _ozon_reconciliation_result(
-            offer_id=offer_id,
-            detail=(
-                "A prior Ozon target attempt may already have dispatched an "
-                "import, but no exact product is visible yet; a second import "
-                "was blocked"
-            ),
-            evidence={
-                "phase": "prior_import_reconciliation",
-                "durable_attempts": durable_attempts,
-                "existing_readback": evidence,
-                "duplicate_import_blocked": True,
-                "external_writes_performed": [],
-            },
-        )
-
-    source_key = str(pricing.get("selected_source_target_key") or "lh_ph")
-    source_region = {
-        "lh_ph": "PH",
-        "lh_my": "MY",
-        "lh_th": "TH",
-        "lh_vn": "VN",
-    }.get(source_key)
-    if not source_region:
-        raise RuntimeError("approved Ozon source target is not a verified TikTok SEA site")
-    source_label = {
-        "PH": "tiktok:LH_PH",
-        "MY": "tiktok:LH_MY",
-        "TH": "tiktok:LH_TH",
-        "VN": "tiktok:LH_VN",
-    }[source_region]
-    source_verified, source_evidence = _tiktok_readback(
-        seller_sku=request.seller_sku,
-        region=source_region,
-        expected_title=_candidate(payload, "tiktok", source_region),
-        expected_price=_store_price(payload, source_label).get("list_price"),
-        expected_image_count=len(context["images"]),
-        expected_category_id="600338",
-    )
-    delivery_images = list(source_evidence.get("image_urls") or ())
-    if not source_verified or len(delivery_images) != len(context["images"]):
-        raise RuntimeError(
-            "Ozon requires the exact verified TikTok master image set before import"
-        )
-
-    from modules.ozon.migrate_batch import migrate_one
-
-    result = migrate_one(
-        request.seller_sku,
-        allow_deepseek=False,
-        title_candidate=title,
-        product_size_cm=(width, height),
-        quantity=1,
-        price_cny_override=int(math.ceil(float(price_cny))),
-        old_price_cny_override=int(math.ceil(float(old_price_cny))),
-        price_source_override="approved_release_plan",
-        price_label_override=request.target_label,
-        # Use TikTok's official CDN copies of the already-approved image set.
-        # Origin 1688/ToAPI URLs may reject server-side downloads even though
-        # the pixels were accepted by TikTok.
-        image_urls_override=delivery_images,
-        # The legacy image processor re-hosts files through a third-party
-        # image service. These CDN URLs already represent the exact approved
-        # assets, so submit them directly to Ozon and preserve their lineage.
-        process_images=False,
-        # Rich content is an independent, separately moderated asset. The
-        # governed V1 publishes only the approved title, description and
-        # images; it must not generate an unaudited Rich JSON payload.
-        skip_rich_content=True,
-        # A governed release must not silently train the shared TikTok→Ozon
-        # category mapping from one product. Mapping changes remain a separate
-        # reviewed catalogue operation.
-        skip_mapping_write=True,
-    )
-    offer_id = str(result.get("offer_id") or offer_id)
-    import_attempted = bool(result.get("import_request_attempted"))
-    task_id = str(result.get("task_id") or "")
-    import_evidence = {
-        "phase": "product_import",
-        "task_id": task_id,
-        "status": result.get("status"),
-        "dispatch_outcome": result.get("import_dispatch_outcome"),
-        "errors": list(result.get("errors") or ()),
-        "external_writes_performed": (
-            ["ozon:product_import:create"]
-            if import_attempted
-            else []
-        ),
+        if key in evidence
     }
-    if not result.get("ok") and not import_attempted:
-        return AdapterExecutionResult(
-            False,
-            False,
-            f"Ozon import failed: {result.get('error') or result.get('status')}",
-            offer_id,
-            {"source": "official_ozon_seller_api", "import_result": result},
-        )
-    if import_attempted and not task_id:
+    if (
+        verified
+        and str(evidence.get("product_id") or "")
+        == planned_stock_command["product_id"]
+    ):
+        # Product-info visibility only proves some stock exists. The v2
+        # stock command is completed by the target-scoped runner's exact FBS
+        # warehouse/quantity readback, never by this legacy listing check.
         return _ozon_reconciliation_result(
             offer_id=offer_id,
             detail=(
-                "Ozon import dispatch did not return a stable task identity; "
-                "stock update and duplicate import were blocked"
+                "Ozon listing matches official readback, but exact warehouse "
+                "and quantity stock readback is required"
             ),
             evidence={
-                **import_evidence,
-                "import_result": result,
-                "creation": {
-                    "state": "ambiguous",
-                    "reason": "missing_import_task_id",
-                },
+                "phase": "exact_stock_readback_required",
+                "existing_readback": readback_summary,
+                "external_writes_performed": [],
             },
         )
-    creation_evidence = _await_ozon_product_creation(
-        offer_id=offer_id,
-        task_id=task_id,
-    )
-    if creation_evidence.get("state") != "created":
+    # The successor-plan command is scoped to an existing Ozon product. A
+    # missing or still-processing offer cannot authorize a product import.
+    if not evidence.get("product_id") or not evidence.get("is_created"):
+        durable_attempts = int((context.get("target") or {}).get("attempts") or 1)
         return _ozon_reconciliation_result(
             offer_id=offer_id,
-            detail=(
-                "Ozon import was dispatched but exact product creation did "
-                "not converge; stock update and duplicate import were blocked"
-            ),
+            detail="Ozon existing product is not confirmed by official readback",
             evidence={
-                **import_evidence,
-                "import_result": result,
-                "creation": creation_evidence,
+                "phase": "existing_product_readback",
+                "existing_readback": readback_summary,
+                "duplicate_import_blocked": True,
+                "durable_attempts": durable_attempts,
+                "external_writes_performed": [],
             },
         )
-    try:
-        stock_evidence = _ozon_set_release_stock(
-            offer_id=offer_id,
-            stock=desired_stock_quantity,
-        )
-    except Exception as error:
+    if str(evidence["product_id"]) != planned_stock_command["product_id"]:
         return _ozon_reconciliation_result(
             offer_id=offer_id,
-            detail=(
-                "Ozon product was created but the stock update outcome "
-                "requires reconciliation"
-            ),
+            detail="Ozon product identity differs from the immutable stock command",
             evidence={
-                **import_evidence,
-                "import_result": result,
-                "creation": creation_evidence,
-                "stock_error": str(error),
-                "external_writes_performed": [
-                    *import_evidence["external_writes_performed"],
-                    "ozon:stock:update_attempted",
-                ],
+                "phase": "existing_product_readback",
+                "existing_readback": readback_summary,
+                "duplicate_import_blocked": True,
+                "external_writes_performed": [],
             },
         )
-    for attempt in range(24):
-        if attempt:
-            time.sleep(10)
-        verified, evidence = _ozon_readback(
-            offer_id=offer_id,
-            expected_title=expected_platform_title,
-            expected_price=price_cny,
-            expected_image_count=len(context["images"]),
-        )
-        evidence["poll_attempt"] = attempt + 1
-        evidence["import"] = import_evidence
-        evidence["creation"] = creation_evidence
-        evidence["stock_write"] = stock_evidence
-        evidence["external_writes_performed"] = [
-            *import_evidence["external_writes_performed"],
-            "ozon:stock:update",
-        ]
-        if verified:
-            return AdapterExecutionResult(
-                True,
-                True,
-                "Ozon listing imported and matched official API readback",
-                str(evidence.get("product_id") or offer_id),
-                evidence,
-            )
     return _ozon_reconciliation_result(
         offer_id=offer_id,
-        detail=(
-            "Ozon product creation and stock update completed but exact "
-            "official readback did not converge"
-        ),
-        evidence=evidence,
+        detail="Ozon existing product has not passed exact official readback",
+        evidence={
+            "phase": "existing_product_readback",
+            "existing_readback": readback_summary,
+            "external_writes_performed": [],
+        },
     )

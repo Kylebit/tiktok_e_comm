@@ -22,3 +22,24 @@ Use and care for the item according to the approved product facts.
     for forbidden in ("BRUP", "0966", "BB3729", "3882722296", "Seller SKU"):
         assert forbidden not in cleaned
     assert "Decorative table runner" in cleaned
+
+
+def test_localization_facts_allow_counted_product_without_material_or_dimensions():
+    facts = _approved_copy_required_facts(
+        "62-Piece Dried Flower Bouquet in Blue & Natural Beige for Home Decor",
+        "A dried flower bouquet with 62 pieces for home decoration.",
+    )
+
+    assert facts == {
+        "material_tokens": [],
+        "finished_dimension_pairs": [],
+        "quantity": 62,
+    }
+    _localized_copy_preserves_required_facts(
+        "ช่อดอกไม้แห้ง 62 ชิ้น",
+        "ช่อดอกไม้แห้งสำหรับตกแต่งบ้าน จำนวน 62 ชิ้น",
+        facts,
+    )
+
+
+from modules.shopee.global_copy import _approved_copy_required_facts, _localized_copy_preserves_required_facts

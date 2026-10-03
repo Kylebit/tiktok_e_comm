@@ -1,0 +1,35 @@
+{
+  "producer_commit": "c50d3d31d55004aacdd32c96c6d5bd7ded9356bb",
+  "audit_receipt": "domain-prep/03/b4b-common/R2_COMMON_COMMERCIAL_PRODUCER.json",
+  "scope": "Synthetic commercial facts projected through actual R1 helper/build_round1_snapshot then actual R2 entry.run/qa.run; lowest provider/download fake",
+  "files": [
+    {
+      "file": "source-dashboard.json",
+      "sha256": "202d678c5d4886157e305fedd38564c6fb507fbcd3b31b50f651cec655748e8a"
+    },
+    {
+      "file": "automated-image-qa.json",
+      "sha256": "8294398cd8b14f78b85e9d44b39bc250fcd584540dcd0e705a481fb513cfe71b"
+    },
+    {
+      "file": "brand-image-generation.json",
+      "sha256": "4f81c3f88df0b6d79f185a07ab05bce89712d7d19f3c0062fff9d8ca81c4f94f"
+    },
+    {
+      "file": "brand-image-translation-plan.json",
+      "sha256": "2ea0c1b133fea1cddbb9205d679ab5fe3e4b6ac756b191b7b51213edce617651"
+    },
+    {
+      "file": "brand-image-translation.json",
+      "sha256": "2eb4270d3c846f911cad6c08d1385c25c8ced78f97cb55dfdbc05c63e7f917f7"
+    },
+    {
+      "file": "first-review.json",
+      "sha256": "d744850942bedb5e03764624829d2b4cf463c5700ec66b13bec70f78e36962b5"
+    },
+    {
+      "file": "round1-approved-snapshot.json",
+      "sha256": "f1a9079775790deff35b7ee7bb85188daef6a7cfdf7abc78b381e4028dc1220b"
+    }
+  ]
+}

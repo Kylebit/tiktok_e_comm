@@ -1,0 +1,15 @@
+body.orbit-shell-page{margin:0!important;padding:0 0 0 204px!important;display:block!important;min-width:0;background:#f4f6f9;color:#202b3c;font-family:"Segoe UI","Microsoft YaHei UI",sans-serif}
+#orbitSidebar{position:fixed;inset:0 auto 0 0;width:204px;z-index:1000;background:#17253c;color:#e8edf6;padding:26px 14px;box-sizing:border-box;overflow:auto}
+#orbitSidebar .orbit-brand{display:block;text-decoration:none;color:#fff;font-size:23px;font-weight:700;padding:0 13px 26px}
+#orbitSidebar .orbit-brand span{display:block;font-size:12px;font-weight:400;color:#aebbd0;margin-top:5px}
+#orbitCoreNav{display:flex;flex-direction:column;gap:7px}
+#orbitCoreNav a{display:block;min-height:42px;padding:12px 14px;border-radius:7px;color:#cad5e7;font-size:14px;font-weight:500;line-height:1.4;text-decoration:none;box-sizing:border-box}
+#orbitCoreNav a:hover,#orbitCoreNav a[aria-current=page]{background:#2c4364;color:#fff}
+#orbitMenu{display:none;background:transparent;border:1px solid #68788e;color:white;border-radius:5px;padding:7px 12px}
+body.orbit-shell-page>main,body.orbit-shell-page>.main{margin:0!important;width:auto!important;max-width:none!important;min-width:0;padding:24px!important}
+body.orbit-shell-page>.topbar{position:relative!important;left:auto!important;top:auto!important;margin:0!important;width:auto!important}
+body.orbit-shell-page .catalog-page{padding-top:24px!important}
+body.orbit-shell-page .catalog-page .table-wrap{overflow-x:auto;max-width:100%}
+.catalog-copy-note{background:#edf4ff;border:1px solid #c5d8f1;border-radius:8px;padding:12px 16px;margin:12px 0;color:#27435e}
+.catalog-copy-note details{font-size:12px;margin-top:8px}.catalog-copy-note pre{white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:760px){body.orbit-shell-page{padding:62px 0 0!important}#orbitSidebar{inset:0 0 auto;width:auto;height:62px;padding:10px 14px;overflow:visible;display:flex;align-items:center;justify-content:space-between}#orbitSidebar .orbit-brand{padding:0;font-size:19px}#orbitSidebar .orbit-brand span{display:none}#orbitMenu{display:block}#orbitCoreNav{display:none;position:absolute;left:0;top:62px;width:230px;padding:14px;background:#17253c;box-shadow:4px 8px 15px #0002}#orbitSidebar.open #orbitCoreNav{display:flex}body.orbit-shell-page>main,body.orbit-shell-page>.main{padding:14px!important}}

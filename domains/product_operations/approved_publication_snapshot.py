@@ -21,6 +21,9 @@ from .source_identity import (
 APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION = (
     "approved-publication-snapshot/v4"
 )
+PUBLICATION_BUSINESS_SNAPSHOT_SCHEMA_VERSION = (
+    "publication-business-snapshot/v1"
+)
 
 _DIGEST = re.compile(r"(?:sha256:)?[0-9a-f]{64}\Z")
 _DIGITS = re.compile(r"[0-9]{1,32}\Z")
@@ -29,7 +32,10 @@ _CONTROL_ONLY_TARGETS = frozenset({"miaoshou:COMMON"})
 _NON_PROVIDER_CATEGORY_DECISION_SCHEMA_VERSION = (
     "publication-category-decision/v1"
 )
-_SHOPEE_GLOBAL_MASTER_SCHEMA_VERSION = "shopee-global-master/v1"
+_SHOPEE_GLOBAL_MASTER_SCHEMA_VERSIONS = {
+    "shopee-global-master/v1",
+    "shopee-global-master/v2",
+}
 # User-approved provider rule: only Shopee envelope dimensions use per-axis
 # centimetre ceilings.  Per-SKU parcel facts, exact weight, prices, and every
 # other platform projection remain unchanged.
@@ -173,6 +179,23 @@ def build_approved_publication_snapshot(
     if list(approved_plan.get("targets") or ()) != [row["target_label"] for row in targets]:
         raise ApprovedPublicationSnapshotError("ReleasePlan target selection drifted")
 
+    body = _publication_fact_body(payload)
+    body.update(schema_version=APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
+                approved_at=approved_at, approved_by=approved_by)
+    return _snapshot(body)
+
+
+def _publication_fact_body(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Shared facts only; this function creates no approval or execution input."""
+    payload = _json_copy(payload, "ReleasePlan payload")
+    plan_id = _text(payload.get("plan_id"), "plan_id")
+    offer_id = _digits(payload.get("product_id"), "offer_id")
+    revision = _integer(payload.get("product_revision"), "product_revision")
+    if revision < 0:
+        raise ApprovedPublicationSnapshotError("product_revision cannot be negative")
+    supplied_plan_digest = _sha256(payload)
+    targets = _targets(payload.get("targets"))
+
     product_facts = _mapping(payload.get("product_facts"), "product_facts")
     title = _text(product_facts.get("title"), "approved title")
     description = _text(product_facts.get("description"), "approved description")
@@ -184,6 +207,31 @@ def build_approved_publication_snapshot(
         )
     categories_by_target = _target_categories(
         product_facts.get("categories_by_target"),
+        targets=targets,
+    )
+    verified_claims = _verified_product_claims(
+        product_facts.get("verified_product_claims") or {}
+    )
+    content_by_target = _target_content(
+        product_facts.get("content_by_target"),
+        targets=targets,
+        base_title=title,
+        base_description=description,
+    )
+    stock_policy = _publication_stock_policy(product_facts.get("stock_policy"))
+    ozon_stock_decision = _ozon_stock_decision(
+        product_facts.get("ozon_stock_decision"), stock_policy=stock_policy
+    )
+    postpublish_promotion_policy = _postpublish_promotion_policy(
+        payload.get("approved_postpublish_promotion_policy")
+    )
+    source_conformance = _source_conformance(
+        product_facts.get("source_conformance"),
+        targets=targets,
+        stock_policy=stock_policy,
+    )
+    warehouse_inventory_by_target = _warehouse_inventory_by_target(
+        product_facts.get("warehouse_inventory_by_target"),
         targets=targets,
     )
 
@@ -257,6 +305,9 @@ def build_approved_publication_snapshot(
         )
         if not specification:
             raise ApprovedPublicationSnapshotError("SKU specification is required")
+        specification = _consumer_readable_specification(
+            specification, model_sku=model_sku, name=f"SKU {variant_key} specification"
+        )
         cost = _money(row.get("cost"), f"SKU {variant_key} cost")
         parcel = {
             "weight_kg": _positive_decimal(
@@ -286,6 +337,7 @@ def build_approved_publication_snapshot(
         targets=targets,
         skus=skus,
         approved_product_images=images,
+        offer_id=offer_id,
     )
 
     product = {
@@ -295,6 +347,10 @@ def build_approved_publication_snapshot(
         "main_category": category,
         "source_identity": source_contract.payload(),
     }
+    if verified_claims:
+        product["verified_claims"] = verified_claims
+    if content_by_target is not None:
+        product["content_by_target"] = content_by_target
     image_routing = _image_routing(
         payload.get("localized_image_routing"),
         targets=targets,
@@ -302,14 +358,21 @@ def build_approved_publication_snapshot(
     )
     if image_routing is not None:
         product["image_routing"] = image_routing
+    if stock_policy is not None:
+        product["stock_policy"] = stock_policy
+    if ozon_stock_decision is not None:
+        product["ozon_stock_decision"] = ozon_stock_decision
+    if postpublish_promotion_policy is not None:
+        product["postpublish_promotion_policy"] = postpublish_promotion_policy
+    if source_conformance is not None:
+        product["source_conformance"] = source_conformance
+    if warehouse_inventory_by_target is not None:
+        product["warehouse_inventory_by_target"] = warehouse_inventory_by_target
 
     body = {
-        "schema_version": APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
         "offer_id": offer_id,
         "product_revision": revision,
         "plan_id": plan_id,
-        "approved_at": approved_at,
-        "approved_by": approved_by,
         "publication_targets": targets,
         "bindings": {
             "release_payload_digest": supplied_plan_digest,
@@ -326,7 +389,61 @@ def build_approved_publication_snapshot(
         "skus": skus,
         "digests": digests,
     }
-    return _snapshot(body)
+    return body
+
+
+def build_publication_preview(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the complete publication facts without claiming approval."""
+    body = _publication_fact_body(payload)
+    body.update(schema_version="publication-snapshot-preview/v1", status="NOT_APPROVED")
+    body["preview_digest"] = _sha256(body)
+    return validate_publication_preview(body)
+
+
+def build_publication_business_snapshot(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Freeze approval-neutral business facts from one immutable plan payload."""
+
+    body = _publication_fact_body(payload)
+    body["schema_version"] = PUBLICATION_BUSINESS_SNAPSHOT_SCHEMA_VERSION
+    body["business_snapshot_digest"] = _sha256(body)
+    return validate_publication_business_snapshot(body)
+
+
+def validate_publication_business_snapshot(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Verify an approval-neutral business snapshot and return a detached copy."""
+
+    body = _json_copy(value, "publication business snapshot")
+    digest = _digest(
+        body.pop("business_snapshot_digest", None),
+        "business_snapshot_digest",
+    )
+    expected = _BODY_KEYS - {"approved_at", "approved_by"}
+    if (
+        set(body) != expected
+        or body.get("schema_version")
+        != PUBLICATION_BUSINESS_SNAPSHOT_SCHEMA_VERSION
+        or _sha256(body) != digest
+    ):
+        raise ApprovedPublicationSnapshotError(
+            "publication business snapshot identity is invalid"
+        )
+    _validate_publication_facts(body)
+    return {**body, "business_snapshot_digest": digest}
+
+
+def validate_publication_preview(value: Mapping[str, Any]) -> dict[str, Any]:
+    body = _json_copy(value, "publication preview")
+    digest = _digest(body.pop("preview_digest", None), "preview_digest")
+    expected = (_BODY_KEYS - {"approved_at", "approved_by"}) | {"status"}
+    if (set(body) != expected or body.get("schema_version") != "publication-snapshot-preview/v1"
+            or body.get("status") != "NOT_APPROVED" or _sha256(body) != digest):
+        raise ApprovedPublicationSnapshotError("publication preview identity is invalid")
+    _validate_publication_facts(body)
+    return {**body, "preview_digest": digest}
 
 
 def approved_publication_snapshot_from_payload(
@@ -367,13 +484,17 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
         raise ApprovedPublicationSnapshotError("snapshot body fields are invalid")
     if body.get("schema_version") != APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION:
         raise ApprovedPublicationSnapshotError("snapshot schema_version is invalid")
+    _timestamp(body.get("approved_at"), "snapshot approved_at")
+    _text(body.get("approved_by"), "snapshot approved_by")
+    _validate_publication_facts(body)
+
+
+def _validate_publication_facts(body: Mapping[str, Any]) -> None:
     offer_id = _digits(body.get("offer_id"), "snapshot offer_id")
     revision = _integer(body.get("product_revision"), "snapshot product_revision")
     if revision < 0:
         raise ApprovedPublicationSnapshotError("snapshot revision cannot be negative")
     _text(body.get("plan_id"), "snapshot plan_id")
-    _timestamp(body.get("approved_at"), "snapshot approved_at")
-    _text(body.get("approved_by"), "snapshot approved_by")
     targets = _targets(body.get("publication_targets"), already_projected=True)
     target_labels = [row["target_label"] for row in targets]
     price_target_labels = [
@@ -399,7 +520,19 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
         "main_category",
         "source_identity",
     }
-    if frozenset(product) not in {frozenset(base_product_fields), frozenset({*base_product_fields, "image_routing"})}:
+    optional_product_fields = {
+        "content_by_target",
+        "image_routing",
+        "source_conformance",
+        "stock_policy",
+        "ozon_stock_decision",
+        "postpublish_promotion_policy",
+        "verified_claims",
+        "warehouse_inventory_by_target",
+    }
+    if not base_product_fields.issubset(product) or set(product).difference(
+        base_product_fields | optional_product_fields
+    ):
         raise ApprovedPublicationSnapshotError("snapshot product fields are invalid")
     _text(product.get("title"), "snapshot title")
     _text(product.get("description"), "snapshot description")
@@ -424,6 +557,27 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
         product.get("image_routing"),
         targets=targets,
         base_images=_text_list(product.get("images"), "snapshot images"),
+    )
+    _verified_product_claims(product.get("verified_claims") or {})
+    _target_content(
+        product.get("content_by_target"),
+        targets=targets,
+        base_title=_text(product.get("title"), "snapshot title"),
+        base_description=_text(product.get("description"), "snapshot description"),
+    )
+    stock_policy = _publication_stock_policy(product.get("stock_policy"))
+    _ozon_stock_decision(
+        product.get("ozon_stock_decision"), stock_policy=stock_policy
+    )
+    _postpublish_promotion_policy(product.get("postpublish_promotion_policy"))
+    _source_conformance(
+        product.get("source_conformance"),
+        targets=targets,
+        stock_policy=stock_policy,
+    )
+    _warehouse_inventory_by_target(
+        product.get("warehouse_inventory_by_target"),
+        targets=targets,
     )
     _target_categories(body.get("categories_by_target"), targets=targets)
 
@@ -466,8 +620,14 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
         variants.add(variant)
         models.add(model)
         sellers.add(seller)
-        if not _string_mapping(row.get("specification"), "snapshot specification"):
+        specification = _string_mapping(
+            row.get("specification"), "snapshot specification"
+        )
+        if not specification:
             raise ApprovedPublicationSnapshotError("snapshot specification is empty")
+        _consumer_readable_specification(
+            specification, model_sku=model, name="snapshot specification"
+        )
         _money(row.get("cost"), "snapshot cost")
         parcel = _mapping(row.get("parcel"), "snapshot parcel")
         if set(parcel) != {"weight_kg", "package_cm"}:
@@ -489,6 +649,7 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
         approved_product_images=_text_list(
             product.get("images"), "snapshot images"
         ),
+        offer_id=offer_id,
     )
     if not offer_id:
         raise ApprovedPublicationSnapshotError("snapshot offer identity is missing")
@@ -500,6 +661,7 @@ def _shopee_global_master(
     targets: list[dict[str, str]],
     skus: list[dict[str, Any]],
     approved_product_images: list[str],
+    offer_id: str,
 ) -> dict[str, Any] | None:
     shopee_targets = {
         row["target_label"]
@@ -515,6 +677,12 @@ def _shopee_global_master(
     row = _mapping(value, "Shopee global master")
     if "parcel_envelope" not in row:
         raise ApprovedPublicationSnapshotError("Shopee parcel envelope is missing")
+    schema_version = row.get("schema_version")
+    image_field = (
+        "variant_image_positions"
+        if schema_version == "shopee-global-master/v1"
+        else "variant_image_bindings"
+    )
     if set(row) != {
         "schema_version",
         "price_source",
@@ -522,8 +690,8 @@ def _shopee_global_master(
         "category_decision",
         "parcel_envelope",
         "policy",
-        "variant_image_positions",
-    } or row.get("schema_version") != _SHOPEE_GLOBAL_MASTER_SCHEMA_VERSION:
+        image_field,
+    } or schema_version not in _SHOPEE_GLOBAL_MASTER_SCHEMA_VERSIONS:
         raise ApprovedPublicationSnapshotError(
             "Shopee global master fields are invalid"
         )
@@ -618,41 +786,80 @@ def _shopee_global_master(
     parcel_envelope = _shopee_parcel_envelope(row.get("parcel_envelope"), skus=skus)
     policy = _shopee_global_policy(row.get("policy"))
 
-    position_rows = _mapping_list(
-        row.get("variant_image_positions"),
-        "Shopee global variant image positions",
-    )
+    position_rows = _mapping_list(row.get(image_field), f"Shopee global {image_field}")
     positions: list[dict[str, Any]] = []
     seen_positions: set[str] = set()
     for raw in position_rows:
-        if set(raw) != {"model_sku", "position", "image_url"}:
+        expected_fields = (
+            {"model_sku", "position", "image_url"}
+            if schema_version == "shopee-global-master/v1"
+            else {"model_sku", "image_url", "image_digest", "source"}
+        )
+        if set(raw) != expected_fields:
             raise ApprovedPublicationSnapshotError(
                 "Shopee global variant image position fields are invalid"
             )
         model = _digits(raw.get("model_sku"), "Shopee variant image model_sku")
-        position = raw.get("position")
         image_url = _text(raw.get("image_url"), "Shopee variant image URL")
-        if (
-            model not in sku_by_model
-            or model in seen_positions
-            or type(position) is not int
-            or position < 0
-            or position >= len(approved_product_images)
-            or approved_product_images[position] != image_url
-        ):
+        if model not in sku_by_model or model in seen_positions:
             raise ApprovedPublicationSnapshotError(
                 "Shopee global variant image positions conflict"
             )
         seen_positions.add(model)
-        positions.append(
-            {"model_sku": model, "position": position, "image_url": image_url}
-        )
+        if schema_version == "shopee-global-master/v1":
+            position = raw.get("position")
+            if (
+                type(position) is not int
+                or position < 0
+                or position >= len(approved_product_images)
+                or approved_product_images[position] != image_url
+            ):
+                raise ApprovedPublicationSnapshotError(
+                    "Shopee global variant image positions conflict"
+                )
+            positions.append(
+                {"model_sku": model, "position": position, "image_url": image_url}
+            )
+        else:
+            source = _mapping(raw.get("source"), "Shopee variant image source")
+            source_position = source.get("source_position")
+            if (
+                not image_url.startswith("https://")
+                or set(source) != {"kind", "source_offer_id", "source_position"}
+                or source.get("kind") != "MIAOSHOU_SOURCE_IMAGE"
+                or source.get("source_offer_id") != offer_id
+                or type(source_position) is not int
+                or source_position <= 0
+            ):
+                raise ApprovedPublicationSnapshotError(
+                    "Shopee global variant image bindings conflict"
+                )
+            positions.append(
+                {
+                    "model_sku": model,
+                    "image_url": image_url,
+                    "image_digest": _digest(
+                        raw.get("image_digest"), "Shopee variant image digest"
+                    ),
+                    "source": dict(source),
+                }
+            )
     if [position["model_sku"] for position in positions] != models:
         raise ApprovedPublicationSnapshotError(
             "Shopee global variant image position coverage conflicts"
         )
+    if len(models) > 1:
+        if schema_version == "shopee-global-master/v2" and (
+            len({position["image_url"] for position in positions}) != len(positions)
+            or len({position["image_digest"] for position in positions}) != len(positions)
+            or len({position["source"]["source_position"] for position in positions})
+            != len(positions)
+        ):
+            raise ApprovedPublicationSnapshotError(
+                "Shopee multi-SKU variant image bindings must be distinct"
+            )
     return {
-        "schema_version": _SHOPEE_GLOBAL_MASTER_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "price_source": {
             "target_label": target_label,
             "region": region,
@@ -663,7 +870,7 @@ def _shopee_global_master(
         "category_decision": category_decision,
         "parcel_envelope": parcel_envelope,
         "policy": policy,
-        "variant_image_positions": positions,
+        image_field: positions,
     }
 
 
@@ -786,7 +993,7 @@ def _shopee_global_category_decision(value: Any) -> dict[str, Any]:
         category = None
         source_decision_digest = None
         decision_digest = expected
-    elif status == "APPROVED":
+    elif status in {"APPROVED", "EVIDENCE_BOUND"}:
         raw_category = _mapping(row.get("category"), "Shopee global category")
         if set(raw_category) != {"id", "name", "path"}:
             raise ApprovedPublicationSnapshotError(
@@ -1155,6 +1362,347 @@ def publication_images_for_target(
         raise ApprovedPublicationSnapshotError("localized image target is unavailable") from error
 
 
+def publication_content_for_target(
+    snapshot: Mapping[str, Any], target_label: str
+) -> dict[str, str]:
+    """Return exact frozen title, description and locale for one target.
+
+    Older v4 snapshots did not carry per-target content. They remain readable
+    and deterministically fall back to the frozen base copy. New snapshots
+    that contain ``content_by_target`` require exact full target coverage.
+    """
+
+    product = _mapping(snapshot.get("product"), "snapshot product")
+    title = _text(product.get("title"), "snapshot title")
+    description = _text(product.get("description"), "snapshot description")
+    targets = _targets(snapshot.get("publication_targets"), already_projected=True)
+    label = _text(target_label, "publication target label")
+    available = {row["target_label"] for row in targets}
+    if label not in available:
+        raise ApprovedPublicationSnapshotError("localized content target is unavailable")
+    normalized = _target_content(
+        product.get("content_by_target"),
+        targets=targets,
+        base_title=title,
+        base_description=description,
+    )
+    if normalized is None:
+        return {"locale": "und", "title": title, "description": description}
+    return dict(normalized[label])
+
+
+def _target_content(
+    value: object,
+    *,
+    targets: list[dict[str, str]],
+    base_title: str,
+    base_description: str,
+) -> dict[str, dict[str, str]] | None:
+    if value is None:
+        return None
+    rows = _mapping(value, "content_by_target")
+    expected = {row["target_label"] for row in targets}
+    if set(rows) != expected:
+        raise ApprovedPublicationSnapshotError(
+            "localized content target coverage drifted"
+        )
+    normalized: dict[str, dict[str, str]] = {}
+    for label in sorted(expected):
+        row = _mapping(rows[label], f"{label} localized content")
+        if set(row) != {"locale", "title", "description"}:
+            raise ApprovedPublicationSnapshotError(
+                f"{label} localized content fields are invalid"
+            )
+        normalized[label] = {
+            "locale": _text(row.get("locale"), f"{label} content locale"),
+            "title": _text(row.get("title"), f"{label} content title"),
+            "description": _text(
+                row.get("description"), f"{label} content description"
+            ),
+        }
+    return normalized
+
+
+def _publication_stock_policy(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    row = _mapping(value, "publication stock policy")
+    expected = {
+        "schema_version": "publication-default-stock/v1",
+        "quantity_per_sku": 200,
+        "scope": "EACH_SELECTED_SKU",
+        "source": "SYSTEM_GOVERNED_DEFAULT",
+        "review_round": "ROUND1",
+    }
+    if dict(row) != expected:
+        raise ApprovedPublicationSnapshotError("publication stock policy is invalid")
+    return dict(expected)
+
+
+def _ozon_stock_decision(
+    value: object, *, stock_policy: Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    """Validate an exact, read-only Ozon warehouse decision.
+
+    The field remains optional so historical v4 snapshots still deserialize.
+    New R3 Ozon candidates require it before final review.
+    """
+    if value is None:
+        return None
+    row = _mapping(value, "Ozon stock warehouse decision")
+    expected_fields = {
+        "schema_version",
+        "warehouse_id",
+        "selection_policy",
+        "stock_policy_digest",
+        "source",
+    }
+    if set(row) != expected_fields:
+        raise ApprovedPublicationSnapshotError(
+            "Ozon stock warehouse decision fields are invalid"
+        )
+    warehouse_id = row.get("warehouse_id")
+    if type(warehouse_id) is not int or warehouse_id <= 0:
+        raise ApprovedPublicationSnapshotError(
+            "Ozon stock warehouse identity is invalid"
+        )
+    if (
+        row.get("schema_version") != "ozon-stock-warehouse-decision/v1"
+        or row.get("selection_policy")
+        != "EXACT_UNIQUE_ACTIVE_OR_CREATED_NON_KGT"
+        or row.get("source") != "OFFICIAL_PROVIDER_READBACK"
+        or stock_policy is None
+        or _digest(
+            row.get("stock_policy_digest"),
+            "Ozon stock warehouse decision stock policy digest",
+        )
+        != _sha256(stock_policy)
+    ):
+        raise ApprovedPublicationSnapshotError(
+            "Ozon stock warehouse decision identity drifted"
+        )
+    return {
+        "schema_version": "ozon-stock-warehouse-decision/v1",
+        "warehouse_id": warehouse_id,
+        "selection_policy": "EXACT_UNIQUE_ACTIVE_OR_CREATED_NON_KGT",
+        "stock_policy_digest": _sha256(stock_policy),
+        "source": "OFFICIAL_PROVIDER_READBACK",
+    }
+
+
+def _postpublish_promotion_policy(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ApprovedPublicationSnapshotError(
+            "postpublish promotion policy must be a mapping"
+        )
+    # Historical plans used this marker before an exact approved action policy
+    # existed. Keep those v4 snapshots loadable, but never present the marker as
+    # an approved companion action.
+    if value == {"schema_version": "postpublish-promotion-policy/v1"}:
+        return None
+    try:
+        from shared_platform.postpublish_promotions import (
+            approved_postpublish_promotion_policy,
+        )
+
+        return approved_postpublish_promotion_policy(
+            {"approved_postpublish_promotion_policy": value}
+        )
+    except (TypeError, ValueError) as error:
+        raise ApprovedPublicationSnapshotError(
+            f"postpublish promotion policy is invalid: {error}"
+        ) from None
+
+
+def _warehouse_inventory_by_target(
+    value: object,
+    *,
+    targets: list[dict[str, str]],
+) -> dict[str, dict[str, Any]] | None:
+    """Normalize an explicitly approved exact-shop warehouse allocation.
+
+    The warehouse IDs are operational bindings covered by the immutable
+    snapshot digest.  They are intentionally kept out of public review
+    projections, which expose only names and quantities.
+    """
+
+    if value is None:
+        return None
+    rows = _mapping(value, "warehouse inventory by target")
+    expected = {
+        row["target_label"]
+        for row in targets
+        if row["platform"].lower() == "tiktok"
+    }
+    if not expected or set(rows) != expected:
+        raise ApprovedPublicationSnapshotError(
+            "warehouse inventory target coverage drifted"
+        )
+    normalized: dict[str, dict[str, Any]] = {}
+    seen_shop_ids: set[str] = set()
+    for label in sorted(expected):
+        allocation = _mapping(rows[label], f"{label} warehouse inventory")
+        if set(allocation) != {
+            "schema_version",
+            "shop_id",
+            "warehouses",
+            "total_stock",
+            "source",
+            "approved_by",
+            "approved_at",
+        } or allocation.get("schema_version") != "miaoshou-tiktok-warehouse-allocation/v1":
+            raise ApprovedPublicationSnapshotError(
+                f"{label} warehouse inventory fields are invalid"
+            )
+        shop_id = _digits(allocation.get("shop_id"), f"{label} warehouse shop_id")
+        if shop_id in seen_shop_ids:
+            raise ApprovedPublicationSnapshotError(
+                "warehouse inventory shop identity conflicts"
+            )
+        seen_shop_ids.add(shop_id)
+        warehouse_rows = _mapping_list(
+            allocation.get("warehouses"), f"{label} warehouses"
+        )
+        seen_ids: set[str] = set()
+        seen_names: set[str] = set()
+        normalized_rows: list[dict[str, Any]] = []
+        total = 0
+        for raw in warehouse_rows:
+            if set(raw) != {"warehouse_id", "warehouse_name", "stock"}:
+                raise ApprovedPublicationSnapshotError(
+                    f"{label} warehouse fields are invalid"
+                )
+            warehouse_id = _digits(
+                raw.get("warehouse_id"), f"{label} warehouse_id"
+            )
+            warehouse_name = _text(
+                raw.get("warehouse_name"), f"{label} warehouse_name"
+            )
+            stock = raw.get("stock")
+            if type(stock) is not int or stock < 0:
+                raise ApprovedPublicationSnapshotError(
+                    f"{label} warehouse stock must be a non-negative built-in int"
+                )
+            if warehouse_id in seen_ids or warehouse_name in seen_names:
+                raise ApprovedPublicationSnapshotError(
+                    f"{label} warehouse identities are duplicated"
+                )
+            seen_ids.add(warehouse_id)
+            seen_names.add(warehouse_name)
+            total += stock
+            normalized_rows.append(
+                {
+                    "warehouse_id": warehouse_id,
+                    "warehouse_name": warehouse_name,
+                    "stock": stock,
+                }
+            )
+        total_stock = allocation.get("total_stock")
+        if type(total_stock) is not int or total_stock <= 0:
+            raise ApprovedPublicationSnapshotError(
+                f"{label} warehouse total stock must be a positive built-in int"
+            )
+        if not normalized_rows or total <= 0 or total_stock != total:
+            raise ApprovedPublicationSnapshotError(
+                f"{label} warehouse total stock drifted"
+            )
+        if allocation.get("source") != "CONVERSATION_APPROVAL":
+            raise ApprovedPublicationSnapshotError(
+                f"{label} warehouse inventory source is invalid"
+            )
+        normalized[label] = {
+            "schema_version": "miaoshou-tiktok-warehouse-allocation/v1",
+            "shop_id": shop_id,
+            "warehouses": normalized_rows,
+            "total_stock": total,
+            "source": "CONVERSATION_APPROVAL",
+            "approved_by": _text(
+                allocation.get("approved_by"), f"{label} warehouse approved_by"
+            ),
+            "approved_at": _timestamp(
+                allocation.get("approved_at"), f"{label} warehouse approved_at"
+            ),
+        }
+    return normalized
+
+
+def _source_conformance(
+    value: object,
+    *,
+    targets: list[dict[str, str]],
+    stock_policy: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    row = _mapping(value, "source conformance")
+    if set(row) != {
+        "schema_version",
+        "status",
+        "target_labels",
+        "stock_policy_digest",
+        "targets",
+    } or row.get("schema_version") != "shadow-formal-conformance/v1" or row.get("status") != "PASS":
+        raise ApprovedPublicationSnapshotError("source conformance identity is invalid")
+    expected_labels = [item["target_label"] for item in targets]
+    if row.get("target_labels") != expected_labels:
+        raise ApprovedPublicationSnapshotError("source conformance target coverage drifted")
+    if stock_policy is None or _digest(
+        row.get("stock_policy_digest"), "source conformance stock digest"
+    ) != _sha256(stock_policy):
+        raise ApprovedPublicationSnapshotError("source conformance stock policy drifted")
+    target_rows = _mapping(row.get("targets"), "source conformance targets")
+    if set(target_rows) != set(expected_labels):
+        raise ApprovedPublicationSnapshotError("source conformance target rows drifted")
+    fields = {
+        "source_target",
+        "copy_digest",
+        "category_digest",
+        "price_digest",
+        "gallery_digest",
+        "description_images_digest",
+        "formal_route_digest",
+        "description_images_match_gallery",
+        "asset_set_match",
+    }
+    normalized_targets: dict[str, dict[str, Any]] = {}
+    for label in expected_labels:
+        target_row = _mapping(target_rows[label], f"{label} source conformance")
+        if set(target_row) != fields:
+            raise ApprovedPublicationSnapshotError(
+                f"{label} source conformance fields are invalid"
+            )
+        if target_row.get("description_images_match_gallery") is not True or target_row.get("asset_set_match") is not True:
+            raise ApprovedPublicationSnapshotError(
+                f"{label} source conformance did not pass"
+            )
+        normalized = {
+            "source_target": _text(target_row.get("source_target"), f"{label} source target"),
+            "description_images_match_gallery": True,
+            "asset_set_match": True,
+        }
+        for key in (
+            "copy_digest",
+            "category_digest",
+            "price_digest",
+            "gallery_digest",
+            "description_images_digest",
+            "formal_route_digest",
+        ):
+            normalized[key] = _digest(target_row.get(key), f"{label} {key}")
+        normalized_targets[label] = normalized
+    return {
+        "schema_version": "shadow-formal-conformance/v1",
+        "status": "PASS",
+        "target_labels": expected_labels,
+        "stock_policy_digest": _digest(
+            row.get("stock_policy_digest"), "source conformance stock digest"
+        ),
+        "targets": normalized_targets,
+    }
+
+
 def _source_identity(value: Mapping[str, Any]) -> SourceProductIdentity:
     if value.get("schema_version") != SOURCE_IDENTITY_SCHEMA_VERSION:
         raise ApprovedPublicationSnapshotError("source identity schema is invalid")
@@ -1265,6 +1813,20 @@ def _text_list(value: Any, name: str) -> list[str]:
     return result
 
 
+def _consumer_readable_specification(
+    specification: Mapping[str, str], *, model_sku: str, name: str
+) -> dict[str, str]:
+    """Apply the same display semantics when constructing and loading facts."""
+    from .sku_display_name import SkuDisplayNameError, validate_specification_mapping
+
+    try:
+        return validate_specification_mapping(specification, model_sku=model_sku)
+    except SkuDisplayNameError as error:
+        raise ApprovedPublicationSnapshotError(
+            f"{name} is not consumer-readable: {error}"
+        ) from None
+
+
 def _string_mapping(value: Any, name: str) -> dict[str, str]:
     source = _mapping(value, name)
     result = {_text(key, name): _text(item, name) for key, item in source.items()}
@@ -1340,6 +1902,42 @@ def _publication_price(
     return result
 
 
+def _verified_product_claims(value: Any) -> dict[str, dict[str, Any]]:
+    claims = _mapping(value, "verified product claims")
+    normalized: dict[str, dict[str, Any]] = {}
+    for claim, raw in claims.items():
+        if claim != "self_adhesive":
+            raise ApprovedPublicationSnapshotError(
+                "verified product claim is not supported"
+            )
+        row = _mapping(raw, f"verified product claim {claim}")
+        required = {
+            "value",
+            "fact_verified",
+            "evidence_level",
+            "approved_by",
+            "approved_at",
+            "source",
+        }
+        if set(row) != required:
+            raise ApprovedPublicationSnapshotError(
+                "verified product claim fields are invalid"
+            )
+        if (
+            row.get("value") is not True
+            or row.get("fact_verified") is not True
+            or row.get("evidence_level") != "user_decision"
+            or row.get("approved_by") != "Kyle"
+            or row.get("source") != "conversation_approval"
+        ):
+            raise ApprovedPublicationSnapshotError(
+                "verified product claim approval evidence is invalid"
+            )
+        approved_at = _timestamp(row.get("approved_at"), "claim approved_at")
+        normalized[claim] = {**dict(row), "approved_at": approved_at}
+    return normalized
+
+
 def _dimensions(value: Any, name: str) -> list[str]:
     if not _sequence(value) or len(value) != 3:
         raise ApprovedPublicationSnapshotError(f"{name} requires three dimensions")
@@ -1411,6 +2009,7 @@ __all__ = [
     "approved_publication_snapshot_from_payload",
     "build_approved_publication_snapshot",
     "publication_category_decision_digest",
+    "publication_content_for_target",
     "publication_images_for_target",
     "validate_approved_publication_snapshot",
 ]

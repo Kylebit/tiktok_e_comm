@@ -262,19 +262,19 @@ def test_legacy_new_product_api_remains_retired(product_server, method):
     assert "Orbit Treasury moved" in json.loads(body)["error"]
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/ai-image-studio",
-        "/new-product/images",
-    ],
-)
-def test_ai_image_studio_routes_are_served_with_strict_csp(product_server, path):
-    status, headers, body = _request(product_server + path)
+@pytest.mark.parametrize("path", ["/ai-image-studio", "/ai-image-studio.html"])
+def test_retired_ai_image_studio_routes_are_unavailable(product_server, path):
+    status, _, _ = _request(product_server + path)
+
+    assert status == 404
+
+
+def test_publication_review_route_is_served_with_strict_csp(product_server):
+    status, headers, body = _request(product_server + "/product-workspace")
     csp = headers.get("Content-Security-Policy", "")
 
     assert status == 200
-    assert "Orbit · AI 图片工作室" in body.decode("utf-8")
+    assert "Orbit · 商品发布中心" in body.decode("utf-8")
     assert "default-src 'self'" in csp
     assert "script-src 'self'" in csp
     assert "connect-src 'self'" in csp

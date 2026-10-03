@@ -1,5 +1,7 @@
 # TikTok Shop vs Shopee Open API — 能力对比
 
+> **REFERENCE_ONLY / 2026-06-03 快照。** 本文不代表当前能力、凭据状态或执行入口；当前平台合同以 canonical Skill、adapter 和能力目录为准。
+
 > LivelyHive 跨境 · MY/VN/TH/PH 四国  
 > 更新：2026-06-03
 
@@ -69,7 +71,7 @@
 
 ### P1 — 与 Master Catalog 对齐
 - 按 region + 660xxx 映射 TK ↔ Shopee item_id/model_id
-- Hub 日报增加 Shopee 商品数、仅 TK / 仅 SP 清单
+- 本地报告增加 Shopee 商品数、仅 TK / 仅 SP 清单（历史设想）
 
 ### P2 — 运营动作（复用 TK 队列思路）
 - 改价 / 改库存（跟 TK 促销队列联动）

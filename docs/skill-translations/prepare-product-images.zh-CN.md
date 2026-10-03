@@ -1,73 +1,53 @@
-<!-- source_sha256: 6266a2b4ce72886935f4a715b2c01f59996336ff12db0d01cfd5ff16202f7e22 -->
+<!-- source_sha256: 5054f5f4145c46e623a31f93ca2c4898c7ff87e8c03e721640f5ce97a00556d2 -->
+
+> 历史译本（2026-09-23 标注）：此 source_sha256 与当前英文 Skill 不一致；请读当前英文 `SKILL.md`，它是唯一执行权威。旧译文中的 R1 和图片审核步骤不代表当前一轮最终审核流程。
 
 ### 元数据
 
 - `name`：`prepare-product-images`
-- `description`：冻结会话已批准的第一轮范围；可选地只对用户选中的图片执行 ToAPIs 本地化；精确同步并验证一次妙手公共基线；记录会话批准；在不发布的前提下原子冻结已批准 ReleasePlan 交接。用于第二轮的开始、恢复、批准或完成。
+- `description`：消费不可变第一轮快照，通过灵识 AI 准备双品牌母版与本地化图片，使用共享产品预算、持久化恢复、返工和自动 QA。用于第二轮商品图片准备；不重新批准事实、不写妙手、不发布。
 
 ### 准备商品图片
 
-必须使用 `scripts/prepare_product_images.py`，不得用临时 API 调用重建流程。
+恢复已有商品前，按仓库根 `docs/PUBLICATION_SOURCE_CONTRACT.md` 使用所选项目中绑定提交的 `scripts/publication_takeover.py`。保留已有付费回执与 QA；只读结果不会启动新任务，也不会把已生成资产转为 `keep`。
 
-### 工作流
+R2 使用 `scripts/prepare_product_images.py`，视觉 QA 使用 `scripts/run_automated_image_qa.py`。保持冻结 R1 的商品、品牌、目标与来源身份。处理未知结果、旧记录或技术漂移前，读取 `references/paid-recovery.md` 中本地预算与恢复合同。此处 `scripts/`、`references/` 相对 canonical Skill 目录；`shared_platform` 和 `reports` 路径相对仓库根。
 
-1. 要求精确 Offer ID 和 Kyle 已批准的第一轮商品发布中心 revision。
-2. 要求 `reports/product-preparation/<offer_id>/first-review.json` 为 `FIRST_REVIEW_READY` 且 revision 一致。
-3. 第一轮图片计划是权威；OCR 和模型不能额外选择翻译位置。
-4. 排除 `REMOVE` 来源图，并确定性重排保留位置。
-5. 先不带付费参数运行，报告冻结输入 digest、位置、语言路由和付费任务数。
-6. 若没有翻译位置，允许零付费任务继续，不能虚构图片工作。否则必须同时使用 `--execute-paid` 和 `--confirm-paid-generation` 才能开始付费生成。
-7. 每个任务必须有完整 ToAPIs 回执和精确输出数量；未知结果不能盲目重试，应先检查持久化 checkpoint。
-8. 妙手公共采集箱只写入英语母版一次，并执行官方回读。必须同时使用 `--execute-miaoshou` 和 `--confirm-miaoshou-write`。该技术条件不能阻止或删除会话批准。
-9. 本地化图片按目标路由冻结，不能把多国语言图片同时写入公共采集箱。必须保留 ToAPIs 返回的公开 HTTPS 地址；旧资产缺失该事实时，需要明确 uploaded-assets manifest，不能伪造或静默重复上传。
-10. 商品发布中心的 `#localizedImageResults` 是唯一人工审核面；独立结果页只是技术查看页，只保留刷新动作。
-11. Kyle 会话批准是唯一批准入口，即使技术检查未完成也应立即记录。
-12. 批准意图自动接受同一冻结输入下已经就绪或稍后就绪的资产；技术阻断不要求重复批准。
-13. 一次妙手验证和会话批准完成后，执行最终交接：复用精确已批准基础 plan，或本地冻结当前精确 plan。有本地化任务时，原子创建并批准只改变图片路由的 successor；无任务时保留基础 plan。只有 v4 快照和目标路由回读精确后才写 `workflow-handoff.json`。
+### 权威与输入
 
-### 安全边界
+要求有效的 `round1-approved-snapshot/v1` 和匹配的当前商品发布中心批准。在原范围内复用批准。事实和目标变更仍走既有 R1 批准流程。
 
-- ReleasePlan 只能发生本地变更：冻结基础 plan，并在需要时原子创建一个已批准的图片路由 successor。不能让 predecessor 已被 supersede 却没有可用 successor。
-- 付费生成期间不写妙手；生成回执完整且会话授权后才执行独立公共基线同步。
-- 不发布、不认领、不创建店铺草稿、不直接更新平台图片。
-- 不为未批准或过期 revision 生成图片。
-- 不生成第一轮计划和目标店铺之外的语言。
-- 付费调用按外部写入计数并报告确认数量。
-- OCR 只提取用户已选图片中的文字，绝不能决定选图。
-- 本 Skill 不发布；`READY_TO_PUBLISH` 只由 `publish-approved-product` 消费。
+付费执行要求由 `shared_platform.publication_autopilot` 加载既有适用政策，其归属权威、允许用途和产品上限必须覆盖本动作。开始新授权的真实生成前，展示所选模型、当前价格、用途与 QA 计划，取得所需付费授权。已有匹配授权无需再次索取。
 
-### 命令
+随包的 `historical-autopilot-policy.example.json` 是非活动的历史来源证据。其原名称、日期和 ACTIVE 状态不是当前权威，不能将其激活为默认配置。离线 fixture 和绿色测试不构成真实生成权限。
 
-预检：
+### 执行一个阶段
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id>
-```
+1. 仅带 `--offer-id` 运行以检查本地状态。help/status 不调用付费服务。缺少既有 R1/预算桥接的旧 UI 消费者在调用服务前返回 `PAID_CONTEXT_REQUIRED` 或 `LEGACY_R2_BRIDGE_REQUIRED`。
+2. 校验已批准的品牌角色与复用计划。在适用付费授权下运行 `--execute-brand-generation --paid-policy <existing-policy>`。完整来源字节与冻结事实绑定技术计划及每个 checkpoint。完成整套母版图片审核后停止本阶段。
+3. 使用 `run_automated_image_qa.py --offer-id <id> --model <approved-model> --paid-policy <existing-policy>` 执行母版 QA。保留原始回复、精确产物摘要和 QA 回执。通过结果只属于这些产物及该 R1 快照。
+4. 用 `--approve-translation-images <numbers> --dimension-only-images <numbers-or-none> --approved-by <existing-actor>` 冻结已经批准的编号图片范围。在冻结 R1 目标内路由语言；仅尺寸图不创建翻译任务。
+5. 在匹配的付费授权下运行 `--execute-paid --paid-policy <existing-policy>`。OCR、文字翻译、本地化图片生成与母版及 QA 共用产品账本。OCR 区域为空时直接复用，不发送付费模型请求。
+6. 使用精确已通过的母版 QA 回执和当前本地化产物执行本地化 QA。保留事实对齐、OCR 语言或重复性失败供复核。
 
-明确授权后的付费生成：
+壁纸和墙贴消费 `prepare-product-publication/references` 下既有产品家族规则包；不能在提示词中编造缺失事实。
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --execute-paid --confirm-paid-generation
-```
+### 预算与恢复
 
-第二轮唯一妙手同步和验证：
+`reports/product-preparation/<id>/paid-requests/events.jsonl` 是计数权威。品牌、语言、QA、重试、新进程及改变后的批准摘要共用该账本。POST 前先持久化预留并占用名额。已尝试、未知、失败、被替代与完成的工作仍计数；等待服务返回前释放账本锁。
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --execute-miaoshou --confirm-miaoshou-write
-```
+对新商品，代码完整盘点已知 R1/R2 报告与本地化审核/包元数据根。普通审核 HTML/Markdown 和本地计划属于证据，不是付费调用。有效旧回执带来源 SHA 导入，同一服务商的重复任务仅计一次。缺元数据、重定向根、归属不明确或旧工作未知，均不能当作零。
 
-记录 Kyle 会话批准：
+报告分别显示本阶段计划请求数、已占用、已尝试、未知、已确认，以及本次调用新增请求数。资产数量和旧回执生成数量是全生命周期产物事实。原始 usage/成本与价格估算分开。只有适用产品政策包含该用途，且存在绑定的实际请求回执时，才计入先前 R1 标题/文案调用。
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --approve-all --approved-by Kyle
-```
+遇到 SUBMITTING、UNKNOWN 或提交后超时，检查本地请求/checkpoint 状态。已有 task ID 通过查询恢复，不能重新创建。原始聊天回复先持久化再解析，可在本地重新解析。超时且没有原始回复时需上游对账；修改提示词或重试编号不授予重发权限。
 
-冻结发布交接：
+使用 `references/paid-recovery.md` 中的本地恢复 CLI。它检查精确商品/请求/attempt/revision、来源 SHA、核验者、时间戳和证据引用，但不会发现或证明外部计费事实。保留损坏及旧版本字节，绝不编造未计费结论。
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --finalize-release-handoff
-```
+### 返工与技术重建
 
-旧资产没有 ToAPIs 公开结果地址时增加 `--uploaded-assets <PATH>`。文件必须给出精确 `uploaded_assets` 映射：已批准 artifact ID、匹配 digest 和公开 HTTPS URL。缺失、额外或漂移均失败关闭。
+已完成付费产物若被精确 QA 拒绝或被明确选中重做，可在既有返工政策与剩余产品预算内创建新 attempt。品牌请求用 `--prepare-brand-rework`；单个本地化产物用 `--retry-localized-review-number <n> --retry-locale <locale> --retry-failure-code <code> --retry-authorized-by <existing-actor>`。绑定旧任务/产物、QA 或用户意图、当前输入与下一 attempt。最多重试三次；旧成功工作仍计数，无需虚假的未计费证明。
 
-命令只输出一个 JSON 摘要。批准和技术就绪分离；批准后仍可显示 `MIAOSHOU_SYNC_REQUIRED`。最终成功显示 `READY_TO_PUBLISH`、精确 plan/snapshot 身份，不要求另一次页面批准。
+TECHNICAL_PLAN_DRIFT 写出绑定摘要的提案，并保留活动计划。既有批准提供有效当前输入后，通过本地 CLI 显式激活提案。激活归档旧计划和受影响 R2 投影，输出 R3 失效证据并保留全部付费事件。商品请求仍未知时禁止激活。不能删除账本/checkpoint 让新计划运行。
+
+R2 不写妙手、ReleaseStore、ReleasePlan、平台草稿或发布。R3 通过自己的权威消费已批准图片证据和 `round2-technical-invalidation.json`。离线测试和图片 QA 不授予发布权限。

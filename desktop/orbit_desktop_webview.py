@@ -1,527 +1,227 @@
+"""WebView2 client for the verified top-level OrbitHive website. No JS service bridge."""
 from __future__ import annotations
 
-import json
-import os
-import shutil
-import subprocess
-import sys
-import threading
-import time
-import urllib.error
-import urllib.request
-import webbrowser
+from dataclasses import replace
+import base64
+from html import escape
 from pathlib import Path
+from threading import Event, Thread
+import webbrowser
 
-import webview
-
-
-def _project_root() -> Path:
-    candidates = [
-        Path(os.environ.get("ORBIT_PROJECT_ROOT", "")),
-        Path.cwd(),
-        Path(sys.executable).resolve().parent,
-        Path(__file__).resolve().parents[1],
-    ]
-    for base in candidates:
-        if not str(base):
-            continue
-        for path in (base, *base.parents):
-            if (path / "main.py").is_file() and (path / "modules").is_dir():
-                return path
-    return Path(__file__).resolve().parents[1]
+from desktop.session import DesktopSession, external_destination
 
 
-ROOT = _project_root()
-PYTHON = sys.executable if not getattr(sys, "frozen", False) else (shutil.which("pythonw") or shutil.which("python") or "python")
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from shared_platform.orbit_registry import ModuleSpec, build_module_specs, navigation_payload
-
-
-MODULES = build_module_specs(ROOT, PYTHON)
-
-
-HTML = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Orbit CEO Desktop</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --bg: #0f172a;
-      --panel: #111827;
-      --panel-2: #ffffff;
-      --muted: #94a3b8;
-      --line: #e5e7eb;
-      --text: #0f172a;
-      --accent: #2563eb;
-      --accent-soft: #dbeafe;
-      --ok: #16a34a;
-      --warn: #d97706;
-      --bad: #dc2626;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: "Segoe UI", Arial, sans-serif;
-      background: #e5e7eb;
-      color: var(--text);
-      height: 100vh;
-      overflow: hidden;
-    }
-    .app {
-      display: grid;
-      grid-template-columns: 232px 1fr;
-      height: 100vh;
-    }
-    .sidebar {
-      background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
-      color: #f8fafc;
-      display: flex;
-      flex-direction: column;
-      border-right: 1px solid rgba(255,255,255,.08);
-    }
-    .brand {
-      padding: 22px 20px 16px;
-      border-bottom: 1px solid rgba(255,255,255,.08);
-    }
-    .brand h1 {
-      margin: 0;
-      font-size: 22px;
-    }
-    .brand p {
-      margin: 6px 0 0;
-      color: #94a3b8;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-    .navigation { padding: 12px; overflow: auto; }
-    .nav-item {
-      display: block;
-      width: 100%;
-      padding: 10px 12px;
-      border: 0;
-      border-radius: 8px;
-      color: #cbd5e1;
-      background: transparent;
-      text-align: left;
-      font: inherit;
-      cursor: pointer;
-    }
-    .nav-item:hover, .nav-item.active { color: #fff; background: #1f493f; }
-    .nav-divider { height: 1px; margin: 12px; background: rgba(255,255,255,.14); }
-    .btn {
-      border: 1px solid transparent;
-      border-radius: 8px;
-      padding: 8px 12px;
-      font-size: 13px;
-      cursor: pointer;
-      background: #fff;
-      color: #111827;
-    }
-    .btn.primary {
-      background: var(--accent);
-      color: #fff;
-    }
-    .btn.secondary {
-      background: rgba(255,255,255,.08);
-      color: #f8fafc;
-      border-color: rgba(255,255,255,.1);
-    }
-    .btn.ghost {
-      background: transparent;
-      color: #0f172a;
-      border-color: var(--line);
-    }
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      border-radius: 999px;
-      font-size: 11px;
-      padding: 4px 8px;
-      background: rgba(255,255,255,.08);
-      color: #e2e8f0;
-    }
-    .status-pill.ok { background: rgba(22,163,74,.18); color: #bbf7d0; }
-    .status-pill.bad { background: rgba(220,38,38,.18); color: #fecaca; }
-    .main {
-      display: grid;
-      grid-template-rows: auto 1fr;
-      background: #f8fafc;
-      min-width: 0;
-    }
-    .main.system-mode { grid-template-rows: auto auto 1fr 220px; }
-    .hidden { display: none !important; }
-    .toolbar {
-      background: #fff;
-      border-bottom: 1px solid var(--line);
-      padding: 16px 18px 12px;
-    }
-    .toolbar h2 {
-      margin: 0;
-      font-size: 22px;
-    }
-    .toolbar p {
-      margin: 6px 0 0;
-      color: #64748b;
-      font-size: 13px;
-    }
-    .toolbar-actions {
-      margin-top: 14px;
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .quick-links {
-      background: #fff;
-      border-bottom: 1px solid var(--line);
-      padding: 12px 18px;
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .viewer {
-      min-height: 0;
-      background: #dbe4ee;
-    }
-    iframe {
-      width: 100%;
-      height: 100%;
-      border: 0;
-      background: #fff;
-    }
-    .logs {
-      border-top: 1px solid var(--line);
-      background: #0b1220;
-      color: #dbeafe;
-      padding: 0;
-      display: grid;
-      grid-template-rows: auto 1fr;
-      min-height: 0;
-    }
-    .logs-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px 14px;
-      border-bottom: 1px solid rgba(255,255,255,.08);
-    }
-    .logs-head strong {
-      font-size: 13px;
-    }
-    .logs-body {
-      padding: 12px 14px;
-      overflow: auto;
-      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-      font-size: 12px;
-      line-height: 1.5;
-      white-space: pre-wrap;
-    }
-  </style>
-</head>
-<body>
-  <div class="app">
-    <aside class="sidebar">
-      <div class="brand">
-        <h1>Orbit</h1>
-        <p>CEO / Shared Platform</p>
-      </div>
-      <div id="navigation" class="navigation"></div>
-    </aside>
-    <section id="main" class="main">
-      <div class="toolbar">
-        <h2 id="moduleTitle">公司运营总览</h2>
-        <p id="moduleSubtitle"></p>
-        <div id="serviceActions" class="toolbar-actions hidden">
-          <button class="btn primary" onclick="openInPane()">在内嵌窗口打开</button>
-          <button class="btn ghost" onclick="openExternal()">外部浏览器打开</button>
-          <button class="btn ghost" onclick="startCurrent()">启动</button>
-          <button class="btn ghost" onclick="restartCurrent()">重启</button>
-          <button class="btn ghost" onclick="stopCurrent()">停止</button>
-          <button class="btn ghost" onclick="startAll()">全部启动</button>
-          <button class="btn ghost" onclick="stopAll()">全部停止</button>
-        </div>
-      </div>
-      <div id="quickLinks" class="quick-links hidden"></div>
-      <div class="viewer">
-        <iframe id="frame" src="about:blank"></iframe>
-      </div>
-      <div id="serviceLogs" class="logs hidden">
-        <div class="logs-head">
-          <strong>模块日志</strong>
-          <button class="btn secondary" onclick="refreshAll()">刷新状态</button>
-        </div>
-        <div id="logs" class="logs-body"></div>
-      </div>
-    </section>
-  </div>
-  <script>
-    let modules = [];
-    let navigation = [];
-    let current = 'os';
-    let currentView = 'overview';
-
-    function escapeHtml(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    }
-
-    async function refreshAll() {
-      modules = await window.pywebview.api.list_modules();
-      if (currentView === 'system') renderCurrentService();
-    }
-
-    function renderNavigation() {
-      const wrap = document.getElementById('navigation');
-      const primary = navigation.filter(x => x.level === 'primary');
-      const secondary = navigation.filter(x => x.level === 'secondary');
-      const buttons = items => items.map(item =>
-        `<button class="nav-item ${item.key === currentView ? 'active' : ''}" ` +
-        `onclick="selectView('${item.key}')">${escapeHtml(item.label)}</button>`
-      ).join('');
-      wrap.innerHTML = buttons(primary) + '<div class="nav-divider"></div>' + buttons(secondary);
-    }
-
-    function renderCurrentService() {
-      const m = modules.find(x => x.key === current) || modules[0];
-      if (!m) return;
-      current = m.key;
-      const quick = document.getElementById('quickLinks');
-      quick.innerHTML = modules.map(service => {
-        const state = service.healthy ? '在线' : '不可用';
-        return `<button class="btn ghost" onclick="selectModule('${service.key}')">` +
-          `${escapeHtml(service.title)} · ${state}</button>`;
-      }).join('') + (m.quick_links || []).map(link =>
-        `<button class="btn ghost" onclick="loadUrl('${link.url}')">${escapeHtml(link.label)}</button>`
-      ).join('');
-      document.getElementById('moduleTitle').textContent = '系统与服务 · ' + m.title;
-      document.getElementById('moduleSubtitle').textContent =
-        m.subtitle + ' · Port ' + m.port + ' · ' + (m.healthy ? '在线' : '状态不可用');
-      document.getElementById('logs').textContent = (m.logs || []).join('\\n') || '暂无日志。';
-    }
-
-    function selectModule(key) {
-      current = key;
-      renderCurrentService();
-    }
-
-    function selectView(key) {
-      const item = navigation.find(x => x.key === key) || navigation[0];
-      if (!item) return;
-      currentView = item.key;
-      const system = currentView === 'system';
-      document.getElementById('main').classList.toggle('system-mode', system);
-      document.getElementById('serviceActions').classList.toggle('hidden', !system);
-      document.getElementById('serviceLogs').classList.toggle('hidden', !system);
-      document.getElementById('quickLinks').classList.toggle('hidden', !system);
-      renderNavigation();
-      if (system) {
-        renderCurrentService();
-        loadUrl('http://127.0.0.1:8765/?view=system');
-      } else {
-        document.getElementById('moduleTitle').textContent = item.label;
-        document.getElementById('moduleSubtitle').textContent = item.description;
-        loadUrl('http://127.0.0.1:8765' + item.href);
-      }
-    }
-
-    function loadUrl(url) {
-      document.getElementById('frame').src = url;
-    }
-
-    function openInPane() {
-      const m = modules.find(x => x.key === current);
-      if (m) loadUrl(m.url);
-    }
-
-    async function openExternal() {
-      await window.pywebview.api.open_external(current);
-    }
-
-    async function startCurrent() {
-      await window.pywebview.api.start_module(current);
-      await refreshAll();
-    }
-
-    async function stopCurrent() {
-      await window.pywebview.api.stop_module(current);
-      await refreshAll();
-    }
-
-    async function restartCurrent() {
-      await window.pywebview.api.restart_module(current);
-      await refreshAll();
-    }
-
-    async function startAll() {
-      await window.pywebview.api.start_all();
-      await refreshAll();
-    }
-
-    async function stopAll() {
-      await window.pywebview.api.stop_all();
-      await refreshAll();
-    }
-
-    setInterval(refreshAll, 3000);
-    Promise.all([
-      window.pywebview.api.list_navigation(),
-      window.pywebview.api.list_modules()
-    ]).then(results => {
-      navigation = results[0].navigation || [];
-      modules = results[1] || [];
-      selectView('overview');
-    });
-  </script>
-</body>
-</html>
-"""
+def runtime_page(result, notice=''):
+    title = escape(str(result.get('label') or '运行信息'))
+    fields = [('工程', result.get('project_root')), ('运行档案', result.get('profile_path')),
+              ('入口', result.get('url')), ('状态代码', result.get('state'))]
+    rows = ''.join(f'<tr><th>{escape(key)}</th><td>{escape(str(value or "尚未选择"))}</td></tr>' for key, value in fields)
+    detail = escape(str(notice or result.get('detail') or '服务身份只说明当前连接；业务结果请查看对应工作页面。'))
+    return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>OrbitHive · 运行信息</title>
+<style>body{{margin:0;background:#f1f5f9;color:#172334;font:14px/1.6 'Segoe UI','Microsoft YaHei',sans-serif}}
+main{{max-width:980px;margin:32px auto;padding:24px;background:white;border:1px solid #dbe3ed;border-radius:8px}}
+h1{{font-size:23px;margin:0 0 12px}}p{{color:#475569}}table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+th,td{{padding:9px;text-align:left;border-bottom:1px solid #e2e8f0;overflow-wrap:anywhere}}th{{width:100px}}
+.note{{padding:10px 12px;background:#edf4ff;border-left:3px solid #3b82f6}}code{{font-size:12px}}</style>
+<main><h1>{title}</h1><p class="note">{detail}</p><table>{rows}</table>
+<p>通过顶部“连接”菜单选择工程和运行档案，然后“重新检查并打开”。服务未启动时，可先选择 Python，再点击“启动所选服务”。</p>
+<p>任务首页与商品目录、商品上架、供应链、利润、知识工具五个一级入口共用网站导航。下载请使用“在浏览器中打开”；关闭 APP 会保留后台服务和任务。</p>
+<p>首次配置见随附桌面使用说明：可通过 <code>--create-profile</code> 按明确路径生成运行档案，无需手工编辑 JSON。</p></main></html>'''
 
 
-class OrbitDesktopBridge:
-    def __init__(self, modules: list[ModuleSpec]) -> None:
-        self.modules = {m.key: m for m in modules}
-        self.lock = threading.Lock()
+class DesktopWindow:
+    def __init__(self, session: DesktopSession, *, hidden=False, external_opener=webbrowser.open):
+        import webview
+        from webview.menu import Menu, MenuAction
+        self.session = session
+        self.external_opener = external_opener
+        self.events = []
+        self.engine_ready = Event()
+        self.engine_error = None
+        self.native = None
+        webview.settings['ALLOW_FILE_URLS'] = False
+        webview.settings['ALLOW_DOWNLOADS'] = False
+        webview.settings['OPEN_EXTERNAL_LINKS_IN_BROWSER'] = False
+        webview.settings['IGNORE_SSL_ERRORS'] = False
+        webview.settings['OPEN_DEVTOOLS_IN_DEBUG'] = False
+        webview.settings['REMOTE_DEBUGGING_PORT'] = None
+        menu = [Menu('连接', [MenuAction('选择工程…', self.choose_project),
+            MenuAction('选择运行档案…', self.choose_profile), MenuAction('选择 Python…', self.choose_python),
+            MenuAction('重新检查并打开', self.refresh), MenuAction('启动所选服务', self.start_service),
+            MenuAction('运行信息', self.show_runtime), MenuAction('在浏览器中打开', self.open_browser)])]
+        initial_html = runtime_page(session.last_result)
+        self._internal_document = self._internal_url(initial_html)
+        self.window = webview.create_window('OrbitHive', html=initial_html, js_api=None,
+            width=1440, height=920, min_size=(900, 600), hidden=hidden, menu=menu)
+        self.window.events.before_show += self._attach_native
+        self.window.events.closing += self._closing
 
-    def list_navigation(self) -> dict:
-        return navigation_payload()
+    def _attach_native(self):
+        self.native = self.window.native
+        self.native.webview.NavigationStarting += self._navigation_starting
+        self.native.webview.CoreWebView2InitializationCompleted += self._engine_initialized
 
-    def _append_log(self, spec: ModuleSpec, line: str) -> None:
-        with self.lock:
-            spec.logs.append(line.rstrip())
-            spec.logs = spec.logs[-400:]
-
-    def _fetch_health(self, url: str) -> tuple[bool, str]:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "OrbitDesktop/2.0"})
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-            return True, json.dumps(payload, ensure_ascii=False)
-        except urllib.error.URLError as exc:
-            return False, str(exc.reason or exc)
-        except Exception as exc:
-            return False, str(exc)
-
-    def _stream_logs(self, spec: ModuleSpec) -> None:
-        proc = spec.process
-        if not proc or not proc.stdout:
+    def _engine_initialized(self, sender, args):
+        if not args.IsSuccess:
+            self.engine_error = str(args.InitializationException)
+            self.engine_ready.set()
             return
-        for line in proc.stdout:
-            self._append_log(spec, line)
-        code = proc.wait()
-        self._append_log(spec, f"[exit] code={code}")
-        spec.process = None
+        core = sender.CoreWebView2
+        # Replace pywebview's automatic window.open handler before any business page.
+        core.NewWindowRequested -= self.native.browser.on_new_window_request
+        core.NewWindowRequested += self._new_window
+        core.DownloadStarting += self._download
+        core.WebResourceRequested += self._document_requested
+        self.engine_ready.set()
 
-    def _start_process(self, spec: ModuleSpec) -> None:
-        if spec.process and spec.process.poll() is None:
-            self._append_log(spec, f"[info] {spec.title} 已在运行")
+    def _document_requested(self, sender, args):
+        from Microsoft.Web.WebView2.Core import CoreWebView2WebResourceContext
+        if args.ResourceContext != CoreWebView2WebResourceContext.Document:
             return
-        creationflags = 0
-        if sys.platform.startswith("win"):
-            creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-        spec.process = subprocess.Popen(
-            spec.command,
-            cwd=str(ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=creationflags,
-        )
-        self._append_log(spec, "[start] " + " ".join(spec.command))
-        threading.Thread(target=self._stream_logs, args=(spec,), daemon=True).start()
-
-    def _stop_process(self, spec: ModuleSpec) -> None:
-        proc = spec.process
-        if not proc or proc.poll() is not None:
-            spec.process = None
-            self._append_log(spec, f"[info] {spec.title} 当前未运行")
+        url = str(args.Request.Uri)
+        if url == 'about:blank' or url == self._internal_document or self.session.verify_document(url):
             return
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        spec.process = None
-        self._append_log(spec, f"[stop] {spec.title}")
+        # Reject at the document-request boundary as well as the navigation
+        # event: no replacement document is fetched from a stale READY port.
+        args.Response = sender.Environment.CreateWebResourceResponse(None, 409, 'Identity mismatch',
+            "Content-Type: text/plain\r\nContent-Security-Policy: default-src 'none'\r\n")
+        if self.session.same_origin(url):
+            self._identity_rejected(url, phase='document-request')
 
-    def list_modules(self) -> list[dict]:
-        out = []
-        for spec in self.modules.values():
-            healthy, detail = self._fetch_health(spec.health_url)
-            running = spec.process is not None and spec.process.poll() is None
-            out.append(
-                {
-                    "key": spec.key,
-                    "title": spec.title,
-                    "subtitle": spec.subtitle,
-                    "port": spec.port,
-                    "url": spec.url,
-                    "health_url": spec.health_url,
-                    "healthy": healthy,
-                    "health_detail": detail,
-                    "running": running,
-                    "quick_links": [{"label": label, "url": url} for label, url in spec.quick_links],
-                    "logs": spec.logs[-120:],
-                }
-            )
-        return out
+    def _navigation_starting(self, sender, args):
+        url = str(args.Uri)
+        if url == 'about:blank' or url == self._internal_document:
+            return
+        if self.session.verify_document(url):
+            return
+        args.Cancel = True
+        if self.session.same_origin(url):
+            self._identity_rejected(url)
+        else:
+            self._external(url, bool(args.IsUserInitiated))
 
-    def start_module(self, key: str) -> dict:
-        spec = self.modules[key]
-        self._start_process(spec)
-        return {"ok": True}
+    def _new_window(self, sender, args):
+        # Finish the native popup event before probing or starting another
+        # navigation. WebView2 does not support event-handler reentrancy.
+        args.Handled = True
+        url = str(args.Uri)
+        user_initiated = bool(args.IsUserInitiated)
+        Thread(target=lambda: self._open_requested_window(url, user_initiated), daemon=True).start()
 
-    def stop_module(self, key: str) -> dict:
-        spec = self.modules[key]
-        self._stop_process(spec)
-        return {"ok": True}
+    def _open_requested_window(self, url, user_initiated):
+        if self.session.verify_document(url):
+            self.window.load_url(url)
+            self.events.append({'action': 'same-origin-new-window', 'url': url})
+        elif self.session.same_origin(url):
+            self._identity_rejected(url)
+        else:
+            self._external(url, user_initiated)
 
-    def restart_module(self, key: str) -> dict:
-        spec = self.modules[key]
-        self._append_log(spec, f"[restart] {spec.title}")
-        self._stop_process(spec)
-        time.sleep(0.5)
-        self._start_process(spec)
-        return {"ok": True}
+    def _identity_rejected(self, url, phase='navigation'):
+        self.events.append({'action': 'identity-rejected', 'url': url, 'state': self.session.last_result['state'], 'phase':phase})
+        result = self.session.last_result
+        Thread(target=lambda: self._show_runtime_page(result), daemon=True).start()
 
-    def start_all(self) -> dict:
-        for spec in self.modules.values():
-            self._start_process(spec)
-        return {"ok": True}
+    @staticmethod
+    def _internal_url(html):
+        # NavigateToString reports this exact data URI in NavigationStarting.
+        # Only the HTML generated by this application is admitted.
+        return 'data:text/html;charset=utf-8;base64,' + base64.b64encode(html.encode('utf-8')).decode('ascii')
 
-    def stop_all(self) -> dict:
-        for spec in self.modules.values():
-            self._stop_process(spec)
-        return {"ok": True}
+    def _show_runtime_page(self, result):
+        html = runtime_page(result)
+        self._internal_document = self._internal_url(html)
+        self.window.load_html(html)
 
-    def open_external(self, key: str) -> dict:
-        webbrowser.open(self.modules[key].url)
-        return {"ok": True}
+    def _external(self, url, user_initiated):
+        allowed = user_initiated and external_destination(url)
+        self.events.append({'action': 'external-open' if allowed else 'navigation-blocked', 'url': url[:2048]})
+        if allowed:
+            self.external_opener(url)
+
+    def _download(self, sender, args):
+        args.Cancel = True
+        self.events.append({'action': 'download-blocked', 'url': str(args.DownloadOperation.Uri)})
+
+    def _closing(self):
+        self.events.append({'action': 'window-close', **self.session.close()})
+
+    def refresh(self):
+        result = self.session.check()
+        if result['state'] == 'READY':
+            self.window.load_url(self.session.selection.url)
+        else:
+            self._show_runtime_page(result)
+        return result
+
+    def start_service(self):
+        result = self.session.start()
+        if result['state'] == 'READY':
+            self.window.load_url(self.session.selection.url)
+        else:
+            self._show_runtime_page(result)
+        return result
+
+    def show_runtime(self):
+        result = self.session.check()
+        self._show_runtime_page(result)
+        return result
+
+    def open_browser(self):
+        result = self.session.check()
+        if result['state'] == 'READY':
+            current = self.window.get_current_url()
+            self.external_opener(current if current and self.session.allows_document(current) else self.session.selection.url)
+        else:
+            self._show_runtime_page(result)
+
+    def _choose(self, kind):
+        import webview
+        folder = kind == 'project_root'
+        selected = self.window.create_file_dialog(webview.FileDialog.FOLDER if folder else webview.FileDialog.OPEN,
+            allow_multiple=False, file_types=() if folder else ('JSON (*.json)',) if kind == 'profile_path' else ('Python (*.exe)',))
+        if not selected:
+            return
+        updates = {kind: Path(selected[0]).resolve()}
+        if folder:
+            updates['profile_path'] = None
+        self.session = DesktopSession(replace(self.session.selection, **updates), self.session.state_dir)
+        self.refresh()
+
+    def choose_project(self):
+        self._choose('project_root')
+
+    def choose_profile(self):
+        self._choose('profile_path')
+
+    def choose_python(self):
+        self._choose('python')
+
+    def run(self, after_open=None):
+        import webview
+
+        def opened():
+            if not self.engine_ready.wait(25) or self.engine_error:
+                self.engine_error = self.engine_error or 'WebView2 initialization timeout'
+                self.events.append({'action': 'renderer-unavailable', 'error': self.engine_error})
+                self.window.destroy()
+                return
+            self.refresh()
+            if after_open is not None:
+                after_open(self)
+
+        # Persist only this client's browser state. Closing does not stop services.
+        webview.start(opened, gui='edgechromium', debug=False, private_mode=False,
+                      storage_path=str(self.session.state_dir / 'webview2'))
+        return 1 if self.engine_error else 0
 
 
-def main() -> int:
-    bridge = OrbitDesktopBridge(MODULES)
-    window = webview.create_window(
-        "Orbit CEO Desktop",
-        html=HTML,
-        js_api=bridge,
-        width=1440,
-        height=920,
-        min_size=(1180, 760),
-    )
-    webview.start(debug=False)
-    return 0
+def main(argv=None):
+    from desktop.startup import main as start
+    return start(argv)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

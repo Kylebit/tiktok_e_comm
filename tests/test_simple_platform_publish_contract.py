@@ -19,14 +19,6 @@ import urllib.request
 
 from modules.products import server as product_server
 from shared_platform import oneclick_release_controlplane as oneclick_controlplane
-from tests.test_tiktok_independent_http import (
-    _approved_plan,
-    _CollectBoxStore,
-    _Publisher,
-    _publish_contexts,
-    _ReleaseStore,
-    _request_body,
-)
 from tests.test_release_ux_contract import (
     BROWSER_CONTRACT,
     ROOT,
@@ -49,27 +41,25 @@ def _post_json(url: str, payload: dict[str, object]):
         return error.code, json.loads(error.read())
 
 
-def test_tiktok_button_response_is_the_final_miaoshou_result(
-    tmp_path, monkeypatch
-):
-    plan = _approved_plan()
-    contexts = _publish_contexts(plan)
-    publisher = _Publisher()
-    monkeypatch.setattr(
-        product_server, "_tiktok_release_store", lambda: _ReleaseStore(plan)
-    )
-    monkeypatch.setattr(
-        product_server, "_collectbox_action_store", lambda: _CollectBoxStore(contexts)
-    )
-    monkeypatch.setattr(
-        product_server, "_tiktok_publisher", lambda: publisher
-    )
+def test_tiktok_button_starts_one_durable_platform_report(monkeypatch):
+    """The route starts the current runner and returns its durable identity."""
+
+    calls: list[tuple[dict[str, object], str]] = []
+
+    def start_publication(data, *, platform):
+        calls.append((data, platform))
+        return 202, {
+            "ok": True,
+            "schema_version": "product-publication-start/v1",
+            "platform": platform,
+            "report_id": "publication-report:run-tiktok-1",
+            "run_id": "run-tiktok-1",
+        }
+
     monkeypatch.setattr(
         product_server,
-        "_start_oneclick_release",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("TikTok must not enter the shared platform job")
-        ),
+        "_start_product_publication",
+        start_publication,
     )
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), product_server.Handler)
@@ -82,22 +72,24 @@ def test_tiktok_button_response_is_the_final_miaoshou_result(
                 f"http://127.0.0.1:{server.server_address[1]}"
                 "/api/product-workspace/publish-tiktok"
             ),
-            _request_body(plan),
+            {"offer_id": "3846511157", "plan_id": "approved-plan"},
         )
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
 
-    assert status == 200
-    assert body["schema_version"] == "miaoshou-platform-publish-result/v1"
-    assert body["success"] is True
-    assert body["target_count"] == 6
-    assert body["successful_target_count"] == 6
-    assert body["failed_targets"] == []
-    assert body["write_request_count"] == 6
-    assert body["external_write_count"] == 6
-    assert len(publisher.snapshots) == 1
+    assert status == 202
+    assert body == {
+        "ok": True,
+        "schema_version": "product-publication-start/v1",
+        "platform": "TIKTOK",
+        "report_id": "publication-report:run-tiktok-1",
+        "run_id": "run-tiktok-1",
+    }
+    assert calls == [
+        ({"offer_id": "3846511157", "plan_id": "approved-plan"}, "TIKTOK")
+    ]
 
 
 def test_shopee_global_success_is_read_from_shared_controls(monkeypatch):
@@ -485,19 +477,24 @@ def test_ozon_button_rejects_vendor_errors_even_when_result_says_ok(monkeypatch)
     assert body["success"] is False
 
 
-def test_frontend_uses_only_four_simple_states_and_never_polls_after_post():
+def test_frontend_uses_only_four_simple_states_and_polls_durable_report():
     script = (
         product_server.ROOT / "web/static/product_workspace.js"
     ).read_text(encoding="utf-8")
     start = script.index("async function publishPlatformBatch(")
     end = script.index("async function publishSelectedTargets()", start)
     publish = script[start:end]
+    status_start = script.index("const PUBLICATION_REPORT_STATUSES")
+    status_end = script.index("]);", status_start)
+    statuses = script[status_start:status_end]
 
-    assert "发布中" in publish
-    assert "发布成功" in publish
-    assert "发布失败" in publish
-    assert "payload.success !== true" in publish
-    assert "response.status !== 200" in publish
+    for state in ("PUBLISHED", "PROCESSING", "PARTIAL", "FAILED"):
+        assert f'"{state}"' in statuses
+    assert 'result.status = "PROCESSING"' in publish
+    assert 'result.status = "FAILED"' in publish
+    assert 'response.status !== 202' in publish
+    assert 'payload.schema_version !== "product-publication-start/v1"' in publish
+    assert "await pollPublicationReport(platformKey, generation)" in publish
     assert "scheduleOneClickStatusPoll" not in publish
     assert "payload.accepted" not in publish
     assert "payload.job" not in publish
@@ -520,7 +517,7 @@ def test_authoritative_dashboard_render_initializes_four_state_cards():
         product_server.ROOT / "web/static/product_workspace.js"
     ).read_text(encoding="utf-8")
     start = script.index("function render(data) {")
-    end = script.index("function clearCurrentApprovalContext()", start)
+    end = script.index("function clearCurrentApprovalContext(", start)
     render = script[start:end]
 
     identity_position = render.index("ensureOneClickExecution(data);")
@@ -528,7 +525,7 @@ def test_authoritative_dashboard_render_initializes_four_state_cards():
     assert cards_position > identity_position
 
 
-def test_real_chromium_covers_all_simple_publish_paths_with_screenshots(
+def test_real_chromium_blocks_legacy_publish_during_r3_reconciliation(
     tmp_path,
 ):
     runtime = _browser_runtime()
@@ -547,7 +544,7 @@ def test_real_chromium_covers_all_simple_publish_paths_with_screenshots(
         {
             "NODE_PATH": str(modules),
             "ORBIT_CHROMIUM_BIN": str(chrome),
-            "ORBIT_BROWSER_CONTRACT_ONLY": "simplified-platform-publish",
+            "ORBIT_BROWSER_CONTRACT_ONLY": "r3-managed-publish-block",
             "ORBIT_BROWSER_ARTIFACT_DIR": str(artifacts),
         }
     )
@@ -564,18 +561,12 @@ def test_real_chromium_covers_all_simple_publish_paths_with_screenshots(
             check=False,
         )
     assert result.returncode == 0, (
-        "simplified platform publish Chromium contract failed\n"
+        "R3 reconciliation Chromium contract failed\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     expected = {
         f"{viewport}-{state}.png"
         for viewport in ("1440x900", "390x844")
-        for state in (
-            "initial",
-            "publishing",
-            "failure-and-independent-success",
-            "all-success-after-retry",
-            "sibling-cards-stable-after-reimport",
-        )
+        for state in ("r3-reconciliation-blocked",)
     }
     assert {path.name for path in artifacts.glob("*.png")} == expected

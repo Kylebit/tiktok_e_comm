@@ -106,7 +106,7 @@ def promotion_adapter_policy_digest() -> str:
             "activity_products": ACTIVITY_PRODUCTS_PATH,
             "product_detail": PRODUCT_DETAIL_PATH,
             "complete_pagination": True,
-            "exactly_one_write_occurrence": True,
+            "write_occurrences": "existing_exact_zero_otherwise_one",
             "official_readback_required": True,
             "shopee": "blocked_no_audited_api",
         }
@@ -116,10 +116,10 @@ def promotion_adapter_policy_digest() -> str:
 def prepare_postpublish_promotion(request: object) -> Mapping[str, Any]:
     target = _text(getattr(request, "target_label", None), "target")
     target_policy = promotion_target_policy(target)
-    if target_policy["channel"] != "tiktok":
+    if target_policy["execution_surface"] != "tiktok_official":
         return _blocked(
-            "shopee_promotion_api_unavailable",
-            "Shopee promotion endpoint and exact readback are not audited",
+            "promotion_execution_surface_unavailable",
+            "This target needs its governed Shopee adapter or explicit browser workflow",
         )
     plan = _mapping(
         getattr(request, "immutable_plan_payload", None),
@@ -227,7 +227,7 @@ def prepare_postpublish_promotion(request: object) -> Mapping[str, Any]:
     )
     command = {
         "schema_version": PREPARED_SCHEMA,
-        "policy_version": PROMOTION_POLICY_VERSION,
+        "policy_version": approval["policy_version"],
         "selection_policy": PROMOTION_SELECTION_POLICY,
         "target_label": target,
         "prerequisite_target": target_policy["prerequisite_target"],
@@ -238,7 +238,7 @@ def prepare_postpublish_promotion(request: object) -> Mapping[str, Any]:
         "shop_cipher": shop_cipher,
         "activity_id": activity_id,
         "product_id": product_id,
-        "discount_percent": target_policy["discount_percent"],
+        "discount_percent": approval["discount_percent"],
         "approved_list_price": expected_price,
         "currency": currency,
         "seller_skus": list(expected_skus),
@@ -253,7 +253,7 @@ def prepare_postpublish_promotion(request: object) -> Mapping[str, Any]:
     }
     proof = {
         "schema_version": PROOF_SCHEMA,
-        "policy_version": PROMOTION_POLICY_VERSION,
+        "policy_version": approval["policy_version"],
         "selection_policy": PROMOTION_SELECTION_POLICY,
         "target_label": target,
         "activity_count": len(activities),
@@ -270,7 +270,7 @@ def prepare_postpublish_promotion(request: object) -> Mapping[str, Any]:
         ),
         "begin_time": activity["begin_time"],
         "end_time": activity["end_time"],
-        "discount_percent": target_policy["discount_percent"],
+        "discount_percent": approval["discount_percent"],
         "approved_list_price": expected_price,
         "currency": currency,
         "action_policy_digest": approval["action_policy_digest"],
@@ -283,7 +283,7 @@ def prepare_postpublish_promotion(request: object) -> Mapping[str, Any]:
                 "readback_evidence_digest": prerequisite[
                     "readback_evidence_digest"
                 ],
-                "discount_percent": target_policy["discount_percent"],
+                "discount_percent": approval["discount_percent"],
             }
         ),
     }
@@ -302,7 +302,7 @@ def prepare_postpublish_promotion(request: object) -> Mapping[str, Any]:
 def dispatch_postpublish_promotion(request: object) -> Mapping[str, Any]:
     target = _text(getattr(request, "target_label", None), "target")
     policy = promotion_target_policy(target)
-    if policy["channel"] != "tiktok":
+    if policy["execution_surface"] != "tiktok_official":
         raise TikTokPromotionPreDispatchError(
             "Shopee promotion API remains unavailable"
         )
@@ -356,6 +356,12 @@ def dispatch_postpublish_promotion(request: object) -> Mapping[str, Any]:
         raise TikTokPromotionPreDispatchError(
             "official promotion or product identity drifted before write"
         )
+    members = [row for row in activity["products"]
+               if str(row.get("id") or row.get("product_id") or "") == command["product_id"]]
+    if members:
+        if len(members) != 1 or _decimal(members[0].get("discount"), "discount") != Decimal(command["discount_percent"]):
+            raise TikTokPromotionPreDispatchError("existing promotion membership conflicts with the frozen command")
+        return _promotion_success(command, write_count=0)
     progress = getattr(request, "progress_recorder", None)
     if not callable(progress):
         raise TikTokPromotionPreDispatchError(
@@ -459,6 +465,10 @@ def dispatch_postpublish_promotion(request: object) -> Mapping[str, Any]:
             lower_bound=1,
             upper_bound=1,
         ) from error
+    return _promotion_success(command, write_count=1)
+
+
+def _promotion_success(command: Mapping[str, Any], *, write_count: int) -> Mapping[str, Any]:
     evidence_digest = _digest(
         {
             "activity_identity_digest": command["activity_identity_digest"],
@@ -473,16 +483,17 @@ def dispatch_postpublish_promotion(request: object) -> Mapping[str, Any]:
         "reason_scope": "TARGET",
         "reason_code": "promotion_official_readback_exact",
         "reason_detail": "official activity readback matches approved discount",
-        "external_writes": (TIKTOK_PROMOTION_WRITE_CLASS,),
-        "external_write_count": 1,
-        "confirmed_external_write_count_lower_bound": 1,
-        "possible_external_write_count_upper_bound": 1,
+        "external_writes": (TIKTOK_PROMOTION_WRITE_CLASS,) if write_count else (),
+        "external_write_count": write_count,
+        "confirmed_external_write_count_lower_bound": write_count,
+        "possible_external_write_count_upper_bound": write_count,
         "external_id": "sha256:" + command["activity_identity_digest"],
-        "submission_accepted": True,
+        "submission_accepted": write_count > 0,
         "readback_verified": True,
         "dispatch_outcome_unknown": False,
         "evidence": {
             "schema_version": "tiktok-promotion-readback/v1",
+            "existing_membership_exact": write_count == 0,
             "discount_percent": command["discount_percent"],
             "official_readback_exact": True,
             "activity_identity_digest": command["activity_identity_digest"],
@@ -857,8 +868,10 @@ def _validate_command_and_proof(
         != proof.get("activity_identity_digest")
         or command.get("product_identity_digest")
         != proof.get("product_identity_digest")
-        or command.get("discount_percent") != 32
-        or proof.get("discount_percent") != 32
+        or type(command.get("discount_percent")) is not int
+        or not 0 < command["discount_percent"] < 100
+        or command.get("discount_percent") != proof.get("discount_percent")
+        or command.get("policy_version") != proof.get("policy_version")
         or command.get("selection_policy")
         != PROMOTION_SELECTION_POLICY
         or proof.get("selection_policy")

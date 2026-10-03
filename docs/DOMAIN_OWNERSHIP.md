@@ -1,19 +1,19 @@
-# Domain ownership (Phase 1)
+# Domain ownership
 
-This document introduces code ownership boundaries without moving production
-logic. Existing CLI names, HTTP paths, ports, SQLite tables, and integrations
-remain behavior-compatible. The registry in `shared_platform.registry` is the
-temporary adapter seam; it describes ownership but does not dispatch calls.
+This document defines the current ownership boundaries. It was introduced in
+Phase 1 without moving production logic. The compatibility inventory below is
+historical context and must be re-verified against the current work order; it
+does not by itself declare a capability ready or authorize execution.
 
 ## Domain ownership
 
 | Domain | Owns | Current legacy locations | Primary hand-off |
 | --- | --- | --- | --- |
-| Product operations | Product master data, SKU, intake, package approval | `modules/catalog`, `modules/products/costs`, `modules/sourcing/new_product_workbench` | `ApprovedProductPackage` |
+| Product operations | Product master data, SKU identity, intake, package approval | `modules/catalog`, `modules/sourcing/new_product_workbench` | `ApprovedProductPackage` |
 | Content operations | Copy, images, future video | `modules/products/titles`, `modules/products/images`, `modules/sourcing/image_workbench` | `ContentPackage` |
 | Channel operations | TikTok, Shopee, Ozon, Miaoshou publishing; affiliate outreach, price, promotion, deactivation | `modules/ozon`, `modules/shopee`, `modules/miaoshou`, `modules/affiliate` | `ChannelListing` |
 | Supply-chain operations | Supplier sources, Yacang/Seaya, inventory, receiving, replenishment | New domain; `modules/catalog/logistics_weights` is the first legacy adapter | `InventorySnapshot` |
-| Data operations | Cost, settlement, profit, ads, analytics | `modules/finance`, `modules/ads`, `modules/pricing` | `FinancialFact` |
+| Data operations | Cost, settlement, profit, ads, analytics | `modules/finance`, `modules/ads`, `modules/pricing`; legacy compatibility adapter `modules/products/costs` | `FinancialFact` |
 
 ## Shared platform
 
@@ -39,6 +39,14 @@ approval, audit, jobs, notification, and health tables. Cross-domain code must
 exchange a stable contract or call an explicitly documented adapter, not query
 another domain's table directly.
 
+For one canonical internal SKU, one effective time/range, one currency, and
+one cost basis, only one active authoritative current-cost fact is allowed.
+Multiple sources enter reconciliation or a versioned supersession; they do not
+become parallel current costs. Product operations consumes the cost contract
+and must not copy or recompute the data-domain cost truth. Platform listing
+identities, country warehouse balances, settlement lines, and historical cost
+versions remain separately sourced facts.
+
 ## Entry-point compatibility
 
 `main.py` publishes `CLI_DOMAIN_REGISTRY`; `modules.products.server` publishes
@@ -58,14 +66,13 @@ inventory adapter.
 
 ## Parallel delivery and integration
 
-Five Codex workstreams map one-to-one to the five domains. Each workstream may
-change only its owned modules plus a contract proposal and tests. The CEO/
-integrator owns `shared_platform`, schema migration ordering, contract version
-approval, cross-domain dependency resolution, and final integration testing.
-No domain may change another domain's tables or public CLI/HTTP entry points
-without an approved adapter and an integrator review.
+The five domains are logical ownership boundaries, not five permanent tasks.
+The current work order and coordination state identify the writer, exact source,
+allowed modules and producer/consumer hand-off. Cross-domain contract changes
+receive the assigned integrator review; this does not add a new user approval
+for implementation already authorized by that work order.
 
-The fixed thread assignments, Work Order lifecycle, single-writer rule, UI
+Current task assignments, Work Order lifecycle, single-writer rule, UI
 acceptance split, and external-write authority are normative in
 [`THREAD_OPERATING_MODEL.md`](THREAD_OPERATING_MODEL.md) and
 [`pm/DISPATCH_CONVENTION.md`](pm/DISPATCH_CONVENTION.md).
@@ -73,9 +80,15 @@ acceptance split, and external-write authority are normative in
 The legacy A2A, EigenFlux, and multi-agent systems are retained as code for
 compatibility but are disabled by default for this architecture. They are not
 required to start a domain workflow and must not become a cross-domain runtime
-dependency without an explicit future approval.
+dependency without a current Work Order, named owner, isolated scope, and
+single-writer constraint. A current explicit delegation does not require a
+second approval merely because these historical systems remain disabled.
 
-## Next extraction steps
+## Historical Phase 1 extraction backlog
+
+The following items record the original Phase 1 direction. They are not an
+active task list; a current Work Order and present code evidence are required
+before reopening one.
 
 1. Add read adapters from existing SQLite rows and payloads to the contracts.
 2. Move one command or route at a time behind a domain-owned adapter while

@@ -8,6 +8,8 @@ I/O and does not call any marketplace adapter.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -160,7 +162,7 @@ def _master_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 def _store_price(row: Mapping[str, Any] | None) -> dict[str, Any]:
     if not row:
         return {}
-    return {
+    result = {
         "target_key": str(row.get("id") or _special_key(row)).lower(),
         "shop": str(row.get("shop") or ""),
         "shop_id": row.get("shop_id"),
@@ -183,6 +185,12 @@ def _store_price(row: Mapping[str, Any] | None) -> dict[str, Any]:
         "formula_parameters": dict(row.get("header_meta") or {}),
         "notes": str(row.get("notes") or ""),
     }
+
+    if isinstance(row.get("price_override"), Mapping):
+        result["price_override"] = deepcopy(dict(row["price_override"]))
+    if str(row.get("pricing_authority") or "").strip():
+        result["pricing_authority"] = str(row["pricing_authority"]).strip()
+    return result
 
 
 def _fees(row: Mapping[str, Any]) -> dict[str, Any]:

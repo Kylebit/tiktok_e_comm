@@ -1,106 +1,27 @@
-# Database governance
+# 数据库治理
 
-Status date: 2026-07-25
+本页保留数据库与恢复不变量；2026-07-25 的表数、成本冲突和旧构建观测已移到[历史参考](LEGACY_PLATFORM_REFERENCE.md#database-history)，不代表当前生产现状。
 
-## Canonical runtime databases
+## 身份、范围和事实
 
-- `data/shop.db` is the commerce catalog and operational SQLite database.
-- `data/orbit_platform.db` stores immutable local report runs and Orbit inbox
-  items.
-- Browser-profile cache databases under `data/auth/` are third-party runtime
-  caches and are not business sources of truth.
+- 先确定工单允许的数据库、实际进程/配置引用和用途，再执行读取、备份或迁移。历史 `data/shop.db`、`data/orbit_platform.db` 是查找线索；不能从路径存在或默认参数推断当前库。浏览器缓存不是业务事实源。
+- 只读审计使用只读连接，输出必要统计/元数据，不导出业务行与秘密。测试使用合成临时 SQLite 的范围见[测试治理](TESTING_GOVERNANCE.md#budget)。
+- 明确区分当前快照、历史记录、派生分析、来源与时间。缺成本、冲突身份或陈旧库存保持 needs_review / unavailable，不能填默认值当 verified。
+- 金额与单位保持业务合同，迁移需记录 schema/version；新增约束须在隔离副本验证现有数据、事务、回滚和兼容消费者。
 
-The main database currently uses WAL mode. A live copy of `shop.db` alone is
-not a valid backup procedure because committed pages may still be in
-`shop.db-wal`.
+## 备份与变更
 
-## Safe commands
+WAL 模式不能只复制运行中的主 `.db` 文件。使用 SQLite online backup 或经验证的一致恢复集，保存来源身份、时间、SHA-256、完整性与恢复验证；不得覆盖已有恢复点。真实备份是私有数据，Git 和留存规则见[线程治理](THREAD_OPERATING_MODEL.md#git)。
 
-Full read-only health check:
+当前可检查的维护源码入口为 [database_maintenance.py](../scripts/database_maintenance.py)：`check --full`、`quality`、`backup` 子命令。先读实际参数并绑定精确 `--database` 与受控输出位置；例子省略的默认路径不构成操作授权。`quality --fail-on-review` 的失败应解释具体事实缺口，不改为成功。
 
-```powershell
-.\.venv\Scripts\python.exe scripts\database_maintenance.py check --full
-```
+目录全量变更还遵守[目录治理](CATALOG_UPDATE_GOVERNANCE.md)：完整输入、预览/差量、预留与唯一性、数据库事务、审计和回读。跨数据库/平台原子性必须有实现证据，不能由一个 API 成功推定。
 
-Read-only catalog quality report:
+## 恢复
 
-```powershell
-.\.venv\Scripts\python.exe scripts\database_maintenance.py quality
-```
+1. 依精确恢复工单确认 owner、目标库/进程、可回滚范围和验证通过的恢复集；备份完成本身不授权替换服务或真实数据。
+2. 仅在已获准的维护窗口停止真正拥有目标库的 writer，不按固定端口杀任意服务。保留现有 DB/WAL/SHM 和唯一产物为恢复点。
+3. 在隔离副本验证备份完整性与相关业务合同，按已审方案替换，不能把库复制进正在写入的进程。
+4. 恢复后验证身份、完整性与业务差异，再按原授权恢复运行；失败保留原证据并按恢复方案处理。
 
-Use `quality --fail-on-review` in a release or publication gate; it returns
-exit code 2 while identity, cost, or derived-data blockers remain.
-
-Create a non-overwriting, integrity-checked online backup:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\database_maintenance.py backup
-```
-
-The backup uses SQLite's online backup API, so it includes committed WAL data
-without stopping Orbit. It writes to `backups/database/`, verifies
-`integrity_check=ok`, and returns a SHA-256 digest. It never overwrites an
-existing backup.
-
-## Current verified baseline
-
-The 2026-07-25 production audit found:
-
-- `quick_check=ok` and `integrity_check=ok`;
-- 16 business tables, 1,091 TikTok product rows, 632 Shopee product rows, 847
-  costs, and 725 logistics-weight rows;
-- no current product-to-shop or cost-to-product orphans;
-- `settlement_lines`, `ad_spend_daily`, and `affiliate_invites` are empty;
-- the schema has no declared foreign keys or triggers and `user_version=0`;
-- schema creation and incremental `ALTER TABLE` calls are still distributed
-  across business modules.
-
-The first verified online backup is recorded locally under
-`backups/database/`. Backup files and databases are ignored by Git.
-
-## Data-quality gates
-
-P0:
-
-- Five seller-SKU duplicate groups exist inside `UK_IMPORT_GB`: `0003`,
-  `0153`, `0200`, `0619`, and `0926`. Reads or mutations that select one row
-  with `LIMIT 1` are ambiguous until the UK identities are reviewed.
-
-P1:
-
-- 244 product rows have no direct platform-SKU cost. Canonical seller-SKU
-  fallback resolves 146; 98 rows across 28 business keys remain unresolved.
-- Three canonical keys have conflicting positive costs:
-  `0018` (`5`/`5.5`), `0810` (`8`/`8.5`), and `0934` (`10`/`11`).
-- 137 analytics rows no longer match the current active-product snapshot.
-  They must be classified as history or stale derived data before deletion.
-- 97 logistics rows do not match an exact regional seller SKU, but only four
-  fail the approved numeric tail-four alignment. Do not bulk-delete all 97.
-- One Shopee product row has a non-positive price.
-
-P2:
-
-- Add a central, versioned migration ledger before introducing foreign keys or
-  CHECK constraints.
-- Define whether analytics is a current snapshot or retained history.
-- Add explicit reservation/uniqueness governance for new seller SKUs.
-- Remove or quarantine packaged `dist` database copies so runtime state cannot
-  drift from the canonical database.
-
-The Orbit build script now strips a generated `_internal/data` directory only
-after verifying that it is inside the current build bundle, then rejects any
-remaining `shop.db`, `orbit_platform.db`, browser `Cookies`, or `Login Data`
-file. Existing older bundles must still be quarantined or rebuilt once.
-
-## Restore procedure
-
-1. Stop the Orbit process that owns port 8765.
-2. Run `check --full` against the backup file.
-3. Preserve the current `shop.db`, `shop.db-wal`, and `shop.db-shm` as one
-   recovery set; do not delete them immediately.
-4. Copy the verified backup to `data/shop.db`.
-5. Start Orbit and run `check --full` again before any synchronization or
-   channel write.
-
-Do not restore into a running process, and do not copy only a live WAL-mode
-`shop.db`.
+“旧快照仍可读”与“可用于新发布/价格/库存决定”分别评估；历史数据不直接升级为当前动作依据。

@@ -10,9 +10,13 @@
 
 批次起算优先使用雅仓日志 `已入库（Reach the domestic warehouse）`。尚未实际入库时，必须显示 `NOT_YET_INBOUND`，并使用用户批准的 `estimated_anchor_at = created_at + 4 days` 回退；该时间只能标为估算，不能伪装成实际已入库。`expected_sellable_date = effective_anchor_date + effective_country_transport_days`，不再增加签收上架缓冲。截图确认的泰国批次 `THML4038-58701` 已入库时间为 `2026-08-04 15:39:15`；按用户最终确认的泰国 15 天运输周期，预计可售日为 `2026-08-19`。
 
-雅仓入库详情必须读取全部分页，并按完整 SKU 汇总重复分箱行。2026-08-09 只读复核已对平泰国全部 3,350 件在途：`THML4038-58701` 为 13 个 SKU / 2,100 件，`THSL4038-59557` 为 8 个 SKU / 1,250 件。0021 为 200 + 600 = 800 件；0017、0015、0021、0026 的重复分箱行均在各自完整批次内求和。
+雅仓入库详情必须读取全部分页，并按完整 SKU 汇总重复分箱行。2026-09-01 只读复核的运输中供给仍为两批：泰国 `THSL4038-60638` 共 11 条分箱行、8 个 SKU、1,270 件，其中 0021 为 3 箱合计 600 件；菲律宾 `PHPH4038-59553` 共 13 条分箱行、11 个 SKU、510 件。两批均与库存页聚合在途逐 SKU 对平，最新物流节点均为 2026-08-31 清关中。用户于 2026-09-01 明确确认泰国该批“三天后到达上架”，因此批次预计可售日调整为 2026-09-04，并优先于通用 15 天运输估算；菲律宾仍为 2026-09-05。在完成到达上架前两批仍不算现货。马来西亚上一批已经完成上架，因此本轮不再作为在途供应。
 
 在途采用分时点投影，不再视为今天已经到仓：先用当前可用库存满足日需求；到某批预计可售日期时才加入该批在途数量；随后继续消耗到本次新补货的预计可售日期。已有在途批次优先以实际已入库日志起算，缺日志时保留“未入库”状态并用建单 + 4 天估算。本次新补货统一拆为 3 天备货、4 天到国内仓，再叠加国家海外运输周期；三段时效全部进入交期需求和预计可售日。用户已取消额外 2 天签收上架缓冲。页面对四国每个 SKU 使用同一 `TIME_PHASED_BATCH_EVENTS_V1` 计算，并展示每段消耗、每批到仓、库存前后值、目标和最终建议；不存在只针对 0021 的特例。
+
+当本土仓库存在可售缺口但仍可跨境直发时，页面不再把它写成完全断货。两套场景都会显示本土仓履约件数、跨境直发兜底件数、兜底日历天数、首次切换日期和本土仓履约率。跨境时效可能降低下单率，但在取得并批准各国/渠道转化折损证据前，只披露暴露量，不伪造损失金额，也不改写建议件数。
+
+订单与库存使用独立时钟。订单刷新只更新 `orderDemandCapturedAt`，不能覆盖雅仓库存 `snapshotDate`。若订单已经更新而库存仍是旧快照，页面显示 `BLOCKED_STALE_INVENTORY`；建议数只作为条件测算，不得直接转成采购或发货指令。
 
 泰国当前采用用户确认的 15 天海外运输与 33 天目标覆盖。33 天目标为 `ceil(双平台预测日均 × 33)`，最终建议为 `max(0, 33天目标 - 本次新货到仓时的分时点剩余库存)`。
 
@@ -43,7 +47,7 @@ C:\Users\Windows11\Desktop\Agent_PR\tiktok_e_comm\.venv\Scripts\python.exe -m ht
 
 然后打开 `http://127.0.0.1:8874/`。
 
-数据截点为 2026-08-01。31 天订单读取共 99 次：TikTok 有效订单 MY 531、TH 1917、VN 283、PH 321；Shopee 有效订单 MY 101、TH 999、VN 32、PH 77，SKU 行均无未解析订单明细。取消、未付款、测试、替换和暂停订单不计需求；Shopee 部分取消数量显式扣除，退货数量单独保留。头程采用用户批准的统一口径人民币 1 元/件。收益仍使用原结算事实：泰国 Shopee 结算快照没有 SKU 级跨境运费字段，因此该部分节省按 0 计，不伪造收益。
+当前数据截点为 2026-09-02。四国独立快照合计 91 次订单读取：TikTok 有效订单 MY 520、TH 1,610、VN 209、PH 144；Shopee 有效订单 MY 76、TH 815、VN 17、PH 44。取消、未付款、测试、替换和暂停订单不计需求；Shopee 部分取消数量显式扣除，退货数量单独保留。雅仓库存共读取 105 条：MY 31、TH 42、VN 15、PH 17；可用库存分别为 2,011、3,075、523、28 件，占用分别为 5、25、1、0 件，在途分别为 0、1,270、0、510 件，冻结均为 0。两个在途批次均已重新读取全部明细页并精确对账：`THSL4038-60638` 为 11 行 / 8 SKU / 1,270 件，`PHPH4038-59553` 为 13 行 / 11 SKU / 510 件，最新厂商节点仍为 2026-08-31 清关中。头程采用用户批准的统一口径人民币 1 元/件。收益仍使用原结算事实：泰国 Shopee 结算快照没有 SKU 级跨境运费字段，因此该部分节省按 0 计，不伪造收益。
 
 Shopee 明细优先使用完整 `model_sku`；只有 `4位`、`77+4位`、`99+4位`属于已批准的渠道映射。其他格式必须通过精确 `item_id + model_id` 商品目录关系恢复 SKU。越南 21 条、菲律宾 193 条明细通过该关系恢复。菲律宾仍有 19 条历史商品明细没有可审计的 4 位 SKU，因此只在证据区披露并排除自动备货计算，不能把标题相似或图片相似当作映射依据。
 
@@ -62,5 +66,14 @@ Four-country summary:
 
 - The `四国汇总 >10` tab calculates MY, TH, VN, and PH independently, then places only rows with `recommended > 10` into one table.
 - The threshold is strict: a recommendation of exactly 10 units is excluded.
+- The active-inbound headline counts every fully reconciled batch in the source plan, independently of this row threshold; any batch, country or inventory total mismatch shows a pending reconciliation state instead of a partial amount. It describes the source snapshot, not current live stock.
 - Every summary row retains its country badge, main image, SKU, demand, local inventory, arrival calculation, recommendation type, quantity, and benefit evidence.
 - The same SKU may appear once per country because no demand or inventory is netted across borders.
+
+## Batch confirmation and evidence
+
+Open `/supply-chain/`, select a country, and follow the batch confirmation link. On the batch page, use the migration panel to export current confirmations, preview a JSON import, select conflicts explicitly, or undo the latest import. Storage errors retain the input for review. The header exposes inventory, order and batch capture times separately.
+
+See the [decision contract](../skills/manage-seaya-replenishment/references/decision-contract.md#u04-local-confirmation-and-explicit-refresh-contract-2026-09-05) for the maintained rules and the [Skill entry](../skills/manage-seaya-replenishment/SKILL.md#local-confirmation-migration-and-refresh-preflight) for refresh commands. U04 validation is indexed by `domain-prep/04/u04-validation/U04_A_RECEIPT.json` in the separately retained audit directory; synthetic validation is not a current business refresh.
+
+The compact SKU table keeps both recommendation scenarios in view. Use each row’s “事实与计算详情” button for the complete source facts, manual logistics entry and expandable calculation traces; page-level formulas and evidence are below the table. Country selection and batch confirmation use the existing navigation.

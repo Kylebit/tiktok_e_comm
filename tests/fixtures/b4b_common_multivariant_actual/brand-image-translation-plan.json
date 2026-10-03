@@ -1,0 +1,83 @@
+{
+  "schema_version": "brand-image-translation-plan/v1",
+  "offer_id": "9000052",
+  "status": "APPROVED_IN_CONVERSATION",
+  "approved_by": "Kyle",
+  "approval_authority": "USER_FINAL_IMAGE_REVIEW",
+  "generation_identity_digest": "sha256:8746af101cafc862e90768d09a2e437f95962e18e899c7518015572658213c9c",
+  "approved_task_count": 7,
+  "tasks": [
+    {
+      "review_number": 1,
+      "brand_id": "livelyhive-sea",
+      "role": "cover_scene",
+      "locale": "ru-RU",
+      "source_url": "https://fixture.example/multivariant-v2/1.png",
+      "source_artifact_digest": "sha256:124f6aa13a1f26aa88a0acef016616c668207a05bf0fb0f80ebccafe10090153"
+    },
+    {
+      "review_number": 2,
+      "brand_id": "livelyhive-sea",
+      "role": "installed_detail",
+      "locale": "ru-RU",
+      "source_url": "https://fixture.example/multivariant-v2/2.png",
+      "source_artifact_digest": "sha256:8ec4f24127893dbe6c50c963452d2b5b8a064d6671e62ce6b4d759facd0e1b7d"
+    },
+    {
+      "review_number": 3,
+      "brand_id": "livelyhive-sea",
+      "role": "scene_1",
+      "locale": "ru-RU",
+      "source_url": "https://fixture.example/multivariant-v2/3.png",
+      "source_artifact_digest": "sha256:891dcaa6a4a4275e80af2b568afe1e04ab876d8c1a10aba7564dfebff1e8c7bd"
+    },
+    {
+      "review_number": 4,
+      "brand_id": "livelyhive-sea",
+      "role": "scene_2",
+      "locale": "ru-RU",
+      "source_url": "https://fixture.example/multivariant-v2/4.png",
+      "source_artifact_digest": "sha256:0109b93b572b3ffff950dd0d8c0e7e076b2974d27eb09c585e5869c37512c112"
+    },
+    {
+      "review_number": 5,
+      "brand_id": "livelyhive-sea",
+      "role": "scene_3",
+      "locale": "ru-RU",
+      "source_url": "https://fixture.example/multivariant-v2/5.png",
+      "source_artifact_digest": "sha256:7f4819ffbfb2bc97cdae2025feed98e32ec5bbf854bd11542bdaf0aec21eebbc"
+    },
+    {
+      "review_number": 6,
+      "brand_id": "livelyhive-sea",
+      "role": "assembled_size",
+      "locale": "ru-RU",
+      "source_url": "https://fixture.example/multivariant-v2/6.png",
+      "source_artifact_digest": "sha256:0cb862128aa4222171f15113b5903e70797da6fd8b6afcf634b67ab7d01cee00"
+    },
+    {
+      "review_number": 7,
+      "brand_id": "livelyhive-sea",
+      "role": "piece_layout_or_instructions",
+      "locale": "ru-RU",
+      "source_url": "https://fixture.example/multivariant-v2/7.png",
+      "source_artifact_digest": "sha256:9c6b41e4b6ead8c68cdb9b79d8e11dd7902197048a52b326e37f229f5dcde9fd"
+    }
+  ],
+  "scope_decisions": {
+    "selected_review_numbers": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "dimension_only_no_translation_review_numbers": [],
+    "dimension_only_rule": "仅含数字、尺寸线和通用单位且没有可翻译文案的图片保留英文母版，不创建本地化任务。"
+  },
+  "platform_writes": 0,
+  "miaoshou_writes": 0,
+  "product_center_mutated": false
+}

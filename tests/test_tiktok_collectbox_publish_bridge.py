@@ -1,8 +1,9 @@
-"""Regression gate for collect-box preparation -> TikTok publication.
+"""Legacy-only collect-box plans must not authorize the current v4 HTTP route.
 
-This test intentionally crosses the real HTTP handler, durable collect-box
-ledger, durable ReleaseStore/one-click ledger, production adapter registry,
-and worker.  The only substituted boundary is the Miaoshou transport.
+Seven former HTTP success expectations used only old plan approval. Their exact
+legacy fixtures now verify explicit zero-write migration. Six-store execution,
+partial failure and unknown reentry live in test_b4a_publication_entry_contract.
+The final legacy control-plane pinning regression remains unchanged.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import sqlite3
 import threading
 import urllib.error
 import urllib.request
+
+import pytest
 
 from domains.channel_operations.oneclick_release_adapters import (
     production_adapter_registry,
@@ -274,7 +277,7 @@ def _start_tiktok_through_handler(
     return status, body, woken, transport
 
 
-def test_persisted_collectbox_drafts_dispatch_six_tiktok_publish_tasks(
+def test_legacy_only_persisted_collectbox_drafts_dispatch_six_tiktok_publish_tasks(
     tmp_path, monkeypatch
 ):
     release, plan = _approved_tiktok_context(tmp_path)
@@ -287,36 +290,13 @@ def test_persisted_collectbox_drafts_dispatch_six_tiktok_publish_tasks(
         release, plan, monkeypatch
     )
 
-    assert status == 200
-    assert body["success"] is True
-    assert body["platform"] == "TIKTOK"
-    assert body["successful_target_count"] == 6
-    assert woken == []
-    assert body["external_write_count"] == 7
-    assert body["write_request_count"] == 7
-    assert transport is not None
-    read_calls = [
-        call
-        for call in transport.calls
-        if call[0] in {READ_SITE_DRAFT_PATH, READ_SHOP_DRAFT_PATH}
-    ]
-    publish_calls = [
-        body
-        for path, body in transport.calls
-        if path == INDEPENDENT_PUBLISH_PATH
-    ]
-    assert len(read_calls) == 6
-    assert len(publish_calls) == 6
-    assert {
-        (int(body["detailIds"][0]), int(body["shopIds"][0]))
-        for body in publish_calls
-    } == {
-        (91000 + index, EXPECTED_SHOP_IDS[label])
-        for index, label in enumerate(TIKTOK_TARGETS, start=1)
-    }
+    assert status == 409
+    assert body["code"] == "approved_publication_snapshot_required"
+    assert body["external_write_count"] == 0
+    assert transport is None or transport.calls == []
 
 
-def test_six_tiktok_publish_calls_each_target_once_without_oneclick_job(
+def test_legacy_only_six_tiktok_publish_calls_each_target_once_without_oneclick_job(
     tmp_path, monkeypatch
 ):
     release, plan = _approved_tiktok_context(tmp_path)
@@ -325,18 +305,13 @@ def test_six_tiktok_publish_calls_each_target_once_without_oneclick_job(
         release, plan, monkeypatch
     )
 
-    assert status == 200
-    assert body["success"] is True
-    assert body["successful_target_count"] == 6
-    assert woken == []
-    assert transport is not None
-    assert len(
-        [call for call in transport.calls if call[0] == INDEPENDENT_PUBLISH_PATH]
-    ) == 6
-    assert OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"]) is None
+    assert status == 409
+    assert body["code"] == "approved_publication_snapshot_required"
+    assert body["external_write_count"] == 0
+    assert transport is None or transport.calls == []
 
 
-def test_category_confirmation_target_is_excluded_but_five_ready_targets_publish(
+def test_legacy_only_category_confirmation_target_is_excluded_but_five_ready_targets_publish(
     tmp_path, monkeypatch
 ):
     release, plan = _approved_tiktok_context(tmp_path)
@@ -350,23 +325,13 @@ def test_category_confirmation_target_is_excluded_but_five_ready_targets_publish
         release, plan, monkeypatch
     )
 
-    assert status == 200
-    assert body["successful_target_count"] == 5
-    assert body["not_attempted_target_count"] == 1
-    assert body["failed_targets"] == ["tiktok:LH_PH"]
-    assert woken == []
-    assert transport is not None
-    publish_calls = [
-        body for path, body in transport.calls if path == INDEPENDENT_PUBLISH_PATH
-    ]
-    assert len(publish_calls) == 5
-    assert all(
-        int(body["shopIds"][0]) != EXPECTED_SHOP_IDS["tiktok:LH_PH"]
-        for body in publish_calls
-    )
+    assert status == 409
+    assert body["code"] == "approved_publication_snapshot_required"
+    assert body["external_write_count"] == 0
+    assert transport is None or transport.calls == []
 
 
-def test_old_collectbox_receipt_without_internal_proof_reports_each_store_without_writes(
+def test_legacy_only_old_collectbox_receipt_without_internal_proof_reports_each_store_without_writes(
     tmp_path, monkeypatch
 ):
     release, plan = _approved_tiktok_context(tmp_path)
@@ -385,21 +350,13 @@ def test_old_collectbox_receipt_without_internal_proof_reports_each_store_withou
         release, plan, monkeypatch
     )
 
-    assert status == 200
-    assert body["success"] is False
-    assert body["not_attempted_target_count"] == 6
+    assert status == 409
+    assert body["code"] == "approved_publication_snapshot_required"
     assert body["external_write_count"] == 0
-    assert woken == []
-    with sqlite3.connect(release.path) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM release_runs WHERE plan_id = ?",
-            (plan["plan_id"],),
-        ).fetchone()[0] == before_runs
-    control = OneClickReleaseStore(release.path)
-    assert control.get_job(plan_id=plan["plan_id"]) is None
+    assert _transport is None or _transport.calls == []
 
 
-def test_publish_transport_ambiguity_records_one_possible_write_per_target(
+def test_legacy_only_publish_transport_ambiguity_records_one_possible_write_per_target(
     tmp_path, monkeypatch
 ):
     release, plan = _approved_tiktok_context(tmp_path)
@@ -420,21 +377,14 @@ def test_publish_transport_ambiguity_records_one_possible_write_per_target(
     status, body, woken, transport = _start_tiktok_through_handler(
         release, plan, monkeypatch, publisher_factory=ambiguous_factory
     )
-    assert status == 200
-    assert body["success"] is False
-    assert body["successful_target_count"] == 0
-    assert body["unknown_target_count"] == 6
-    assert body["external_write_count"] is None
-    assert body["write_request_count"] == 7
-    assert woken == []
-    assert transport is not None
-    assert len(
-        [call for call in transport.calls if call[0] == INDEPENDENT_PUBLISH_PATH]
-    ) == 6
-    assert OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"]) is None
+
+    assert status == 409
+    assert body["code"] == "approved_publication_snapshot_required"
+    assert body["external_write_count"] == 0
+    assert transport is None or transport.calls == []
 
 
-def test_one_ready_target_dispatch_ambiguity_does_not_truncate_later_targets(
+def test_legacy_only_one_ready_target_dispatch_ambiguity_does_not_truncate_later_targets(
     tmp_path, monkeypatch
 ):
     release, plan = _approved_tiktok_context(tmp_path)
@@ -460,16 +410,13 @@ def test_one_ready_target_dispatch_ambiguity_does_not_truncate_later_targets(
         release, plan, monkeypatch, publisher_factory=one_ambiguous_factory
     )
 
-    assert status == 200
-    assert body["unknown_target_count"] == 1
-    assert body["successful_target_count"] == 5
-    assert transport is not None
-    assert len(
-        [call for call in transport.calls if call[0] == INDEPENDENT_PUBLISH_PATH]
-    ) == 6
+    assert status == 409
+    assert body["code"] == "approved_publication_snapshot_required"
+    assert body["external_write_count"] == 0
+    assert transport is None or transport.calls == []
 
 
-def test_missing_gb_detail_proof_does_not_block_other_five_targets(
+def test_legacy_only_missing_gb_detail_proof_does_not_block_other_five_targets(
     tmp_path, monkeypatch
 ):
     release, plan = _approved_tiktok_context(tmp_path)
@@ -481,15 +428,11 @@ def test_missing_gb_detail_proof_does_not_block_other_five_targets(
     status, body, woken, transport = _start_tiktok_through_handler(
         release, plan, monkeypatch
     )
-    assert status == 200
-    assert body["success"] is False
-    assert body["successful_target_count"] == 5
-    assert body["not_attempted_target_count"] == 1
-    assert body["failed_targets"] == ["tiktok:GB"]
-    assert body["external_write_count"] == 5
-    assert woken == []
-    assert transport is not None
-    assert OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"]) is None
+
+    assert status == 409
+    assert body["code"] == "approved_publication_snapshot_required"
+    assert body["external_write_count"] == 0
+    assert transport is None or transport.calls == []
 
 
 def test_prepare_job_pins_one_collectbox_receipt_during_concurrent_reimport(

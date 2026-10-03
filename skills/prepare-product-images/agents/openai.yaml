@@ -1,4 +1,4 @@
 interface:
   display_name: "准备商品图片"
-  short_description: "锁定第一轮审核并生成待人工审核的多语言图片"
-  default_prompt: "Use $prepare-product-images to start the approved product's second-round image generation and prepare its human review page."
+  short_description: "按技术冻结范围生成并质检可审计多语言图片候选"
+  default_prompt: "Use $prepare-product-images to prepare and automatically QA the frozen product's round-2 image candidates within existing paid authority; do not request an intermediate human approval."

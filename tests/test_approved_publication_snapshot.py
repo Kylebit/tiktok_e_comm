@@ -9,6 +9,7 @@ from domains.product_operations.approved_publication_snapshot import (
     ApprovedPublicationSnapshotError,
     approved_publication_snapshot_from_payload,
     build_approved_publication_snapshot,
+    publication_content_for_target,
     publication_images_for_target,
     validate_approved_publication_snapshot,
 )
@@ -26,6 +27,58 @@ def _sha(value):
         allow_nan=False,
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+@pytest.mark.parametrize("display", ["0958", "SKU 0958", "Bear【38x45cm】"])
+@pytest.mark.parametrize(
+    "load", [approved_publication_snapshot_from_payload, validate_approved_publication_snapshot]
+)
+def test_b2a_fix_snapshot_loader_rejects_invalid_display_with_recomputed_checksum(
+    display, load
+):
+    plan = _approved_plan()
+    plan["payload"]["product_facts"]["sku_commercial_facts"]["blue-38x45"][
+        "specification"
+    ] = {"style": display}
+    _rebind(plan)
+    with pytest.raises(ApprovedPublicationSnapshotError, match="consumer-readable"):
+        build_approved_publication_snapshot(plan)
+
+    document = build_approved_publication_snapshot(_approved_plan()).payload()
+    document["skus"][0]["specification"] = {"style": display}
+    document.pop("snapshot_digest")
+    document["snapshot_digest"] = _sha(document)
+    # A matching checksum establishes no independent approval authority. This
+    # exercises semantic validation of an otherwise self-consistent document.
+    with pytest.raises(ApprovedPublicationSnapshotError, match="consumer-readable"):
+        load(document)
+
+
+@pytest.mark.parametrize("total_stock", [True, 1.0])
+@pytest.mark.parametrize("entrypoint", ["build", "load"])
+def test_b2a_fix_snapshot_rejects_non_integer_warehouse_total(total_stock, entrypoint):
+    plan = _approved_plan()
+    allocation = _warehouse_allocations()
+    row = allocation["tiktok:LH_PH"]
+    row["warehouses"][0]["stock"] = 1
+    row["warehouses"][1]["stock"] = 0
+    row["total_stock"] = 1
+    plan["payload"]["product_facts"]["warehouse_inventory_by_target"] = allocation
+    _rebind(plan)
+    if entrypoint == "build":
+        row["total_stock"] = total_stock
+        _rebind(plan)
+        call = lambda: build_approved_publication_snapshot(plan)
+    else:
+        document = build_approved_publication_snapshot(plan).payload()
+        document["product"]["warehouse_inventory_by_target"]["tiktok:LH_PH"][
+            "total_stock"
+        ] = total_stock
+        document.pop("snapshot_digest")
+        document["snapshot_digest"] = _sha(document)
+        call = lambda: approved_publication_snapshot_from_payload(document)
+    with pytest.raises(ApprovedPublicationSnapshotError, match="warehouse.*total"):
+        call()
 
 
 def _category_decision(target, category_id, name, parent_id, parent_name):
@@ -750,3 +803,172 @@ def test_freezes_complete_target_specific_image_routes():
     _rebind(tampered)
     with pytest.raises(ApprovedPublicationSnapshotError, match="coverage"):
         build_approved_publication_snapshot(tampered)
+
+
+def test_freezes_complete_target_specific_content_and_reads_exact_locale():
+    plan = _approved_plan()
+    plan["payload"]["product_facts"]["content_by_target"] = {
+        label: {
+            "locale": "ms-MY" if label == "tiktok:LH_MY" else "en-PH",
+            "title": (
+                "Pelekat Dinding Beruang PVC"
+                if label == "tiktok:LH_MY"
+                else "Bear Peekaboo PVC Wall Sticker"
+            ),
+            "description": (
+                "Pelekat dinding kalis air untuk hiasan bilik."
+                if label == "tiktok:LH_MY"
+                else "Removable waterproof wall sticker for nursery decor."
+            ),
+        }
+        for label in plan["payload"]["targets"]
+    }
+    _rebind(plan)
+
+    document = build_approved_publication_snapshot(plan).payload()
+
+    assert publication_content_for_target(document, "tiktok:LH_MY") == {
+        "locale": "ms-MY",
+        "title": "Pelekat Dinding Beruang PVC",
+        "description": "Pelekat dinding kalis air untuk hiasan bilik.",
+    }
+    assert publication_content_for_target(document, "shopee:PH")["locale"] == "en-PH"
+
+    tampered = deepcopy(plan)
+    tampered["payload"]["product_facts"]["content_by_target"].pop("ozon:RU")
+    _rebind(tampered)
+    with pytest.raises(ApprovedPublicationSnapshotError, match="content target coverage"):
+        build_approved_publication_snapshot(tampered)
+
+
+def _warehouse_allocations():
+    return {
+        "tiktok:LH_PH": {
+            "schema_version": "miaoshou-tiktok-warehouse-allocation/v1",
+            "shop_id": "16770557",
+            "warehouses": [
+                {
+                    "warehouse_id": "7635880818728552209",
+                    "warehouse_name": "CN Pickup Warehouse",
+                    "stock": 500,
+                },
+                {
+                    "warehouse_id": "7677806106640287506",
+                    "warehouse_name": "TH8806",
+                    "stock": 40,
+                },
+            ],
+            "total_stock": 540,
+            "source": "CONVERSATION_APPROVAL",
+            "approved_by": "Kyle",
+            "approved_at": "2026-08-30T00:00:00+08:00",
+        },
+        "tiktok:LH_MY": {
+            "schema_version": "miaoshou-tiktok-warehouse-allocation/v1",
+            "shop_id": "16265910",
+            "warehouses": [
+                {
+                    "warehouse_id": "7677806106640287510",
+                    "warehouse_name": "China Warehouse",
+                    "stock": 200,
+                }
+            ],
+            "total_stock": 200,
+            "source": "CONVERSATION_APPROVAL",
+            "approved_by": "Kyle",
+            "approved_at": "2026-08-30T00:01:00+08:00",
+        },
+    }
+
+
+def test_freezes_exact_target_shop_warehouse_allocation_and_approval_provenance():
+    plan = _approved_plan()
+    allocation = _warehouse_allocations()
+    plan["payload"]["product_facts"]["warehouse_inventory_by_target"] = allocation
+    _rebind(plan)
+
+    snapshot = build_approved_publication_snapshot(plan)
+    document = snapshot.payload()
+    assert document["product"]["warehouse_inventory_by_target"] == allocation
+
+    allocation["tiktok:LH_PH"]["warehouses"][0]["stock"] = 1
+    assert snapshot.payload()["product"]["warehouse_inventory_by_target"][
+        "tiktok:LH_PH"
+    ]["warehouses"][0]["stock"] == 500
+
+
+@pytest.mark.parametrize(
+    "mutate,error",
+    [
+        (
+            lambda rows: rows.pop("tiktok:LH_MY"),
+            "warehouse inventory target coverage drifted",
+        ),
+        (
+            lambda rows: rows["tiktok:LH_MY"].update(
+                shop_id=rows["tiktok:LH_PH"]["shop_id"]
+            ),
+            "shop identity conflicts",
+        ),
+        (
+            lambda rows: rows["tiktok:LH_PH"].update(shop_id=True),
+            "shop_id must be a positive digit string",
+        ),
+        (
+            lambda rows: rows["tiktok:LH_PH"].update(total_stock=539),
+            "warehouse total stock drifted",
+        ),
+        (
+            lambda rows: rows["tiktok:LH_PH"].update(approved_by=""),
+            "approved_by must be a non-empty built-in str",
+        ),
+        (
+            lambda rows: rows["tiktok:LH_PH"].update(
+                approved_at="2026-08-30T00:00:00"
+            ),
+            "approved_at must include a timezone",
+        ),
+    ],
+)
+def test_warehouse_allocation_conflicts_fail_closed(mutate, error):
+    plan = _approved_plan()
+    allocation = _warehouse_allocations()
+    mutate(allocation)
+    plan["payload"]["product_facts"]["warehouse_inventory_by_target"] = allocation
+    _rebind(plan)
+
+    with pytest.raises(ApprovedPublicationSnapshotError, match=error):
+        build_approved_publication_snapshot(plan)
+def test_freezes_exact_ozon_stock_warehouse_decision_and_rejects_digest_drift():
+    plan = _approved_plan()
+    stock_policy = {
+        "schema_version": "publication-default-stock/v1",
+        "quantity_per_sku": 200,
+        "scope": "EACH_SELECTED_SKU",
+        "source": "SYSTEM_GOVERNED_DEFAULT",
+        "review_round": "ROUND1",
+    }
+    decision = {
+        "schema_version": "ozon-stock-warehouse-decision/v1",
+        "warehouse_id": 1020005018928780,
+        "selection_policy": "EXACT_UNIQUE_ACTIVE_OR_CREATED_NON_KGT",
+        "stock_policy_digest": _sha(stock_policy),
+        "source": "OFFICIAL_PROVIDER_READBACK",
+    }
+    plan["payload"]["product_facts"]["stock_policy"] = deepcopy(stock_policy)
+    plan["payload"]["product_facts"]["ozon_stock_decision"] = deepcopy(decision)
+    _rebind(plan)
+
+    frozen = build_approved_publication_snapshot(plan).payload()
+    assert frozen["product"]["stock_policy"] == stock_policy
+    assert frozen["product"]["ozon_stock_decision"] == decision
+
+    plan["payload"]["product_facts"]["ozon_stock_decision"][
+        "stock_policy_digest"
+    ] = "sha256:" + "0" * 64
+    _rebind(plan)
+    with pytest.raises(
+        ApprovedPublicationSnapshotError,
+        match="Ozon stock warehouse decision identity drifted",
+    ):
+        build_approved_publication_snapshot(plan)

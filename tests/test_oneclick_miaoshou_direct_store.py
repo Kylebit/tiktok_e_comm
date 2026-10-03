@@ -51,6 +51,7 @@ def test_platform_owners_are_registered_without_cross_platform_aliasing():
     assert set(registry) == {
         "miaoshou-direct-store/v1",
         "shopee_cnsc_publish",
+        "postpublish_promotion",
     }
     registration = registry["miaoshou-direct-store/v1"]
     assert registration.adapter_name == "miaoshou-direct-store/v1"

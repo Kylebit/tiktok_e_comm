@@ -2,12 +2,21 @@
 
 Status date: 2026-07-25
 
+> Historical migration record, not current startup or instruction policy. Paths,
+> ports, ACL observations, scheduled-task states and the five-thread plan below
+> describe that date only. Do not rename Git directories, restore startup items,
+> authenticate or start services merely to take over a task. Start with current
+> [AGENTS](../AGENTS.md), [ownership/authority](THREAD_OPERATING_MODEL.md) and
+> [read-only hand-off scenarios](AGENT_HANDOFF.md); the current work order and
+> verified Git identity supersede these historical locations and assignments.
+
 ## Default operating mode
 
-`tiktok_e_comm` is the only business source repository. Codex is the default
-task and integration surface. A2A, EigenFlux, Cursor/WorkBuddy bridges, and
-Feishu dispatch code remain available for later experiments, but none is a
-required runtime dependency and none should auto-start.
+`tiktok_e_comm` was the business source repository observed at that time.
+The A2A, EigenFlux, Cursor/WorkBuddy bridge and external-message dispatch
+experiments described below are retired and their executable source is absent
+from the current tree. This record does not authorize restoring or starting
+them.
 
 The canonical local business services are:
 
@@ -23,7 +32,9 @@ the checkout than a deliverables service should.
 
 ## Frozen legacy runtime
 
-The following login-start items were moved, not deleted:
+The following login-start items were observed as disabled during the historical
+migration. They are not current platform components and must not be restored
+from this document:
 
 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\_Disabled_OrbitHive_2026-07-25`
 
@@ -56,19 +67,8 @@ Safe manual rehearsal:
 The command above is dry-run. Add `--persist-local` only when the result should
 become an Orbit inbox item.
 
-To restore a single startup bridge, move only its file from the disabled folder
-back to the parent `Startup` folder. To restore the EigenFlux listener, recreate
-the `EigenFluxStreamListener` string value with the preserved command above.
-Do not restore all bridges together.
-
-Stage3 can still be started manually from the repository:
-
-```powershell
-python agent_comms/stage3/start_stage3.py
-```
-
-Do not restart `agent_comms/serve_deliverables.py` until it is changed to serve
-an explicit output allowlist instead of the repository tree.
+No restart or restoration procedure is retained: the old bridge and repository
+wide deliverables server were removed from the current source tree.
 
 ## Git and Codex project safety
 

@@ -8,7 +8,7 @@ import yaml
 SKILL_DIR = Path(__file__).resolve().parents[1]
 
 
-def test_skill_package_has_required_zero_write_review_contracts():
+def test_skill_package_has_required_zero_write_candidate_contracts():
     skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
     decision = (SKILL_DIR / "references" / "decision-contract.md").read_text(encoding="utf-8")
 
@@ -17,7 +17,8 @@ def test_skill_package_has_required_zero_write_review_contracts():
     assert "zero external writes" in skill.lower()
     assert "second round" in skill.lower()
     assert "Do not use OCR" in skill
-    assert "Do not automatically" in skill
+    assert "human_approval=false" in skill
+    assert "FINAL_MARKETPLACE_PUBLISH" in skill
 
 
 def test_skill_client_cannot_claim_create_site_drafts_or_publish():
@@ -30,10 +31,11 @@ def test_skill_client_cannot_claim_create_site_drafts_or_publish():
     assert "prepare_miaoshou_draft" not in script
 
 
-def test_openai_interface_mentions_the_skill_and_review_packet():
+def test_openai_interface_mentions_the_skill_and_candidate_without_an_intermediate_gate():
     payload = yaml.safe_load((SKILL_DIR / "agents" / "openai.yaml").read_text(encoding="utf-8"))
     interface = payload["interface"]
 
     assert 25 <= len(interface["short_description"]) <= 64
     assert "$prepare-product-publication" in interface["default_prompt"]
-    assert "first-review decision packet" in interface["default_prompt"]
+    assert "round-1 candidate" in interface["default_prompt"]
+    assert "do not request intermediate human approval" in interface["default_prompt"]

@@ -18,6 +18,71 @@ from modules.products import costs as cost_mod
 from modules.catalog.logistics_weights import weight_index_by_match_key
 
 
+def _ozon_catalog_rows():
+    from shared_platform.catalog_ozon import catalog_rows
+    conn = connect_readonly()
+    try:
+        return catalog_rows(conn)
+    finally:
+        conn.close()
+
+
+def _ozon_directory_row(row):
+    from shared_platform.catalog_cost_projection import digest
+    full, listing, cost = row['identity'], row['listing'], row['cost']
+    images = listing.get('images') or []
+    control = {'identity': full, 'key': digest(full),
+               'cost_cny': cost['amount'] if cost else None,
+               'version': cost['version'] if cost else 0,
+               'label': 'ozon / RU / ' + full['shop_key'] + ' / ' + full['offer_id']}
+    return {'match_key': full['offer_id'], 'identity': full,
+            'matched': {'tiktok': False, 'shopee': False, 'ozon': True},
+            'matched_count': 1, 'cost_controls': [control],
+            'cost_cny': float(cost['amount']) if cost else None,
+            'tiktok': None, 'shopee': None, 'is_reference_only': False,
+            'ozon': {'identity_status': 'OFFICIAL_PRODUCT_OFFER',
+                     'account_id': full['shop_key'], 'product_id': full['product_id'],
+                     'seller_sku': full['offer_id'], 'product_name': listing.get('name'),
+                     'image_url': images[0] if images else '',
+                     'source_ref': row['source_ref'], 'statuses': listing.get('statuses')}}
+
+
+def save_identity_cost(identity, value, expected_version):
+    from core.db import db_path
+    if isinstance(identity,dict) and identity.get('platform')=='ozon':
+        from shared_platform.catalog_ozon import save_manual
+        return save_manual(db_path(),identity,value,expected_version)
+    from shared_platform.catalog_cost_projection import save_manual
+    return save_manual(db_path(), identity, value, expected_version)
+
+
+def _identity_cost_controls(rows):
+    from shared_platform.catalog_cost_projection import identity, read_cost, legacy_cost, digest, _owners, _key
+    conn = connect_readonly()
+    controls = []
+    try:
+        seen = set()
+        for row in rows:
+            try:
+                full = identity({'platform': row['platform'],
+                    'shop_key': str(row.get('shop_cipher') or row.get('shop_id') or ''),
+                    'product_id': str(row.get('product_id') or ''),
+                    'variant_id': str(row.get('sku_id') or ''), 'seller_sku': row.get('seller_sku')})
+                if _key(full) not in _owners(conn, full['variant_id']) or _key(full) in seen:
+                    continue
+                seen.add(_key(full))
+                scoped = read_cost(conn, full)
+                value = scoped['amount'] if scoped else legacy_cost(conn, full)
+                controls.append({'identity': full, 'key': digest(full), 'cost_cny': value,
+                                 'version': scoped['version'] if scoped else 0,
+                                 'label': row['platform'] + ' / ' + str(row.get('region') or '') + ' / ' + full['shop_key']})
+            except (ValueError, KeyError):
+                continue
+    finally:
+        conn.close()
+    return controls
+
+
 def _row_tk(r, region: str) -> dict:
     return {
         "platform": "tiktok",
@@ -306,6 +371,8 @@ def save_cost_by_match_key(match_key: str, cost_cny: float, note: str = "") -> i
                     sids.append(sid)
         conn.close()
     n = 0
+    if len(sids) != 1:
+        raise ValueError("exact catalog identity required; match_key is ambiguous or absent")
     for sid in sids:
         cost_mod.save_cost(sid, cost_cny, note or f"catalog:{key}")
         n += 1
@@ -337,23 +404,33 @@ def global_summary() -> dict:
     missing_sp = _count_shopee_needs_seller_sku(conn)
     conn.close()
     ozon = load_ozon_by_key()
-    oz_keys = set(ozon)
-    all_keys = tk_keys | sp_keys | oz_keys
+    typed_ozon = _ozon_catalog_rows()
+    # Ozon identities have no approved cross-platform join. Count separately.
+    all_keys = tk_keys | sp_keys
     matched_tk_sp = len(tk_keys & sp_keys)
-    matched_all = len(tk_keys & sp_keys & oz_keys)
-    with_cost, _ = _cost_index()
+    matched_all = 0
+    # Coverage counts identities with a current cost, including Shopee-only
+    # rows and differing costs across shops; it is not an aggregate amount.
+    cost_conn=connect_readonly()
+    try:
+        cost_rows=[dict(r) for r in cost_conn.execute("SELECT 'tiktok' AS platform,shop_cipher,product_id,sku_id,seller_sku FROM products WHERE status='ACTIVATE'")]
+        cost_rows += [dict(r) for r in cost_conn.execute("SELECT 'shopee' AS platform,shop_id,item_id AS product_id,model_id AS sku_id,seller_sku FROM shopee_products")]
+    finally:cost_conn.close()
+    with_cost={parse_search_key(c['identity']['seller_sku']) for c in _identity_cost_controls(cost_rows) if c['cost_cny'] is not None}
+    with_cost.discard(None);with_cost.discard('')
     return {
         "tiktok_keys": len(tk_keys),
         "shopee_keys": len(sp_keys),
-        "ozon_keys": len(oz_keys),
-        "total_keys": len(all_keys),
+        "ozon_keys": len(typed_ozon),
+        "total_keys": len(all_keys) + len(typed_ozon),
+        "legacy_ozon_reference_count": len(ozon),
         "matched_tk_shopee": matched_tk_sp,
         "matched_all_three": matched_all,
-        "with_cost": len(with_cost),
+        "with_cost": len(with_cost) + sum(r['cost'] is not None for r in typed_ozon),
         "tiktok_missing_sku": missing_tk,
         "shopee_needs_sku": missing_sp,
-        "ozon_live": sum(1 for v in ozon.values() if v.get("migrated")),
-        "ozon_pending": sum(1 for v in ozon.values() if not v.get("migrated")),
+        "ozon_live": len(typed_ozon),
+        "ozon_pending": 0,
         "regions": list(SEA_REGIONS),
     }
 
@@ -673,30 +750,41 @@ def list_products(
         matched = {
             "tiktok": bool(tk_m),
             "shopee": bool(sp_m),
-            "ozon": bool(oz),
+            "ozon": False,
         }
         if match_only and not (matched["tiktok"] and matched["shopee"]):
             continue
         if platform == "missing_ozon":
-            if not (tk_m or sp_m) or oz:
+            if not (tk_m or sp_m):
                 continue
 
+        cost_controls=_identity_cost_controls([*tk_rows,*sp_rows])
+        current_amounts={c['cost_cny'] for c in cost_controls if c['cost_cny'] is not None}
         items_all.append(
             {
                 "match_key": k,
                 "matched": matched,
                 "matched_count": sum(1 for v in matched.values() if v),
-                "cost_cny": key_cost.get(k),
+                "cost_cny": float(next(iter(current_amounts))) if len(current_amounts)==1 else None,
                 "cost_sku_ids": key_to_skus.get(k, []),
+                "cost_controls": cost_controls,
                 "logistics_weight_g": (key_weight.get(k) or {}).get("weight_g"),
                 "logistics_package_count": (key_weight.get(k) or {}).get("package_count"),
                 "weight_source": (key_weight.get(k) or {}).get("weight_source"),
                 "tiktok": tk_m,
                 "shopee": sp_m,
-                "ozon": oz,
+                "ozon": {**oz, 'identity_status': 'LEGACY_UNBOUND_REFERENCE', 'counted': False} if oz else None,
+                "is_reference_only": not (tk_m or sp_m),
                 "tk_group": tk_groups.get(k),
             }
         )
+
+    if not reg_filter and not match_only and platform != 'missing_ozon':
+        for row in _ozon_catalog_rows():
+            offer = row['identity']['offer_id']
+            if sku and sku != offer and (not search_key or search_key != parse_search_key(offer)):
+                continue
+            items_all.append(_ozon_directory_row(row))
 
     missing_tk_included = 0
     missing_sp_included = 0
@@ -715,6 +803,8 @@ def list_products(
     return {
         "region": reg_filter or "ALL",
         "total": total,
+        "business_total": sum(not r.get('is_reference_only', False) for r in items_all),
+        "reference_total": sum(r.get('is_reference_only', False) for r in items_all),
         "offset": offset,
         "limit": limit,
         "items": page,

@@ -1,60 +1,24 @@
-# TikTok Shop 控制台
+# OrbitHive
 
-LivelyHive 东南亚跨境店本地运营工具：商品目录、TikTok/Ozon/Shopee 联动、Listing 优化、结算利润、Ozon 上品搬运。
+OrbitHive 把日常运营任务放在首页，业务工作分为五个一级入口。仓库同时包含各领域代码、完整业务 Skill 和可分发的独立工具；**代码存在不代表正式服务已经启用该能力**。页面、执行器及平台结果须按当前部署身份与回执核验。
 
-## 快速开始
+| 入口 | 页面 | 主要工作 |
+| --- | --- | --- |
+| 任务工作台 | `/` | 查看待办、审核接续、结果和运行状态 |
+| 商品目录 | `/catalog` | 按内部 SKU 查看商品与维护一个当前成本 |
+| 商品上架 | `/product-workspace` | 准备候选、查看原审核页及逐目标发布结果 |
+| 供应链 | `/supply-chain/` | 库存、入库和补货 |
+| 利润 | `/profit` | 结算覆盖、利润计算与月报 |
+| 知识工具 | `/knowledge` | Skill、工具、方法和来源检索 |
 
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-catalog.txt
+首页是任务入口，不增加第六个业务领域。商品上架的 [R1 事实准备](skills/prepare-product-publication/SKILL.md)、[R2 图片准备](skills/prepare-product-images/SKILL.md)和 [R3 已批准发布](skills/publish-approved-product/SKILL.md)以各自英文原文为执行合同；正常流程只在冻结的最终市场发布候选上进行一次人工终审。后续技术恢复与逐平台回读复用同一精确批准，候选或目标变化才按原合同重新判定。其他业务 Skill 和工具见[能力目录](docs/tools/README.md)。
 
-python3 main.py init
-# 编辑 config/settings.json（可从 settings.example.json 复制）
-python3 main.py auth
-python3 main.py serve --port 8765
-```
+## 接手与部署
 
-浏览器：`http://127.0.0.1:8765/`
+1. 从 [AGENTS.md](AGENTS.md)核验本次工单的仓库、分支、负责人和权限；状态、Git 与授权规则见[线程治理](docs/THREAD_OPERATING_MODEL.md)。
+2. 理解任务、版本、审核和结果的关系时读[任务运行合同](docs/OPERATIONS_TASK_RUNTIME.md)；需要部署或切换服务时读[部署说明](docs/DEPLOY.md)。
+3. 使用[能力目录](docs/tools/README.md)检查可移植工具与安装边界。完整业务 runtime、portable 包和个人 Skill 安装是不同范围。
 
-## 另一台电脑部署
+当前维护网页服务使用固定版本和独立任务账本，部署模式为 **web-only**：页面可用于浏览及明确允许的本地操作，后台执行器未启用。它不会因页面显示任务而自动上架、下架或生成利润报告。服务端口、版本、数据库、执行器和平台结果都是时点事实，须现场 readback；不能从本文推定某个任务正在执行。
 
-1. **代码**：`git clone git@github.com:Kylebit/tiktok_e_comm.git`
-2. **Ozon 子应用**：同级目录放置 `ozon/webapp/`（见 [docs/DEPLOY.md](docs/DEPLOY.md)）
-3. **凭据/数据库**：用 U 盘或 `scripts/bundle_secrets.sh` 从旧机器拷贝，**勿提交 GitHub**
-4. **Cursor 记忆**：仓库内 `AGENTS.md` + `.cursor/rules/` 会在新机器自动生效
-
-完整步骤：[docs/DEPLOY.md](docs/DEPLOY.md)
-
-## 主要功能
-
-| 页面 / 命令 | 说明 |
-|-------------|------|
-| `/catalog` | 商品目录（TikTok + Ozon 快照、物流实测重量） |
-| `/ozon` | TikTok → Ozon 上品（草稿可改类目/文案后再提交） |
-| `/settlement` | 结算与利润 |
-| `/titles` | Analytics A 类 → AI 标题 → 推送 |
-| `/images` | 主图抠白底（Photoroom） |
-| `/promotions` | 促销调价 |
-| `/analytics` | 28 天 CTR 分段 |
-| `/deactivate` | 零销下架 |
-| `/sourcing` | 1688 选品 |
-
-```bash
-python3 main.py products sync
-python3 main.py serve
-```
-
-## 配置
-
-- `config/settings.json` — API Key、DeepSeek、Ozon、飞书（**勿提交 git**）
-- `tiktok_tokens.json` — Shop OAuth（**勿提交 git**）
-- 模板：`config/settings.example.json`
-
-## 架构
-
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [AGENTS.md](AGENTS.md) — AI / Cursor 项目说明
-
-## 安全
-
-仓库已忽略 Token、数据库、settings。克隆后需 `init` + `auth`，并从旧机器安全拷贝 `data/shop.db` 与 token 文件。
+旧 `main.py serve --port 8765`、Ozon 搬运页与旧机器迁移步骤保留在[历史部署指南](docs/legacy/platform/DEPLOY_OLD_CONSOLE.md)和[历史架构](docs/ARCHITECTURE.md)，仅用于追溯，不是当前 OrbitHive 的操作入口。配置模板在 [config/settings.example.json](config/settings.example.json)；真实凭据和数据库不进入 Git 或 portable 包。

@@ -89,9 +89,11 @@ agent_comms/helper/outbox/
 /.pf*
 /.pt*
 /.pytest-*
+/.pytest_*
 /.restart-*
 /.skill-*
 /.tmp-*
+/.tmp/
 /tmp_seaya_sdk/
 
 # Local Product Center services and immutable publication evidence

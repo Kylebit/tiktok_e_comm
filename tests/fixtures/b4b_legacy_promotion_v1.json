@@ -1,0 +1,30 @@
+{
+  "approval": {
+    "schema_version": "approved-postpublish-promotion-policy/v1",
+    "policy_version": "oneclick-postpublish-promotion/v1",
+    "selection_policy": "unique_ongoing_direct_discount/v1",
+    "policy_digest": "c542ce54560d17288e930494abba094e8483cf4c28fbbb8be34c292633a2e589",
+    "discounts": {
+      "shopee": 30,
+      "tiktok": 32
+    },
+    "approved_by": "Kyle",
+    "approval_reference": "fixture-existing-frozen-v1",
+    "approval_digest": "60c385d01dee763cd90045f5ca5531bbf8a8ddf1b54edbbea51c83f78e1f335b"
+  },
+  "action": {
+    "schema_version": "approved-postpublish-promotion-action-policy/v1",
+    "target_label": "promotion:tiktok:LH_PH",
+    "prerequisite_target": "tiktok:LH_PH",
+    "channel": "tiktok",
+    "region": "PH",
+    "currency": "PHP",
+    "discount_percent": 32,
+    "selection_policy": "unique_ongoing_direct_discount/v1",
+    "policy_version": "oneclick-postpublish-promotion/v1",
+    "policy_digest": "c542ce54560d17288e930494abba094e8483cf4c28fbbb8be34c292633a2e589",
+    "approval_reference": "fixture-existing-frozen-v1",
+    "approval_digest": "60c385d01dee763cd90045f5ca5531bbf8a8ddf1b54edbbea51c83f78e1f335b",
+    "action_policy_digest": "15b3fa78ea83252d0f5fe81f34afbca84c43c2fc6e0b78a2a932cab6e911dc50"
+  }
+}

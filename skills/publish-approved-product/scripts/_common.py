@@ -11,7 +11,10 @@ from typing import Any, Mapping
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8765"
-DEFAULT_REPO = Path(r"C:\Users\Windows11\Desktop\Agent_PR\tiktok_e_comm")
+# Resolve the repository shipped with this Skill. Explicit --repo values still
+# take precedence through repo_path; the default must not depend on a
+# workstation-specific checkout that may have moved or been archived.
+DEFAULT_REPO = Path(__file__).resolve().parents[3]
 
 
 def utc_now() -> str:

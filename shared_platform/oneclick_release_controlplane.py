@@ -3110,16 +3110,50 @@ class OneClickReleaseStore:
             raise AdapterContractError(
                 "promotion receipt omitted write-count evidence"
             )
-        if result.canonical_status == SUCCEEDED and (
-            result.submission_accepted is not True
-            or result.readback_verified is not True
-            or result_exact != 1
-            or result.external_writes
-            != (TIKTOK_PROMOTION_WRITE_CLASS,)
-        ):
-            raise AdapterContractError(
-                "promotion success requires one exact write and official readback"
+        if result.canonical_status == SUCCEEDED:
+            accepted_write = (
+                result.submission_accepted is True
+                and result.readback_verified is True
+                and result_exact == 1
+                and result.external_writes == (TIKTOK_PROMOTION_WRITE_CLASS,)
             )
+            command_payload = request.command.get("payload")
+            observed = result.evidence
+            existing_exact = False
+            if isinstance(command_payload, Mapping) and isinstance(observed, Mapping):
+                expected_membership = {
+                    "activity_identity_digest": command_payload.get("activity_identity_digest"),
+                    "product_identity_digest": command_payload.get("product_identity_digest"),
+                    "discount_percent": command_payload.get("discount_percent"),
+                    "readback_exact": True,
+                }
+                existing_exact = (
+                    result.submission_accepted is False
+                    and result.readback_verified is True
+                    and result.external_writes == ()
+                    and type(result.external_write_count) is int
+                    and result.external_write_count == 0
+                    and type(result.confirmed_external_write_count_lower_bound) is int
+                    and type(result.possible_external_write_count_upper_bound) is int
+                    and (result_exact, result_lower, result_upper) == (0, 0, 0)
+                    and _stored_write_count_bounds(target) == (0, 0, 0)
+                    and not cumulative and pending_intent is None
+                    and observed.get("schema_version") == "tiktok-promotion-readback/v1"
+                    and observed.get("existing_membership_exact") is True
+                    and observed.get("official_readback_exact") is True
+                    and _is_digest(expected_membership["activity_identity_digest"])
+                    and _is_digest(expected_membership["product_identity_digest"])
+                    and type(expected_membership["discount_percent"]) is int
+                    and 0 < expected_membership["discount_percent"] < 100
+                    and all(observed.get(key) == expected_membership[key] for key in (
+                        "activity_identity_digest", "product_identity_digest", "discount_percent"))
+                    and observed.get("evidence_digest") == _digest_json(expected_membership)
+                    and result.external_id == "sha256:" + expected_membership["activity_identity_digest"]
+                )
+            if not (accepted_write or existing_exact):
+                raise AdapterContractError(
+                    "promotion success requires one exact write or proven existing membership with an empty write ledger"
+                )
         evidence = _canonical_evidence(request, result)
         evidence_digest = _digest_json(evidence)
         durable_detail = _durable_reason_detail(

@@ -1,5 +1,12 @@
 import json
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import os
 from pathlib import Path
+import subprocess
+from threading import Thread
+
+import pytest
 
 
 DASHBOARD = (
@@ -8,6 +15,29 @@ DASHBOARD = (
     / "supply_chain_operations"
     / "dashboard"
 )
+
+
+def test_four_country_inbound_headline_uses_all_reconciled_batches(tmp_path):
+    node_root = Path('C:/Users/Windows11/.cache/codex-runtimes/codex-primary-runtime/dependencies/node')
+    node = node_root / 'bin/node.exe'
+    if not node.is_file():
+        pytest.skip('bundled Node unavailable')
+    env = {**os.environ, 'NODE_PATH': str(node_root / 'node_modules')}
+    script = Path(__file__).resolve().parent / 'browser/supply_inbound_headline.cjs'
+    handler = partial(SimpleHTTPRequestHandler, directory=str(DASHBOARD))
+    server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        result = subprocess.run(
+            [str(node), str(script), f'http://127.0.0.1:{server.server_port}', str(tmp_path)],
+            env=env, capture_output=True, text=True, encoding='utf-8', timeout=90,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def _data() -> dict:
@@ -55,7 +85,7 @@ def test_dashboard_has_four_country_isolated_facts_and_policies():
     assert {
         region: len([row for row in rows if row["kind"] == "existing"])
         for region, rows in data["countries"].items()
-    } == {"MY": 24, "TH": 26, "VN": 11, "PH": 11}
+    } == {"MY": 24, "TH": 28, "VN": 10, "PH": 11}
 
     for region, rows in data["countries"].items():
         for row in rows:
@@ -74,39 +104,39 @@ def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
     data = _data()
 
     assert _row(data, "TH", "0400")["inventory"] == {
-        "stock": 86,
-        "available": 86,
+        "stock": 81,
+        "available": 81,
         "allocated": 0,
         "frozen": 0,
         "inbound": 0,
         "warehouse": "TH8806",
     }
     assert _row(data, "TH", "0401")["inventory"] == {
-        "stock": 98,
-        "available": 94,
-        "allocated": 4,
+        "stock": 136,
+        "available": 136,
+        "allocated": 0,
         "frozen": 0,
-        "inbound": 60,
+        "inbound": 80,
         "warehouse": "TH8806",
     }
     assert _row(data, "TH", "0401")["sourceAliases"] == ["0401", "990401"]
-    assert _row(data, "TH", "0026")["inventory"]["inbound"] == 800
+    assert _row(data, "TH", "0026")["inventory"]["inbound"] == 0
     assert _row(data, "TH", "0604")["inventory"]["available"] == 0
-    assert _row(data, "TH", "0605")["inventory"]["available"] == 8
+    assert _row(data, "TH", "0605")["inventory"]["available"] == 6
     assert _row(data, "TH", "0605")["sourceAliases"] == ["0605", "990605"]
-    assert _row(data, "TH", "0613")["inventory"]["available"] == 20
+    assert _row(data, "TH", "0613")["inventory"]["available"] == 16
 
 
 def test_vietnam_and_philippines_use_complete_shopee_settlement_snapshots():
     data = _data()
 
-    assert sum(row["inventory"]["available"] for row in data["countries"]["VN"]) == 290
-    assert sum(row["inventory"]["available"] for row in data["countries"]["PH"]) == 30
+    assert sum(row["inventory"]["available"] for row in data["countries"]["VN"]) == 523
+    assert sum(row["inventory"]["available"] for row in data["countries"]["PH"]) == 28
     assert _row(data, "VN", "0004")["sourceAliases"] == ["0004", "880004"]
     assert _row(data, "VN", "0004")["kind"] == "existing"
     assert _row(data, "VN", "0004")["inventory"] == {
-        "stock": 46,
-        "available": 46,
+        "stock": 42,
+        "available": 42,
         "allocated": 0,
         "frozen": 0,
         "inbound": 0,
@@ -124,7 +154,7 @@ def test_vietnam_and_philippines_use_complete_shopee_settlement_snapshots():
     assert {
         region: sum(row["inventory"]["inbound"] for row in data["countries"][region])
         for region in ("MY", "TH", "VN", "PH")
-    } == {"MY": 1000, "TH": 3350, "VN": 330, "PH": 510}
+    } == {"MY": 0, "TH": 1270, "VN": 0, "PH": 510}
     assert "inventoryIdentityBlocker" not in data["config"]["PH"]
     assert "inventoryIdentityBlocker" not in data["config"]["VN"]
     assert "880004→0004" in data["config"]["VN"]["inventoryIdentityEvidence"]
@@ -259,7 +289,7 @@ def test_every_recent_30_day_sku_is_present_and_filterable_without_economic_gate
         recent_counts[region] = len(recent_rows)
         assert all((DASHBOARD / row["image"]).is_file() for row in recent_rows)
 
-    assert recent_counts == {"MY": 55, "TH": 94, "VN": 72, "PH": 89}
+    assert recent_counts == {"MY": 54, "TH": 87, "VN": 60, "PH": 68}
     assert 'filter === "RECENT30" && recent30Units > 0' in app
     assert 'status = item.kind === "first_stock" ? "FIRST_STOCK" : "REPLENISH"' in app
     assert '"REVIEW"' not in app
@@ -309,6 +339,24 @@ def test_quantity_is_independent_from_dimensions_weight_and_cost():
     assert "TIMELINE.projectSupply" in app
     assert "countedInbound: supplyProjection.countedInbound" in app
     assert "calculationReady" not in app
+
+
+def test_order_refresh_keeps_inventory_clock_separate():
+    apply_script = (
+        DASHBOARD.parent
+        / "skills"
+        / "manage-seaya-replenishment"
+        / "scripts"
+        / "apply_order_demand.py"
+    ).read_text(encoding="utf-8")
+    data = _data()
+    app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
+    html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+
+    assert 'data["orderDemandCapturedAt"] = snapshot["capturedAt"]' in apply_script
+    assert 'data["snapshotDate"] = snapshot["capturedAt"][:10]' not in apply_script
+    assert data["snapshotDate"] == "2026-09-02"
+    assert data["orderDemandCapturedAt"].startswith("2026-09-01T")
     assert "const handlingUnit = item.weightReady" in app
     assert "const netTotal = netUnit === null ? null" in app
     assert '"BLOCKED_DATA"' not in app
@@ -369,18 +417,18 @@ def test_dashboard_uses_complete_new_order_snapshots_for_quantity():
 
     assert data["quantityBasis"] == "valid_order"
     assert data["economicsBasis"] == "settlement"
-    assert data["snapshotDate"] == "2026-08-09"
+    assert data["snapshotDate"] == "2026-09-02"
     assert {region: len(rows) for region, rows in data["countries"].items()} == {
-        "MY": 83,
-        "TH": 104,
-        "VN": 102,
-        "PH": 139,
+        "MY": 92,
+        "TH": 123,
+        "VN": 114,
+        "PH": 147,
     }
     expected = {
-        "MY": {"tiktok": (707, 545), "shopee": (132, 96)},
-        "TH": {"tiktok": (2137, 1805), "shopee": (1170, 963)},
-        "VN": {"tiktok": (367, 288), "shopee": (47, 32)},
-        "PH": {"tiktok": (340, 293), "shopee": (84, 63)},
+        "MY": {"tiktok": (740, 520), "shopee": (117, 76)},
+        "TH": {"tiktok": (1891, 1610), "shopee": (1023, 815)},
+        "VN": {"tiktok": (275, 209), "shopee": (21, 17)},
+        "PH": {"tiktok": (161, 144), "shopee": (55, 44)},
     }
     for region, platforms in expected.items():
         evidence = data["config"][region]["orderDemandEvidence"]
@@ -395,15 +443,15 @@ def test_dashboard_records_current_seaya_inventory_lineage():
     data = _data()
     expected = {
         "MY": (31, 24),
-        "TH": (39, 26),
-        "VN": (15, 11),
+        "TH": (42, 28),
+        "VN": (15, 10),
         "PH": (17, 11),
     }
 
     for region, (raw_rows, canonical_skus) in expected.items():
         evidence = data["config"][region]["inventoryEvidence"]
-        assert evidence["capturedAt"] == "2026-08-09T09:42:43+08:00"
-        assert evidence["source"] == "seaya_oms_stockWarehouse_logged_in_readonly"
+        assert evidence["capturedAt"] == "2026-09-02T06:34:25.064+08:00"
+        assert evidence["source"] == "seaya_browser_inventory_complete_2026-09-02"
         assert evidence["rawRows"] == raw_rows
         assert evidence["canonicalSkuCount"] == canonical_skus
         assert len(evidence["digest"]) == 64
@@ -431,30 +479,38 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     plan = (DASHBOARD / "inbound-plan.js").read_text(encoding="utf-8")
     timeline = (DASHBOARD / "inbound-timeline.js").read_text(encoding="utf-8")
 
-    assert 'anchorAt: "2026-08-04T15:39:15+08:00"' in plan
-    assert 'estimatedSellableDate: "2026-08-19"' in plan
+    assert 'anchorAt: "2026-08-22T16:48:05+08:00"' in plan
+    assert 'estimatedSellableDate: "2026-09-04"' in plan
+    assert 'estimatedSellableConfirmedAt: "2026-09-01T23:47:53+08:00"' in plan
+    assert 'confidence: "USER_CONFIRMED_BATCH_ETA"' in plan
+    assert 'estimatedSellableSource: "user_confirmed_arrival_and_shelving_date"' in plan
     assert 'anchorType: "REACHED_DOMESTIC_WAREHOUSE"' in plan
-    assert 'anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE"' in plan
-    assert 'inboundStatus: "NOT_YET_INBOUND"' in plan
-    assert 'estimatedAnchorAt: "2026-08-11T16:41:32+08:00"' in plan
-    assert 'estimatedSellableDate: "2026-08-26"' in plan
+    assert 'inboundStatus: "INBOUND_CONFIRMED"' in plan
+    assert 'estimatedAnchorAt: null' in plan
     assert 'anchorType: "MARKED_SHIPPED"' not in plan
     assert 'anchorType: "CREATED_FALLBACK"' not in plan
-    assert 'batchId: "THML4038-58701"' in plan
-    assert 'batchId: "THSL4038-59557"' in plan
-    assert '"0021": 200' in plan
+    assert 'batchId: "THSL4038-60638"' in plan
     assert '"0021": 600' in plan
-    assert '"0026": 600' in plan
-    assert '"0026": 200' in plan
+    assert '"0140": 400' in plan
     assert 'allocationPolicy: "EXACT_BATCH_SKU_REQUIRED"' in plan
     assert "function projectSupply" in timeline
     assert "const steps = []" in timeline
+    assert "crossBorderFallbackUnits" in timeline
+    assert "firstLocalStockoutDate" in timeline
+    assert "localFulfillmentRate" in timeline
     assert 'projectionMethod: "TIME_PHASED_BATCH_EVENTS_V1"' in timeline
     assert "if (event.day > horizonDays)" in timeline
     assert "supplySteps: supplyProjection.steps" in app
+    assert "currentOverride?.estimatedSellableDate\n      || batch.estimatedSellableDate" in app
+    assert "overrideUpdateTime > planConfirmationTime" in timeline
+    assert "saved.basePlanConfirmedAt === batch.estimatedSellableConfirmedAt" in timeline
     assert "function projectionAuditHtml(item)" in app
+    assert "本土仓不足不是完全断货" in app
+    assert "跨境直发兜底" in app
+    assert "BLOCKED_STALE_INVENTORY" in app
+    assert 'filter === "LOCAL_FALLBACK"' in app
     assert 'item.sku === "0021"' not in app
-    assert 'supply-chain-inbound-batch-timing-v3' in app
+    assert 'supply-chain-inbound-batch-timing-v3' in timeline
     assert "const inboundEtaId = (region, batchId)" in app
     assert 'href="./inbound-batches.html"' in html
     assert 'id="inboundEtaDialog"' not in html
@@ -462,11 +518,18 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     assert 'id="batchRows"' in batch_html
     assert "确认批次时间" in batch_app
     assert "overrideId(region, batchId)" in batch_app
-    assert "localStorage.setItem(INBOUND_ETA_KEY" in batch_app
+    assert "OVERRIDE_STORE.write(localStorage, overrideStorage, nextOverrides)" in batch_app
+    assert "storage.setItem(KEY, JSON.stringify(state))" in timeline
     assert 'name="anchorAt"' in batch_app
     assert 'type="datetime-local"' in batch_app
     assert "batch.transportDays + batch.shelvingDays" not in batch_app
+    assert "|| batch.estimatedSellableDate" in batch_app
+    assert "function currentOverride(batch)" in batch_app
+    assert "overrideUpdateTime > planConfirmationTime" in timeline
+    assert "saved.basePlanConfirmedAt === batch.estimatedSellableConfirmedAt" in timeline
+    assert "basePlanConfirmedAt: batch?.estimatedSellableConfirmedAt || null" in batch_app
     assert "TIMELINE.addDays(effectiveAnchorDate, batch.transportDays)" in batch_app
+    assert "用户确认到达并上架" in batch_app
     assert "签收上架缓冲 <b>0 天（已取消）</b>" in batch_app
     assert "有“已入库”日志时使用实际时间" in batch_html
     assert "尚未入库时明确标记“未入库”" in batch_html

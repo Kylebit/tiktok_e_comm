@@ -6,77 +6,244 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
-  <link rel="stylesheet" href="/static/product_workspace.css?v=20260820-v21">
-  <script src="/static/product_workspace.js?v=20260820-v40" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace.css?v=20260908-r2-review">
+  <link rel="stylesheet" href="/static/operations.css">
+  <script src="/static/operations_shell.js" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace_flow.css">
+  <script src="/static/product_workspace_flow.js" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace_dense.css">
+  <script src="/static/product_workspace_dense.js" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace_round1_category.css">
+  <script src="/static/product_workspace_round1_category.js" defer></script>
+  <script src="/static/product_workspace.js?v=20260922-queue-retry" defer></script>
   <script src="/static/disabled_control_hints.js?v=20260729-v2" defer></script>
-</head>
-<body data-human-review-surface="product-center">
+<link rel="stylesheet" href="/static/operations_shell.css"><link rel="stylesheet" href="/static/publication_original_review.css"><script src="/static/publication_original_review.js" defer></script><script src="/static/publication_original_adapter.js" defer></script></head>
+<body data-core="product" data-human-review-surface="product-center" class="dense-workspace">
   <a class="skip-link" href="#main">跳到主要内容</a>
 
+
   <header class="topbar">
-    <a class="brand" href="/" aria-label="返回 Orbit 总览">
-      <span class="brand-mark" aria-hidden="true">O</span>
-      <span><strong>Orbit</strong><small>商品运营</small></span>
-    </a>
+    <strong>商品发布中心</strong>
     <nav aria-label="页面导航">
       <a href="#productFactsPanel">商品信息</a>
       <a href="#embeddedImageReview">图片审核</a>
       <a href="#channels">店铺与售价</a>
-      <a id="studioNavLink" class="operator-clutter" href="/ai-image-studio" target="_blank" rel="noopener">高级图片工具 ↗</a>
+      <a id="studioNavLink" class="operator-clutter" href="#pane-images">图片与内容</a>
     </nav>
-    <span class="safety-pill"><i aria-hidden="true"></i> 会话授权 · 页面不重复批准</span>
+    <a class="queue-jump" href="#queueTitle">返回商品队列</a>
   </header>
 
   <main id="main">
+    <section class="panel" id="connectedProductPicker" aria-labelledby="connectedProductTitle">
+      <h2 id="connectedProductTitle">选择要审核的商品</h2>
+      <div class="action-row">
+        <label for="connectedProductSelect">已连接商品</label>
+        <select id="connectedProductSelect"><option value="">正在读取可审核商品…</option></select>
+        <button id="openConnectedProduct" type="button" disabled>进入商品审核</button>
+        <button id="refreshConnectedProducts" type="button">刷新商品</button>
+      </div>
+      <p id="connectedProductStatus" role="status">按商品身份读取现有资料；请选择后进入审核。</p>
+    </section>
     <section class="hero" id="overview">
       <div class="hero-copy">
         <p class="eyebrow">PRODUCT OPERATIONS</p>
-        <h1>商品发布中心</h1>
-        <p>只审核商品信息、图片方案、目标店铺与售价；发布交给后续 Skill。</p>
+        <h1>商品队列</h1>
+        <p>选择商品，核对事实、图片与逐店结果。</p>
       </div>
 
       <form id="lookupForm" class="lookup-card" aria-label="添加商品到并行发布队列">
         <label>
           <span>Offer ID</span>
-          <input id="offerId" name="offer_id" value="3828811808" inputmode="numeric"
+          <input id="offerId" name="offer_id" placeholder="输入 Offer ID" inputmode="numeric"
                  pattern="[0-9]{1,32}" autocomplete="off" required>
         </label>
         <div class="automatic-sku" aria-live="polite">
           <span>Seller SKU</span>
-          <strong id="sellerSku">系统读取后自动分配</strong>
-          <small>依据 TikTok 商品目录序列，并避开全目录占用、工作台锁、已验证认领及正式发布计划预留。</small>
+          <strong id="sellerSku">未选择商品</strong>
         </div>
         <button class="button button-primary" type="submit">
-          <span class="button-label">加入队列并打开</span>
+           <span class="button-label">加入并读取</span>
           <span class="button-loading">正在检查…</span>
         </button>
-        <p>你只需输入 Offer ID。多个商品可以并行检查；Seller SKU 在审批前会再次自动核验。</p>
+        <button id="collectProductButton" class="button button-secondary" type="button">从妙手采集建档</button>
+        <button id="openManualIntake" class="button button-secondary" type="button">手工录入</button>
+        <button id="openProductHistory" class="button button-secondary" type="button">商品历史</button>
+        <p>加入只读本地档案；采集建档是独立操作。</p>
       </form>
     </section>
 
-    <section class="queue-section operator-clutter" aria-labelledby="queueTitle">
+    <section class="queue-section" aria-labelledby="queueTitle">
       <div class="queue-heading">
         <div>
           <p class="kicker">PARALLEL RELEASE QUEUE</p>
-          <h2 id="queueTitle">并行发布队列</h2>
-          <p>队列保存在本机浏览器。批量刷新只读取状态，不会上传、同步或发布商品。</p>
+          <h2 id="queueTitle">本机商品队列 <span id="queueCount"></span></h2>
         </div>
         <button id="refreshAllButton" class="button button-secondary" type="button">
           <span class="refresh-all-label">刷新全部商品</span>
           <span class="refresh-all-loading">并行刷新中…</span>
         </button>
       </div>
-      <div id="queueGrid" class="queue-grid" aria-live="polite"></div>
+      <div class="queue-filters">
+        <label>查找商品<input id="queueSearch" type="search" placeholder="Offer / SKU / 标题" autocomplete="off"></label>
+        <label>读取状态<select id="queueFilter"><option value="all">全部状态</option><option value="unread">未读取</option><option value="error">读取失败</option><option value="approved">事实已批准</option><option value="unapproved">事实待批准</option></select></label>
+        <span id="queueSelectionCount" role="status">已选 0 项</span>
+        <button id="selectFilteredButton" class="queue-row-action" type="button">选择筛选结果</button>
+        <button id="undoQueueRemovalButton" class="queue-row-action" type="button" hidden>撤销移出</button>
+      </div>
+      <div id="queueGrid" class="table-scroll" aria-live="polite"></div>
+      <div class="queue-batch-bar" aria-label="所选商品操作" hidden>
+        <button id="clearQueueSelectionButton" type="button">清空选择</button>
+        <button id="refreshSelectedButton" type="button" disabled>只读刷新所选</button>
+        <button id="copySelectedButton" type="button" disabled>复制身份</button><button id="exportSelectedButton" type="button" disabled>导出身份</button>
+        <button id="removeSelectedButton" type="button" disabled>移出队列</button>
+      </div>
       <p id="queueMessage" class="queue-message" role="status"></p>
     </section>
 
     <div id="pageAlert" class="alert" role="alert" hidden></div>
+<section id="originalPublicationReview" hidden aria-label="商品三轮审核"><nav class="original-round-nav" aria-label="审核阶段"><button type="button" data-original-round="first">第一轮 · 商品准备审核</button><button type="button" data-original-round="images">第二轮 · 图片审核</button><button type="button" data-original-round="final">最终发布审核</button></nav><p class="central-review-notice">本工作台只审核商品信息、图片方案、目标店铺与售价；明确的会话批准是唯一人工批准入口，页面不会创建额外批准。</p><section id="firstReviewWorkspace" class="first-review-workspace" aria-labelledby="firstReviewWorkspaceTitle">
+      <header class="first-review-workspace-hero">
+        <div class="first-review-workspace-heading">
+          <p class="eyebrow">PRODUCT PREPARATION · ROUND 01</p>
+          <div class="first-review-workspace-title-row">
+            <div>
+              <h1 id="firstReviewWorkspaceTitle">第一轮商品准备审核</h1>
+              <p id="firstReviewWorkspaceSubtitle">正在整理可审核材料…</p>
+            </div>
+            <span id="firstReviewWorkspaceStatus" class="first-review-workspace-status">读取中</span>
+          </div>
+        </div>
+        <div class="first-review-workspace-metrics" aria-label="第一轮审核摘要">
+          <div><span>Offer</span><strong id="firstReviewWorkspaceOffer">—</strong></div>
+          <div><span>目标店铺</span><strong id="firstReviewWorkspaceTargets">—</strong></div>
+          <div><span>商品版本</span><strong id="firstReviewWorkspaceRevision">—</strong></div>
+          <div><span>外部写入</span><strong id="firstReviewWorkspaceWrites">—</strong></div>
+        </div>
+      </header>
 
+      <div class="first-review-workspace-layout">
+        <aside class="first-review-workspace-sidebar">
+          <p class="kicker">REVIEW MAP</p>
+          <nav id="firstReviewWorkspaceNav" aria-label="第一轮审核章节">
+            <a href="#firstReviewDecisionDesk"><span>01</span><strong>结论与待决定</strong><small>先看需要你判断的事项</small></a>
+            <a href="#firstReviewCandidates"><span>02</span><strong>审核候选</strong><small>平台类目、英中稿与价格</small></a>
+            <a href="#firstReviewImagePlan"><span>03</span><strong>双品牌图片方案</strong><small>类目建议、来源图与翻译</small></a>
+            <a href="#firstReviewAudit"><span>04</span><strong>证据与工作记录</strong><small>过程、来源和操作账本</small></a>
+          </nav>
+          <div class="first-review-zero-write-note">
+            <strong>只读审核</strong>
+            <span>本页没有批准按钮，不会同步妙手、创建草稿或发布商品。</span>
+          </div>
+        </aside>
+
+        <div class="first-review-workspace-main">
+          <section id="firstReviewDecisionDesk" class="first-review-decision-desk" data-first-review-section="decision" aria-labelledby="firstReviewDecisionTitle">
+            <div class="first-review-section-heading">
+              <div>
+                <p class="kicker">REVIEW FIRST</p>
+                <h2 id="firstReviewDecisionTitle">结论与待决定</h2>
+                <p id="firstReviewDecisionHeadline">先处理影响后续工作的关键选择，再查看逐店细节。</p>
+              </div>
+              <span class="first-review-section-index">01</span>
+            </div>
+            <div class="first-review-decision-grid">
+              <article>
+                <span>已确认事实</span>
+                <div id="firstReviewDecisionFacts" class="first-review-decision-list"></div>
+              </article>
+              <article>
+                <span>Skill 建议</span>
+                <div id="firstReviewDecisionRecommendations" class="first-review-decision-list"></div>
+              </article>
+              <article class="needs-decision">
+                <span>需要你决定</span>
+                <div id="firstReviewDecisionQuestions" class="first-review-decision-list"></div>
+              </article>
+            </div>
+          </section>
+          <div id="firstReviewCandidatesSlot" class="first-review-workspace-slot" data-first-review-section="candidates"></div>
+          <div id="firstReviewImagePlanSlot" class="first-review-workspace-slot" data-first-review-section="images"></div>
+          <div id="firstReviewAuditSlot" class="first-review-workspace-slot" data-first-review-section="audit"></div>
+        </div>
+      </div>
+    </section><section id="originalImagesRound" hidden><h2>第二轮 · 品牌图片与本地化审核</h2><p id="originalImagesStatus"></p><div id="originalImagesSlot"></div></section><section id="originalFinalRound" hidden><article id="releaseCandidatePanel" class="release-candidate-panel"
+          aria-labelledby="releaseCandidateTitle">
+          <header>
+            <div>
+              <p class="kicker">FINAL REVIEW CANDIDATE</p>
+              <h4 id="releaseCandidateTitle">最终发布审核包</h4>
+            </div>
+            <span id="releaseCandidateBadge" class="status-badge">正在准备</span>
+          </header>
+          <p id="releaseCandidateMessage" role="status" aria-live="polite">
+            系统正在汇总事实、图片路由、零写入模拟和事故防护。
+          </p>
+          <div id="releaseCandidateChecks" class="release-candidate-grid"></div>
+          <div id="releaseCandidateContent" class="release-candidate-content" hidden>
+            <section class="release-review-section" aria-labelledby="releaseCandidateCopyTitle">
+              <div class="release-review-heading">
+                <div><p class="kicker">COPY</p><h5 id="releaseCandidateCopyTitle">标题与商品描述</h5></div>
+                <span>按实际共用内容分组</span>
+              </div>
+              <div id="releaseCandidateCopy" class="release-review-copy"></div>
+            </section>
+            <section class="release-review-section" aria-labelledby="releaseCandidateVariantsTitle">
+              <div class="release-review-heading">
+                <div><p class="kicker">SKU &amp; LOGISTICS</p><h5 id="releaseCandidateVariantsTitle">商品 Seller SKU、变体 SKU ID、规格与包裹</h5></div>
+                <span>全部变体</span>
+              </div>
+              <div id="releaseCandidateVariants" class="release-review-variants"></div>
+            </section>
+            <section class="release-review-section" aria-labelledby="releaseCandidateTargetsTitle">
+              <div class="release-review-heading">
+                <div><p class="kicker">TARGET MATRIX</p><h5 id="releaseCandidateTargetsTitle">逐目标类目、语言与售价</h5></div>
+                <span>完整店铺范围</span>
+              </div>
+              <div id="releaseCandidateTargets" class="release-review-targets"></div>
+            </section>
+            <section class="release-review-section" aria-labelledby="releaseCandidateImagesTitle">
+              <div class="release-review-heading">
+                <div><p class="kicker">IMAGE ROUTING</p><h5 id="releaseCandidateImagesTitle">发布图片与国家路由</h5></div>
+                <span>按完全相同的图片组归并</span>
+              </div>
+              <div id="releaseCandidateImages" class="release-review-images"></div>
+            </section>
+          </div>
+          <details>
+            <summary>查看逐平台写入预算</summary>
+            <div id="releaseCandidateWriteBudget" class="release-candidate-budget"></div>
+          </details>
+          <details>
+            <summary>查看已启用的事故防护</summary>
+            <div id="releaseCandidateIncidents" class="release-candidate-incidents"></div>
+          </details>
+          <div id="originalFinalActions"></div>
+      </article><div id="originalStageLedger"></div></section></section>
+    <section id="productHistory" class="panel" hidden aria-labelledby="productHistoryTitle">
+      <div class="panel-heading"><h2 id="productHistoryTitle">商品历史</h2><button id="closeProductHistory" type="button">收起</button></div>
+      <p id="productHistoryStatus" role="status">历史版本仅供核对，打开后读取当前商品与账本。</p>
+      <div class="table-scroll"><table><thead><tr><th>商品 / SKU</th><th>来源</th><th>版本</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="productHistoryRows"></tbody></table></div>
+    </section>
+    <dialog id="manualIntakeDialog" aria-labelledby="manualIntakeTitle">
+      <form id="manualIntakeForm">
+        <h2 id="manualIntakeTitle">本地手工录入</h2><p>保存图片与商品资料，随后在商品事实页核对。</p>
+        <label>商品名称<input id="manualTitle" maxlength="300" required></label>
+        <label>商品描述<textarea id="manualDescription" rows="3" maxlength="20000" required></textarea></label>
+        <div class="table-scroll"><table><thead><tr><th>规格</th><th>成本 CNY</th><th>重量 kg</th><th>长 cm</th><th>宽 cm</th><th>高 cm</th><th></th></tr></thead><tbody id="manualVariants"></tbody></table></div>
+        <button id="addManualVariant" type="button">添加规格</button>
+        <label>来源图片（1–12 张，JPEG / PNG / WebP）<input id="manualImages" type="file" accept="image/jpeg,image/png,image/webp" multiple required></label>
+        <p id="manualStatus" role="status"></p>
+        <div class="flow-actions"><button id="submitManualIntake" class="button button-primary" type="submit">保存本地商品</button><button id="saveManualDraft" type="button">保存草稿并关闭</button><button id="discardManualDraft" type="button">放弃录入</button></div>
+      </form>
+    </dialog>
+
+    <div id="productDetail" class="product-detail" hidden>
     <section class="status-hero" aria-live="polite">
       <div>
         <p class="kicker">CURRENT PRODUCT</p>
         <h2 id="productTitle">正在读取商品…</h2>
         <div id="productIdentity" class="identity-line"></div>
+        <button id="discardProductDraftButton" class="queue-row-action" type="button" hidden>放弃未保存修改</button>
       </div>
       <div class="readiness">
         <span id="readinessLabel">检查中</span>
@@ -84,6 +251,16 @@
         <small id="readinessNote">正在核对发布条件</small>
       </div>
     </section>
+
+    <div class="product-tabs" role="tablist" aria-label="商品详情">
+      <button id="tab-facts" role="tab" type="button" aria-selected="true" aria-controls="pane-facts" data-product-tab="facts">商品事实</button>
+      <button id="tab-images" role="tab" type="button" aria-selected="false" aria-controls="pane-images" tabindex="-1" data-product-tab="images">图片与内容</button>
+      <button id="tab-targets" role="tab" type="button" aria-selected="false" aria-controls="pane-targets" tabindex="-1" data-product-tab="targets">店铺与售价</button>
+      <button id="tab-release" role="tab" type="button" aria-selected="false" aria-controls="pane-release" tabindex="-1" data-product-tab="release">批准与发布回读</button>
+    </div>
+
+    <div id="pane-facts" role="tabpanel" aria-labelledby="tab-facts" data-product-pane="facts">
+    <details id="roundEvidence" class="panel"><summary>第一轮审核与轮次证据</summary><div id="roundEvidenceContent" role="status">选择商品后读取。</div></details>
 
     <section aria-labelledby="journeyTitle" class="operator-clutter">
       <div class="section-heading">
@@ -190,7 +367,7 @@
         </form>
       </article>
 
-      <article class="panel next-panel operator-clutter">
+      <article class="panel next-panel">
         <div class="panel-heading">
           <div>
             <p class="kicker">NEXT ACTION</p>
@@ -204,12 +381,11 @@
         <div class="action-row">
           <button id="nextStepActionButton" class="button button-primary"
                   type="button" hidden>前往下一步</button>
-          <a id="workbenchLink" class="button button-dark" href="/ai-image-studio"
-             target="_blank" rel="noopener">并行打开内容与图片工作室 ↗</a>
+          <a id="workbenchLink" class="button button-dark" href="#pane-images">在本页审核图片与内容</a>
           <button id="refreshButton" class="button button-secondary" type="button">重新检查</button>
         </div>
         <p class="boundary-note">
-          AI 图片工作室中的付费生图与妙手写入默认关闭，开启后仍需明确二次确认。
+          付费生图与妙手写入默认关闭；各入口按当前商品和冻结范围核验有效授权。当前页面的付费任务流程尚待接通。
         </p>
       </article>
     </section>
@@ -255,6 +431,8 @@
       </article>
     </section>
 
+    </div>
+    <div id="pane-images" role="tabpanel" aria-labelledby="tab-images" data-product-pane="images" hidden>
     <section id="embeddedImageReview" class="embedded-image-review" aria-labelledby="embeddedImageReviewTitle">
       <div class="section-heading">
         <div>
@@ -264,7 +442,7 @@
         <span id="embeddedImageReviewBadge" class="badge neutral">正在读取</span>
       </div>
       <p class="embedded-image-review-intro">
-        这里只选择每张来源图“保留”或“不使用”。对当前轮次的最终同意以会话中的“继续/通过/下一步”为准，不需要再点批准按钮。
+        在此保存来源图的保留选择。轮次批准以当前商品、当前冻结版本已记录的批准为准。
       </p>
       <div id="embeddedSourceImageGrid" class="embedded-source-image-grid" aria-live="polite"></div>
       <div class="embedded-image-review-actions">
@@ -314,12 +492,17 @@
         <span id="localizedImageResultsBadge" class="badge neutral">尚未建立</span>
       </div>
       <p class="localized-image-results-intro">
-        这里集中显示第二轮图片 Skill 的各语言输出。页面只供查看；你在会话中说“继续/通过/下一步”即代表同意当前轮次。
+        查看第二轮图片 Skill 的各语言输出。进入下一轮前，沿用当前商品、当前冻结版本已记录的批准。
       </p>
       <div id="localizedImageResultsGrid" class="localized-image-results-grid" aria-live="polite"></div>
       <p id="localizedImageResultsMessage" class="localized-image-results-message" role="status"></p>
+      <button id="saveR2CandidateReviewButton" type="button" class="button button-primary" hidden disabled>
+        <span class="embedded-image-save-label">保存图片选择</span><span class="embedded-image-save-loading">正在保存…</span>
+      </button>
     </section>
 
+    </div>
+    <div id="pane-targets" role="tabpanel" aria-labelledby="tab-targets" data-product-pane="targets" hidden>
     <section id="channels" class="channel-section" aria-labelledby="channelsTitle">
       <div class="section-heading">
         <div>
@@ -336,7 +519,7 @@
             <p>每个目标可独立选择。修改后只会重新生成本地预检、售价审查与确认令牌，不会创建草稿或发布商品。</p>
           </div>
           <div class="scope-actions">
-            <button id="selectAllTargetsButton" class="text-button" type="button">全选 16 个目标</button>
+            <button id="selectAllTargetsButton" class="text-button" type="button">全选可用目标</button>
             <button id="restoreTargetDefaultsButton" class="text-button" type="button">恢复商品默认</button>
           </div>
         </div>
@@ -387,7 +570,16 @@
       <div id="channelBlockers" class="channel-blockers"></div>
     </section>
 
-    <section id="releasePlan" class="release-plan-section operator-clutter" aria-labelledby="releasePlanTitle">
+    </div>
+    <div id="pane-release" role="tabpanel" aria-labelledby="tab-release" data-product-pane="release" hidden>
+    <section id="publicationFlow" class="panel" aria-labelledby="publicationFlowTitle">
+      <div class="panel-heading"><h2 id="publicationFlowTitle">当前发布阶段与审核</h2><button id="refreshPublicationFlow" type="button">只读刷新</button></div>
+      <p id="publicationFlowStatus" role="status">选择商品后读取服务端阶段。</p>
+      <div id="publicationFlowReview"></div><div id="publicationFlowActions" class="flow-actions"></div>
+      <div id="publicationFlowLedger" class="table-scroll"></div>
+      <details><summary>发布关闭记录</summary><div id="publicationClosureContent">尚未读取。</div></details>
+    </section>
+    <section id="releasePlan" class="release-plan-section" aria-labelledby="releasePlanTitle">
       <div class="section-heading">
         <div>
           <p class="kicker">IMMUTABLE RELEASE PLAN</p>
@@ -403,7 +595,7 @@
           <div><span>精确目标</span><strong>—</strong></div>
           <div><span>批准状态</span><strong>未批准</strong></div>
         </div>
-        <form id="releasePlanApprovalForm" class="release-plan-form">
+        <form id="releasePlanApprovalForm" class="release-plan-form operator-clutter">
           <input id="releasePlanCheckbox" type="checkbox" hidden aria-hidden="true" tabindex="-1">
           <p class="approval-confirm approval-confirm-single-action">
             点击“批准当前发布计划”即表示 Kyle 已核对本次商品、内容、视频、目标店铺、来源映射、售价与费用。
@@ -526,7 +718,7 @@
         </article>
       </div>
 
-      <article id="legacyReleaseRunLedger" class="run-ledger operator-clutter">
+      <article id="legacyReleaseRunLedger" class="run-ledger">
         <div>
           <p class="kicker">RELEASE RUN</p>
           <h3>逐目标执行与回读账本</h3>
@@ -537,15 +729,18 @@
       </article>
     </section>
 
+    </div>
     <section class="safety-card operator-clutter" aria-labelledby="safetyTitle">
       <div class="safety-mark" aria-hidden="true">✓</div>
       <div>
         <p class="kicker">SAFE BY DEFAULT</p>
         <h2 id="safetyTitle">正式执行由精确计划和确认令牌保护</h2>
-        <p>读取、选择和审批不会自动发布。两个外部动作均需要当前 ReleasePlan、Kyle 的批准、未过期 revision 和独立二次确认。</p>
+        <p>读取和选择不会自动发布。执行前会核对当前 ReleasePlan、对应冻结范围的有效批准和 revision；已完成或结果待核对的目标显示只读记录。</p>
       </div>
       <span>GUARDED EXECUTION</span>
     </section>
+    </div>
+    <div id="noProductSelected" class="queue-empty-selection" role="status">从队列打开一件商品，或输入准确的 Offer ID 读取本地档案。历史队列不会自动替你选品。</div>
   </main>
 
   <footer>

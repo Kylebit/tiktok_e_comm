@@ -7,6 +7,7 @@ be coupled to commerce synchronisation data and no credentials are stored here.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -15,7 +16,18 @@ from typing import Any, Mapping
 from core.config import ROOT
 
 
-DEFAULT_WORKBENCH_STORE_PATH = ROOT / "data" / "orbit_workbench.db"
+def configured_workbench_store_path() -> Path:
+    selected = os.environ.get("ORBIT_WORKBENCH_STORE_PATH")
+    if not selected:
+        return (ROOT / "data" / "orbit_workbench.db").resolve()
+    path = Path(selected).expanduser()
+    if not path.is_absolute():
+        raise ValueError("ORBIT_WORKBENCH_STORE_PATH must be an absolute path")
+    return path.resolve()
+
+
+DEFAULT_WORKBENCH_STORE_PATH = configured_workbench_store_path()
+_DYNAMIC_WORKBENCH_PATH = object()
 STATUSES = frozenset({"inbox", "triage", "todo", "in_progress", "waiting_approval", "blocked", "parked", "done", "cancelled"})
 PRIORITIES = frozenset({"P0", "P1", "P2", "P3"})
 APPROVAL_STATUSES = frozenset({"not_required", "pending", "approved", "rejected"})
@@ -88,8 +100,8 @@ def _json(value: object) -> str:
 
 
 class WorkbenchStore:
-    def __init__(self, path: str | Path = DEFAULT_WORKBENCH_STORE_PATH) -> None:
-        self.path = Path(path)
+    def __init__(self, path: str | Path | object = _DYNAMIC_WORKBENCH_PATH) -> None:
+        self.path = configured_workbench_store_path() if path is _DYNAMIC_WORKBENCH_PATH else Path(path)
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +111,14 @@ class WorkbenchStore:
         conn.execute("PRAGMA busy_timeout=30000")
         conn.executescript(_SCHEMA)
         return conn
+
+    @staticmethod
+    def _assert_legacy_mutable(conn, task_id):
+        # Engine-owned tasks share this table but must use the lease/receipt
+        # state machine. The legacy board cannot approve or finish them.
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workbench_execution'").fetchone():
+            if conn.execute("SELECT 1 FROM workbench_execution WHERE task_id=?", (task_id,)).fetchone():
+                raise ValueError("workflow task must be changed through the task engine")
 
     def _next_id(self, conn: sqlite3.Connection) -> str:
         prefix = f"TASK-{date.today():%Y%m%d}-"
@@ -162,6 +182,8 @@ class WorkbenchStore:
             return [self._row(row) for row in conn.execute(query, values).fetchall()]
 
     def update_task(self, task_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        with self._connect() as conn:
+            self._assert_legacy_mutable(conn, task_id)
         allowed = {"title", "project", "business_line", "owner", "priority", "due_date", "related_url", "definition_of_done", "blocked_reason", "approval_status", "execution_notes", "is_top3"}
         fields = {key: payload[key] for key in allowed if key in payload}
         if not fields:
@@ -195,6 +217,7 @@ class WorkbenchStore:
         if status not in STATUSES:
             raise ValueError("invalid status")
         with self._connect() as conn:
+            self._assert_legacy_mutable(conn, task_id)
             row = conn.execute("SELECT * FROM workbench_tasks WHERE task_id=?", (_text(task_id),)).fetchone()
             if not row:
                 raise KeyError(task_id)
@@ -276,10 +299,6 @@ class WorkbenchStore:
         with self._connect() as conn:
             rows = conn.execute("SELECT event_type,detail_json,created_at FROM workbench_events WHERE task_id=? ORDER BY id DESC", (_text(task_id),)).fetchall()
             return [{"event_type": row["event_type"], "detail": json.loads(row["detail_json"]), "created_at": row["created_at"]} for row in rows]
-
-    def record_notification(self, task_id: str, *, delivered: bool, reason: str) -> None:
-        with self._connect() as conn:
-            self._event(conn, _text(task_id), "notification_sent" if delivered else "notification_skipped", {"reason": _text(reason)})
 
 
 def default_workbench_store() -> WorkbenchStore:

@@ -323,6 +323,7 @@ class Publisher:
         self.preflight_values = preflight or {}
         self.dispatch_values = dispatch or {}
         self.preflight_calls: list[str] = []
+        self.post_save_preflight_calls: list[str] = []
         self.publish_calls: list[str] = []
 
     def preflight(self, snapshot):
@@ -356,6 +357,24 @@ class Publisher:
                     "provider_code": "200",
                     "external_write_count": 1 if value == "ACCEPTED" else 0,
                     "write_request_count": 1,
+                }
+            ],
+        }
+
+
+    def preflight_after_accepted_save(self, snapshot):
+        label = snapshot["targets"][0]["target_label"]
+        self.post_save_preflight_calls.append(label)
+        return {
+            "schema_version": "tiktok-publish-preflight/v1",
+            "offer_id": snapshot["offer_id"],
+            "plan_id": snapshot["plan_id"],
+            "snapshot_digest": "unused-by-thin-executor",
+            "targets": [
+                {
+                    "target_label": label,
+                    "status": "READY",
+                    "save_required": False,
                 }
             ],
         }
@@ -507,3 +526,56 @@ def test_no_official_storefront_readback_never_reports_published():
 
     assert receipt["status"] == "PROCESSING"
     assert {row["status"] for row in receipt["targets"]} == {"PROCESSING"}
+
+
+def test_projection_target_only_retry_validates_full_snapshot_but_projects_one_store():
+    snapshot = _snapshot()
+    contexts = {
+        "tiktok:LH_MY": _context(snapshot, "tiktok:LH_MY", "7002"),
+    }
+
+    plan = project_tiktok_v4_execution_plan(
+        snapshot,
+        collectbox_contexts=contexts,
+        category_resolver=CategoryResolver(),
+        target_scope=("tiktok:LH_MY",),
+    )
+
+    assert plan["target_order"] == ["tiktok:LH_MY"]
+    assert [row["target_label"] for row in plan["targets"]] == [
+        "tiktok:LH_MY"
+    ]
+    assert plan["blocked_targets"] == []
+
+
+def test_accepted_preparation_save_uses_post_save_preflight_without_second_save():
+    _, plan = _project()
+    publisher = Publisher()
+
+    execute_tiktok_v4_plan(
+        plan,
+        publisher=publisher,
+        storefront_readback=Readback(),
+        accepted_save_targets=("tiktok:LH_PH",),
+    )
+
+    assert publisher.post_save_preflight_calls == ["tiktok:LH_PH"]
+    assert publisher.preflight_calls == ["tiktok:LH_MY"]
+
+
+def test_local_publish_budget_failure_is_not_reported_as_transport_unknown():
+    _, plan = _project()
+    publisher = Publisher()
+
+    def reject_before_publish(_target_label: str) -> None:
+        raise RuntimeError("local publish budget exceeded")
+
+    with pytest.raises(RuntimeError, match="local publish budget exceeded"):
+        execute_tiktok_v4_plan(
+            plan,
+            publisher=publisher,
+            storefront_readback=Readback(),
+            before_publish=reject_before_publish,
+        )
+
+    assert publisher.publish_calls == []

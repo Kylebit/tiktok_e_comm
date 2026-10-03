@@ -23,6 +23,133 @@ main{max-width:1680px;margin:auto}.hero{padding:62px 4vw 48px;display:grid;grid-
 .manual-dialog{width:min(680px,calc(100vw - 28px));border:0;border-radius:20px;padding:0;box-shadow:0 28px 80px rgba(16,36,29,.3)}.manual-dialog::backdrop{background:rgba(16,36,29,.58)}.manual-form{padding:28px}.manual-dialog-head{display:flex;justify-content:space-between;align-items:start;gap:20px}.manual-dialog-head h2{margin:6px 0 0}.dialog-close{border:0;background:#edf1ee;width:36px;height:36px;border-radius:50%;font-size:24px;cursor:pointer}.manual-intro{color:var(--muted);line-height:1.65}.manual-form fieldset{border:1px solid var(--line);border-radius:12px;padding:14px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.manual-form legend{color:var(--muted);font-size:12px;padding:0 6px}.manual-form label{display:block;color:var(--muted);font-size:12px}.manual-form input{display:block;width:100%;margin-top:6px;padding:11px;border:1px solid #c8d1cc;border-radius:8px;font:inherit;color:var(--ink)}.manual-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}.manual-error{min-height:20px;color:var(--red);font-size:12px}.manual-actions{display:flex;align-items:center;gap:10px;margin-top:8px}.manual-actions span{flex:1}.manual-actions button{border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer}.manual-actions .primary{border:1px solid var(--green);background:var(--green);color:#fff}.manual-actions .secondary{border:1px solid var(--line);background:#fff;color:var(--ink)}.manual-actions .danger{color:var(--red);border-color:#e3bcb7}
 .formula-section{display:grid;grid-template-columns:1fr 1fr;gap:50px;background:var(--green);color:#fff}.formula-section h2{font-size:36px}.formula{padding:24px;background:#064c39;border-radius:14px;color:var(--lime);font:700 19px/1.6 ui-monospace,monospace}.formula-note{color:#bed8cf;line-height:1.7}.rules article{padding:18px 0;border-bottom:1px solid rgba(255,255,255,.18);display:grid;grid-template-columns:70px 1fr;gap:15px}.rules b{color:var(--lime)}.rules p{margin:0;color:#dbece6;line-height:1.7}
 .evidence-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.evidence-grid article{background:#fff;padding:22px;border-left:4px solid var(--line);border-radius:9px}.evidence-grid article.ok{border-color:#56a77f}.evidence-grid article.warn{border-color:#d9a248}.evidence-grid article.neutral{border-color:#8d9c96}.evidence-grid p{color:var(--muted);line-height:1.65;margin:9px 0 0}
+.fallback-risk-summary{margin:9px 0;padding:9px 10px;border-left:3px solid var(--amber);border-radius:7px;background:#fff7e8}.fallback-risk-summary b,.fallback-risk-summary span,.fallback-risk-summary em{display:block}.fallback-risk-summary b{color:#9b5d00}.fallback-risk-summary span{margin-top:4px;font-size:11px;color:var(--ink)}.fallback-risk-summary em{margin-top:5px;font-size:10px;color:var(--muted);font-style:normal}.local-coverage-ok{margin:9px 0;padding:8px 10px;border-radius:7px;background:#edf7f2;color:var(--green);font-size:11px;font-weight:700}.scenario-audit li.fallback-risk{padding:7px;border-radius:6px;background:#fff7e8;color:#7b520e}
+.evidence-blocker{display:block;margin-bottom:7px;padding:5px 7px;border-radius:6px;background:#fff0dc;color:#9b5d00;font-size:10px;font-weight:900;letter-spacing:.03em}
 .batch-hero{padding:54px 4vw 34px;display:grid;grid-template-columns:1.3fr .7fr;gap:36px;align-items:center;background:#fbfaf6}.batch-hero h1{font-size:clamp(40px,5vw,68px);margin:12px 0 16px;letter-spacing:-.04em}.batch-hero p{color:var(--muted);line-height:1.75;max-width:820px}.batch-policy{background:var(--green);color:#fff;border-radius:18px;padding:24px}.batch-policy p{color:#d9e9e2;margin-bottom:0}.batch-kpis{grid-template-columns:repeat(4,1fr)}.batch-control-section{padding-top:44px}.batch-table{min-width:1320px}.batch-identity,.batch-facts{display:grid;gap:7px}.batch-identity small{color:var(--green2);font-weight:800;letter-spacing:.08em}.batch-identity strong{font-size:15px}.batch-identity span,.batch-facts span{color:var(--muted)}.batch-date-field,.batch-note-field{display:block;color:var(--muted);font-size:11px}.batch-date-field input,.batch-note-field input{width:100%;margin:5px 0 8px;padding:9px;border:1px solid #c8d1cc;border-radius:7px;color:var(--ink);font:inherit}.batch-save-state{color:var(--muted)}.batch-actions{display:grid;gap:8px}.batch-actions button{border-radius:8px;padding:9px 11px;font-weight:800;cursor:pointer}.batch-actions .primary{border:1px solid var(--green);background:var(--green);color:#fff}.batch-actions .secondary{border:1px solid var(--line);background:#fff;color:var(--ink)}.batch-actions button:disabled{opacity:.45;cursor:not-allowed}.error-text{color:var(--red)!important;font-weight:800}
 footer{padding:28px 4vw;display:flex;justify-content:space-between;background:#10241d;color:#cbd8d2;font-size:12px}
 @media(max-width:1000px){.hero,.formula-section,.batch-hero{grid-template-columns:1fr}.kpi-strip,.batch-kpis{grid-template-columns:repeat(2,1fr)}.section-heading,.group-heading{display:block}.evidence-grid{grid-template-columns:1fr}.hero{padding-top:38px}.decision-grid{grid-template-columns:repeat(2,1fr)}}
+/* Batch transfer stays folded during routine dense-table work. */
+.override-transfer summary { cursor: pointer; font-weight: 700; padding: 8px 0; }
+.transfer-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.transfer-fields label { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.transfer-fields textarea { width: 100%; min-width: 0; resize: vertical; font: 12px/1.5 monospace; }
+.transfer-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.override-transfer button { border: 1px solid #cad8d2; border-radius: 6px; padding: 9px 12px; cursor: pointer; background: white; color: #095d46; font: inherit; }
+.override-transfer button.primary { background: #095d46; color: white; }
+.override-transfer button:disabled { opacity: .45; cursor: default; }
+.override-transfer textarea { border: 1px solid #cad8d2; border-radius: 6px; padding: 10px; box-sizing: border-box; }
+.snapshot { max-width: 65%; flex-wrap: wrap; overflow-wrap: anywhere; }
+@media (max-width: 650px) {
+  .transfer-fields { grid-template-columns: 1fr; }
+  .snapshot { max-width: 100%; }
+  .batch-hero { display: block; }
+  .batch-policy { margin-top: 12px; }
+  .topbar { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .brand { flex-shrink: 0; }
+  .topbar { height: auto; padding-top: 14px; padding-bottom: 14px; }
+  .hero, .formula-section { gap: 24px; }
+  .hero > *, .formula-section > *, .kpi-strip article { min-width: 0; }
+  .decision-card { padding: 20px; }
+  .decision-head { flex-wrap: wrap; gap: 8px; }
+  .big-number span { font-size: clamp(25px, 7vw, 45px); overflow-wrap: anywhere; }
+  .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi-strip strong, .formula { overflow-wrap: anywhere; }
+  .toolbar, footer { flex-wrap: wrap; gap: 12px; }
+  .toolbar label { width: 100%; }
+  .toolbar input, .toolbar select { min-width: 0; width: 100%; }
+}
+
+/* Scoped operational presentation; the batch editor and calculations are unchanged. */
+.dense-ledger{background:#f5f7f6;font-size:13px}
+.dense-ledger .topbar{height:52px;padding:0 20px;background:#fff}
+.dense-ledger .brand-mark{width:30px;height:30px;border-radius:6px}
+.dense-ledger .brand small{font-size:9px;letter-spacing:.08em}
+.dense-ledger .snapshot{font-size:12px}
+.dense-ledger .country-tabs{padding:8px 20px;gap:6px;background:#fff;border-bottom:1px solid var(--line)}
+.dense-ledger .country-tab{padding:7px 12px;border-radius:5px;font-size:12px}
+.dense-ledger main{padding:0 20px}
+.dense-ledger .hero{padding:12px 0;display:grid;grid-template-columns:270px minmax(0,1fr);gap:18px;background:transparent;align-items:start}
+.dense-ledger .hero h1{font-size:21px;letter-spacing:0;line-height:1.3;margin:4px 0 6px}
+.dense-ledger .eyebrow{font-size:10px;letter-spacing:.08em}
+.dense-ledger .decision-card{display:grid;grid-template-columns:170px minmax(0,1fr);gap:5px 14px;background:#fff;color:var(--ink);padding:10px 12px;border:1px solid var(--line);border-radius:6px;box-shadow:none}
+.dense-ledger .decision-head{grid-column:1;color:var(--muted);font-size:11px}
+.dense-ledger .status{background:transparent;color:var(--muted);padding:0}
+.dense-ledger .big-number{margin:0;grid-column:1;grid-row:2}
+.dense-ledger .big-number span{font-size:19px;line-height:1.3;color:var(--green)}
+.dense-ledger .decision-card>.context-details{grid-column:1;grid-row:3}
+.dense-ledger .decision-grid{grid-column:2;grid-row:1/4;margin:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px 12px;background:transparent}
+.dense-ledger .decision-grid div{padding:0;background:transparent}
+.dense-ledger .decision-grid small{color:var(--muted);font-size:10px;margin:0 0 3px}
+.dense-ledger .decision-grid strong{font-size:12px;line-height:1.3;font-variant-numeric:tabular-nums}
+.dense-ledger .context-details{font-size:11px;line-height:1.5;color:var(--muted)}
+.dense-ledger summary{cursor:pointer;color:var(--green);font-weight:600}
+.dense-ledger .context-details[open]{padding:8px;border:1px solid var(--line);border-radius:4px;background:#fff}
+.dense-ledger .context-details p{max-width:850px;line-height:1.6}
+.dense-ledger .source-chips{margin-top:8px;gap:4px}
+.dense-ledger .source-chips span{padding:4px 6px;font-size:11px}
+.dense-ledger .kpi-strip{border:1px solid var(--line);border-radius:6px;grid-template-columns:repeat(4,minmax(0,1fr))}
+.dense-ledger .kpi-strip article{padding:8px 12px}
+.dense-ledger .kpi-strip small{font-size:10px}
+.dense-ledger .kpi-strip strong{font-size:13px;margin:3px 0}
+.dense-ledger .kpi-strip span{font-size:10px}
+.dense-ledger .section{padding:12px 0}
+.dense-ledger .section-heading{display:flex;align-items:center;gap:12px;margin:0 0 8px}
+.dense-ledger .section-heading h2{font-size:16px;margin:0}
+.dense-ledger .section-heading .eyebrow{display:none}
+.dense-ledger .toolbar{padding:8px 10px;margin-bottom:8px;border:1px solid var(--line);border-radius:5px;background:#fff;gap:10px}
+.dense-ledger .toolbar label{display:flex;gap:8px;align-items:center;font-size:11px}
+.dense-ledger .toolbar input,.dense-ledger .toolbar select{margin:0;padding:6px 8px;border-radius:4px;min-width:190px;font-size:12px}
+.dense-ledger .group-heading{margin:0 0 6px;align-items:center;gap:12px}
+.dense-ledger .group-heading h3{font-size:12px}
+.dense-ledger .group-heading>div>span{display:none}
+.dense-ledger .ledger-group{margin-bottom:0}
+.dense-ledger .table-wrap{border-radius:5px;max-width:100%}
+.dense-ledger .ledger-group>.table-wrap>table{min-width:1180px;table-layout:fixed}
+.dense-ledger .ledger-group>.table-wrap>table>thead th{padding:9px 8px;font-size:11px;background:#eaf0ec}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(1){width:18%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(2){width:11%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(3){width:13%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(4){width:18%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(5){width:9%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(6){width:13%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(7){width:18%}
+.dense-ledger .sku-summary>td{padding:8px;font-size:12px;vertical-align:middle}
+.dense-ledger .sku-summary .product-cell{min-width:0;gap:8px;align-items:center}
+.dense-ledger .sku-summary .product-cell img{width:40px;height:40px;border-radius:4px;flex-shrink:0}
+.dense-ledger .sku-summary .product-cell strong{font-size:13px}
+.dense-ledger .sku-summary .product-cell span{font-size:11px;margin:3px 0;overflow-wrap:anywhere}
+.dense-ledger .compact-line{display:block;font-size:11px;line-height:1.4;margin-top:3px}
+.dense-ledger .compact-pair{display:grid;gap:5px;font-variant-numeric:tabular-nums}
+.dense-ledger .compact-pair span{display:flex;justify-content:space-between;gap:6px;max-width:100px}
+.dense-ledger .recommendation b{color:var(--green);font-size:15px}
+.dense-ledger .pending-data{color:#8b590c;font-size:11px}
+.dense-ledger .pill{padding:3px 6px;font-size:10px;border-radius:4px}
+.dense-ledger .sku-detail-toggle{margin-top:4px;padding:3px 0;border:0;background:transparent;color:var(--green);font:inherit;font-size:11px;cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.dense-ledger tr[hidden]{display:none}
+.dense-ledger .sku-detail-row>td{padding:12px;background:#edf3ef}
+.dense-ledger .sku-detail-content h4{margin:0 0 8px}
+.dense-ledger .detail-facts{min-width:1700px}
+.dense-ledger .reference-panel{margin:0 0 8px;padding:10px 12px;border:1px solid var(--line);border-radius:5px;background:#fff}
+.dense-ledger .formula-section{margin-top:12px;padding:16px;gap:20px;border-radius:4px}
+.dense-ledger .formula-section h2{font-size:18px}
+.dense-ledger .formula{font-size:13px;padding:12px}
+.dense-ledger .evidence{margin-top:12px}
+.dense-ledger .evidence-grid article{padding:12px;font-size:12px}
+.dense-ledger footer{padding:12px 20px;font-size:10px;background:#fff;color:var(--muted);border-top:1px solid var(--line)}
+.dense-ledger :is(button,a,input,select,summary):focus-visible{outline:2px solid #225f88;outline-offset:3px}
+@media(max-width:800px){
+ .dense-ledger .topbar{height:auto;min-height:52px;padding:10px 12px;gap:6px}
+ .dense-ledger .country-tabs{padding:8px 12px}
+ .dense-ledger main{padding:0 12px}
+ .dense-ledger .hero{grid-template-columns:1fr;gap:8px}
+ .dense-ledger .decision-card{grid-template-columns:120px minmax(0,1fr);gap:6px}
+ .dense-ledger .decision-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .dense-ledger .big-number span{font-size:17px}
+ .dense-ledger .kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .dense-ledger .toolbar{flex-wrap:wrap;align-items:center}
+ .dense-ledger .toolbar label{width:100%;display:grid;grid-template-columns:80px minmax(0,1fr)}
+ .dense-ledger .toolbar input,.dense-ledger .toolbar select{width:100%;min-width:0}
+ .dense-ledger .toolbar span{margin-left:0}
+ .dense-ledger .group-heading{display:block}
+ .dense-ledger .formula-section{grid-template-columns:1fr}
+}

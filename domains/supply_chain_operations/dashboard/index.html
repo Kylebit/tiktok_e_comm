@@ -5,9 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>东南亚四国逐 SKU 备货决策台</title>
+  <script src="./load-errors.js" data-supply-load-errors></script>
   <link rel="stylesheet" href="./styles.css">
-</head>
-<body>
+<link rel="stylesheet" href="/static/operations_shell.css"><script defer src="/static/operations_shell.js"></script></head>
+<body class="dense-ledger" data-core="supply-chain">
   <header class="topbar">
     <div class="brand"><span class="brand-mark">SC</span><div><strong>供应链运营</strong><small>SKU REPLENISHMENT LEDGER</small></div></div>
     <div class="snapshot"><span class="pulse"></span>只读快照 <strong id="snapshotDate">—</strong></div>
@@ -23,17 +24,22 @@
   </nav>
 
   <main>
+    <section id="supplyLoadError" role="alert" hidden style="padding:12px 16px;border:1px solid #dfb46f;border-radius:8px;background:#fff5e4">
+      <strong>供应链页面加载失败</strong>
+      <p>当前数据未能完整加载，请重试后再查看库存和备货建议。</p>
+      <button id="retrySupplyLoad" type="button">重新加载</button>
+    </section>
     <section class="hero">
       <div>
         <span class="eyebrow" id="countryEyebrow">—</span>
-        <h1><span id="countryName">—</span>每一个 SKU，<br><span>都算清楚再备货。</span></h1>
-        <p id="heroDescription"></p>
-        <div class="source-chips" id="sourceChips"></div>
+        <h1><span id="countryName">—</span> · SKU 备货决策</h1>
+        <details class="context-details"><summary>来源与备货口径</summary><p id="heroDescription"></p>
+        <div class="source-chips" id="sourceChips"></div></details>
       </div>
       <aside class="decision-card">
-        <div class="decision-head"><span class="status">本批建议</span><span id="coverageLabel">—</span></div>
+        <div class="decision-head"><span class="status">条件测算 · 建议量</span></div>
         <div class="big-number"><span id="batchQty">—</span><small>件</small></div>
-        <p id="batchSentence">正在汇总逐 SKU 决策…</p>
+        <details class="context-details"><summary>汇总依据</summary><span id="coverageLabel">—</span><p id="batchSentence">正在汇总逐 SKU 决策…</p></details>
         <div class="decision-grid">
           <div><small>建议 SKU</small><strong id="batchSkuCount">—</strong></div>
           <div><small>实物体积</small><strong id="batchVolume">—</strong></div>
@@ -47,30 +53,30 @@
 
     <section class="kpi-strip">
       <article><small id="warehouseLabel">海外仓</small><strong id="inventoryUnits">—</strong><span>当前可用库存</span></article>
-      <article><small>雅仓聚合在途</small><strong id="inboundUnits">—</strong><span>仅批次 SKU 数量对平后按日期计入</span></article>
+      <article><small>快照在途批次</small><strong id="inboundUnits">—</strong><span>以顶部库存／批次日期为准；仅对平后按日期计入</span></article>
       <article><small>需求观察窗</small><strong id="demandWindow">—</strong><span>TikTok + Shopee 分渠道合并</span></article>
       <article><small>当前结论</small><strong id="decisionHeadline">—</strong><span>建议量按需求与库存判定</span></article>
     </section>
 
     <section class="section ledger" id="sku-plan">
       <div class="section-heading">
-        <div><span class="eyebrow">SKU-BY-SKU LEDGER</span><h2>逐款展示需求、库存、公式与收益</h2></div>
-        <p>正式建议件数只使用 TikTok 与 Shopee 的有效订单事实；结算口径销量仅为旧版参考，不构成正式补货数量。雅仓现货从今天开始消耗，在途按各自批次的预计可售日才加入投影库存。本次新货预计可售日按 3 天备货 + 4 天到国内仓 + 当前国家海外运输周期计算。预计日期按批次手工修正，节省金额只使用结算事实，各国绝不混算。</p>
+        <div><span class="eyebrow">SKU-BY-SKU LEDGER</span><h2>SKU 明细</h2></div>
+        <details class="context-details"><summary>数量与收益口径</summary><p>正式建议件数只使用 TikTok 与 Shopee 的有效订单事实；结算口径销量仅为旧版参考，不构成正式补货数量。雅仓现货从今天开始消耗，在途按各自批次的预计可售日才加入投影库存。本土仓不足时标记为切换跨境直发兜底，不按完全断货处理；跨境转化折损率未获批准前，只展示暴露件数和天数，不伪造损失金额。本次新货预计可售日按 3 天备货 + 4 天到国内仓 + 当前国家海外运输周期计算。</p></details>
       </div>
       <div class="toolbar">
         <label>搜索 SKU / 商品<input id="searchInput" type="search" placeholder="例如 0007、墙贴"></label>
-        <label>决策<select id="statusFilter"><option value="all">全部</option><option value="RECENT30">近30天有动销</option><option value="MISSING_DATA">资料待补</option><option value="REPLENISH">建议补货</option><option value="FIRST_STOCK">建议首批</option><option value="HOLD">暂不补货</option><option value="NO_DEMAND">销量不足</option></select></label>
+        <label>决策<select id="statusFilter"><option value="all">全部</option><option value="RECENT30">近30天有动销</option><option value="LOCAL_FALLBACK">需跨境直发兜底</option><option value="MISSING_DATA">资料待补</option><option value="REPLENISH">建议补货</option><option value="FIRST_STOCK">建议首批</option><option value="HOLD">暂不补货</option><option value="NO_DEMAND">销量不足</option></select></label>
         <span id="visibleCount"></span>
       </div>
 
       <div class="ledger-group">
-        <div class="group-heading"><div><span>01</span><h3 id="ledgerTitle">全部 SKU 备货建议</h3></div><p id="ledgerDescription">“建议补货”表示海外仓已有该 SKU；“建议首批”表示海外仓当前没有该 SKU。两类建议按同一规则排序并在同一张表中展示。</p></div>
-        <div class="table-wrap"><table><thead><tr><th>主图 / SKU</th><th>双平台需求事实</th><th>雅仓供应事实</th><th>到仓计算</th><th>建议</th><th>收益明细</th><th>判断</th></tr></thead><tbody id="skuRows"></tbody></table></div>
+        <div class="group-heading"><div><span>01</span><h3 id="ledgerTitle">全部 SKU 备货建议</h3></div><details class="context-details"><summary>建议分类说明</summary><p id="ledgerDescription">“建议补货”表示海外仓已有该 SKU；“建议首批”表示海外仓当前没有该 SKU。两类建议按同一规则排序并在同一张表中展示。</p></details></div>
+        <div class="table-wrap"><table><thead><tr><th>主图 / SKU</th><th>需求 · 件/天</th><th>仓库 / 供应</th><th>新货可售 / 兜底风险</th><th>建议 · 件</th><th>收益 / 资料</th><th>判断 / 操作</th></tr></thead><tbody id="skuRows"></tbody></table></div>
         <div class="empty-state" id="skuEmpty" hidden>当前筛选条件下没有记录。</div>
       </div>
     </section>
 
-    <section class="section formula-section">
+    <details class="section reference-panel"><summary>计算公式与规则</summary><section class="formula-section">
       <div>
         <span class="eyebrow">FORMULA & GUARDRAILS</span>
         <h2>每一件建议数从哪里来</h2>
@@ -84,10 +90,12 @@
       </div>
     </section>
 
-    <section class="section evidence">
+    </details>
+    <details class="section reference-panel"><summary>来源证据与风险说明</summary><section class="evidence">
       <div class="section-heading"><div><span class="eyebrow">AUDIT TRAIL</span><h2>证据边界与风险</h2></div></div>
       <div class="evidence-grid" id="evidenceGrid"></div>
     </section>
+    </details>
   </main>
 
   <dialog id="manualInputDialog" class="manual-dialog">
@@ -121,10 +129,10 @@
   </dialog>
 
   <footer><span>Supply Chain Operations · Read-only decision artifact</span><span>这是决策建议，不是采购或发货指令；正式发货前复核采购可得量与当期头程报价。</span></footer>
-  <script src="./data.js?v=20260810-dual-demand"></script>
-  <script src="./transport-history.js?v=20260810-dual-demand"></script>
-  <script src="./inbound-plan.js?v=20260810-dual-demand"></script>
-  <script src="./inbound-timeline.js?v=20260810-dual-demand"></script>
-  <script src="./app.js?v=20260810-dual-demand"></script>
+  <script data-supply-asset src="./data.js?v=20260902-full-refresh"></script>
+  <script data-supply-asset src="./transport-history.js?v=20260810-dual-demand"></script>
+  <script data-supply-asset src="./inbound-plan.js?v=20260902-full-refresh"></script>
+  <script data-supply-asset src="./inbound-timeline.js?v=20260812-local-fallback"></script>
+  <script data-supply-asset src="./app.js?v=20260901-th-batch-eta"></script>
 </body>
 </html>

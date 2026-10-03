@@ -7,13 +7,17 @@ used only to prove that the downstream channel draft contracts can be built.
 """
 
 from __future__ import annotations
+from copy import deepcopy
+from contextlib import closing
 
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import asdict, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
+import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -44,13 +48,57 @@ from domains.product_operations import (
 )
 from modules.finance.profit_engine import exchange_rate_for
 from modules.ozon.price_convert import exchange_rates as ozon_exchange_rates
-from modules.sourcing.new_product_workbench import _source_summary, price_review
+from modules.sourcing.new_product_workbench import (
+    _apply_target_price_overrides,
+    _source_summary,
+    price_review,
+)
 from shared_platform.report_store import ReportRunStore
 from shared_platform.weekly_profit_runner import build_weekly_profit_preview
 
 
 DEFAULT_OFFER_ID = "3828811808"
 DEFAULT_CANDIDATE_SELLER_SKU = "0946"
+RELEASE_EVIDENCE_ROOT_ENV = "ORBIT_RELEASE_EVIDENCE_ROOT"
+RELEASE_SOURCE_IDENTITY_PATH_ENV = "ORBIT_RELEASE_SOURCE_IDENTITY_PATH"
+RELEASE_SOURCE_IDENTITY_OFFER_ENV = "ORBIT_RELEASE_SOURCE_IDENTITY_OFFER_ID"
+RELEASE_SOURCE_IDENTITY_SHA256_ENV = "ORBIT_RELEASE_SOURCE_IDENTITY_SHA256"
+
+
+def configured_release_evidence_root(default: str | Path = ROOT) -> Path:
+    """Resolve the explicit read-only workbench evidence root for R3."""
+    selected = os.environ.get(RELEASE_EVIDENCE_ROOT_ENV)
+    if not selected:
+        return Path(default).resolve()
+    path = Path(selected).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"{RELEASE_EVIDENCE_ROOT_ENV} must be an absolute path")
+    resolved = path.resolve()
+    if not resolved.is_dir():
+        raise ValueError(f"{RELEASE_EVIDENCE_ROOT_ENV} must identify an existing directory")
+    return resolved
+
+
+def configured_release_source_identity_path(offer_id: str) -> Path | None:
+    """Resolve an explicitly pinned, immutable source-identity evidence file."""
+    selected = os.environ.get(RELEASE_SOURCE_IDENTITY_PATH_ENV)
+    if not selected:
+        return None
+    pinned_offer_id = str(os.environ.get(RELEASE_SOURCE_IDENTITY_OFFER_ENV) or "").strip()
+    expected_sha256 = str(os.environ.get(RELEASE_SOURCE_IDENTITY_SHA256_ENV) or "").strip()
+    if not pinned_offer_id or not expected_sha256:
+        raise ValueError("source-identity pin requires explicit offer ID and SHA256")
+    if str(offer_id).strip() != pinned_offer_id:
+        return None
+    path = Path(selected).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"{RELEASE_SOURCE_IDENTITY_PATH_ENV} must be an absolute path")
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise ValueError(f"{RELEASE_SOURCE_IDENTITY_PATH_ENV} must identify an existing file")
+    if hashlib.sha256(resolved.read_bytes()).hexdigest() != expected_sha256:
+        raise ValueError("pinned source-identity evidence digest drifted")
+    return resolved
 
 TIKTOK_STORE_TARGETS: Mapping[str, tuple[str, str, str]] = {
     "LH_PH": ("lh_ph", "LivelyHive", "PH"),
@@ -122,29 +170,36 @@ def _generation_audits(package_dir: Path) -> dict[str, dict[str, Any]]:
     return audits
 
 
-def _known_seller_skus(database_path: Path) -> tuple[str, ...]:
+def _known_seller_skus(database_path: Path, *, strict: bool = False) -> tuple[str, ...]:
     values: set[str] = set()
-    with connect_readonly(database_path) as connection:
+    with closing(connect_readonly(database_path)) as connection:
         for table in ("products", "shopee_products"):
             try:
                 rows = connection.execute(
                     f"SELECT seller_sku FROM {table} "
                     "WHERE seller_sku IS NOT NULL AND TRIM(seller_sku) != ''"
                 ).fetchall()
-            except Exception:
+            except Exception as error:
+                if strict:
+                    raise ValueError("FINAL_REVIEW_CATALOG_QUERY_UNAVAILABLE") from error
                 continue
             values.update(str(row["seller_sku"]).strip() for row in rows)
     return tuple(sorted(values))
 
 
-def _known_tiktok_seller_skus(database_path: Path) -> tuple[str, ...]:
+def _known_tiktok_seller_skus(database_path: Path, *, strict: bool = False) -> tuple[str, ...]:
     values: set[str] = set()
-    with connect_readonly(database_path) as connection:
-        rows = connection.execute(
-            "SELECT seller_sku FROM products "
-            "WHERE seller_sku IS NOT NULL AND TRIM(seller_sku) != ''"
-        ).fetchall()
-        values.update(str(row["seller_sku"]).strip() for row in rows)
+    try:
+        with closing(connect_readonly(database_path)) as connection:
+            rows = connection.execute(
+                "SELECT seller_sku FROM products "
+                "WHERE seller_sku IS NOT NULL AND TRIM(seller_sku) != ''"
+            ).fetchall()
+            values.update(str(row["seller_sku"]).strip() for row in rows)
+    except sqlite3.Error as error:
+        if strict:
+            raise ValueError("FINAL_REVIEW_CATALOG_QUERY_UNAVAILABLE") from error
+        raise
     return tuple(sorted(values))
 
 
@@ -154,6 +209,7 @@ def _catalog_sku_is_owned_by_release(
     *,
     product_id: str,
     seller_sku: str,
+    strict: bool = False,
 ) -> bool:
     """Recognize catalogue rows created by this product's approved release.
 
@@ -199,7 +255,7 @@ def _catalog_sku_is_owned_by_release(
             owned_shopee_ids.add(external_id)
 
     exact_rows: list[tuple[str, str]] = []
-    with connect_readonly(database_path) as connection:
+    with closing(connect_readonly(database_path)) as connection:
         try:
             exact_rows.extend(
                 ("tiktok", str(row["product_id"]))
@@ -208,7 +264,9 @@ def _catalog_sku_is_owned_by_release(
                     (seller_sku,),
                 ).fetchall()
             )
-        except sqlite3.Error:
+        except sqlite3.Error as error:
+            if strict:
+                raise ValueError("FINAL_REVIEW_CATALOG_QUERY_UNAVAILABLE") from error
             pass
         try:
             exact_rows.extend(
@@ -218,7 +276,9 @@ def _catalog_sku_is_owned_by_release(
                     (seller_sku,),
                 ).fetchall()
             )
-        except sqlite3.Error:
+        except sqlite3.Error as error:
+            if strict:
+                raise ValueError("FINAL_REVIEW_CATALOG_QUERY_UNAVAILABLE") from error
             pass
     if not exact_rows:
         return False
@@ -795,11 +855,14 @@ def _release_pricing_review(
         package_cm = [float(_decimal(value)) for value in package[:3]]
         while len(package_cm) < 3:
             package_cm.append(0.0)
-        legacy = price_review(
-            cost,
-            weight,
-            package_cm,
-            fx_rates=fx_rates,
+        legacy = _apply_target_price_overrides(
+            price_review(
+                cost,
+                weight,
+                package_cm,
+                fx_rates=fx_rates,
+            ),
+            review.get("target_price_overrides"),
         )
         return build_channel_pricing_preview(
             legacy,
@@ -1039,19 +1102,25 @@ def build_release_dashboard(
     root: str | Path = ROOT,
     database_path: str | Path | None = None,
     report_store_path: str | Path | None = None,
+    report_store: Any | None = None,
     publication_targets: object = None,
+    catalog_optional: bool = False,
+    strict_catalog: bool = False,
+    frozen_pricing: dict | None = None,
+    frozen_round1: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the complete local release rehearsal without side effects."""
     clean_offer_id = _clean_offer_id(offer_id)
-    project_root = Path(root)
+    project_root = configured_release_evidence_root(root)
     state_path = project_root / "data" / "new_product_workbench" / f"{clean_offer_id}.json"
     state = _read_json(state_path)
     if str(state.get("offer_id") or "").strip() != clean_offer_id:
         raise ValueError("workbench offer identity does not match the requested offer_id")
     review = state.get("review") if isinstance(state.get("review"), Mapping) else {}
     db_path = Path(database_path or project_root / "data" / "shop.db")
-    known_skus = _known_seller_skus(db_path)
-    tiktok_skus = _known_tiktok_seller_skus(db_path)
+    missing_catalog = catalog_optional and not strict_catalog and not db_path.exists()
+    known_skus = set() if missing_catalog else _known_seller_skus(db_path, strict=strict_catalog)
+    tiktok_skus = set() if missing_catalog else _known_tiktok_seller_skus(db_path, strict=strict_catalog)
     reservation_facts = list(
         _local_seller_sku_reservations(
             project_root,
@@ -1063,7 +1132,9 @@ def build_release_dashboard(
     release_store_path = Path(
         report_store_path or project_root / "data" / "orbit_platform.db"
     )
-    release_store = ReleaseStore(release_store_path)
+    if report_store is not None and Path(report_store.path).resolve() != release_store_path.resolve():
+        raise ValueError("dashboard report Store must match report_store_path")
+    release_store = report_store if report_store is not None else ReleaseStore(release_store_path)
     listing_copy_state = (
         state.get("listing_copy")
         if isinstance(state.get("listing_copy"), Mapping)
@@ -1129,6 +1200,11 @@ def build_release_dashboard(
         else {}
     )
     locked_review_sku = str(review.get("seller_sku") or "").strip()
+    explicit_ab_alias = bool(
+        locked_review_sku.isdigit()
+        and str(review.get("seller_sku_authority") or "").strip().casefold()
+        == "explicit_same_store_ab_alias"
+    )
     has_locked_sku = bool(
         locked_review_sku.isdigit()
         and (
@@ -1151,6 +1227,9 @@ def build_release_dashboard(
         # workbench lock create an impossible successor identity.
         clean_seller_sku = _clean_seller_sku(lineage_seller_sku)
         seller_sku_source = "release_plan_lineage_repair"
+    elif explicit_ab_alias:
+        clean_seller_sku = _clean_seller_sku(locked_review_sku)
+        seller_sku_source = "explicit_same_store_ab_alias"
     elif has_locked_sku:
         clean_seller_sku = _clean_seller_sku(locked_review_sku)
         seller_sku_source = "approved_workbench_lock"
@@ -1178,20 +1257,46 @@ def build_release_dashboard(
         and lineage_seller_sku == clean_seller_sku
     )
     approval_known_skus = known_skus
+    if explicit_ab_alias:
+        # A same-store B link intentionally shares the source product's
+        # last-four logical SKU while remaining unique by its full numeric
+        # alias (for example 660003 -> 990003).  Keep exact-full collisions
+        # blocked, but remove only the explicitly authorized tail collision.
+        approval_known_skus = tuple(
+            value
+            for value in approval_known_skus
+            if not (
+                str(value).strip().isdigit()
+                and str(value).strip()[-4:].zfill(4)
+                == clean_seller_sku[-4:].zfill(4)
+            )
+        )
     if lineage_owns_seller_sku or _catalog_sku_is_owned_by_release(
         db_path,
         release_store,
         product_id=clean_offer_id,
         seller_sku=clean_seller_sku,
+        strict=strict_catalog,
     ):
         approval_known_skus = tuple(
             value for value in known_skus if value != clean_seller_sku
+        )
+    if explicit_ab_alias:
+        approval_known_skus = tuple(
+            value
+            for value in approval_known_skus
+            if not (
+                str(value).strip().isdigit()
+                and str(value).strip()[-4:].zfill(4)
+                == clean_seller_sku[-4:].zfill(4)
+            )
         )
     displayed_sku_range = (
         (clean_seller_sku,)
         if seller_sku_source
         in {
             "approved_workbench_lock",
+            "explicit_same_store_ab_alias",
             "release_plan_lineage",
             "release_plan_lineage_repair",
         }
@@ -1295,12 +1400,27 @@ def build_release_dashboard(
         and str(collect_box.get("detail_id") or "").strip() != collect_box_id
     ):
         raise ValueError("review package collect-box identity does not match its evidence directory")
+    pinned_source_identity_path = configured_release_source_identity_path(clean_offer_id)
+    pinned_source_identity = (
+        _read_json(pinned_source_identity_path)
+        if pinned_source_identity_path is not None
+        else {}
+    )
+    if pinned_source_identity_path is not None:
+        pinned_offer_id = str(pinned_source_identity.get("offer_id") or "").strip()
+        pinned_common_id = str(
+            pinned_source_identity.get("resolved_common_collect_id")
+            or pinned_source_identity.get("requested_common_collect_id")
+            or ""
+        ).strip()
+        if pinned_offer_id != clean_offer_id or pinned_common_id != clean_offer_id:
+            raise ValueError("pinned source-identity evidence does not match requested offer")
     source_identity_inputs = {
         "collect_box": dict(collect_box),
         "precollect": (
             dict(source.get("precollect"))
             if isinstance(source.get("precollect"), Mapping)
-            else {}
+            else dict(pinned_source_identity)
         ),
         "source_record": (
             dict(source.get("source_record"))
@@ -1308,13 +1428,28 @@ def build_release_dashboard(
             else {}
         ),
         "source_authority": str(
-            source.get("source_authority") or "1688"
+            (
+                ((pinned_source_identity.get("records") or [{}])[0] or {}).get("source")
+                if pinned_source_identity
+                else None
+            )
+            or source.get("source_authority")
+            or "1688"
         ),
     }
     source_identity_resolution = resolve_source_product_identity(
         **source_identity_inputs
     )
     source_identity_payload = source_identity_resolution.payload()
+    frozen_models = None
+    if frozen_round1 is not None:
+        from shared_platform.frozen_sku_assignment import frozen_model_skus
+        if not source_identity_resolution.ready:
+            raise ValueError('FROZEN_R1_SOURCE_IDENTITY_REQUIRED')
+        frozen_models = frozen_model_skus(
+            frozen_round1, offer_id=clean_offer_id, state=state,
+            source=source, seller_sku=clean_seller_sku,
+        )
     source_identity_public = {
         "schema_version": source_identity_payload["schema_version"],
         "status": source_identity_payload["status"],
@@ -1402,7 +1537,22 @@ def build_release_dashboard(
         variant_keys = list(
             review.get("selected_sku_keys") or ("default",)
         )
-        model_values = list(next_seller_skus[: len(variant_keys)])
+        generated_model_values = (
+            [
+                str(int(clean_seller_sku) + index).zfill(len(clean_seller_sku))
+                for index in range(len(variant_keys))
+            ]
+            if seller_sku_source in {
+                "legacy_explicit_candidate",
+                "explicit_same_store_ab_alias",
+            }
+            else list(next_seller_skus[: len(variant_keys)])
+        )
+        model_values = (
+            list(frozen_models)
+            if frozen_models is not None
+            else generated_model_values
+        )
         if len(model_values) < len(variant_keys):
             base = int(clean_seller_sku)
             model_values = [
@@ -1438,9 +1588,10 @@ def build_release_dashboard(
             finalized = finalize_new_source_sku_reservation(
                 source_identity=source_identity_resolution.identity,
                 assignment=assignment,
-                existing_reservations=lineage_context[
-                    "existing_reservations"
-                ],
+                existing_reservations=lineage_context.get(
+                    "active_reservation_claims",
+                    lineage_context["existing_reservations"],
+                ),
             )
             if finalized.ready and finalized.reservation is not None:
                 sku_lineage_payload = {
@@ -1457,6 +1608,42 @@ def build_release_dashboard(
                     "reservation": None,
                     "blockers": list(finalized.blockers),
                 }
+    if frozen_models is not None and sku_lineage_payload.get('ready'):
+        assignment_payload = sku_lineage_payload.get('assignment') or {}
+        actual_models = {
+            row['variant_key']: row['model_sku']
+            for row in assignment_payload.get('model_skus') or []
+        }
+        expected_models = dict(zip(review['selected_sku_keys'], frozen_models))
+        if (assignment_payload.get('seller_sku') != clean_seller_sku
+            or actual_models != expected_models):
+            raise ValueError('FROZEN_R1_EXISTING_ASSIGNMENT_CONFLICT')
+    # Inherited/reused assignments also need cross-source NEW_SOURCE claims.
+    # Those rows cannot enter the predecessor-only resolver's legacy parser.
+    reservation = sku_lineage_payload.get("reservation")
+    if sku_lineage_payload.get("ready") and isinstance(reservation, Mapping):
+        desired_keys = set(reservation.get("reservation_keys") or ())
+        source_digest = sku_lineage_payload.get("source_identity_digest")
+        foreign_keys = sorted({
+            key
+            for claim in lineage_context.get("active_reservation_claims", ())
+            if claim.get("source_identity_digest") != source_digest
+            for key in claim.get("reservation_keys") or ()
+            if key in desired_keys
+        })
+        if foreign_keys:
+            sku_lineage_payload = {
+                **sku_lineage_payload,
+                "status": "BLOCKED_SKU_LINEAGE",
+                "ready": False,
+                "assignment": None,
+                "reservation": None,
+                "blockers": [
+                    "SKU keys belong to another canonical source: "
+                    + ", ".join(foreign_keys)
+                ],
+            }
+            sku_lineage_resolution = None
     sku_lineage_blockers = list(
         sku_lineage_payload.get("blockers") or ()
     )
@@ -1528,6 +1715,7 @@ def build_release_dashboard(
         fact
         for fact in reservation_facts
         if _seller_sku_matches(clean_seller_sku, (fact["seller_sku"],))
+        and not explicit_ab_alias
     )
     product_row = {
         "product_id": clean_offer_id,
@@ -1610,7 +1798,7 @@ def build_release_dashboard(
         )
         if isinstance(row, Mapping)
     }
-    base_release_pricing = _release_pricing_review(
+    base_release_pricing = deepcopy(frozen_pricing) if frozen_pricing is not None else _release_pricing_review(
         review,
         sku_commercial_facts=commercial_rows,
         model_skus_by_variant=model_skus_by_variant,
@@ -1620,13 +1808,14 @@ def build_release_dashboard(
         omnichannel_selection,
         base_release_pricing,
     )
-    release_pricing = _release_pricing_review(
+    release_pricing = deepcopy(frozen_pricing) if frozen_pricing is not None else _release_pricing_review(
         review,
         selected_site_keys=scope_site_keys,
         sku_commercial_facts=commercial_rows,
         model_skus_by_variant=model_skus_by_variant,
     )
-    _apply_store_level_pricing(release_pricing, omnichannel_selection)
+    if frozen_pricing is None:
+        _apply_store_level_pricing(release_pricing, omnichannel_selection)
     release_pricing["selection_source"] = publication_scope["source"]
     release_pricing["publication_target_labels"] = list(
         publication_scope["selected_labels"]
@@ -1953,6 +2142,8 @@ def build_release_dashboard(
         },
         "product": {
             "offer_id": clean_offer_id,
+            "source_mode": source.get("source_mode") or "miaoshou",
+            "source_authority": source.get("source_authority") or "1688",
             "source_item_code": str(
                 source.get("source_item_code")
                 or source.get("itemNum")
@@ -1991,7 +2182,7 @@ def build_release_dashboard(
                 if actual_product_approved and bool(review.get("fields_locked"))
                 else "awaiting_kyle_review"
             ),
-            "facts_source": "miaoshou_precollect_plus_workbench_review",
+            "facts_source": "manual_intake_plus_workbench_review" if source.get("source_mode") == "manual_intake" else "miaoshou_precollect_plus_workbench_review",
             "fact_evidence": product_facts.payload(),
             "actual_product_approved": actual_product_approved,
             "actual_approval": dict(actual_approval),

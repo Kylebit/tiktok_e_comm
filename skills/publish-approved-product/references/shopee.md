@@ -5,6 +5,18 @@ the Shopee CNSC global product. Publish regional storefronts only when the user
 explicitly authorizes those targets, and treat every storefront as an
 independent operation.
 
+`platform-preflight-report/v2` must bind the selected official CNSC category,
+prove its decision is not deferred, retain every required attribute selection,
+and bind each approved Model SKU to one distinct valid HTTPS option image.
+Outer-object field presence is not evidence. Duplicate option-image URLs,
+missing Model-SKU coverage, or a deferred official category/attribute decision
+block before upload, product creation or update.
+
+The variation-image binding is independent from the master gallery. A complete
+gallery never proves that different Model SKUs have different option images;
+both preflight and official model readback must verify the exact one-to-one
+binding.
+
 ## Frozen-v4 executor boundary
 
 The executable CNSC master path consumes `approved-publication-snapshot/v4`
@@ -39,6 +51,14 @@ attribute. Final global-item readback must still prove the exact category and
 the selected `100818=4228` attribute; absent, changed, or ambiguous official
 facts fail closed before regional publication.
 
+The frozen semantic may be an exact singular or plural leaf label. Treat
+`Wallpaper`, `Wallpapers`, `墙纸`, `壁纸`, `墙纸、壁纸`, and the combined official
+leaf label as aliases of this same approved wallpaper family. Match only the
+single official publishable leaf `101157`; unrelated adhesive, roofing, or
+flooring recommendations remain invalid. Preserve a zero-write category
+failure as sanitized target evidence so the Product Publication frontend shows
+the failed preparation step and reason instead of an unexplained failure.
+
 Checkpoint provider identities in this order: uploaded image IDs, returned
 `global_item_id`, then returned global model IDs. Each checkpoint happens
 immediately after its provider call and before the next fallible operation.
@@ -56,6 +76,14 @@ after this resolver returns.
 Send the approved English title and description, ordered images, every selected
 variant, exact option names, model SKUs, per-SKU parcel facts and approved global
 price. Do not obtain these facts from TikTok.
+
+For every selected regional item, the ordered storefront gallery must also be
+written into Shopee `description_info.extended_description`. Put the final
+regional description in the first text field, then add one image field for
+every final gallery image ID in the same order. PH/MY use the approved English
+route; TH/VN use their localized image IDs and localized copy. Plain
+`description` plus a populated gallery is incomplete and must not pass final
+readback.
 
 ## Official readback
 
@@ -115,11 +143,14 @@ chooses the recovery. A dispatcher or readback tool does not invent policy.
 Treat every PH/MY/TH/VN shop as an independent explicit task. A failure in one
 shop must not stop another shop and must not alter the global product.
 
-Use `dispatch_shopee_regions.py` only after the global product's official
-readback succeeds. Pass its immutable dispatch fact to
-`readback_shopee_regions.py`; never infer regional success from global-product
-creation or from an accepted regional task alone. Unselected regions are not
-called.
+For a new production run, the server-owned frozen-v4 Shopee executor starts
+regional targets only after the global product's official readback succeeds;
+it retains each region's immutable dispatch and readback fact. The historical
+direct-script sequence used `dispatch_shopee_regions.py` followed by
+`readback_shopee_regions.py` and is for incident reproduction only, as the
+parent Skill's production boundary requires. Never infer regional success
+from global-product creation or from an accepted regional task alone.
+Unselected regions are not called.
 
 For each selected shop:
 
@@ -141,22 +172,45 @@ For each selected shop:
    so read the item again instead of blindly repeating it.
 7. Enable applicable logistics if Shopee created them disabled, and read
    `get_item_base_info` plus `get_model_list` again.
-8. Resolve the regional item back to the same `global_item_id` and verify item
-   state, all Model SKUs, each local price/currency, logistics, copy and images.
-   PH/MY may retain the English Global copy. TH must contain Thai copy and VN
-   must contain Vietnamese copy. For TH/VN descriptions, each semantic line
+8. Write the final regional description as Shopee extended description: one
+   text field followed by every exact regional gallery image ID in gallery
+   order. Read the same item again; never upload another image merely for the
+   description and never substitute another region's image IDs.
+9. Resolve the regional item back to the same `global_item_id` and verify item
+   state, all Model SKUs, each local price/currency, logistics, copy, gallery
+   images and extended-description image IDs. The two ordered image-ID lists
+   must be identical and complete.
+   PH may retain the English Global copy. MY must contain Malay copy, TH must
+   contain Thai copy and VN must contain Vietnamese copy. For MY/TH/VN
+   descriptions, each semantic line
    that contains letters must include that target language on the same line;
    a line made only of numbers, dimensions, punctuation, and bullets may remain
    language-neutral. Do not treat a Latin material or unit token as localized
    unless its line also has the target-language label.
-9. Report success for that shop only after the regional official readback.
+10. Report success for that shop only after the regional official readback.
 
-If official TH/VN readback is still English, do not create another regional
+If official MY/TH/VN readback is still English, do not create another regional
 item and do not repeat `create_publish_task`. Generate localized copy from the
 same frozen English Global master, update that exact existing `item_id` through
 the official shop update API, and read the same item again. A lost update
 response is an unknown write outcome; official readback decides whether the
 repair took effect. Only the repaired target is affected.
+
+## Confirmed incident: target-only retry retained the full image-route map
+
+Symptom: a VN-only recovery had the correct frozen target and official item,
+but failed locally with `localized image route coverage drifted` before the
+regional image repair.
+
+Confirmed cause: the retry scoped `publication_targets` to VN while retaining
+all TikTok, Shopee and Ozon entries in `product.image_routing.routes`. Exact
+route coverage therefore compared one selected target with the full release.
+
+Permanent handling: a target-only retry reads the complete immutable snapshot,
+but every target-indexed execution projection must be scoped together. This
+includes `publication_targets`, `product.image_routing.routes`, preparation,
+mutation budgets, dispatch and official readback. Never weaken exact coverage
+validation and never copy another country route to make the check pass.
 
 ## Confirmed incident: explicit English copy disabled regional translation
 
@@ -176,8 +230,8 @@ Permanent handling:
 3. Keep exact parent SKU, Model tiers, local prices, parcel and logistics in
    the regional request; copy omission must not remove those facts.
 4. Officially read every created or existing shop item.
-5. Accept English for PH/MY; require Thai for TH and Vietnamese for VN.
-6. Repair an English TH/VN item in place, then officially read it again.
+5. Accept English only for PH; require Malay for MY, Thai for TH and Vietnamese for VN.
+6. Repair an English MY/TH/VN item in place, then officially read it again.
 7. Never create a duplicate item merely to correct language.
 
 The approved snapshot must retain both price identities for every target:
@@ -284,6 +338,31 @@ commercial, copy, image, linkage and logistics fact to be exact; then list that
 same item once and rely on official readback if its response is lost. Persist
 the recovered local identity only through `record_shop_item` after the complete
 official `NORMAL` readback succeeds.
+
+## Confirmed incident: a fresh Global item entered historical recovery scanning
+
+Observed on Offer `3912004828`: the run created and officially verified a new
+Global item and two Models, then spent most of its 19-minute runtime scanning
+regional `NORMAL`/`UNLIST` catalogs before the four first-time regional tasks.
+
+Confirmed cause: absent regional mappings always triggered the historical
+unknown-outcome recovery scan, even when the same run had just created the
+exact Global identity. A same-run fresh Global item cannot have an older
+regional item linked to that new identity.
+
+Permanent handling:
+
+1. The Global resolver records whether the exact returned `global_item_id` was
+   created by the current run; an existing or updated Global item is not fresh.
+2. For a same-run fresh Global item, skip historical regional discovery and
+   proceed to the first authorized `create_publish_task` after normal official
+   Global, Model, logistics and parcel checks.
+3. For every continuation, process restart, existing Global item, or unknown
+   prior regional outcome, keep bounded `NORMAL`/`UNLIST` discovery enabled.
+4. Never infer freshness from an empty local region map or from a positive
+   write count alone; require exact in-memory run and Global identity
+   provenance.
+5. Keep every regional task independent and retain the no-blind-retry rule.
 
 ## Confirmed incident: regional numeric prices were serialized as strings
 
@@ -416,6 +495,25 @@ Permanent handling:
    not send `init_tier_variation` again.
 4. If the readback is missing, partial or mismatched, preserve an unknown or
    reconciliation-required result; never blindly retry the write.
+
+## Confirmed incident: tier-image update became visible after the response
+
+Observed on Offer `3882460382`: `update_tier_variation` changed the three
+approved option images, but the immediate mutation result was an error and the
+first official readback still exposed the previous tier state. A later
+`get_global_model_list` returned the exact three distinct image identities, and
+the same identities propagated to the existing PH, MY and TH shop products.
+
+Permanent handling:
+
+1. Submit the frozen `update_tier_variation` request exactly once.
+2. Treat the mutation response and official final state as separate evidence.
+3. After either a success response, provider error or transport exception,
+   perform at most three official readbacks with bounded delay.
+4. Converge only when every Model SKU, option value and option `image_id` is
+   exact; otherwise retain the original failure or an unverified outcome.
+5. Retry only the official GET. Never repeat the POST merely because Shopee's
+   final state is not immediately visible.
 
 ## Confirmed incident: provider CDN URLs caused a false image mismatch
 

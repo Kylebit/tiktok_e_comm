@@ -14,6 +14,22 @@ from modules.sourcing import new_product_workbench
 from shared_platform import release_control
 
 
+@pytest.fixture(autouse=True)
+def isolated_workspace_paths(tmp_path, monkeypatch):
+    """Keep the existing simulated approval tests off default report/store paths."""
+    from modules.products import server
+    from shared_platform import release_store, report_store, publication_r3_image_bridge, publication_rounds
+    from shared_platform.publication_runtime_config import capture_startup_config
+    monkeypatch.setattr(server, 'ROOT', tmp_path)
+    monkeypatch.setattr(server, 'R3_STARTUP_CONFIG', capture_startup_config(root=tmp_path, environ={}))
+    monkeypatch.setattr(new_product_workbench, 'ROOT', tmp_path)
+    monkeypatch.setattr(new_product_workbench, 'STATE_DIR', tmp_path/'data/new_product_workbench')
+    monkeypatch.setattr(release_store, 'DEFAULT_RELEASE_STORE_PATH', tmp_path/'data/release.db')
+    monkeypatch.setattr(report_store, 'DEFAULT_REPORT_STORE_PATH', tmp_path/'data/reports.db')
+    monkeypatch.setattr(publication_r3_image_bridge, 'REPORTS_ROOT', tmp_path/'reports/product-preparation')
+    monkeypatch.setattr(publication_rounds, 'REPORTS_ROOT', tmp_path/'reports/product-preparation')
+
+
 def _dashboard(
     state: dict,
     *,

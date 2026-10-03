@@ -10,7 +10,6 @@ TikTok Shop 控制台 — 唯一入口
   python3 main.py products sync
   python3 main.py finance sync --date 2026-06-01
   python3 main.py ads sync
-  python3 main.py affiliate invite --products ID1,ID2 --creators my_list
 """
 
 import argparse
@@ -42,10 +41,9 @@ def cmd_init(_):
     p = init_db()
     print(f"✅ 数据库: {p}")
     (ROOT / "data" / "creator_lists").mkdir(parents=True, exist_ok=True)
-    (ROOT / "data" / "digest").mkdir(parents=True, exist_ok=True)
     (ROOT / "exports").mkdir(exist_ok=True)
     print("\n下一步:")
-    print("  1. 编辑 config/settings.json（app_key、汇率、feishu.webhook_url）")
+    print("  1. 编辑 config/settings.json（app_key、汇率）")
     print("  2. python3 main.py auth   或继续用 tiktok_auth.py")
     print("  3. python3 main.py status")
 
@@ -235,12 +233,8 @@ def build_parser():
             "catalog",
             "settlement",
             "costs",
-            "titles",
-            "images",
             "sourcing",
-            "promotions",
             "analytics",
-            "deactivate",
             "sku-profit",
         ],
         default="index",
@@ -334,14 +328,6 @@ def build_parser():
             region=a.region
         )
     )
-    pds = prod_sub.add_parser("deactivate-scan", help="扫描零销下架候选（90天0单+低CTR）")
-    pds.add_argument("--limit", type=int, default=50)
-    pds.add_argument("--region", help="仅 MY/VN/TH/PH")
-    pds.set_defaults(
-        func=lambda a: __import__("modules.products.service", fromlist=["scan_deactivate"]).scan_deactivate(
-            limit=a.limit, region=a.region
-        )
-    )
     pis = prod_sub.add_parser("image-scan", help="Analytics B类：低CTR 0单 → AI 主图候选")
     pis.add_argument("--limit", type=int, default=10)
     pis.add_argument("--variants", type=int, help="每商品候选张数，默认读 settings images.variants_per_product")
@@ -351,46 +337,9 @@ def build_parser():
             limit=a.limit, region=a.region, variants=a.variants
         )
     )
-    pdp = prod_sub.add_parser("deactivate-push", help="CLI 推送已确认的下架")
-    pdp.set_defaults(
-        func=lambda a: __import__("modules.products.service", fromlist=["push_deactivate_cli"]).push_deactivate_cli()
-    )
-    ptr = prod_sub.add_parser("title-serve", help="打开标题页（同 main.py serve --page titles）")
-    ptr.add_argument("--port", type=int, default=8765)
-    ptr.set_defaults(
-        func=lambda a: __import__("modules.products.server", fromlist=["serve"]).serve(
-            port=a.port, page="titles"
-        )
-    )
     ptp = prod_sub.add_parser("title-push", help="CLI 推送已确认的标题（无需浏览器）")
     ptp.set_defaults(
         func=lambda a: __import__("modules.products.service", fromlist=["push_titles"]).push_titles()
-    )
-    pps = prod_sub.add_parser("promo-scan", help="扫描促销活动中低动销商品并生成折扣建议")
-    pps.add_argument("--days", type=int, default=30)
-    pps.add_argument("--max-units", type=int, default=1)
-    pps.add_argument("--limit", type=int, default=30)
-    pps.add_argument("--region", help="仅 MY/VN/TH/PH")
-    pps.add_argument("--scope", choices=["adjust", "add", "flash", "all"], default="adjust")
-    pps.add_argument("--mode", choices=["velocity", "analytics"], default="velocity",
-                     help="analytics = A类高CTR 0单")
-    pps.set_defaults(
-        func=lambda a: __import__("modules.products.service", fromlist=["scan_promos"]).scan_promos(
-            days=a.days, max_units=a.max_units, limit=a.limit, region=a.region,
-            scope=a.scope, mode=a.mode
-        )
-    )
-    ppp = prod_sub.add_parser("promo-push", help="CLI 推送已确认的促销折扣")
-    ppp.set_defaults(
-        func=lambda a: __import__("modules.products.service", fromlist=["push_promos"]).push_promos()
-    )
-    pcc = prod_sub.add_parser("coupon-scan", help="生成优惠券建议（需手动到后台创建）")
-    pcc.add_argument("--region", help="仅 MY/VN/TH/PH")
-    pcc.add_argument("--limit", type=int, default=4)
-    pcc.set_defaults(
-        func=lambda a: __import__("modules.products.promotions", fromlist=["scan_coupon_suggestions"]).scan_coupon_suggestions(
-            region=a.region, limit=a.limit
-        )
     )
     pc = prod_sub.add_parser("cost", help="成本维护")
     pc_sub = pc.add_subparsers(dest="cost_cmd")
@@ -435,43 +384,6 @@ def build_parser():
         func=lambda a: __import__("modules.ads.service", fromlist=["show_report"]).show_report(a.days)
     )
 
-    aff = sub.add_parser("affiliate", help="联盟定向建联")
-    aff_sub = aff.add_subparsers(dest="affiliate_cmd")
-    aff_sub.add_parser("lists", help="达人列表").set_defaults(
-        func=lambda a: __import__("modules.affiliate.service", fromlist=["list_creator_lists"]).list_creator_lists()
-    )
-    inv = aff_sub.add_parser("invite", help="批量定向邀请")
-    inv.add_argument("--products", required=True, help="商品 ID，逗号分隔")
-    inv.add_argument("--creators", required=True, help="达人列表名（不含 .csv）")
-    inv.add_argument("--commission", type=float, help="佣金 %")
-    inv.add_argument("--shop", help="shop_cipher")
-    inv.set_defaults(
-        func=lambda a: __import__("modules.affiliate.service", fromlist=["invite_creators"]).invite_creators(
-            a.products.split(","), a.creators, a.commission, a.shop
-        )
-    )
-
-    dig = sub.add_parser("digest", help="运营日报（飞书）")
-    dig_sub = dig.add_subparsers(dest="digest_cmd")
-    dig_sub.add_parser("preview", help="终端预览日报").set_defaults(
-        func=lambda a: __import__("modules.hub.service", fromlist=["preview_digest"]).preview_digest()
-    )
-    ds = dig_sub.add_parser("send", help="发送日报到飞书")
-    ds.add_argument("--dry-run", action="store_true", help="只预览不发送")
-    ds.set_defaults(
-        func=lambda a: __import__("modules.hub.service", fromlist=["send_digest"]).send_digest(
-            dry_run=a.dry_run
-        )
-    )
-
-    fs = sub.add_parser("feishu", help="飞书双向机器人")
-    fs_sub = fs.add_subparsers(dest="feishu_cmd")
-    fs_sub.add_parser("setup", help="打印自建应用配置说明").set_defaults(
-        func=lambda a: __import__("modules.hub.feishu_bot", fromlist=["print_setup_guide"]).print_setup_guide()
-    )
-    fs_sub.add_parser("bot", help="启动长连接（接收 @ 指令）").set_defaults(
-        func=lambda a: __import__("modules.hub.feishu_bot", fromlist=["run_websocket_bot"]).run_websocket_bot()
-    )
 
     sp = sub.add_parser("shopee", help="Shopee Open API")
     sp_sub = sp.add_subparsers(dest="shopee_cmd")
@@ -762,7 +674,6 @@ MENU = """
 ║  6  打开 Web 控制台                  ║
 ║  7  结算同步                         ║
 ║  8  广告同步                         ║
-║  9  联盟达人列表                     ║
 ║  0  退出                             ║
 ╚══════════════════════════════════════╝
 """
@@ -778,12 +689,11 @@ def interactive():
         "6": lambda: __import__("modules.products.server", fromlist=["serve"]).serve(),
         "7": lambda: __import__("modules.finance.service", fromlist=["sync_settlement"]).sync_settlement(),
         "8": lambda: __import__("modules.ads.service", fromlist=["sync_daily_spend"]).sync_daily_spend(),
-        "9": lambda: __import__("modules.affiliate.service", fromlist=["list_creator_lists"]).list_creator_lists(),
     }
     while True:
         print(MENU)
         choice = input("请选择: ").strip()
-        if choice in ("0", "9", "q", "quit", "exit"):
+        if choice in ("0", "q", "quit", "exit"):
             break
         fn = actions.get(choice)
         if fn:

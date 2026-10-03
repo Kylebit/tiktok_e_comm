@@ -575,7 +575,7 @@ def quote_sku(seller_sku: str, *, cny_mxn: float | None = None) -> PopResult:
     if not cost or float(cost) <= 0:
         raise RuntimeError(f"{seller_sku} 无 sku_costs 成本，请先在目录填写")
     mk = tk_match_key(seller_sku)
-    from modules.miaoshou.feishu_manual_overrides import load_overrides
+    from modules.miaoshou.mx_manual_overrides import load_overrides
 
     ov = load_overrides().get(mk, {})
     known = KNOWN_LOGISTICS.get(seller_sku) or {**KNOWN_BY_MATCH_KEY.get(mk, {}), **ov}

@@ -14,6 +14,7 @@ writes.  ``OfficialShopeeRegionRuntime`` is the thin live adapter used by the
 Skill CLI when the operator explicitly authorizes execution.
 """
 from __future__ import annotations
+from collections.abc import Sequence
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -21,11 +22,24 @@ import hashlib
 import json
 import re
 import time
-from typing import Any, Mapping, Protocol
-from domains.product_operations import publication_images_for_target
-from modules.shopee.global_copy import localized_semantic_line_matches
+from typing import Any, Callable, Mapping, Protocol
+from domains.product_operations.approved_publication_snapshot import publication_content_for_target
+from domains.product_operations import (
+    publication_images_for_target,
+)
+from modules.shopee.global_copy import (
+    contains_malay_language_features,
+    localized_copy_matches_approved,
+    localized_semantic_line_matches,
+)
 
 from modules.shopee.global_copy import contains_vietnamese_language_features
+from shared_platform.publication_write_budget import PublicationWriteBudgetExceeded
+from shared_platform.product_description_media import (
+    shopee_description_image_ids,
+    shopee_description_text,
+    shopee_extended_description,
+)
 
 
 REGIONAL_CURRENCIES = {
@@ -118,7 +132,8 @@ class ShopeeRegionRuntime(Protocol):
     ) -> Mapping[str, object] | None: ...
 
     def upload_regional_images(
-        self, context: RegionContext, image_urls: tuple[str, ...]
+        self, context: RegionContext, image_urls: tuple[str, ...],
+        *, before_upload: Callable[[], object] | None = None,
     ) -> Mapping[str, object]: ...
 
     def update_regional_images(
@@ -126,6 +141,15 @@ class ShopeeRegionRuntime(Protocol):
         context: RegionContext,
         item_id: str,
         *,
+        image_ids: tuple[str, ...],
+    ) -> Mapping[str, object]: ...
+
+    def update_regional_description(
+        self,
+        context: RegionContext,
+        item_id: str,
+        *,
+        description: str,
         image_ids: tuple[str, ...],
     ) -> Mapping[str, object]: ...
 
@@ -150,7 +174,7 @@ class ShopeeRegionRuntime(Protocol):
     ) -> None: ...
 
 
-def selected_region_targets(snapshot: Mapping[str, object]) -> list[str]:
+def selected_region_targets(snapshot: Mapping[str, object], *, target_scope: Sequence[str] | None = None) -> list[str]:
     """Return only explicitly approved Shopee regional targets.
 
     ``shopee:GLOBAL`` is deliberately excluded.  Global-only approval must
@@ -176,7 +200,32 @@ def selected_region_targets(snapshot: Mapping[str, object]) -> list[str]:
         if target not in REGIONAL_TARGETS or target in selected:
             continue
         selected.append(target)
+    if target_scope is not None:
+        if isinstance(target_scope,(str,bytes)) or not isinstance(target_scope,Sequence):
+            raise ValueError("regional target scope must be a sequence")
+        labels=tuple(target_scope)
+        if not labels or len(labels)!=len(set(labels)) or any(label not in selected for label in labels):
+            raise ValueError("regional target scope is outside the frozen snapshot")
+        return [label for label in selected if label in labels]
     return selected
+
+
+class _TargetResultJournal(list[dict[str, object]]):
+    """Notify a durable observer after each complete target result."""
+
+    def __init__(
+        self,
+        callback: Callable[[str, Mapping[str, object]], object] | None,
+        stage: str,
+    ) -> None:
+        super().__init__()
+        self._callback = callback
+        self._stage = stage
+
+    def append(self, row: dict[str, object]) -> None:
+        super().append(row)
+        if self._callback is not None:
+            self._callback(self._stage, row)
 
 
 def dispatch_selected_regions(
@@ -184,16 +233,25 @@ def dispatch_selected_regions(
     *,
     global_item_id: str,
     runtime: ShopeeRegionRuntime,
+    recover_absent_mapping: bool = True,
+    before_mutation: Callable[[str, str], object] | None = None,
+    on_target_result: Callable[[str, Mapping[str, object]], object] | None = None,
+    target_scope: Sequence[str] | None = None,
 ) -> dict[str, object]:
     """Submit one independent official publish task per selected region."""
 
+    if type(recover_absent_mapping) is not bool:
+        raise TypeError("recover_absent_mapping must be boolean")
     global_id = _positive_identity(global_item_id, "global item identity")
-    targets = selected_region_targets(snapshot)
-    results: list[dict[str, object]] = []
+    targets = selected_region_targets(snapshot,target_scope=target_scope)
+    results: list[dict[str, object]] = _TargetResultJournal(
+        on_target_result, "DISPATCH"
+    )
     for target in targets:
         region = target.split(":", 1)[1]
         try:
             approved_models = _approved_models(snapshot, target)
+            _require_frozen_regional_copy(snapshot, target)
             approved_item_sku = _expected_item_sku(snapshot)
             parcel = _parcel_envelope(snapshot)
             context = runtime.context(region)
@@ -226,7 +284,7 @@ def dispatch_selected_regions(
             existing_item_id = runtime.existing_regional_item(
                 context, global_id
             )
-            if not existing_item_id:
+            if not existing_item_id and recover_absent_mapping:
                 existing_item_id = runtime.discover_existing_regional_item(
                     context,
                     global_id,
@@ -264,6 +322,16 @@ def dispatch_selected_regions(
             )
             continue
 
+        try:
+            if before_mutation is not None:
+                before_mutation(target, "create_publish_task")
+        except Exception as error:
+            results.append({
+                **_target_fact(target, attempted=False, accepted=False,
+                    outcome="NOT_ATTEMPTED", message=_safe_text(error, 180)),
+                "external_write_count": 0,
+            })
+            continue
         try:
             response = runtime.create_publish_task(context, body)
         except Exception as error:
@@ -331,6 +399,9 @@ def readback_dispatched_regions(
     global_item_id: str,
     runtime: ShopeeRegionRuntime,
     poll_attempts: int = 3,
+    before_mutation: Callable[[str, str], object] | None = None,
+    on_target_result: Callable[[str, Mapping[str, object]], object] | None = None,
+    target_scope: Sequence[str] | None = None,
 ) -> dict[str, object]:
     """Verify accepted tasks from official shop facts, target by target."""
 
@@ -341,8 +412,10 @@ def readback_dispatched_regions(
         for row in dispatch.get("targets") or []
         if isinstance(row, Mapping)
     }
-    results: list[dict[str, object]] = []
-    for target in selected_region_targets(snapshot):
+    results: list[dict[str, object]] = _TargetResultJournal(
+        on_target_result, "READBACK"
+    )
+    for target in selected_region_targets(snapshot,target_scope=target_scope):
         source = dispatch_rows.get(target)
         if not isinstance(source, Mapping) or source.get("accepted") is not True:
             results.append(
@@ -359,9 +432,15 @@ def readback_dispatched_regions(
         existing_item_id = str(source.get("existing_item_id") or "").strip()
         is_existing_identity = bool(existing_item_id)
         region = target.split(":", 1)[1]
+        # Preserve prior transport evidence even when a later local reservation
+        # or readback fails. Only a transport that actually started is unknown.
+        image_write_count = listing_write_count = logistics_write_count = 0
+        copy_write_count = description_media_write_count = 0
+        completed_image_upload_count = 0
         try:
             if not task_id and not existing_item_id:
                 raise ShopeeRegionContractError("publish task identity is missing")
+            _require_frozen_regional_copy(snapshot, target)
             approved_models = _approved_models(snapshot, target)
             context = runtime.context(region)
             expected_tiers = _exact_global_tiers(
@@ -460,9 +539,18 @@ def readback_dispatched_regions(
                             "regional identity is not exact enough for an image update"
                         )
                     image_attempted = True
-                    upload_receipt = runtime.upload_regional_images(
-                        context, target_images
-                    )
+                    image_write_count = None
+                    try:
+                        upload_kwargs = ({"before_upload": lambda: before_mutation(target, "upload_regional_image")}
+                                         if before_mutation is not None else {})
+                        upload_receipt = runtime.upload_regional_images(
+                            context, target_images, **upload_kwargs
+                        )
+                    except Exception as error:
+                        completed_image_upload_count = getattr(error, "completed_image_upload_count", 0)
+                        if getattr(error, "image_upload_outcome_unknown", None) is False:
+                            image_write_count = completed_image_upload_count
+                        raise
                     uploaded_ids = _image_ids(
                         upload_receipt.get("image_ids"),
                         "regional image upload receipt",
@@ -476,6 +564,9 @@ def readback_dispatched_regions(
                         "regional image upload write count",
                     )
                     expected_image_ids = tuple(uploaded_ids)
+                    image_write_count = upload_write_count
+                    if before_mutation is not None:
+                        before_mutation(target, "update_regional_images")
                     try:
                         update_receipt = runtime.update_regional_images(
                             context,
@@ -504,12 +595,13 @@ def readback_dispatched_regions(
             logistics_attempted = False
             logistics_error_type = ""
             logistics_write_count: int | None = 0
-            expected_title, expected_description = _approved_copy(snapshot)
+            expected_title, expected_description = _approved_copy(snapshot, target)
             copy_repair_attempted = False
             copy_repair_error_type = ""
+            copy_repair_error_message = ""
             copy_write_count: int | None = 0
             repaired_copy: tuple[str, str] | None = None
-            if region in {"TH", "VN"} and not _regional_copy_matches(
+            if region in {"MY", "TH", "VN"} and not _regional_copy_matches(
                 item,
                 region=region,
                 english_title=expected_title,
@@ -517,15 +609,8 @@ def readback_dispatched_regions(
             ):
                 copy_repair_attempted = True
                 try:
-                    localized = runtime.localize_regional_copy(
-                        context,
-                        english_title=expected_title,
-                        english_description=expected_description,
-                    )
-                    localized_title = str(localized.get("title") or "").strip()
-                    localized_description = str(
-                        localized.get("description") or ""
-                    ).strip()
+                    localized_title = expected_title
+                    localized_description = expected_description
                     if not _localized_copy_matches(
                         localized_title,
                         localized_description,
@@ -536,8 +621,11 @@ def readback_dispatched_regions(
                         )
                 except Exception as error:
                     copy_repair_error_type = type(error).__name__
+                    copy_repair_error_message = _safe_text(error, 180)
                 else:
                     repaired_copy = (localized_title, localized_description)
+                    if before_mutation is not None:
+                        before_mutation(target, "update_regional_copy")
                     try:
                         repair_receipt = runtime.update_regional_copy(
                             context,
@@ -554,8 +642,47 @@ def readback_dispatched_regions(
                         # Shopee accepted the change. Never retry blindly;
                         # official readback below is authoritative.
                         copy_repair_error_type = type(error).__name__
+                        copy_repair_error_message = _safe_text(error, 180)
                         copy_write_count = None
                     item = runtime.regional_item(context, item_id)
+            description_image_ids = (
+                expected_image_ids
+                if expected_image_ids is not None
+                else _official_image_ids(item)
+            )
+            if isinstance(item, Mapping) and len(description_image_ids) != len(target_images):
+                raise ShopeeRegionContractError(
+                    "regional gallery cannot prove complete description-image coverage"
+                )
+            observed_description = shopee_description_text(item)
+            description_media_attempted = False
+            description_media_error_type = ""
+            description_media_write_count: int | None = 0
+            if isinstance(item, Mapping) and (
+                shopee_description_image_ids(item) != description_image_ids
+            ):
+                description_media_attempted = True
+                if before_mutation is not None:
+                    before_mutation(target, "update_description_media")
+                try:
+                    description_receipt = runtime.update_regional_description(
+                        context,
+                        item_id,
+                        description=observed_description,
+                        image_ids=description_image_ids,
+                    )
+                    description_media_write_count = _nonnegative_write_count(
+                        description_receipt.get("external_write_count"),
+                        "description media write count",
+                    )
+                except Exception as error:
+                    # The provider may accept an update even if the response is
+                    # lost.  Official item readback below remains authoritative.
+                    description_media_error_type = type(error).__name__
+                    description_media_write_count = None
+                item = runtime.regional_item(context, item_id)
+                if shopee_description_image_ids(item) == description_image_ids:
+                    description_media_write_count = 1
             if should_list and is_existing_identity:
                 # An existing UNLIST item has no provider task identity to
                 # rescue us from a wrong candidate.  Prove every immutable
@@ -584,6 +711,7 @@ def readback_dispatched_regions(
                     expected_region=region,
                     repaired_copy=repaired_copy,
                     expected_image_ids=expected_image_ids,
+                    expected_description_image_ids=description_image_ids,
                     item_id=item_id,
                 )
                 if not all(
@@ -596,6 +724,8 @@ def readback_dispatched_regions(
                     )
             if should_list:
                 listing_attempted = True
+                if before_mutation is not None:
+                    before_mutation(target, "list_regional_item")
                 try:
                     runtime.list_item(context, item_id)
                     listing_write_count = 1
@@ -627,6 +757,7 @@ def readback_dispatched_regions(
                 expected_region=region,
                 repaired_copy=repaired_copy,
                 expected_image_ids=expected_image_ids,
+                expected_description_image_ids=description_image_ids,
                 item_id=item_id,
             )
             verified = all(checks.values())
@@ -667,40 +798,62 @@ def readback_dispatched_regions(
                     "item_id": item_id,
                     "checks": checks,
                     "verified": verified,
+                    "official_catalog_rows": _catalog_observation_rows(
+                        target, context.shop_id, item_id, region, item, models, approved_models
+                    ) if verified else [],
                     "listing_attempted": listing_attempted,
                     "listing_error_type": listing_error_type,
                     "logistics_attempted": logistics_attempted,
                     "logistics_error_type": logistics_error_type,
                     "copy_repair_attempted": copy_repair_attempted,
                     "copy_repair_error_type": copy_repair_error_type,
+                    "copy_repair_error_message": copy_repair_error_message,
                     "image_update_attempted": image_attempted,
                     "image_update_error_type": image_error_type,
+                    "description_media_update_attempted": description_media_attempted,
+                    "description_media_update_error_type": description_media_error_type,
                     "external_write_count": (
                         None
                         if listing_write_count is None
                         or logistics_write_count is None
                         or copy_write_count is None
                         or image_write_count is None
+                        or description_media_write_count is None
                         else (
                             listing_write_count
                             + logistics_write_count
                             + copy_write_count
                             + image_write_count
+                            + description_media_write_count
                         )
                     ),
                 }
             )
         except Exception as error:
+            counts = (image_write_count, listing_write_count, logistics_write_count,
+                      copy_write_count, description_media_write_count)
+            known_count = None if any(value is None for value in counts) else sum(counts)
+            budget_denied = isinstance(error, PublicationWriteBudgetExceeded)
+            locally_stopped = budget_denied or getattr(error, "image_upload_outcome_unknown", None) is False
+            outcome = ("NOT_ATTEMPTED" if known_count == 0 else "FAILED") if locally_stopped and known_count is not None else "UNKNOWN"
             results.append(
                 {
                     **_target_fact(
                         target,
-                        attempted=True,
+                        attempted=known_count != 0,
                         accepted=True,
-                        outcome="UNKNOWN",
-                        message=str(error),
+                        outcome=outcome,
+                        message=_safe_text(error, 180),
                     ),
                     "provider_task_id": task_id,
+                    "readback_error_type": type(error).__name__,
+                    "verified": False,
+                    "external_write_count": known_count,
+                    "confirmed_external_write_count_lower_bound": (
+                        sum(value for value in counts if value is not None)
+                        + (completed_image_upload_count if image_write_count is None else 0)
+                    ),
+                    "budget_denied_before_next_transport": budget_denied,
                 }
             )
     verified_count = sum(row.get("verified") is True for row in results)
@@ -989,32 +1142,31 @@ class OfficialShopeeRegionRuntime:
         title: str,
         description: str,
     ) -> Mapping[str, object]:
-        from modules.shopee.publish import update_local_listing_copy
+        """Atomically update localized copy without dropping detail images."""
 
-        receipt = update_local_listing_copy(
-            shop_id=context.shop_id,
-            token=context.shop_token,
-            item_id=int(item_id),
-            title=title,
-            description=description,
+        from modules.shopee.client import shop_post
+
+        current = self.regional_item(context, item_id)
+        image_ids = _official_image_ids(current)
+        if not image_ids:
+            raise ShopeeRegionContractError(
+                "regional copy repair requires the existing ordered gallery"
+            )
+        response = shop_post(
+            "/api/v2/product/update_item",
+            context.shop_id,
+            context.shop_token,
+            {
+                "item_id": int(item_id),
+                "item_name": str(title or "").strip(),
+                "description_type": "extended",
+                "description_info": shopee_extended_description(
+                    str(description or "").strip(), image_ids
+                ),
+            },
         )
-        logistics = receipt.get("logistics")
-        newly_enabled = (
-            logistics.get("newly_enabled_logistic_ids")
-            if isinstance(logistics, Mapping)
-            else []
-        )
-        rejected = (
-            logistics.get("rejected_logistics")
-            if isinstance(logistics, Mapping)
-            else []
-        )
-        return {
-            "external_write_count": (
-                1 + len(newly_enabled or []) + len(rejected or [])
-            ),
-            "verified": receipt.get("verified") is True,
-        }
+        _raise_provider_error(response, "official regional copy and media update")
+        return {"external_write_count": 1, "accepted": True, "verified": False}
 
     def existing_regional_image_binding(
         self, context: RegionContext, global_item_id: str
@@ -1028,12 +1180,13 @@ class OfficialShopeeRegionRuntime:
         return dict(binding) if isinstance(binding, Mapping) else None
 
     def upload_regional_images(
-        self, context: RegionContext, image_urls: tuple[str, ...]
+        self, context: RegionContext, image_urls: tuple[str, ...],
+        *, before_upload: Callable[[], object] | None = None,
     ) -> Mapping[str, object]:
         del context
         from modules.shopee.publish import _upload_images_exact
 
-        image_ids = _upload_images_exact(list(image_urls), max_images=9)
+        image_ids = _upload_images_exact(list(image_urls), max_images=9, before_upload=before_upload)
         return {
             "image_ids": image_ids,
             "external_write_count": len(image_ids),
@@ -1059,6 +1212,33 @@ class OfficialShopeeRegionRuntime:
             },
         )
         _raise_provider_error(response, "official regional image update")
+        return {"external_write_count": 1}
+
+    def update_regional_description(
+        self,
+        context: RegionContext,
+        item_id: str,
+        *,
+        description: str,
+        image_ids: tuple[str, ...],
+    ) -> Mapping[str, object]:
+        """Write the full ordered gallery into Shopee's extended description."""
+
+        from modules.shopee.client import shop_post
+
+        clean_ids = tuple(_image_ids(image_ids, "regional description images"))
+        description_info = shopee_extended_description(description, clean_ids)
+        response = shop_post(
+            "/api/v2/product/update_item",
+            context.shop_id,
+            context.shop_token,
+            {
+                "item_id": int(item_id),
+                "description_type": "extended",
+                "description_info": description_info,
+            },
+        )
+        _raise_provider_error(response, "official regional description media update")
         return {"external_write_count": 1}
 
     def regional_models(
@@ -1253,7 +1433,12 @@ def _approved_image_count(snapshot: Mapping[str, object]) -> int:
     return len(_approved_images(snapshot))
 
 
-def _approved_copy(snapshot: Mapping[str, object]) -> tuple[str, str]:
+def _approved_copy(
+    snapshot: Mapping[str, object], target_label: str | None = None
+) -> tuple[str, str]:
+    if target_label is not None and _has_target_copy(snapshot, target_label):
+        content = publication_content_for_target(snapshot, target_label)
+        return content["title"], content["description"]
     product = snapshot.get("product")
     content = snapshot.get("content")
     title = (
@@ -1277,6 +1462,36 @@ def _approved_copy(snapshot: Mapping[str, object]) -> tuple[str, str]:
             "approved regional title and description are required"
         )
     return clean_title, clean_description
+
+
+def _has_target_copy(snapshot: Mapping[str, object], target_label: str) -> bool:
+    product = snapshot.get("product")
+    return (
+        isinstance(product, Mapping)
+        and isinstance(product.get("content_by_target"), Mapping)
+        and target_label in product["content_by_target"]
+    )
+
+
+def _require_frozen_regional_copy(
+    snapshot: Mapping[str, object], target_label: str
+) -> tuple[str, str]:
+    """R3 consumes frozen copy; historical snapshots remain readable elsewhere."""
+    region = target_label.split(":", 1)[1]
+    if region in {"MY", "TH", "VN"} and not _has_target_copy(snapshot, target_label):
+        raise ShopeeRegionContractError(
+            f"{target_label} frozen target copy is missing; use "
+            "prepare-product-publication and prepare-product-images before R3"
+        )
+    title, description = _approved_copy(snapshot, target_label)
+    if region in {"MY", "TH", "VN"} and not _localized_copy_matches(
+        title, description, region=region
+    ):
+        raise ShopeeRegionContractError(
+            f"{target_label} frozen target copy language is invalid; "
+            "return to prepare-product-publication without changing approved facts"
+        )
+    return title, description
 
 
 def _expected_item_sku(snapshot: Mapping[str, object]) -> str:
@@ -1404,6 +1619,29 @@ def _provider_price(value: Decimal) -> int | float:
     return float(value)
 
 
+def _catalog_observation_rows(target, shop_id, item_id, region, item, models, approved_models):
+    """An optional local projection must never change the provider outcome."""
+    try:
+        expected={row['model_sku']:row for row in approved_models}
+        skus=[row['model_sku'] for row in models]
+        ids=[str(row['model_id']) for row in models]
+        if len(set(skus))!=len(skus) or set(skus)!=set(expected) or len(set(ids))!=len(ids):
+            raise ValueError('ambiguous_official_models')
+        if any(not value.isdecimal() or int(value)<=0 for value in [str(shop_id),str(item_id),*ids]):
+            raise ValueError('official_identity_missing')
+        rows=[]
+        for model in models:
+            sku=model['model_sku'];currency=expected[sku]['currency']
+            price=_regional_model_price(model,currency)
+            if price is None:raise ValueError('official_price_missing')
+            rows.append({'authority':'OFFICIAL','verified':True,'target_label':target,'model_sku':sku,
+                         'identity':{'platform':'shopee','shop_key':str(shop_id),'product_id':str(item_id),'variant_id':str(model['model_id']),'seller_sku':sku},
+                         'listing':{'name':item.get('item_name'),'variant_name':model.get('model_name'),'region':region,'status':item.get('item_status'),'currency':currency,'price':str(price)}})
+        return rows
+    except Exception:
+        return [{'authority':'UNAVAILABLE','verified':False,'target_label':target,'reason':'official_catalog_identity_unbound'}]
+
+
 def _official_readback_checks(
     *,
     item: Mapping[str, object] | None,
@@ -1421,6 +1659,7 @@ def _official_readback_checks(
     expected_region: str,
     repaired_copy: tuple[str, str] | None,
     expected_image_ids: tuple[str, ...] | None,
+    expected_description_image_ids: tuple[str, ...],
     item_id: str,
 ) -> dict[str, bool]:
     expected = {row["model_sku"]: row for row in expected_models}
@@ -1488,11 +1727,7 @@ def _official_readback_checks(
         if isinstance(item, Mapping)
         else ""
     )
-    observed_description = (
-        str(item.get("description") or "").strip()
-        if isinstance(item, Mapping)
-        else ""
-    )
+    observed_description = shopee_description_text(item)
     copy_exact = (
         observed_title == repaired_copy[0]
         and observed_description == repaired_copy[1]
@@ -1548,6 +1783,14 @@ def _official_readback_checks(
         "localized_images_exact": (
             expected_image_ids is None
             or observed_image_ids == expected_image_ids
+        ),
+        "description_images_exact": (
+            shopee_description_image_ids(item)
+            == expected_description_image_ids
+        ),
+        "description_type_extended": (
+            isinstance(item, Mapping)
+            and str(item.get("description_type") or "").lower() == "extended"
         ),
     }
 
@@ -1611,10 +1854,8 @@ def _regional_copy_matches(
     if not isinstance(item, Mapping):
         return False
     title = str(item.get("item_name") or "").strip()
-    description = str(item.get("description") or "").strip()
-    if region in {"PH", "MY"}:
-        return title == english_title and description == english_description
-    return _localized_copy_matches(title, description, region=region)
+    description = shopee_description_text(item)
+    return title == english_title and description == english_description
 
 
 def _localized_copy_matches(title: str, description: str, *, region: str) -> bool:
@@ -1628,6 +1869,10 @@ def _localized_copy_matches(title: str, description: str, *, region: str) -> boo
         return _contains_vietnamese(title) and _localized_description_matches(
             description, region=region
         )
+    if region == "MY":
+        return contains_malay_language_features(
+            title
+        ) and _localized_description_matches(description, region=region)
     return False
 
 

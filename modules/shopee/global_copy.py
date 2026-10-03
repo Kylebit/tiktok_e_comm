@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from pathlib import Path
 
 GLOBAL_TITLE_MAX = 120
 GLOBAL_DESC_MAX = 3000
 GLOBAL_DESC_TARGET = 2400
-TOAPI_COPY_MODEL = "gpt-5.4-mini-official"
+LINGSHI_COPY_MODEL = "gpt-5.4-nano"
+LINGSHI_COPY_PROVIDER = "lingshi-chat-completions/v1"
 
 # 铺货时优先用 PH 英文作为母版（TH/VN 仅作最后回退）
 TK_SOURCE_ORDER = ("PH", "MY", "TH", "VN")
@@ -35,8 +37,10 @@ _CANONICAL_MATERIAL_RE = re.compile(
     re.I,
 )
 _DIMENSION_PAIR_RE = re.compile(
-    r"(?<!\d)(\d+(?:\.\d+)?)\s*(?:x|×|\*)\s*"
-    r"(\d+(?:\.\d+)?)\s*(cm|mm|m|in|inch|inches)\b",
+    r"(?<!\d)(?P<first>\d+(?:\.\d+)?)\s*"
+    r"(?:(?P<first_unit>cm|mm|m|in|inch|inches)\s*)?"
+    r"(?:x|×|\*)\s*(?P<second>\d+(?:\.\d+)?)\s*"
+    r"(?P<second_unit>cm|mm|m|in|inch|inches)\b",
     re.I,
 )
 _PACKAGE_DIMENSION_HINT_RE = re.compile(
@@ -76,6 +80,17 @@ def contains_vietnamese_language_features(value: str) -> bool:
         char in _VIETNAMESE_LANGUAGE_FEATURES
         for char in unicodedata.normalize("NFC", str(value or ""))
     )
+
+
+def contains_malay_language_features(value: str) -> bool:
+    """Require multiple recognizable Malay words for Latin-script copy."""
+
+    matches = {
+        match.group(0).casefold()
+        for match in _MALAY_HINT_RE.finditer(str(value or ""))
+    }
+    return len(matches) >= 2
+
 
 _SYSTEM = """You are a Shopee CNSC cross-border listing copywriter. Write in English ONLY.
 
@@ -213,19 +228,12 @@ def _extra_specs(detail: dict) -> str:
 
 
 def _ai_chat(system: str, user: str, *, max_tokens: int = 120) -> str:
-    from modules.sourcing.image_suite_plan import chat_completions, message_content
-
-    return message_content(
-        chat_completions(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            model=TOAPI_COPY_MODEL,
-            max_tokens=max_tokens,
-            temperature=0.2,
-        )
-    ).strip()
+    """Retired implicit paid path; pure copy validation remains reusable."""
+    raise RuntimeError(
+        "Implicit Shopee paid copy generation is retired. Prepare and freeze "
+        "target copy via prepare-product-publication before R3; "
+        "this helper cannot use ToAPI or Lingshi as an automatic fallback."
+    )
 
 
 def _guess_material(title_src: str, detail: dict) -> str:
@@ -354,39 +362,45 @@ def _approved_copy_required_facts(
             for match in _CANONICAL_MATERIAL_RE.finditer(source)
         )
     )
-    if not material_tokens:
-        raise ValueError(
-            "approved English copy is missing a canonical material token"
-        )
-
-    size_match = None
+    size_matches = []
     if not _PACKAGE_DIMENSION_HINT_RE.search(title):
-        size_match = _DIMENSION_PAIR_RE.search(title)
-    if size_match is None:
+        size_matches.extend(_DIMENSION_PAIR_RE.finditer(title))
+    if not size_matches:
         for line in description.splitlines():
             if _PACKAGE_DIMENSION_HINT_RE.search(line):
                 continue
             if not _PRODUCT_DIMENSION_HINT_RE.search(line):
                 continue
-            size_match = _DIMENSION_PAIR_RE.search(line)
-            if size_match is not None:
-                break
-    if size_match is None:
+            size_matches.extend(_DIMENSION_PAIR_RE.finditer(line))
+    if not size_matches and any(
+        _PACKAGE_DIMENSION_HINT_RE.search(line)
+        and _DIMENSION_PAIR_RE.search(line)
+        for line in source.splitlines()
+    ):
         raise ValueError(
-            "approved English copy is missing explicit finished product dimensions"
+            "approved copy provides package dimensions but no finished product dimensions"
         )
+    dimension_pairs = list(
+        dict.fromkeys(
+            (
+                _normalized_fact_number(match.group("first")),
+                _normalized_fact_number(match.group("second")),
+                match.group("second_unit").lower(),
+            )
+            for match in size_matches
+        )
+    )
 
     quantity_match = _LABELED_QUANTITY_RE.search(source)
     if quantity_match is None:
         quantity_match = _COUNTED_ITEM_RE.search(source)
     facts = {
         "material_tokens": material_tokens,
-        "finished_dimensions": [
-            _normalized_fact_number(size_match.group(1)),
-            _normalized_fact_number(size_match.group(2)),
-        ],
-        "dimension_unit": size_match.group(3).lower(),
+        "finished_dimension_pairs": [list(pair) for pair in dimension_pairs],
     }
+    if dimension_pairs:
+        facts["finished_dimensions"] = list(dimension_pairs[0][:2])
+        facts["dimension_unit"] = dimension_pairs[0][2]
     if quantity_match is not None and int(quantity_match.group(1)) > 0:
         facts["quantity"] = int(quantity_match.group(1))
     return facts
@@ -406,19 +420,26 @@ def _localized_copy_preserves_required_facts(
                 f"Shopee localized copy lost required material {material}"
             )
 
-    first, second = required_facts["finished_dimensions"]
-    first_pattern = re.escape(first).replace(r"\.", r"[\.,]")
-    second_pattern = re.escape(second).replace(r"\.", r"[\.,]")
-    dimension_pattern = re.compile(
-        rf"(?<!\d){first_pattern}\s*(?:x|×|\*)\s*"
-        rf"{second_pattern}(?!\d)",
-        re.I,
-    )
-    if not dimension_pattern.search(combined):
-        raise RuntimeError(
-            "Shopee localized copy lost required finished dimensions "
-            f"{first} x {second}"
+    pairs = required_facts.get("finished_dimension_pairs") or []
+    if not pairs and required_facts.get("finished_dimensions"):
+        pairs = [[
+            *required_facts["finished_dimensions"],
+            required_facts.get("dimension_unit"),
+        ]]
+    for first, second, _unit in pairs:
+        first_pattern = re.escape(first).replace(r"\.", r"[\.,]")
+        second_pattern = re.escape(second).replace(r"\.", r"[\.,]")
+        dimension_pattern = re.compile(
+            rf"(?<!\d){first_pattern}\s*(?:(?:cm|mm|m|in|inch|inches)\s*)?"
+            rf"(?:x|×|\*)\s*{second_pattern}"
+            rf"(?:\s*(?:cm|mm|m|in|inch|inches))?(?!\d)",
+            re.I,
         )
+        if not dimension_pattern.search(combined):
+            raise RuntimeError(
+                "Shopee localized copy lost required finished dimensions "
+                f"{first} x {second}"
+            )
 
     quantity = required_facts.get("quantity")
     if quantity is not None and not re.search(rf"(?<!\d){quantity}(?!\d)", combined):
@@ -427,8 +448,60 @@ def _localized_copy_preserves_required_facts(
         )
 
 
+def localized_title_matches(title: str, *, site: str, required_facts: dict) -> bool:
+    """Reject mixed-language titles while allowing factual Latin tokens."""
+
+    value = str(title or "").strip()
+    if not value:
+        return False
+    if site == "TH":
+        if not any("\u0e00" <= char <= "\u0e7f" for char in value):
+            return False
+        residual = value
+        for token in required_facts.get("material_tokens") or []:
+            residual = re.sub(rf"(?i)\b{re.escape(str(token))}\b", " ", residual)
+        residual = re.sub(r"(?i)\b(?:cm|mm|m|in|inch|inches|pcs?)\b", " ", residual)
+        residual = re.sub(r"(?i)(?<=\d)\s*[x×*]\s*(?=\d)", " ", residual)
+        return not re.search(r"[A-Za-z]{2,}", residual)
+    if site == "VN":
+        if not contains_vietnamese_language_features(value):
+            return False
+        return not re.search(
+            r"(?i)\b(?:product|wallpaper|floral|flower|bird|roll|decor|"
+            r"overview|details|installation|size|material|and|with|for)\b",
+            value,
+        )
+    if site == "MY":
+        return contains_malay_language_features(value)
+    return False
+
+
+def localized_copy_matches_approved(
+    title: str,
+    description: str,
+    *,
+    site: str,
+    english_title: str,
+    english_description: str,
+) -> bool:
+    """Validate provider-localized copy against language and approved facts."""
+
+    try:
+        required_facts = _approved_copy_required_facts(
+            english_title,
+            english_description,
+        )
+        if not localized_title_matches(title, site=site, required_facts=required_facts):
+            return False
+        if not _localized_description_has_target_language(description, site=site):
+            return False
+        _localized_copy_preserves_required_facts(title, description, required_facts)
+    except (RuntimeError, ValueError):
+        return False
+    return True
+
+
 _SEMANTIC_LINE_SPLIT_RE = re.compile(r"(?:\r?\n|[\u2022\u25cf\u25aa\u25e6])+")
-_MAX_UNLOCALIZED_SEMANTIC_LINES = 24
 
 
 def localized_semantic_line_matches(line: str, *, site: str) -> bool:
@@ -441,6 +514,8 @@ def localized_semantic_line_matches(line: str, *, site: str) -> bool:
         has_target_language = any("\u0e00" <= char <= "\u0e7f" for char in value)
     elif site == "VN":
         has_target_language = contains_vietnamese_language_features(value)
+    elif site == "MY":
+        has_target_language = contains_malay_language_features(value)
     else:
         return False
     if has_target_language:
@@ -470,54 +545,6 @@ def _line_has_target_language(line: str, *, site: str) -> bool:
     return localized_semantic_line_matches(line, site=site)
 
 
-def _translate_unlocalized_semantic_lines(
-    description: str,
-    *,
-    site: str,
-    language: str,
-    approved_facts: str,
-) -> str:
-    normalized = re.sub(r"([\u2022\u25cf\u25aa\u25e6])", r"\n\1", description)
-    lines = normalized.splitlines()
-    missing = [
-        index
-        for index, line in enumerate(lines)
-        if line.strip() and not _line_has_target_language(line, site=site)
-    ]
-    if not missing:
-        return description
-    if len(missing) > _MAX_UNLOCALIZED_SEMANTIC_LINES:
-        raise RuntimeError(
-            f"Shopee {site} localized description has too many untranslated semantic lines"
-        )
-    system = f"""Translate one ecommerce description line into {language}.
-Return exactly one plain-text line: no JSON, markdown fence, explanation or extra line.
-The result must contain {language} characters. Preserve every number, dimension and
-Latin material token present in the source line exactly. Do not add product facts."""
-    for index in missing:
-        translated = _ai_chat(
-            system,
-            "Approved English facts:\n"
-            + approved_facts
-            + "\n\nSource line:\n"
-            + lines[index].strip(),
-            max_tokens=180,
-        ).strip().strip('"')
-        if "\n" in translated or not _line_has_target_language(
-            translated, site=site
-        ):
-            raise RuntimeError(
-                f"Shopee {site} localized description failed semantic-line language validation"
-            )
-        lines[index] = translated
-    corrected = "\n".join(lines).strip()
-    if not _localized_description_has_target_language(corrected, site=site):
-        raise RuntimeError(
-            f"Shopee {site} localized description failed semantic-line language validation"
-        )
-    return corrected
-
-
 def localize_shopee_copy(
     *,
     english_title: str,
@@ -531,7 +558,7 @@ def localize_shopee_copy(
     """
 
     site = str(region or "").upper()
-    if site in {"PH", "MY"}:
+    if site == "PH":
         return {
             "title": str(english_title or "").strip(),
             "description": str(english_description or "").strip(),
@@ -539,7 +566,7 @@ def localize_shopee_copy(
             "provider": "english_global_master",
             "model": None,
         }
-    language = {"TH": "Thai", "VN": "Vietnamese"}.get(site)
+    language = {"MY": "Malay", "TH": "Thai", "VN": "Vietnamese"}.get(site)
     if not language:
         raise ValueError(f"unsupported Shopee localization region {site}")
     required_facts = _approved_copy_required_facts(
@@ -554,13 +581,14 @@ def localize_shopee_copy(
     system = f"""You localize approved Shopee cross-border product copy into natural {language}.
 Preserve every supplied product fact exactly and never invent claims.
 Return ONLY JSON with keys title and description.
-Title: 60-115 characters, natural ecommerce language for {site}, searchable, no emoji.
-Description: 500-1800 characters, plain text with clear section headings and line breaks.
+Title: 45-115 characters, natural ecommerce language for {site}, searchable, no emoji.
+Description: 180-900 characters in one natural-language paragraph. Do not use
+standalone headings, labels, bullets or English-only lines.
 Preserve all approved materials, dimensions, package contents and application guidance.
 {quantity_instruction}
 Keep each source material token exactly as supplied in Latin characters somewhere
 in the description, even when the surrounding copy is localized.
-Every non-empty description semantic line must contain {language} characters.
+Every non-empty description semantic line must contain recognizable {language} wording.
 Never emit an English-only heading, label, bullet or sentence. Keep any Latin
 material or dimension token on the same line as its {language} label.
 Do not add waterproof, removable, residue-free, reusable, durability, certification,
@@ -570,68 +598,45 @@ warranty, medical, safety or performance claims. Do not include a seller SKU."""
         "Approved English description:\n"
         f"{str(english_description or '').strip()}"
     )
+    # One approved repair action may make exactly one paid Lingshi request.
+    # If that draft fails any language, length or fact gate, stop and surface
+    # the failure; never spend again automatically and never translate stray
+    # lines through additional hidden calls.
     raw = _ai_chat(system, source_user, max_tokens=1400)
-    for attempt in range(2):
-        parsed = _parse_ai_json(raw)
-        title = re.sub(r"\s+", " ", str(parsed.get("title") or "")).strip()
-        description = str(parsed.get("description") or "").strip()
-        if not (60 <= len(title) <= GLOBAL_TITLE_MAX):
-            raise RuntimeError(
-                f"Shopee {site} localized title length is invalid: {len(title)}"
-            )
-        if not (500 <= len(description) <= GLOBAL_DESC_MAX):
-            raise RuntimeError(
-                f"Shopee {site} localized description length is invalid: "
-                f"{len(description)}"
-            )
-        if site == "TH":
-            title_language_ok = any("\u0e00" <= char <= "\u0e7f" for char in title)
-        else:
-            title_language_ok = contains_vietnamese_language_features(title)
-        if not title_language_ok:
-            raise RuntimeError(f"Shopee {site} localized title failed language validation")
-        if _localized_description_has_target_language(description, site=site):
-            _localized_copy_preserves_required_facts(
-                title,
-                description,
-                required_facts,
-            )
-            return {
-                "title": title,
-                "description": description,
-                "region": site,
-                "provider": "toapi",
-                "model": TOAPI_COPY_MODEL,
-            }
-        if attempt:
-            description = _translate_unlocalized_semantic_lines(
-                description,
-                site=site,
-                language=language,
-                approved_facts=source_user,
-            )
-            _localized_copy_preserves_required_facts(
-                title,
-                description,
-                required_facts,
-            )
-            return {
-                "title": title,
-                "description": description,
-                "region": site,
-                "provider": "toapi",
-                "model": TOAPI_COPY_MODEL,
-            }
-        raw = _ai_chat(
-            system
-            + "\nCORRECTION: Rewrite the first draft. Every non-empty description "
-            "semantic line must contain the target language; preserve all approved facts.",
-            source_user
-            + "\n\nFirst localized draft to correct:\n"
-            + json.dumps({"title": title, "description": description}, ensure_ascii=False),
-            max_tokens=1400,
+    parsed = _parse_ai_json(raw)
+    title = re.sub(r"\s+", " ", str(parsed.get("title") or "")).strip()
+    description = str(parsed.get("description") or "").strip()
+    if not (20 <= len(title) <= GLOBAL_TITLE_MAX):
+        raise RuntimeError(
+            f"Shopee {site} localized title length is invalid: {len(title)}"
         )
-    raise AssertionError("unreachable localized copy correction state")
+    if not (100 <= len(description) <= GLOBAL_DESC_MAX):
+        raise RuntimeError(
+            f"Shopee {site} localized description length is invalid: "
+            f"{len(description)}"
+        )
+    if not localized_title_matches(
+        title,
+        site=site,
+        required_facts=required_facts,
+    ):
+        raise RuntimeError(f"Shopee {site} localized title failed language validation")
+    if not _localized_description_has_target_language(description, site=site):
+        raise RuntimeError(
+            f"Shopee {site} localized description failed language validation"
+        )
+    _localized_copy_preserves_required_facts(
+        title,
+        description,
+        required_facts,
+    )
+    return {
+        "title": title,
+        "description": description,
+        "region": site,
+        "provider": LINGSHI_COPY_PROVIDER,
+        "model": LINGSHI_COPY_MODEL,
+    }
 
 
 def english_variant_label(raw: str, fallback: str = "") -> str:

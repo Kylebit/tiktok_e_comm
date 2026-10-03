@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>已结算利润报表 · OrbitHive</title>
+  <link rel="stylesheet" href="/static/operations_shell.css">
+  <link rel="stylesheet" href="/static/profit_archive.css">
+  <script defer src="/static/operations_shell.js"></script>
+  <script defer src="/static/profit_archive.js"></script>
+</head>
+<body data-core="data">
+<main>
+  <header class="page-heading">
+    <div><span class="eyebrow">数据 / 财务 / 已结算订单</span><h1>利润结算报表</h1></div>
+    <a class="secondary" href="/profit-review">进入快照复核工作台</a>
+  </header>
+  <section class="notice" aria-labelledby="scope-title">
+    <h2 id="scope-title">历史月报按原事实打开</h2>
+    <p>选择此前生成的 <code>*.monthly-profit.json</code>。文件只在本浏览器当前页面内读取，不保存、不联网、不重算，也不会用当前成本覆盖历史成本。同一 report_id 的不同内容按 SHA-256 分别保留，不会静默覆盖。</p>
+    <p><strong>当前缺口：</strong>旧 7 月 JSON/HTML 快照未在现有工作区找到；未导入原 JSON 前，本页不会显示或推测任何历史金额。</p>
+    <p><strong>主图边界：</strong>隔离明细页只允许内嵌 PNG/JPEG/WebP/GIF；旧报告中的远程 HTTPS 图片不会联网加载。</p>
+  </section>
+  <section class="loader">
+    <label class="file-button">选择利润报表 JSON
+      <input id="reportFiles" type="file" accept="application/json,.json" multiple>
+    </label>
+    <button id="clearReports" type="button" disabled>清空当前页面</button>
+    <span id="loadStatus" role="status" aria-live="polite">尚未导入报表。</span>
+  </section>
+  <section>
+    <div class="section-heading"><h2>报表目录</h2><span id="reportCount">0 份</span></div>
+    <div id="reportIssues" class="issues" role="alert" hidden></div>
+    <div id="reportRows" class="report-grid"></div>
+    <div id="emptyReports" class="empty">
+      <strong>没有可展示的历史报表</strong>
+      <p>需要原始利润报表 JSON；结算截图、订单日期标签或当前通用估算页都不能替代它。</p>
+    </div>
+  </section>
+  <footer>报表期间以 JSON 合同为准；页面中的每日标签是下单日期，不是结算日期。刷新结算必须产生新的快照和版本。</footer>
+</main>
+<dialog id="reportDialog" aria-labelledby="reportTitle">
+  <div class="dialog-heading"><h2 id="reportTitle">历史利润报表</h2><button id="closeReport" type="button" aria-label="关闭">×</button></div>
+  <iframe id="reportFrame" title="历史利润报表明细" sandbox="allow-scripts"></iframe>
+  <details><summary>报表身份与来源</summary><pre id="reportEvidence"></pre></details>
+</dialog>
+</body>
+</html>

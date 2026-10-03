@@ -93,7 +93,8 @@ def refresh_access_token(force: bool = False) -> dict:
     }
     url = f"{AUTH_HOST}/api/v2/token/refresh?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, method="GET")
-    with urlopen_retry(req, timeout=30, context=SSL_CTX) as resp:
+    # This GET rotates credentials; an unknown outcome must not be replayed.
+    with urlopen_retry(req, timeout=30, context=SSL_CTX, attempts=1, allow_curl_fallback=False) as resp:
         result = json.loads(resp.read())
 
     if result.get("code") != 0:
@@ -101,6 +102,18 @@ def refresh_access_token(force: bool = False) -> dict:
         raise RuntimeError(f"刷新 Token 失败: {msg}（若持续失败请运行 python3 main.py auth）")
 
     data = result["data"]
+    if not isinstance(data, dict):
+        raise RuntimeError("刷新 Token 响应不完整，未保存凭据")
+    access = data.get("access_token")
+    # Keep the existing absolute-timestamp interpretation and stored value.
+    expiry = _expiry_ts(data, "access_token_expire_in")
+    if (not isinstance(access, str) or not access.strip()
+            or isinstance(data.get("access_token_expire_in"), bool) or not expiry or expiry < 0):
+        raise RuntimeError("刷新 Token 响应不完整，未保存凭据")
+    if "refresh_token" in data and (
+        not isinstance(data["refresh_token"], str) or not data["refresh_token"].strip()
+    ):
+        raise RuntimeError("刷新 Token 响应中的 refresh_token 无效，未保存凭据")
     updated = {
         **token,
         "access_token": data["access_token"],

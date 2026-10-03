@@ -720,7 +720,14 @@ def _reservation_keys(assignment: SkuAssignment) -> tuple[str, ...]:
 
 
 def _sku_key(value: str) -> str:
-    return value[-4:].zfill(4)
+    clean = str(value or "").strip()
+    # The governed 99xxxx namespace is reserved for same-product B links.
+    # Keep its full identity in the technical reservation ledger while the
+    # business/product matching layer may continue to compare the last four
+    # digits. Ordinary SKUs retain the historical four-digit reservation key.
+    if len(clean) == 6 and clean.startswith("99") and clean.isdigit():
+        return clean
+    return clean[-4:].zfill(4)
 
 
 def _mapping_sequence(value: Any) -> bool:

@@ -32,11 +32,24 @@ def canonical_inventory_sku(source: object, region: str) -> str:
 
 def aggregate_snapshot(payload: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
     grouped: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    seen_raw_identities: set[tuple[str, str]] = set()
     for record in payload["records"]:
         warehouse = record["warehouse"]
         region = WAREHOUSE_REGION.get(warehouse)
         if region is None:
             raise ValueError(f"warehouse {warehouse!r} is outside the approved dashboard")
+        quantities: list[int] = []
+        for field in QUANTITY_FIELDS:
+            value = record[field]
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{field} must be a nonnegative built-in int")
+            quantities.append(value)
+        raw_identity = (warehouse, record["seller_sku"])
+        if raw_identity in seen_raw_identities:
+            raise ValueError(
+                "BLOCKED_INVENTORY: duplicate raw inventory identity lacks source position identity"
+            )
+        seen_raw_identities.add(raw_identity)
         sku = canonical_inventory_sku(record["seller_sku"], region)
         row = grouped[region].setdefault(
             sku,
@@ -45,10 +58,7 @@ def aggregate_snapshot(payload: dict[str, Any]) -> dict[str, dict[str, dict[str,
         if row["warehouse"] != warehouse:
             raise ValueError("canonical inventory SKU cannot cross warehouses")
         row["sourceAliases"].append(record["seller_sku"])
-        for field in QUANTITY_FIELDS:
-            value = record[field]
-            if type(value) is not int or value < 0:
-                raise ValueError(f"{field} must be a nonnegative built-in int")
+        for field, value in zip(QUANTITY_FIELDS, quantities, strict=True):
             row[field] += value
     for rows in grouped.values():
         for row in rows.values():

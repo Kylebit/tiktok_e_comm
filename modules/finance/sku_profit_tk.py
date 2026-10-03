@@ -14,7 +14,11 @@ from core.api_client import get as api_get
 from core.config import ROOT, get
 from core.db import connect_readonly
 from core.shops import list_shops
-from modules.finance.sku_key import seller_sku_tail4, sku_variants_for_lookup
+from modules.finance.sku_key import (
+    read_current_internal_sku_cost,
+    seller_sku_tail4,
+    sku_variants_for_lookup,
+)
 from modules.finance.sku_profit_model import (
     DEFAULT_AD_RATE,
     DEFAULT_LOOKBACK_DAYS,
@@ -73,31 +77,6 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
 
     candidates_q = sku_variants_for_lookup(q)
     tail = seller_sku_tail4(q)
-
-    def _pick_cost(sku_id: str) -> float | None:
-        c = conn.execute(
-            "SELECT cost_cny FROM sku_costs WHERE sku_id = ? AND cost_cny > 0",
-            (sku_id,),
-        ).fetchone()
-        if c:
-            return float(c["cost_cny"])
-        return None
-
-    def _cost_by_tail(tail4: str) -> float | None:
-        if not tail4:
-            return None
-        rows = conn.execute(
-            """
-            SELECT p.seller_sku, s.cost_cny
-            FROM products p
-            JOIN sku_costs s ON s.sku_id = p.sku_id AND s.cost_cny > 0
-            ORDER BY s.updated_at DESC
-            """
-        ).fetchall()
-        for r in rows:
-            if seller_sku_tail4(str(r["seller_sku"] or "")) == tail4:
-                return float(r["cost_cny"])
-        return None
 
     def _find_th_by_seller_candidates(cands: list[str]):
         for cand in cands:
@@ -211,9 +190,16 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
         conn.close()
         return None
 
-    cost_cny = _pick_cost(str(row["sku_id"]))
-    if cost_cny is None:
-        cost_cny = _cost_by_tail(seller_sku_tail4(str(row["seller_sku"] or "")) or tail)
+    cost_cny, cost_source = read_current_internal_sku_cost(
+        conn,
+        {
+            "platform": "tiktok",
+            "shop_key": str(row["shop_cipher"] or ""),
+            "product_id": str(row["product_id"] or ""),
+            "variant_id": str(row["sku_id"] or ""),
+            "seller_sku": str(row["seller_sku"] or ""),
+        },
+    )
 
     is_th = (th_cipher and str(row["shop_cipher"] or "") == th_cipher) or str(row["currency"] or "") == "THB"
     out = {
@@ -227,6 +213,7 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
         "currency": row["currency"] or "THB",
         "shop_cipher": row["shop_cipher"] or "",
         "cost_cny": cost_cny,
+        "cost_source": cost_source,
         "is_th_listing": bool(is_th),
         "other_region_only": False,
         "sku_tail4": seller_sku_tail4(str(row["seller_sku"] or "")) or tail,
@@ -623,9 +610,8 @@ def list_hot_skus(limit: int = 30) -> list[dict[str, Any]]:
         if th_cipher:
             r = conn.execute(
                 """
-                SELECT p.seller_sku, p.product_name, p.image_url, p.price, p.currency, s.cost_cny
+                SELECT p.sku_id, p.seller_sku, p.product_id, p.product_name, p.image_url, p.price, p.currency, p.shop_cipher
                 FROM products p
-                LEFT JOIN sku_costs s ON s.sku_id = p.sku_id
                 WHERE p.sku_id = ? AND p.shop_cipher = ?
                 LIMIT 1
                 """,
@@ -634,9 +620,8 @@ def list_hot_skus(limit: int = 30) -> list[dict[str, Any]]:
         else:
             r = conn.execute(
                 """
-                SELECT p.seller_sku, p.product_name, p.image_url, p.price, p.currency, s.cost_cny
+                SELECT p.sku_id, p.seller_sku, p.product_id, p.product_name, p.image_url, p.price, p.currency, p.shop_cipher
                 FROM products p
-                LEFT JOIN sku_costs s ON s.sku_id = p.sku_id
                 WHERE p.sku_id = ? AND p.currency = 'THB'
                 LIMIT 1
                 """,
@@ -644,20 +629,16 @@ def list_hot_skus(limit: int = 30) -> list[dict[str, Any]]:
             ).fetchone()
         if not r or not r["seller_sku"]:
             continue
-        cost = r["cost_cny"]
-        if cost is None:
-            # 同末四位货本可复用
-            hit_rows = conn.execute(
-                """
-                SELECT p.seller_sku, s.cost_cny FROM products p
-                JOIN sku_costs s ON s.sku_id = p.sku_id AND s.cost_cny > 0
-                """
-            ).fetchall()
-            tail = seller_sku_tail4(str(r["seller_sku"] or ""))
-            for h in hit_rows:
-                if seller_sku_tail4(str(h["seller_sku"] or "")) == tail:
-                    cost = float(h["cost_cny"])
-                    break
+        cost, _ = read_current_internal_sku_cost(
+            conn,
+            {
+                "platform": "tiktok",
+                "shop_key": str(r["shop_cipher"] or ""),
+                "product_id": str(r["product_id"] or ""),
+                "variant_id": str(r["sku_id"] or ""),
+                "seller_sku": str(r["seller_sku"] or ""),
+            },
+        )
         if cost is None:
             continue  # 热销快捷只展示可估利润的 SKU
         out.append(

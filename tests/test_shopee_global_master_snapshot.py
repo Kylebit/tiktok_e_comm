@@ -382,3 +382,113 @@ def test_multisku_global_master_requires_exact_variant_image_positions():
             dashboard=dashboard,
             release_plan_payload=payload,
         )
+
+
+def test_multisku_global_master_rejects_duplicate_variant_image_positions():
+    dashboard, payload = _raw_approval_inputs(sku_count=2)
+    payload["product_facts"]["shopee_global_variant_image_positions"] = [
+        {"model_sku": "0958", "position": 0},
+        {"model_sku": "0959", "position": 0},
+    ]
+    payload["pricing"]["master_price_source"] = {
+        "region": "PH",
+        "target_key": "lh_ph",
+    }
+    payload["pricing"]["selected_targets"]["shopee:PH"]["source"] = {
+        "region": "PH",
+        "target_key": "lh_ph",
+    }
+    for index, row in enumerate(
+        payload["pricing"]["selected_targets"]["shopee:PH"]["sku_prices"]
+    ):
+        row["global_original_price_cny"] = str(40 + index)
+
+    with pytest.raises(ApprovedPublicationSnapshotError, match="distinct"):
+        build_approved_publication_snapshot_inputs(
+            dashboard=dashboard,
+            release_plan_payload=payload,
+        )
+
+
+def _external_variant_bindings(source_offer_id="123456"):
+    return [
+        {
+            "model_sku": "0958",
+            "image_url": "https://img.example/source-1.jpg",
+            "image_digest": "sha256:" + "1" * 64,
+            "source": {
+                "kind": "MIAOSHOU_SOURCE_IMAGE",
+                "source_offer_id": source_offer_id,
+                "source_position": 1,
+            },
+        },
+        {
+            "model_sku": "0959",
+            "image_url": "https://img.example/source-2.jpg",
+            "image_digest": "sha256:" + "2" * 64,
+            "source": {
+                "kind": "MIAOSHOU_SOURCE_IMAGE",
+                "source_offer_id": source_offer_id,
+                "source_position": 2,
+            },
+        },
+    ]
+
+
+def test_multisku_global_master_v2_freezes_distinct_external_variant_images():
+    dashboard, payload = _raw_approval_inputs(sku_count=2)
+    payload["product_facts"].pop("shopee_global_variant_image_positions")
+    payload["product_facts"]["shopee_global_variant_image_bindings"] = (
+        _external_variant_bindings(payload["product_id"])
+    )
+    payload["pricing"]["master_price_source"] = {
+        "region": "PH",
+        "target_key": "lh_ph",
+    }
+    payload["pricing"]["selected_targets"]["shopee:PH"]["source"] = {
+        "region": "PH",
+        "target_key": "lh_ph",
+    }
+    for index, row in enumerate(
+        payload["pricing"]["selected_targets"]["shopee:PH"]["sku_prices"]
+    ):
+        row["global_original_price_cny"] = str(40 + index)
+
+    document = _snapshot(dashboard, payload)
+
+    assert document["shopee_global_master"]["schema_version"] == (
+        "shopee-global-master/v2"
+    )
+    assert document["shopee_global_master"]["variant_image_bindings"] == (
+        _external_variant_bindings(payload["product_id"])
+    )
+
+    restored = approved_publication_snapshot_from_payload(deepcopy(document))
+    assert restored.payload() == document
+
+
+@pytest.mark.parametrize("field", ["image_url", "image_digest"])
+def test_multisku_global_master_v2_rejects_duplicate_external_binding(field):
+    dashboard, payload = _raw_approval_inputs(sku_count=2)
+    payload["product_facts"].pop("shopee_global_variant_image_positions")
+    bindings = _external_variant_bindings(payload["product_id"])
+    bindings[1][field] = bindings[0][field]
+    payload["product_facts"]["shopee_global_variant_image_bindings"] = bindings
+    payload["pricing"]["master_price_source"] = {
+        "region": "PH",
+        "target_key": "lh_ph",
+    }
+    payload["pricing"]["selected_targets"]["shopee:PH"]["source"] = {
+        "region": "PH",
+        "target_key": "lh_ph",
+    }
+    for index, row in enumerate(
+        payload["pricing"]["selected_targets"]["shopee:PH"]["sku_prices"]
+    ):
+        row["global_original_price_cny"] = str(40 + index)
+
+    with pytest.raises(ApprovedPublicationSnapshotError, match="distinct"):
+        build_approved_publication_snapshot_inputs(
+            dashboard=dashboard,
+            release_plan_payload=payload,
+        )

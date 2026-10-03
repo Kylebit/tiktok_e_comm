@@ -17,8 +17,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
-from core.http_retry import DEFAULT_SSL_CTX as SSL_CTX
-from core.http_retry import urlopen as urlopen_retry
+from core.resource_download import read_resource
 from core.llm import ai_config, chat_completion
 from modules.catalog import listings as cat_mod
 
@@ -181,10 +180,7 @@ def _download_image(url: str) -> ImageReader | None:
         return None
     try:
         req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urlopen_retry(req, timeout=15, context=SSL_CTX) as resp:
-            data = resp.read()
-        if len(data) > 5_000_000:
-            return None
+        data = read_resource(req, source="catalog_image", timeout=15)
         pil = PILImage.open(io.BytesIO(data)).convert("RGB")
         w, h = pil.size
         max_side = 400

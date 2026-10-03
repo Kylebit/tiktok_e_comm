@@ -1,0 +1,55 @@
+.dense-workspace #queueDisclosure {margin-bottom:10px;border-bottom:1px solid #dce3eb;padding:8px 0;font-size:12px}
+.dense-workspace #queueDisclosure>summary {cursor:pointer;font-weight:600;padding-bottom:8px}
+.dense-workspace .status-hero {padding:12px 0;margin:0;gap:12px;background:transparent;border:0}
+.dense-workspace .status-hero h2 {font-size:18px;line-height:1.4;overflow-wrap:anywhere}
+.dense-workspace .current-review-summary {display:flex;flex-wrap:wrap;gap:12px 24px;padding:10px 12px;background:#eef4f6;border:1px solid #d5e1e5;font-size:12px;align-items:center}
+.current-review-summary span,.current-review-summary strong {display:block}.current-review-summary span {color:#5b6c7c;margin-bottom:3px}
+.dense-workspace .compact-next {display:grid;grid-template-columns:minmax(160px,1fr) minmax(220px,2fr) auto;gap:5px 16px;margin:8px 0;padding:10px 12px;align-items:center;border:1px solid #dce3eb}
+.dense-workspace .compact-next .panel-heading,.dense-workspace .compact-next .boundary-note {display:none}
+.dense-workspace .compact-next h3,.dense-workspace .compact-next p,.dense-workspace .compact-next .action-row {margin:0;font-size:12px}
+.dense-workspace #reviewBlockers {grid-column:1 / -1;grid-row:2}.dense-workspace #reviewBlockers ul {max-height:200px;overflow:auto;display:block}
+.dense-workspace .overview-grid {display:block}.dense-workspace .panel-heading {padding-bottom:8px}.dense-workspace .panel-heading p {font-size:12px;margin:4px 0}
+.dense-workspace #productFactsPanel {padding:12px}.dense-workspace .facts-edit-grid {grid-template-columns:minmax(280px,3fr) minmax(150px,1fr);gap:12px}
+.dense-workspace .facts-edit-form {gap:8px}.dense-workspace .panel-heading {margin-bottom:0}.dense-workspace #roundEvidence {padding:6px 10px;margin:6px 0}.dense-workspace .status-hero .kicker {display:none}
+.dense-workspace .compact-next {padding:8px;row-gap:0}.dense-workspace #reviewBlockers {margin:0;padding:4px 0}.dense-workspace .compact-next .action-row {padding:0}.dense-workspace .status-hero {padding:6px 0}.dense-workspace .facts-edit-form {margin-top:6px}.dense-workspace .facts-edit-form>* {margin-top:0;margin-bottom:0}
+.dense-workspace .facts-edit-grid {margin:0}.dense-workspace .source-spec-editor {margin-top:0}.dense-workspace .compact-next .action-row .button {padding:8px;font-size:12px;min-height:32px}.dense-workspace .facts-edit-title small {margin-top:2px}
+.dense-workspace .facts-edit-title {grid-column:auto}.dense-workspace #factsEditTitle {min-height:60px;height:60px;font-size:13px}
+.dense-workspace .facts-notice {padding:7px;margin:6px 0;font-size:12px}
+.review-fold {margin:8px 0;padding:6px 0;font-size:12px}.review-fold>summary {cursor:pointer;color:#235b69;font-weight:600}
+.dense-workspace .source-spec-grid {display:block}.dense-workspace .source-spec-editor {padding:0;border:0;margin:10px 0}.dense-workspace .source-spec-editor>p {font-size:12px;margin:5px 0}
+.dense-workspace .review-table {width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
+.dense-workspace .review-table th,.dense-workspace .review-table td {padding:7px 6px;border-bottom:1px solid #dce3eb;text-align:left;vertical-align:middle;overflow-wrap:anywhere}
+.dense-workspace .review-table th {background:#edf2f5;color:#475d71;font-weight:600}.review-table small {display:block;color:#64748b}
+.dense-workspace .sku-review-table {min-width:800px}.dense-workspace .sku-review-table th:first-child {width:23%}.dense-workspace .sku-review-table th:nth-child(2) {width:20%}
+.dense-workspace tr.source-spec-option {display:table-row;background:white;border:0;padding:0}.dense-workspace .source-spec-selector {display:flex;gap:6px;align-items:center}
+.dense-workspace .source-spec-selector>input {position:static;opacity:1;width:15px;height:15px;margin:0}.dense-workspace .source-spec-selector>span {border:0;background:none;padding:0;display:block;min-height:0}.dense-workspace .source-spec-selector>span::before {display:none}
+.dense-workspace .source-spec-option strong {font-size:12px}.dense-workspace .source-spec-option small {font-size:10px}
+.dense-workspace .sku-review-table td label>span,.dense-workspace .source-spec-name>small {display:none}.dense-workspace .sku-review-table td:first-child label>span {display:block}
+.dense-workspace .sku-review-table input:not([type=checkbox]) {width:100%;min-width:0;padding:6px;font-size:12px;box-sizing:border-box}
+.dense-workspace .facts-pricing-linkage {padding:6px;margin:6px 0;font-size:12px}.dense-workspace .facts-edit-actions {position:static;padding:8px 0;display:flex;justify-content:space-between;background:transparent}
+.dense-workspace .selected-channel-price-grid {display:block}.dense-workspace .target-review-table {min-width:680px}.target-review-table th:nth-child(2) {width:38%}
+.dense-workspace .publication-target-grid {grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}.dense-workspace .publication-target label {min-height:0;padding:6px 8px;border-radius:4px}.dense-workspace .publication-target strong {font-size:11px}.dense-workspace .publication-target small {font-size:10px}.dense-workspace .publication-scope-heading h3 {font-size:16px}
+.dense-workspace .embedded-source-image-grid {grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}.dense-workspace .embedded-source-card img {height:120px;object-fit:contain}
+.image-decision-status {display:block;color:#725514;font-size:12px}.dense-workspace .approval-section {margin:8px 0}.dense-workspace .approval-card {padding:10px}.dense-workspace .approval-summary {padding:8px;background:#eef4f6;color:#1b3545}
+.dense-workspace .approval-summary strong {color:#1b3545}.dense-workspace .approval-summary>div {padding:4px;min-height:0}.dense-workspace #currentApprovalDetails {padding:8px 0;margin:0}
+.dense-workspace #publicationFlow {padding:12px;margin:8px 0}.review-version-row {display:grid;grid-template-columns:160px 1fr;gap:8px;padding:8px;border-bottom:1px solid #dae3e9;font-size:12px}.review-version-row small {display:block;color:#5c6c7a}
+#reviewDetailDialog {width:min(840px,calc(100vw - 24px));max-height:86vh;box-sizing:border-box;border:1px solid #bacbd4;border-radius:6px;padding:16px;color:#183142}#reviewDetailDialog::backdrop {background:#14293877}.review-detail-heading {display:flex;justify-content:space-between;gap:12px;align-items:center}.review-detail-heading h2 {font-size:16px}#reviewDetailText {white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
+#publicationFlowLedger pre {white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;font-size:11px}
+@media(max-width:700px){.dense-workspace .compact-next {display:flex;flex-direction:column;align-items:stretch}.dense-workspace .current-review-summary {gap:8px 18px}.dense-workspace .facts-edit-grid {grid-template-columns:1fr}.dense-workspace .current-review-summary>div {flex:1 1 42%}.dense-workspace .facts-edit-actions {flex-wrap:wrap}.review-version-row {grid-template-columns:1fr}.dense-workspace .compact-next .action-row {display:flex;flex-wrap:wrap}.dense-workspace .product-tabs {position:static}.dense-workspace #productFactsPanel {padding:8px}}
+@media(max-width:700px){.dense-workspace .publication-target-grid {grid-template-columns:1fr}}
+/* Frozen review stays inside the original four-stage workspace. */
+#frozenCopyReview article {padding:16px 0;border-bottom:1px solid var(--line,#ddd)}
+#frozenCopyReview p {white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65}
+#frozenCopyReview details {padding:12px 0;border-bottom:1px solid var(--line,#ddd)}
+.frozen-master-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
+.frozen-master-grid figure {margin:0;min-width:0}
+.frozen-master-grid img {display:block;width:100%;aspect-ratio:1;object-fit:contain;background:#f4f4f4}
+.frozen-master-grid figcaption {font-size:13px;line-height:1.5;padding:8px 0;overflow-wrap:anywhere}
+#reviewImageCount {font-size:14px;line-height:1.5}
+#productDetail[aria-busy="true"] [data-product-pane],
+#productDetail[aria-busy="true"] .compact-next,
+#productDetail[aria-busy="true"] #currentReviewSummary {display:none}
+/* Keep the registered-product entry visible outside the retained local queue. */
+#connectedProductPicker .action-row { flex-wrap: wrap; }
+#connectedProductSelect { min-width: 0; max-width: 100%; flex: 1 1 260px; }
+#connectedProductPicker h2 { margin-top: 0; }

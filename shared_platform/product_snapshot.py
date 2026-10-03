@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 
@@ -438,6 +439,71 @@ def _approved_target_context(
     }
 
 
+def _approved_warehouse_inventory(
+    value: object, *, target: str, shop_id: str,
+) -> dict[str, object]:
+    """Validate a frozen allocation against the exact collect-box shop."""
+    from copy import deepcopy
+    from datetime import datetime
+
+    if not isinstance(value, Mapping) or target not in value:
+        raise ValueError(f"{target} approved warehouse inventory is missing")
+    row = value[target]
+    if not isinstance(row, Mapping) or set(row) != {
+        "schema_version", "shop_id", "warehouses", "total_stock",
+        "source", "approved_by", "approved_at",
+    }:
+        raise ValueError(f"{target} approved warehouse inventory is malformed")
+    if (
+        row.get("schema_version") != "miaoshou-tiktok-warehouse-allocation/v1"
+        or type(row.get("shop_id")) is not str
+        or row["shop_id"] != shop_id
+        or row.get("source") != "CONVERSATION_APPROVAL"
+        or type(row.get("approved_by")) is not str
+        or not row["approved_by"].strip()
+        or type(row.get("approved_at")) is not str
+    ):
+        raise ValueError(f"{target} approved warehouse identity drifted")
+    try:
+        approved_at = datetime.fromisoformat(row["approved_at"].replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{target} approved warehouse timestamp is invalid") from error
+    if approved_at.tzinfo is None or approved_at.utcoffset() is None:
+        raise ValueError(f"{target} approved warehouse timestamp lacks timezone")
+    warehouses = row.get("warehouses")
+    if not isinstance(warehouses, list) or not warehouses:
+        raise ValueError(f"{target} approved warehouse rows are missing")
+    identifiers: set[str] = set()
+    names: set[str] = set()
+    total_stock = 0
+    for warehouse in warehouses:
+        if not isinstance(warehouse, Mapping) or set(warehouse) != {
+            "warehouse_id", "warehouse_name", "stock",
+        }:
+            raise ValueError(f"{target} approved warehouse row is malformed")
+        identifier = warehouse.get("warehouse_id")
+        name = warehouse.get("warehouse_name")
+        stock = warehouse.get("stock")
+        if (
+            type(identifier) is not str or not identifier.strip()
+            or identifier != identifier.strip() or identifier in identifiers
+            or type(name) is not str or not name.strip()
+            or name != name.strip() or name in names
+            or type(stock) is not int or stock < 0
+        ):
+            raise ValueError(f"{target} approved warehouse row drifted")
+        identifiers.add(identifier)
+        names.add(name)
+        total_stock += stock
+    if (
+        type(row.get("total_stock")) is not int
+        or row["total_stock"] != total_stock
+        or total_stock <= 0
+    ):
+        raise ValueError(f"{target} approved warehouse total drifted")
+    return deepcopy(dict(row))
+
+
 def build_approved_tiktok_publish_snapshot(
     plan: object,
     *,
@@ -473,6 +539,10 @@ def build_approved_tiktok_publish_snapshot(
         payload,
         variant_model_skus=variant_model_skus,
     )
+    product_facts = payload.get("product_facts")
+    if not isinstance(product_facts, Mapping):
+        raise ValueError("approved product facts are missing")
+    warehouse_allocations = product_facts.get("warehouse_inventory_by_target")
     targets: list[dict[str, object]] = []
     unavailable_targets: list[dict[str, str]] = []
     for target in selected_targets:
@@ -491,10 +561,22 @@ def build_approved_tiktok_publish_snapshot(
             target=target,
             approved_identity=identity,
         )
+        product_facts = payload.get("product_facts")
+        warehouse_fields = {}
+        if (
+            isinstance(product_facts, Mapping)
+            and "warehouse_inventory_by_target" in product_facts
+        ):
+            warehouse_fields["expected_warehouse_inventory"] = _approved_warehouse_inventory(
+                product_facts["warehouse_inventory_by_target"],
+                target=target,
+                shop_id=draft["shop_id"],
+            )
         targets.append(
             {
                 "target_label": target,
                 **draft,
+                **warehouse_fields,
                 "expected_price": price,
                 "expected_sku_prices": sku_prices,
                 "expected_variant_model_skus": variant_model_skus,
@@ -516,6 +598,99 @@ def build_approved_tiktok_publish_snapshot(
         "payload_digest": identity["payload_digest"],
         "targets": targets,
         "unavailable_targets": unavailable_targets,
+    }
+
+
+def _approved_warehouse_inventory(
+    value: object,
+    *,
+    target: str,
+    shop_id: str,
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or target not in value:
+        raise ValueError(f"{target} approved warehouse inventory is missing")
+    row = value[target]
+    if not isinstance(row, Mapping) or set(row) != {
+        "schema_version",
+        "shop_id",
+        "warehouses",
+        "total_stock",
+        "source",
+        "approved_by",
+        "approved_at",
+    }:
+        raise ValueError(f"{target} approved warehouse inventory is invalid")
+    if (
+        row.get("schema_version") != "miaoshou-tiktok-warehouse-allocation/v1"
+        or str(row.get("shop_id") or "") != str(shop_id)
+        or row.get("source") != "CONVERSATION_APPROVAL"
+        or type(row.get("approved_by")) is not str
+        or not str(row.get("approved_by")).strip()
+        or type(row.get("approved_at")) is not str
+        or not str(row.get("approved_at")).strip()
+    ):
+        raise ValueError(f"{target} approved warehouse inventory drifted")
+    raw_approved_at = row["approved_at"]
+    if not isinstance(raw_approved_at, str):
+        raise ValueError(f"{target} approved warehouse timestamp is invalid")
+    try:
+        approved_at = datetime.fromisoformat(raw_approved_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{target} approved warehouse timestamp is invalid") from error
+    if approved_at.tzinfo is None or approved_at.utcoffset() is None:
+        raise ValueError(f"{target} approved warehouse timestamp lacks timezone")
+    warehouses = row.get("warehouses")
+    if not isinstance(warehouses, list) or not warehouses:
+        raise ValueError(f"{target} approved warehouses are invalid")
+    normalized: list[dict[str, object]] = []
+    ids: set[str] = set()
+    names: set[str] = set()
+    total = 0
+    for raw in warehouses:
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "warehouse_id",
+            "warehouse_name",
+            "stock",
+        }:
+            raise ValueError(f"{target} approved warehouse row is invalid")
+        warehouse_id = raw.get("warehouse_id")
+        name = raw.get("warehouse_name")
+        stock = raw.get("stock")
+        if (
+            type(warehouse_id) is not str
+            or not warehouse_id.isdigit()
+            or int(warehouse_id) <= 0
+            or type(name) is not str
+            or not name.strip()
+            or name != name.strip()
+            or type(stock) is not int
+            or stock < 0
+            or warehouse_id in ids
+            or name in names
+        ):
+            raise ValueError(f"{target} approved warehouse row drifted")
+        ids.add(warehouse_id)
+        names.add(name)
+        total += stock
+        normalized.append(
+            {
+                "warehouse_id": warehouse_id,
+                "warehouse_name": name,
+                "stock": stock,
+            }
+        )
+    if total <= 0 or row.get("total_stock") != total:
+        raise ValueError(f"{target} approved warehouse total drifted")
+    return {
+        "schema_version": "miaoshou-tiktok-warehouse-allocation/v1",
+        "shop_id": str(shop_id),
+        "warehouses": normalized,
+        "total_stock": total,
+        "source": "CONVERSATION_APPROVAL",
+        "approved_by": row["approved_by"],
+        "approved_at": row["approved_at"],
     }
 
 

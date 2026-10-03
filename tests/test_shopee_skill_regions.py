@@ -13,7 +13,7 @@ from modules.shopee.skill_regions import (
 
 
 def _snapshot(*targets: str) -> dict:
-    return {
+    snapshot = {
         "schema_version": "approved-publication-snapshot/v4",
         "product": {
             "title": "Approved regional title",
@@ -62,6 +62,22 @@ def _snapshot(*targets: str) -> dict:
     }
 
 
+    snapshot['product']['content_by_target'] = {
+        target: _frozen_copy(target.split(':', 1)[1]) for target in targets
+    }
+    return snapshot
+
+
+def _frozen_copy(region):
+    copies = {
+        'MY': ('ms-MY', 'Produk hiasan rumah yang diluluskan', 'Penerangan produk hiasan untuk rumah yang diluluskan.'),
+        'TH': ('th-TH', 'ชื่อสินค้าไทยสำหรับการทดสอบ', 'รายละเอียดสินค้าไทยสำหรับการทดสอบ'),
+        'VN': ('vi-VN', 'Tên sản phẩm tiếng Việt để kiểm tra', 'Mô tả sản phẩm bằng tiếng Việt để kiểm tra'),
+    }
+    locale, title, description = copies.get(region, ('en-PH', 'Approved regional title', 'Approved regional description'))
+    return {'locale': locale, 'title': title, 'description': description}
+
+
 class FakeRuntime:
     def __init__(self) -> None:
         self.context_calls: list[str] = []
@@ -86,11 +102,13 @@ class FakeRuntime:
         self.provider_added_logistics: set[str] = set()
         self.localize_calls: list[str] = []
         self.copy_update_calls: list[tuple[str, str]] = []
-        self.localized_copy: dict[str, dict[str, str]] = {}
+        self.localized_copy: dict[str, dict[str, str]] = {'MY': _frozen_copy('MY')}
         self.image_upload_calls: list[tuple[str, tuple[str, ...]]] = []
         self.image_update_calls: list[tuple[str, str, tuple[str, ...]]] = []
         self.regional_image_ids: dict[str, list[str]] = {}
         self.stored_image_bindings: dict[str, dict[str, object]] = {}
+        self.description_media_calls: list[tuple[str, str, tuple[str, ...]]] = []
+        self.description_media_ids: dict[str, tuple[str, ...]] = {}
 
     def context(self, region: str) -> RegionContext:
         self.context_calls.append(region)
@@ -130,7 +148,6 @@ class FakeRuntime:
         if error is not None:
             raise error
         return self.discovered_items.get(context.region)
-
     def publish_task_result(self, context, task_id):
         status = self.task_status.get(context.region, "success")
         return {
@@ -145,7 +162,7 @@ class FakeRuntime:
         if context.region in self.missing_items:
             return None
         localized = self.localized_copy.get(context.region) or {}
-        return {
+        item = {
             "item_id": item_id,
             "item_status": (
                 "NORMAL" if context.region in self.listed_regions else "UNLIST"
@@ -183,6 +200,29 @@ class FakeRuntime:
                 else []
             ),
         }
+        media_ids = self.description_media_ids.get(context.region)
+        if media_ids is not None:
+            description_text = item["description"]
+            item["description"] = ""
+            item["description_type"] = "extended"
+            item["description_info"] = {
+                "extended_description": {
+                    "field_list": [
+                        {
+                            "field_type": "text",
+                            "text": description_text,
+                        },
+                        *[
+                            {
+                                "field_type": "image",
+                                "image_info": {"image_id": image_id},
+                            }
+                            for image_id in media_ids
+                        ],
+                    ]
+                }
+            }
+        return item
 
     def regional_models(self, context, _item_id):
         currency = {"PH": "PHP", "MY": "MYR", "TH": "THB", "VN": "VND"}[
@@ -230,19 +270,26 @@ class FakeRuntime:
         self, context, *, english_title, english_description
     ):
         self.localize_calls.append(context.region)
-        assert english_title == "Approved regional title"
-        assert english_description == "Approved regional description"
+        assert english_title
+        assert english_description
         return {
             "title": {
+                "MY": (
+                    "Kertas Dinding Bunga dan Burung PVC untuk Hiasan Rumah "
+                    "44 cm x 3 m"
+                ),
                 "TH": "ชื่อสินค้าไทยสำหรับการทดสอบ",
                 "VN": "Tên sản phẩm tiếng Việt để kiểm tra",
             }[context.region],
             "description": {
+                "MY": (
+                    "Produk hiasan dinding dengan bahan PVC untuk rumah dan "
+                    "saiz 44 cm x 3 m."
+                ),
                 "TH": "รายละเอียดสินค้าไทยสำหรับการทดสอบ",
                 "VN": "Mô tả sản phẩm bằng tiếng Việt để kiểm tra",
             }[context.region],
         }
-
     def update_regional_copy(self, context, item_id, *, title, description):
         self.copy_update_calls.append((context.region, str(item_id)))
         self.localized_copy[context.region] = {
@@ -272,6 +319,15 @@ class FakeRuntime:
         self.regional_image_ids[context.region] = list(clean)
         return {"external_write_count": 1}
 
+    def update_regional_description(
+        self, context, item_id, *, description, image_ids
+    ):
+        assert description
+        clean = tuple(image_ids)
+        self.description_media_calls.append((context.region, str(item_id), clean))
+        self.description_media_ids[context.region] = clean
+        return {"external_write_count": 1}
+
     def record_verified_item(self, **facts):
         self.records.append(dict(facts))
         if facts.get("image_route_digest") and facts.get("image_ids"):
@@ -283,6 +339,17 @@ class FakeRuntime:
 
 def _localized_snapshot(target: str, *images: str) -> dict:
     snapshot = _snapshot(target)
+    snapshot["product"]["title"] = (
+        "PVC Bird and Flower Wallpaper Roll 44 cm x 3 m"
+    )
+    snapshot["product"]["description"] = (
+        "Product size: 44 cm x 3 m. Material: PVC."
+    )
+    snapshot["product"]["content_by_target"][target] = {
+        "locale": "ms-MY",
+        "title": "Kertas Dinding Bunga dan Burung PVC untuk Hiasan Rumah 44 cm x 3 m",
+        "description": "Produk hiasan dinding dengan bahan PVC untuk rumah dan saiz 44 cm x 3 m.",
+    }
     snapshot["product"]["image_routing"] = {
         "schema_version": "localized-publication-images/v1",
         "approval_digest": "sha256:" + "1" * 64,
@@ -505,7 +572,12 @@ def test_localized_regional_images_are_written_once_and_read_back_in_order() -> 
         ("MY", "8102", ("my-localized-1",))
     ]
     assert result["targets"][0]["checks"]["localized_images_exact"] is True
-    assert result["targets"][0]["external_write_count"] == 2
+    assert result["targets"][0]["checks"]["description_images_exact"] is True
+    assert runtime.description_media_calls == [
+        ("MY", "8102", ("my-localized-1",))
+    ]
+    assert result["targets"][0]["copy_repair_attempted"] is True
+    assert result["targets"][0]["external_write_count"] == 4
 
     runtime.image_upload_calls.clear()
     runtime.image_update_calls.clear()
@@ -519,6 +591,7 @@ def test_localized_regional_images_are_written_once_and_read_back_in_order() -> 
     assert continuation["targets"][0]["external_write_count"] == 0
     assert runtime.image_upload_calls == []
     assert runtime.image_update_calls == []
+    assert len(runtime.description_media_calls) == 1
 
 
 def test_official_runtime_updates_only_the_exact_regional_image_ids(monkeypatch) -> None:
@@ -734,7 +807,7 @@ def test_th_vn_english_copy_is_repaired_in_place_and_read_back() -> None:
         runtime=runtime,
     )
 
-    assert runtime.localize_calls == ["TH", "VN"]
+    assert runtime.localize_calls == []
     assert runtime.copy_update_calls == [("TH", "8103"), ("VN", "8104")]
     assert [row["outcome"] for row in result["targets"]] == [
         "PUBLISHED",
@@ -788,7 +861,7 @@ def test_partially_disabled_applicable_logistic_passes_without_update() -> None:
     assert runtime.logistic_enable_calls == []
     assert row["outcome"] == "PUBLISHED"
     assert row["checks"]["applicable_logistics_enabled"] is True
-    assert row["external_write_count"] == 1
+    assert row["external_write_count"] == 2
 
 
 def test_provider_added_enabled_logistic_is_not_a_content_mismatch() -> None:
@@ -969,3 +1042,197 @@ def test_official_discovery_rejects_normal_and_unlisted_identity_ambiguity(
         assert "ambiguous" in str(error)
     else:
         raise AssertionError("multiple cross-status candidates must fail closed")
+
+
+def test_fresh_global_dispatch_skips_historical_regional_discovery() -> None:
+    runtime = FakeRuntime()
+
+    result = dispatch_selected_regions(
+        _snapshot("shopee:PH"),
+        global_item_id="60000001",
+        runtime=runtime,
+        recover_absent_mapping=False,
+    )
+
+    assert runtime.discovery_calls == []
+    assert [row[0] for row in runtime.create_calls] == ["PH"]
+    assert result["targets"][0]["outcome"] == "ACCEPTED"
+
+
+def test_provider_th_copy_must_be_fully_localized_and_preserve_every_size() -> None:
+    english_title = "PVC Bird and Flower Wallpaper Roll 44 cm x 3 m / 44 cm x 5 m"
+    english_description = "Product size: 44 cm x 3 m or 44 cm x 5 m. Material: PVC."
+    mixed_item = {
+        "item_name": "ม้วนวอลเปเปอร์ PVC Floral and Bird 44 ซม. x 3 ม./5 ม",
+        "description": "รายละเอียดสินค้า PVC\nขนาด 44 x 3 m",
+    }
+    assert not _prepared_copy_matches(
+        mixed_item,
+        region="TH",
+        english_title=english_title,
+        english_description=english_description,
+    )
+
+    localized_item = {
+        "item_name": "วอลเปเปอร์ PVC ลายนกและดอกไม้ ขนาด 44 ซม. x 3 ม. หรือ 44 ซม. x 5 ม.",
+        "description": "รายละเอียดวัสดุ PVC\nขนาดสินค้า 44 x 3 m และ 44 x 5 m",
+    }
+    assert _prepared_copy_matches(
+        localized_item,
+        region="TH",
+        english_title=english_title,
+        english_description=english_description,
+    )
+
+
+def test_provider_my_copy_requires_malay_instead_of_english_master() -> None:
+    english_title = "PVC Bird and Flower Wallpaper Roll 44 cm x 3 m"
+    english_description = "Product size: 44 cm x 3 m. Material: PVC."
+    assert not _prepared_copy_matches(
+        {
+            "item_name": english_title,
+            "description": english_description,
+        },
+        region="MY",
+        english_title=english_title,
+        english_description=english_description,
+    )
+    assert _prepared_copy_matches(
+        {
+            "item_name": "Kertas Dinding Bunga dan Burung PVC Saiz 44 cm x 3 m",
+            "description": (
+                "Produk hiasan dinding dengan bahan PVC untuk rumah dan "
+                "saiz 44 cm x 3 m."
+            ),
+        },
+        region="MY",
+        english_title=english_title,
+        english_description=english_description,
+    )
+
+
+def test_official_runtime_puts_every_gallery_image_into_extended_description(
+    monkeypatch,
+) -> None:
+    from modules.shopee import client
+
+    calls = []
+    monkeypatch.setattr(
+        client,
+        "shop_post",
+        lambda path, shop_id, token, body: calls.append(
+            (path, shop_id, token, deepcopy(body))
+        )
+        or {"error": "", "response": {}},
+    )
+    context = RegionContext(
+        region="PH",
+        shop_id=101,
+        merchant_id=500,
+        shop_token="secret-shop-token",
+        merchant_token="secret-merchant-token",
+    )
+
+    receipt = OfficialShopeeRegionRuntime().update_regional_description(
+        context,
+        "8101",
+        description="Approved description",
+        image_ids=("image-1", "image-2"),
+    )
+
+    assert receipt == {"external_write_count": 1}
+    assert calls[0][3] == {
+        "item_id": 8101,
+        "description_type": "extended",
+        "description_info": {
+            "extended_description": {
+                "field_list": [
+                    {
+                        "field_type": "text",
+                        "text": "Approved description",
+                    },
+                    {
+                        "field_type": "image",
+                        "image_info": {"image_id": "image-1"},
+                    },
+                    {
+                        "field_type": "image",
+                        "image_info": {"image_id": "image-2"},
+                    },
+                ]
+            }
+        },
+    }
+
+
+def test_official_runtime_repairs_copy_and_preserves_gallery_atomically(
+    monkeypatch,
+) -> None:
+    from modules.shopee import client
+
+    calls = []
+    runtime = OfficialShopeeRegionRuntime()
+    monkeypatch.setattr(
+        runtime,
+        "regional_item",
+        lambda _context, _item_id: {
+            "item_id": 8103,
+            "image": {"image_id_list": ["image-1", "image-2"]},
+        },
+    )
+    monkeypatch.setattr(
+        client,
+        "shop_post",
+        lambda path, shop_id, token, body: calls.append(
+            (path, shop_id, token, deepcopy(body))
+        )
+        or {"error": "", "response": {}},
+    )
+    context = RegionContext(
+        region="TH",
+        shop_id=103,
+        merchant_id=500,
+        shop_token="secret-shop-token",
+        merchant_token="secret-merchant-token",
+    )
+
+    receipt = runtime.update_regional_copy(
+        context,
+        "8103",
+        title="ชื่อสินค้าไทย PVC",
+        description="รายละเอียดสินค้าไทย PVC",
+    )
+
+    assert receipt == {"external_write_count": 1, "accepted": True, "verified": False}
+    assert calls[0][3] == {
+        "item_id": 8103,
+        "item_name": "ชื่อสินค้าไทย PVC",
+        "description_type": "extended",
+        "description_info": {
+            "extended_description": {
+                "field_list": [
+                    {
+                        "field_type": "text",
+                        "text": "รายละเอียดสินค้าไทย PVC",
+                    },
+                    {
+                        "field_type": "image",
+                        "image_info": {"image_id": "image-1"},
+                    },
+                    {
+                        "field_type": "image",
+                        "image_info": {"image_id": "image-2"},
+                    },
+                ]
+            }
+        },
+    }
+
+
+from modules.shopee.skill_regions import _regional_copy_matches
+from modules.shopee.global_copy import localized_copy_matches_approved
+
+
+def _prepared_copy_matches(item, *, region, english_title, english_description):
+    return localized_copy_matches_approved(item['item_name'], item['description'], site=region,
+        english_title=english_title, english_description=english_description)

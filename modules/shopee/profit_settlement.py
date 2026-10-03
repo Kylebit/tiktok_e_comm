@@ -12,6 +12,9 @@ from core.config import ROOT
 
 OUTPUT_DIR = ROOT / "outputs"
 REPORT_GLOB = "weekly_shopee_profit_*.html"
+SUMMARY_SUFFIX = ".summary.json"
+# Historical data compatibility only. This suffix is never used for new writes.
+LEGACY_SUMMARY_SUFFIX = ".feishu.json"
 REGION_CURRENCY = {"PH": "PHP", "MY": "MYR", "TH": "THB", "VN": "VND"}
 
 
@@ -40,6 +43,19 @@ def _extract_data(path: Path) -> dict[str, Any] | None:
     return json.loads(text[start:end])
 
 
+def _report_companion_name(path: Path) -> str:
+    """Return the preferred saved summary without changing either file.
+
+    New neutral summaries win when both exist. The old suffix remains a
+    read-only fallback so already generated profit evidence does not disappear.
+    """
+    current = path.with_suffix(SUMMARY_SUFFIX)
+    if current.is_file():
+        return current.name
+    legacy = path.with_suffix(LEGACY_SUMMARY_SUFFIX)
+    return legacy.name if legacy.is_file() else ""
+
+
 def _report_meta(path: Path) -> dict[str, Any]:
     data = _extract_data(path) or {}
     rows = data.get("rows") or []
@@ -55,10 +71,9 @@ def _report_meta(path: Path) -> dict[str, Any]:
     m = re.search(r"weekly_shopee_profit_(\d{8})_(\d{8})\.html$", path.name)
     start = f"{m.group(1)[:4]}-{m.group(1)[4:6]}-{m.group(1)[6:]}" if m else data.get("start")
     end = f"{m.group(2)[:4]}-{m.group(2)[4:6]}-{m.group(2)[6:]}" if m else data.get("end")
-    json_name = path.with_suffix(".feishu.json").name
     return {
         "html": path.name,
-        "json": json_name if (OUTPUT_DIR / json_name).is_file() else "",
+        "json": _report_companion_name(path),
         "month": f"{start} ~ {end}",
         "release_date": f"{start} ~ {end}",
         "regions": regions,

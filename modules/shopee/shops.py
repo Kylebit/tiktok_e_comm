@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from modules.shopee.auth import load_tokens, save_tokens
+from modules.shopee.auth import load_tokens, update_tokens
 from modules.shopee.client import get_shop_info
 from modules.shopee.config import shopee_config
 
@@ -76,9 +76,18 @@ def refresh_shop_regions(*, quiet: bool = False) -> list[dict]:
             flag = "✓ 同步" if entry["sync_enabled"] else "· 跳过"
             print(f"  {flag} [{region or '?'}] {name[:40]}  shop_id={shop_id}")
 
-    store["shops"] = picked
-    store["sync_shop_ids"] = {r: int(region_primary[r]) for r in sorted(region_primary)}
-    save_tokens(store)
+    sync_ids = {r: int(region_primary[r]) for r in sorted(region_primary)}
+
+    def apply(latest: dict) -> None:
+        latest_shops = latest.setdefault("shops", {})
+        for sid, observed in picked.items():
+            current = latest_shops.setdefault(sid, {})
+            for field in ("region", "shop_name", "updated_at", "sync_enabled"):
+                if field in observed:
+                    current[field] = observed[field]
+        latest["sync_shop_ids"] = sync_ids
+
+    update_tokens(apply)
     return list_sync_shops()
 
 

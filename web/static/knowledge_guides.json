@@ -1,0 +1,254 @@
+{
+  "schema": "orbit-knowledge-guides/v1",
+  "reviewed_base": "3b2490ebeb5ccec4edd296ecfb8723e9841e6f9a",
+  "path_note": "工程路径均相对本次已核验的代码根；外部插件从当前宿主技能清单定位。介绍不是执行授权，实际条件以工具目录和技能原文为准。",
+  "entries": {
+    "prepare-product-publication": {
+      "summary": "把一个商品的事实、售价和图片计划整理成可追溯的第一轮技术资料。",
+      "workflow": ["核验完整 Offer ID、目标店铺和已有任务，先接续可复用事实。", "按来源核对 SKU、成本、包裹、类目和定价，形成逐店文案与图片计划。", "冻结第一轮技术资料并列出缺项，交给图片准备；此阶段不写妙手或发布。"],
+      "scenarios": ["准备新品上架，或继续核对已有商品的缺项", "比较指定店铺的类目、文案、价格和所需语言"],
+      "inputs": ["一个完整 Offer ID，以及完整目标店铺清单", "成本、重量、包装尺寸等来源事实；拟保留、翻译或新增的图片要求"],
+      "outputs": ["带版本和来源的第一轮技术准备包、逐店候选与缺项清单；包含受治理的逐 SKU 发布默认库存策略", "图片选择与语言计划；不会生成付费图片或发布商品"],
+      "requirements": ["完整业务工程及明确绑定的商品发布中心；已有商品先做只读接手检查", "既有范围授权只在原商品、目标和动作内复用；事实缺口需要业务决定时列明，但不增设中间人工审核"],
+      "limits": ["不写妙手、不认领店铺草稿、不付费、不发布；准备资料可能写本地报告", "不从国家推断店铺，不从一个品牌扩展到另一个品牌；候选不是官方发布结果"],
+      "example": "请使用 prepare-product-publication，在已核验的工程中准备第一轮。Offer ID：【填写完整数字 ID】；目标店铺：【填写完整店铺清单】；图片要求：【填写保留、翻译、新增要求】。先读该工程 skills/prepare-product-publication/SKILL.md；已有商品先只读接手。给我事实、售价、图片计划和缺项，不调用付费服务、不写妙手、不发布。",
+      "references": ["skills/prepare-product-publication/SKILL.md", "skills/prepare-product-publication/scripts/prepare_product_publication.py", "scripts/publication_takeover.py", "docs/PUBLICATION_SOURCE_CONTRACT.md"]
+    },
+    "prepare-product-images": {
+      "summary": "按第一轮技术冻结的商品与图片计划，准备主图、多语言图片和质量检查。",
+      "workflow": ["读取第一轮冻结资料、现有图片任务和累计费用，确认可复用资产。", "仅在已有范围及预算授权内制作所需图片；结果未知时先恢复原任务。", "做自动质量检查并保存来源与费用回执，交给发布阶段；不增加中间人工审核。"],
+      "scenarios": ["商品事实已确定，开始制作主图或指定语言图片", "继续已有图片任务，核对失败图片或在原预算内返工"],
+      "inputs": ["精确 Offer ID、第一轮技术冻结快照和图片选择", "已授权的品牌、语言、模型用途与预算；恢复任务时提供已有任务或报告位置"],
+      "outputs": ["主图和本地化图片、质量检查记录及来源摘要", "可恢复的任务记录与累计费用账本，供第三轮消费"],
+      "requirements": ["完整业务工程、灵识账号及有效模型配置", "付费和上传必须有覆盖本次材料、用途与额度的授权；同范围有效批准不重复索取"],
+      "limits": ["只准备图片，不改第一轮事实、不写妙手、不发布", "生成结果未知时先查原任务，不重复提交；质量检查通过不等于已有商城发布授权或已发布"],
+      "example": "请使用 prepare-product-images 继续 Offer ID：【填写 ID】的第二轮，第一轮技术冻结快照：【填写路径或版本】。先阅读该工程 skills/prepare-product-images/SKILL.md，只检查现有任务、图片和剩余预算，列明可复用产物及缺项；不要开始新的付费生成。需要生成时先核对模型、当前价格、材料范围和已有授权，不设置中间人工审核，不写妙手、不发布。",
+      "references": ["skills/prepare-product-images/SKILL.md", "skills/prepare-product-images/scripts/prepare_product_images.py", "skills/prepare-product-images/scripts/run_automated_image_qa.py", "skills/prepare-product-images/references/paid-recovery.md"]
+    },
+    "publish-approved-product": {
+      "summary": "第三轮先同步妙手并回读、冻结候选，再经唯一最终审核按平台独立发布。",
+      "workflow": ["先核对前两轮冻结事实和全部目标；在政策允许范围内完成妙手 COMMON 草稿并逐字段官方回读。", "把完整的多平台候选与 COMMON 回读冻结，在商品上架前端进行一次唯一终审。", "执行前重核关键来源；未漂移的已批准目标按平台独立发布并逐目标官方回读，未知结果先对账。"],
+      "scenarios": ["第一、二轮完成后检查发布条件", "继续某个平台的已批准发布，或查询已有发布结果和关闭条件"],
+      "inputs": ["精确 Offer ID、计划 ID、批准版本和目标平台／店铺", "已核验的服务地址、相应账号权限及原执行记录"],
+      "outputs": ["妙手基线及官方回读、冻结发布候选；授权后生成逐平台持久报告，保留待处理与失败范围", "只有官方回读一致才报告发布成功；本地关闭回执不等于重新发布"],
+      "requirements": ["完整业务工程、服务身份校验、冻结快照和精确目标授权", "唯一人工审核为绑定完整候选、快照和目标的 FINAL_MARKETPLACE_PUBLISH；同范围有效回执续行不重复审核"],
+      "limits": ["最终审核前的妙手写入仅在匹配政策下执行，并须官方回读；妙手同步不授权商城发布", "一个平台的授权不能覆盖另一个；一个平台失败不应拦住其他已授权平台", "请求结果未知时先对账，不能盲目重发；旧直接发布脚本不用于新任务"],
+      "example": "请使用 publish-approved-product 检查 Offer ID：【填写 ID】、计划 ID：【填写精确计划】、目标：【填写平台和店铺】。先读该工程 skills/publish-approved-product/SKILL.md，核对已批准快照、服务身份和历史发布回执，只给出逐平台结果及下一步。此次仅检查，不启动发布，不用旧版直接发布脚本，也不把其他店铺加入范围。",
+      "references": ["skills/publish-approved-product/SKILL.md", "skills/publish-approved-product/scripts/product_center_publication.py", "skills/publish-approved-product/scripts/prepare_publication_execution.py", "skills/publish-approved-product/references/closure.md"]
+    },
+    "delist-products-by-sku": {
+      "summary": "按完整 Seller SKU 和指定店铺规划可恢复的停售，避免误伤其他规格。",
+      "workflow": ["按完整 Seller SKU 与店铺只读定位商品，枚举其全部规格和已有状态。", "冻结逐店计划并标出共用商品可能影响的其他 SKU，确认授权范围。", "仅对已授权且能力支持的目标停售，逐店回读；结果未知先查状态，不直接重试。"],
+      "scenarios": ["指定 SKU 需要下架、停售或归档", "核对先前下架操作是否在每个目标店铺生效"],
+      "inputs": ["完整 Seller SKU 清单、精确店铺范围", "已有下架计划及摘要（如果是继续或回读）"],
+      "outputs": ["包含商品内全部 SKU 的不可变计划及可执行性检查", "执行后逐店官方或页面回读，分别列出成功、未找到和未确认项"],
+      "requirements": ["完整业务工程及目标平台只读权限；浏览器目标需要已登录的准确店铺", "实际下架须有覆盖 SKU 和店铺的授权；原计划身份变化后需重新核对"],
+      "limits": ["停售默认可恢复，不永久删除；混有未请求 SKU 的整件商品不能直接下架", "不能靠相似标题、图片或全页按钮序号定位；未知结果先回读"],
+      "example": "请使用 delist-products-by-sku，先为 Seller SKU：【填写完整 SKU 清单】、店铺：【填写完整目标】生成下架计划。阅读该工程 skills/delist-products-by-sku/SKILL.md，实时只读核对商品及全部规格，标出会影响其他 SKU 的商品。本次仅规划，不执行停售、不删除商品；给出逐店证据与执行缺口。",
+      "references": ["skills/delist-products-by-sku/SKILL.md", "skills/delist-products-by-sku/scripts/delist_products_by_sku.py"]
+    },
+    "apply-product-discounts": {
+      "summary": "核对已发布商品的冻结折扣，按支持范围加入现有活动。",
+      "workflow": ["读取批准的冻结折扣计划与商品发布官方回读，逐目标核对价格、币种和身份。", "检查目标店铺现有活动与能力；已存在相同折扣时先核对，缺能力时单独列出。", "仅对被授权且支持的目标执行，并保存活动回读；不创建活动或重新发布商品。"],
+      "scenarios": ["商品已正式发布，检查是否需要补入既有折扣活动", "核对活动中已有商品是否与批准价格、比例一致"],
+      "inputs": ["已批准的不可变计划、精确店铺与完整商品／SKU 身份", "官方发布回读、冻结标价／币种／折扣及原执行记录"],
+      "outputs": ["逐目标定价合同检查、活动匹配和能力缺口", "支持目标执行后保存折扣回读；相同折扣已存在时可核对后免写入"],
+      "requirements": ["LivelyHive TikTok SEA 使用既有发布后促销执行链路和账本", "需要有效折扣授权、唯一进行中的直接折扣活动；不以本地 JSON 冒充已批准计划"],
+      "limits": ["不发布商品，不创建、改期或终止活动", "Shopee 执行仍待接通；HomeBloom、MX、GB 没有已接通的自动浏览器执行器；暂不支持多价格行变体折扣"],
+      "example": "请使用 apply-product-discounts，只读检查冻结计划：【填写计划路径或 ID】在店铺：【填写目标】的发布后折扣。先读该工程 skills/apply-product-discounts/SKILL.md，核对批准、发布回读、标价和折扣是否完整，说明支持与不支持的目标。本次不提交折扣、不创建活动，不用其他国家比例补缺项。",
+      "references": ["skills/apply-product-discounts/SKILL.md", "skills/apply-product-discounts/scripts/inspect_discount_plan.py", "modules/tiktok/oneclick_promotion.py"]
+    },
+    "manage-seaya-replenishment": {
+      "summary": "结合雅仓库存、在途批次与有效订单，给出分国家、分 SKU 的补货建议。",
+      "workflow": ["先核对本次工程 Skill 原文、库存和在途的采集时点及完整身份；来源冲突保持待核。", "逐国家合并有效订单需求，逐批次核对在途 SKU 数量；结算只用于经济分析，不当作销量。", "计算两套需求情景并展示建议和阻断原因；库存过期或批次不完整时不把数量当可执行决定。"],
+      "source_notice": {
+        "observed_at": "2026-09-28",
+        "status": "版本不一致，执行来源待核",
+        "message": "本工程英文供应链 Skill 与本机个人 Skill 安装版在重复库存身份规则和在途摘要上不同。配置清单的摘要采用 LF 文本规范化，与本工程原文一致；不能把不同哈希口径误判为第三版。旧快照不能代表当前库存；执行前须按本次工单核准源码、Skill 原文与最新数据。此提示不选择任一版本作为执行规则。",
+        "location_note": "本机安装位置：~/.codex/skills/manage-seaya-replenishment/SKILL.md（相对当前用户目录）",
+        "checksums": [
+          {
+            "label": "本工程英文 Skill 原始字节",
+            "sha256": "a8f178cdf95e2d3a3f1425e49f7c0433dbbddd63a41d8d3d69c4142408b5e13c",
+            "observed_at": "2026-10-01"
+          },
+          {
+            "label": "本机安装版原始字节",
+            "sha256": "affdb9e12751061a43bd5e53723505c3b73c1befc6cb6d102d669cae476ce461",
+            "observed_at": "2026-09-28"
+          },
+          {
+            "label": "配置清单记录的本工程 LF 规范化文本",
+            "sha256": "33e20c172e39202baa760c71ba9e926d0eac8c6255984a8b66018ef59d097be6",
+            "observed_at": "2026-10-01"
+          }
+        ],
+        "historical_checksums": [
+          {
+            "label": "本工程英文 Skill 原始字节",
+            "sha256": "3b3fc01257c3b6bfa900185e96f37e89c4e8616dfe0040697ce95e60a5bc02e4",
+            "observed_at": "2026-09-28"
+          },
+          {
+            "label": "本机安装版原始字节",
+            "sha256": "affdb9e12751061a43bd5e53723505c3b73c1befc6cb6d102d669cae476ce461",
+            "observed_at": "2026-09-28"
+          },
+          {
+            "label": "配置清单记录的本工程 LF 规范化文本",
+            "sha256": "4aa3b5c926ce6875472c68d262e5decd96f98a1ef2ce05678cf12e8d21368f4b",
+            "observed_at": "2026-09-28"
+          }
+        ],
+        "project_snapshot_observed_at": "2026-10-01"
+      },
+      "scenarios": ["判断 MY、TH、VN、PH 哪些商品要补货或首次备货", "检查过期快照、缺货订单、在途到货时间与物流资料缺项"],
+      "inputs": ["完整库存／仓库／SKU 身份和采集时间、在途批次及逐 SKU 数量", "同国家的有效订单快照、已批准运输和费用政策；经济分析另需结算事实"],
+      "outputs": ["趋势加权与完整 30 天两套需求情景、到货时库存及建议数量", "来源时点、排除记录、缺项和本地看板；物流资料缺失只影响对应成本或体积结果"],
+      "requirements": ["完整供应链工程与经校验的快照；需要实时读取时再核对相应账号权限", "本地看板更新和跨来源导入需要明确路径与范围；认证刷新与业务写入分开授权"],
+      "limits": ["默认只读，不下采购单、不改仓库平台；在途不能当现货", "结算不能充当销量需求，其他国家的数据不能借用；库存与订单时点不符时建议不可直接执行"],
+      "example": "请使用 manage-seaya-replenishment，分析国家：【填写 MY/TH/VN/PH】、SKU：【填写完整清单或明确全部】。库存／在途快照：【填写路径】；有效订单快照：【填写路径】。先读该工程 domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md，校验身份与时点，分别给出两套需求情景、补货数量及缺项。本次只分析，不改看板、不采购、不刷新凭据。",
+      "references": ["domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md", "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/validate_inventory_snapshot.py", "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/pull_order_demand.py", "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/refresh_supply_chain.py"]
+    },
+    "manage-profit-settlement": {
+      "summary": "从官方已结算证据核算订单利润，并说明成本、广告和数据覆盖缺口。",
+      "workflow": ["核对平台、站点、期间与订单覆盖，只纳入已有官方结算证据。", "按订单发生时的成本、汇率和广告证据计算，未知值与估算单列，不当作零或实际支出。", "输出逐单及汇总报告，标明未完全结算日期与缺口；待核报告不能自动进入正式知识归档。"],
+      "scenarios": ["按平台和站点制作周报、月报或核查亏损 SKU", "审计某期间创建的订单是否已结算，或读取已批准的历史月报"],
+      "inputs": ["平台、站点、完整日期区间和站点时区；精确结算证据路径", "版本化成本和汇率；TikTok／Shopee 月报默认需要实际广告证据，估算须明确批准；Ozon V1 可用标明的默认估算"],
+      "outputs": ["独立 JSON／HTML 报告、逐单费用和利润、质量问题与假设", "订单覆盖审计；满足条件且明确批准的月报才能进入知识归档"],
+      "requirements": ["完整利润域代码和报告政策；捕获证据分析可离线进行", "实时取数需对应平台凭据；认证刷新必须明确授权且遵守平台不同的凭据保存规则"],
+      "limits": ["缺金额不能当零，估算广告不能称实际支出；平台和站点不能相互补数据", "工具存在不代表任何月份已恢复或计算完成；周报和待核查月报不能当作已批准知识"],
+      "example": "请使用 manage-profit-settlement，检查平台：【填写】、站点：【填写】、期间：【起止日期】、时区：【填写】的结算证据：【路径】。成本与汇率快照：【路径】；广告证据或已批准估算规则：【填写】。先读该工程 domains/data_operations/skills/manage-profit-settlement/SKILL.md，说明覆盖范围、缺项和利润口径。本次只读取已有证据，不联网取数、不刷新凭据、不批准或归档报告。",
+      "references": ["domains/data_operations/skills/manage-profit-settlement/SKILL.md", "domains/data_operations/skills/manage-profit-settlement/references/captured-review.md", "domains/data_operations/skills/manage-profit-settlement/scripts/pull_settlement_evidence.py", "domains/data_operations/skills/manage-profit-settlement/scripts/profit_report.py", "domains/data_operations/skills/manage-profit-settlement/scripts/build_weekly_from_evidence.py"]
+    },
+    "tikhub": {
+      "summary": "有界查询 TikTok 商品和视频参考，或分析已保存的研究样本。",
+      "scenarios": ["按关键词和市场找商品／视频参考", "对已有样本做表现分析，不重新付费采集"],
+      "inputs": ["关键词、地区、视频样本数量和明确产物目录", "真实查询需要覆盖两次固定请求的预算授权；离线分析提供已有样本路径"],
+      "outputs": ["离线请求预览，或真实查询后的原始证据与采集清单", "样本分析结果，保留采集时间、缺失值与范围"],
+      "requirements": ["Python 3.11 以上、明确 runtime／project／profile；查询凭据环境名为 TikHub", "真实查询可能计费，提交前保留原授权和尝试记录"],
+      "limits": ["离线预览不会联网或得到真实数据；失败和未知结果不自动重发", "样本销量不是市场总量，视频参考不授予转载或发布权"],
+      "example": "请使用 research-tikhub-reference，为关键词：【填写】、市场：MY、视频数量：10 准备 TikHub 离线查询预览。工程根：【填写】；项目 profile：【填写】；产物目录：【填写】。先读 skills/research-tikhub-reference/SKILL.md，说明两次固定请求的参数和预算缺口；本次不执行付费查询，不下载或转载视频。",
+      "references": ["skills/research-tikhub-reference/SKILL.md", "skills/research-tikhub-reference/references/query-contract.md", "modules/tools/tikhub.py", "scripts/analyze_tikhub_market_snapshot.py", "scripts/orbit_tools.py"]
+    },
+    "duoplus": {
+      "summary": "检查云手机设备和应用查询参数，按精确范围处理应用安装。",
+      "scenarios": ["预览或查询设备列表、状态、应用目录及已安装包", "已有安装结果不明确时，恢复原记录并只读核对"],
+      "inputs": ["明确 runtime 和项目 profile；设备列表无需设备 ID，单机详情、状态及已安装包查询需精确设备 ID", "安装另需设备清单、应用 ID、版本 ID、包名和有效授权引用"],
+      "outputs": ["离线参数预览，或设备／应用查询结果", "安装的持久执行和核对记录，不把包名存在当版本验证"],
+      "requirements": ["Python 3.11 以上；profile 指定的进程环境密钥及设备权限", "真实读取才联网；安装是外部写入，需精确范围授权和账本"],
+      "limits": ["此入口不提供自造的安卓控制网关、账号登录、代理或开关机能力", "未知安装不自动重装；已安装包只能证明包名存在"],
+      "example": "请使用 control-duoplus-cloud-phone，在工程根：【填写】、项目 profile：【填写】中离线预览设备列表查询。先阅读 skills/control-duoplus-cloud-phone/SKILL.md 和 references/api.md，列出所需配置及查询范围；本次不读取密钥值、不联网、不安装应用、不启动设备，也不操作账号。",
+      "references": ["skills/control-duoplus-cloud-phone/SKILL.md", "skills/control-duoplus-cloud-phone/references/api.md", "modules/tools/duoplus.py", "scripts/orbit_tools.py"]
+    },
+    "minimax-h3": {
+      "summary": "通过独立云 GPU 插件生成视频，并恢复任务、下载成片和核对停机。",
+      "scenarios": ["需要 H3 文生视频、关键帧或主体参考图视频", "检查已有云端任务及费用资源是否停止"],
+      "inputs": ["当前宿主的 H3 插件、隔离配置和已授权云资源", "生成阶段再提供提示词、画幅、时长、清晰度及有权上传的图片"],
+      "outputs": ["本地 MP4、任务清单和实例停止状态", "异常时恢复原任务或说明缺口，不把重连当新生成"],
+      "requirements": ["优云凭据由官方 CLI 管理，另需 Node、SSH 和匹配的 Runtime Profile", "先核对许可证、资源与实时费用；生成及材料上传需要对应授权"],
+      "limits": ["独立插件不随业务工程自动安装；本页面没有验证账号或 GPU", "单尾帧和部分低价配置仍有验证限制，以当前插件原文为准；不能承诺任意时长或永久免停机"],
+      "example": "请先从当前宿主技能清单定位 minimax-h3-cloud:minimax-h3-video，完整读取其 SKILL.md，检查能否为本项目使用。已有隔离配置：【填写路径；没有则写未配置】。此次仅核对本地入口和下一步缺项，不读取或回显密钥，不创建、启动 GPU 或生成视频；首次配置按插件当前步骤逐项进行。",
+      "references": ["docs/tools/README.md", "config/capability_catalog.json"],
+      "host_references": ["当前宿主：minimax-h3-cloud:minimax-h3-video → skills/minimax-h3-video/SKILL.md", "相对已核验插件根：Windows 用 scripts/h3-onboard.cmd、h3-provision.cmd、h3-cloud.cmd；其他系统用同名无扩展名脚本"]
+    },
+    "lingshi": {
+      "summary": "预览灵识请求参数，并按授权查询模型或执行文本、图片任务。",
+      "scenarios": ["接入新项目时检查模型请求参数和配置", "核对模型价格或为已批准商品准备文案、图片"],
+      "inputs": ["明确 runtime、项目 profile、模型和用途", "请求 JSON 与材料范围；真实调用另需密钥、有效额度和授权"],
+      "outputs": ["离线请求计划；显式读取可获取模型、价格或使用量信息", "授权执行的内容与证据；商品图片仍走第二轮预算和恢复流程"],
+      "requirements": ["Python 3.11 以上、requests；profile 配置官方地址及凭据环境键名", "先核对当前模型能力与价格，材料上传和付费范围要明确"],
+      "limits": ["通用可移植 CLI 只有灵识预览，不是通用付费执行器", "不把模型示例名称当真实可用模型；未知任务先恢复，不重复付费提交"],
+      "example": "请使用 use-lingshi-ai，在工程根：【填写】、项目 profile：【填写】中检查模型：【填写】的请求参数，用途：【填写】；请求文件：【填写路径】。先读 skills/use-lingshi-ai/SKILL.md，执行本地配置检查和离线预览；本次不联网查余额、不上传材料、不付费生成，列出真实调用前缺少的条件。",
+      "references": ["skills/use-lingshi-ai/SKILL.md", "skills/use-lingshi-ai/references/portable-entry.md", "modules/sourcing/lingshi_client.py", "scripts/orbit_tools.py"]
+    },
+    "linkfox": {
+      "summary": "使用已保留的 LinkFox 客户端预览竞品、新品榜和图片搜索参数。",
+      "scenarios": ["准备东南亚商品关键词或新品榜调研", "用已获使用权的公开图片地址准备 1688 图搜"],
+      "inputs": ["查询类型、地区、关键词／日期及有限分页参数", "图搜需公开 HTTPS 图片地址；实际查询另需预算和密钥"],
+      "outputs": ["客户端校验后的离线请求预览", "授权真实执行后的研究响应；不提供图片上传或 Skill 安装"],
+      "requirements": ["完整工程的 LinkfoxClient；实际执行读取 LINKFOXAGENT_API_KEY", "EchoTik 地区限 PH、MY、TH、VN；页大小最多 20，执行前核对费用授权"],
+      "limits": ["不是独立 portable 执行入口，目录方法用于先读帮助", "不上传 Base64 图片，不自动发送反馈；研究结果不是素材复用许可"],
+      "example": "请在已核验工程中阅读 modules/sourcing/linkfox_client.py，为 EchoTik 商品搜索构建离线预览：region=MY，keyword=home decor，pageSize=10。使用显式合成凭据创建本地客户端，不读取真实密钥；只调用 preview，不调用 execute、不联网、不上传图片，并说明实际查询前的依赖和授权缺口。",
+      "references": ["modules/sourcing/linkfox_client.py", "docs/tools/README.md"]
+    },
+    "publication-knowledge": {
+      "summary": "从明确评审过的来源导出知识快照，并按固定版本检索和回放。",
+      "scenarios": ["新任务复用已核准规则，不受后来改动影响", "查看知识来源、版本、纳入理由和历史参考"],
+      "inputs": ["明确工程根、项目根、Vault／来源及知识专用 profile", "已有评审清单和完整摘要；检索已有快照需文件名、固定版本和关键词"],
+      "outputs": ["导出预览、来源差异或不可变知识快照", "带来源、日期和版本的检索结果，旧任务保留自己的版本"],
+      "requirements": ["Python 3.11 以上；导出文件系统须支持同目录原子 hard-link", "只纳入与已有评审精确绑定的文档；显式写入新快照才会生成文件"],
+      "limits": ["预览不会自动导出，也不修改原 Vault；不同版本不能覆盖旧文件", "知识不是当前发布授权或新鲜经营事实，完整业务运行器自动消费尚未接通"],
+      "example": "请使用商品发布知识工具，只读检索已有快照：【填写路径】，固定版本：【填写完整 sha256 摘要】，关键词：【填写】。工程根和项目根：【分别填写】。先读 docs/knowledge/README.md，使用固定版本 inspect，说明来源、日期和适用范围；不导出新文件、不修改 Vault、不把参考知识当当前发布许可。",
+      "references": ["docs/knowledge/README.md", "scripts/sync_product_publication_knowledge.py", "modules/product_agent/knowledge.py"]
+    }
+  },
+  "iteration": {
+    "schema": "orbit-knowledge-iteration/v1",
+    "projected_at": "2026-09-08T15:25:42.098680+00:00",
+    "index_path": "D:\\OrbitEvidence\\knowledge-closure-20260908\\vault-index.json",
+    "candidate_manifest_path": "D:\\OrbitEvidence\\knowledge-closure-20260908\\candidate-manifest.json",
+    "available": true,
+    "candidate": {
+      "title": "商品目录-内部SKU-0001-验收经验候选",
+      "path": "D:\\OrbitEvidence\\knowledge-closure-20260908\\candidate-vault\\知识候选\\商品目录-内部SKU-0001-验收经验候选.md",
+      "digest": "sha256:fed078ef8067d2b7543f8ec8ff8bcf4a7371d146211f9ee386d919d510631f3c",
+      "matches": true,
+      "learnings": [
+        "1. 内部SKU可以作为跨国家/平台目录聚合键，但平台商品身份、国家、店铺和变体ID必须保留为成员明细，不能合并丢失。",
+        "2. 成本共享只能在已核验为同一内部SKU的成员间发生；缺成本继续为空，冲突必须显式阻断人工选择。",
+        "3. 图片应从同一内部SKU的已登记候选中回退；一张失败不等于整个SKU无图，但验收必须读取真实解码状态。",
+        "4. 页面通过只证明有界审核副本；正式数据切换、成本写回和平台操作需要各自恢复点、授权与官方回读。"
+      ],
+      "observed_at": "2026-09-07T13:48:11.715539+00:00",
+      "verified_commit": "09d9839114f0a9823e559e2a40b3fd081eab5926",
+      "sources": [
+        {
+          "path": "D:\\OrbitEvidence\\catalog-internal-sku-20260907\\ROOT_DEPLOYMENT_VERIFICATION.json",
+          "digest": "sha256:6b266b3b76031b01ab94552c99014ac7dd0dd9f21fbd06896dab808638dc9ca0",
+          "matches": true
+        },
+        {
+          "path": "D:\\OrbitEvidence\\catalog-internal-sku-20260907\\REVIEW_ACCEPTED.json",
+          "digest": "sha256:59a34476499f12f154bf07de86ed9e64960c3ac9d0c82b4cd0078db1a80d0328",
+          "matches": true
+        },
+        {
+          "path": "D:\\OrbitEvidence\\catalog-internal-sku-20260907\\HANDOFF.md",
+          "digest": "sha256:fad2a765bf18da462ef0261554da41f8fbcc8e9242e5c5b3055dbd36cf1fc297",
+          "matches": true
+        },
+        {
+          "path": "D:\\OrbitEvidence\\catalog-internal-sku-20260907\\COVERAGE.json",
+          "digest": "sha256:becc570de113280f658b1da0a05feea0ab8d00477b17e5e6cfc08b579cecbc30",
+          "matches": true
+        }
+      ],
+      "reviewed": false
+    },
+    "execution_authority": false,
+    "index_digest": "sha256:3735bc305808953f6711e79c996604525384ba33ecb84cfe2efea45f4dd2fdd9",
+    "vault_path": "D:\\Users\\Windows11\\Desktop\\Agent_PR\\LivelyHive-运营知识库",
+    "audit_date": "2026-09-08",
+    "indexed_at": "2026-09-08T07:21:30.761640+00:00",
+    "notes": 1135,
+    "by_kind": {
+      "decision_record": 13,
+      "business_fact_or_analysis": 405,
+      "incident_or_learning": 9,
+      "supporting_note": 13,
+      "historical_reference": 685,
+      "operating_rule": 10
+    },
+    "by_freshness": {
+      "UNVERIFIED_REFERENCE": 35,
+      "UNKNOWN_OBSERVED_AT": 46,
+      "STALE_FOR_CURRENT_DECISION": 359,
+      "HISTORICAL_REFERENCE": 685,
+      "RULE_NEEDS_REVALIDATION": 10
+    },
+    "source_check": {
+      "unchanged": 1135
+    }
+  }
+}

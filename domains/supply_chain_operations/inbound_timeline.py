@@ -21,6 +21,11 @@ class SupplyProjection:
     pending_inbound: int
     horizon_days: int
     steps: tuple["SupplyStep", ...]
+    local_fulfilled_units: int
+    cross_border_fallback_units: int
+    cross_border_fallback_days: int
+    first_local_stockout_date: date | None
+    local_fulfillment_rate: float | None
     projection_method: str = "TIME_PHASED_BATCH_EVENTS_V1"
 
 
@@ -34,6 +39,10 @@ class SupplyStep:
     demand: int = 0
     stock_after: int = 0
     unmet_demand: int = 0
+    local_fulfilled_demand: int = 0
+    cross_border_fallback_demand: int = 0
+    local_stockout_start_date: date | None = None
+    cross_border_fallback_days: int = 0
     batch_id: str | None = None
     quantity: int = 0
 
@@ -42,6 +51,28 @@ def _consume(stock: int, daily_velocity: float, days: int) -> int:
     if days <= 0:
         return stock
     return max(0, stock - ceil(daily_velocity * days))
+
+
+def _local_fallback_metrics(
+    *,
+    stock: int,
+    demand: int,
+    daily_velocity: float,
+    days: int,
+    from_date: date,
+) -> tuple[int, int, int, date | None]:
+    local_fulfilled = min(stock, demand)
+    fallback = max(0, demand - local_fulfilled)
+    if fallback == 0:
+        return local_fulfilled, 0, 0, None
+    covered_days = min(days, floor(stock / daily_velocity)) if daily_velocity > 0 else days
+    fallback_days = max(0, days - covered_days)
+    return (
+        local_fulfilled,
+        fallback,
+        fallback_days,
+        from_date + timedelta(days=covered_days),
+    )
 
 
 def project_supply(
@@ -76,6 +107,10 @@ def project_supply(
     last_day = 0
     counted_inbound = 0
     pending_inbound = 0
+    local_fulfilled_units = 0
+    cross_border_fallback_units = 0
+    cross_border_fallback_days = 0
+    first_local_stockout_date: date | None = None
     steps: list[SupplyStep] = []
     for event_day, event in normalized:
         if event_day > horizon_days:
@@ -85,18 +120,35 @@ def project_supply(
             days = event_day - last_day
             demand = ceil(float(daily_velocity) * days)
             stock_after = _consume(stock, float(daily_velocity), days)
+            from_date = snapshot_date + timedelta(days=last_day)
+            local_fulfilled, fallback, fallback_days, stockout_date = _local_fallback_metrics(
+                stock=stock,
+                demand=demand,
+                daily_velocity=float(daily_velocity),
+                days=days,
+                from_date=from_date,
+            )
             steps.append(
                 SupplyStep(
                     kind="CONSUMPTION",
-                    from_date=snapshot_date + timedelta(days=last_day),
+                    from_date=from_date,
                     to_date=snapshot_date + timedelta(days=event_day),
                     days=days,
                     stock_before=stock,
                     demand=demand,
                     stock_after=stock_after,
-                    unmet_demand=max(0, demand - stock),
+                    unmet_demand=fallback,
+                    local_fulfilled_demand=local_fulfilled,
+                    cross_border_fallback_demand=fallback,
+                    local_stockout_start_date=stockout_date,
+                    cross_border_fallback_days=fallback_days,
                 )
             )
+            local_fulfilled_units += local_fulfilled
+            cross_border_fallback_units += fallback
+            cross_border_fallback_days += fallback_days
+            if first_local_stockout_date is None and stockout_date is not None:
+                first_local_stockout_date = stockout_date
             stock = stock_after
         stock_before = stock
         stock += event.quantity
@@ -117,23 +169,46 @@ def project_supply(
         days = horizon_days - last_day
         demand = ceil(float(daily_velocity) * days)
         stock_after = _consume(stock, float(daily_velocity), days)
+        from_date = snapshot_date + timedelta(days=last_day)
+        local_fulfilled, fallback, fallback_days, stockout_date = _local_fallback_metrics(
+            stock=stock,
+            demand=demand,
+            daily_velocity=float(daily_velocity),
+            days=days,
+            from_date=from_date,
+        )
         steps.append(
             SupplyStep(
                 kind="CONSUMPTION",
-                from_date=snapshot_date + timedelta(days=last_day),
+                from_date=from_date,
                 to_date=next_arrival_date,
                 days=days,
                 stock_before=stock,
                 demand=demand,
                 stock_after=stock_after,
-                unmet_demand=max(0, demand - stock),
+                unmet_demand=fallback,
+                local_fulfilled_demand=local_fulfilled,
+                cross_border_fallback_demand=fallback,
+                local_stockout_start_date=stockout_date,
+                cross_border_fallback_days=fallback_days,
             )
         )
+        local_fulfilled_units += local_fulfilled
+        cross_border_fallback_units += fallback
+        cross_border_fallback_days += fallback_days
+        if first_local_stockout_date is None and stockout_date is not None:
+            first_local_stockout_date = stockout_date
         stock = stock_after
+    projected_demand = local_fulfilled_units + cross_border_fallback_units
     return SupplyProjection(
         projected_stock=max(0, floor(stock)),
         counted_inbound=counted_inbound,
         pending_inbound=pending_inbound,
         horizon_days=horizon_days,
         steps=tuple(steps),
+        local_fulfilled_units=local_fulfilled_units,
+        cross_border_fallback_units=cross_border_fallback_units,
+        cross_border_fallback_days=cross_border_fallback_days,
+        first_local_stockout_date=first_local_stockout_date,
+        local_fulfillment_rate=(local_fulfilled_units / projected_demand) if projected_demand else None,
     )

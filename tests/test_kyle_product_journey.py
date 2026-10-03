@@ -789,8 +789,9 @@ def test_formal_frontend_collects_first_and_has_an_inline_facts_editor():
     assert "expected_revision" in script
     assert "selected_sku_keys" in script
     assert "请先进入 AI 图片工作室" not in script
-    assert "AI 图片工作室" in html
-    assert 'target="_blank"' in html
+    # Image review is embedded in this page; the separate studio is no longer
+    # a required navigation step in the formal approval journey.
+    assert 'id="embeddedImageReview' in html
     save_start = script.index("async function submitFactsEdit()")
     save_end = script.index("function approvalEligible", save_start)
     save_flow = script[save_start:save_end]
@@ -820,22 +821,21 @@ def test_unrelated_title_generation_preserves_unsaved_product_fact_edits():
     assert "allowRevisionChange: true" in generate_flow
 
 
-def test_remove_from_queue_requests_a_server_side_test_reset_first():
-    """Queue removal must reset owned local state instead of only hiding a card."""
+def test_remove_from_queue_preserves_product_record_and_can_be_undone():
+    """Removing a browser queue card must not erase approved product facts."""
 
     script = (ROOT / "web/static/product_workspace.js").read_text(encoding="utf-8")
     click_start = script.index('$("#queueGrid").addEventListener("click"')
     click_end = script.index('$("#approvalForm")', click_start)
     remove_flow = script[click_start:click_end]
-    reset_start = script.index("async function resetTestOffer(")
-    reset_end = script.index("function dashboardFromPayload", reset_start)
-    reset_flow = script[reset_start:reset_end]
-
-    assert "/api/product-workspace/reset-test-offer" in reset_flow
-    assert "await resetTestOffer(" in remove_flow
-    assert remove_flow.index("await resetTestOffer(") < remove_flow.index(
-        "queueItems = queueItems.filter"
-    )
+    assert "removeQueueProducts([key])" in remove_flow
+    remove_start = script.index("function removeQueueProducts(")
+    remove_end = script.index("function undoQueueRemoval", remove_start)
+    implementation = script[remove_start:remove_end]
+    assert "removedQueueItems = queueItems.map" in implementation
+    assert "queueItems = queueItems.filter" in implementation
+    assert "商品档案与发布记录保留" in implementation
+    assert "resetTestOffer(" not in implementation
 
 
 def test_test_offer_reset_deletes_only_owned_local_state_and_releases_reservations(

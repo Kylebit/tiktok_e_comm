@@ -1,0 +1,49 @@
+{
+  "source_sha256": "943102031946abe7aba9b671e5d1c519046c834c2020c975cfec421a5bba665f",
+  "source": "exact base core/api_client.py sign and original JSON serialization",
+  "cases": [
+    {
+      "path": "/product/202309/products/search",
+      "body": null,
+      "query": {
+        "shop_cipher": "fixture-shop +",
+        "page_size": "2",
+        "access_token": "fixture-excluded-from-sign"
+      },
+      "body_bytes_utf8": "",
+      "signature": "231d6482a804175354f5b2e85d3a638b7421dafea526083a4a4faa26ef6aab09"
+    },
+    {
+      "path": "/product/202309/products/search",
+      "body": {
+        "title": "中文",
+        "n": 1
+      },
+      "query": {
+        "shop_cipher": "fixture-shop +",
+        "page_size": "2",
+        "access_token": "fixture-excluded-from-sign"
+      },
+      "body_bytes_utf8": "{\"title\":\"\\u4e2d\\u6587\",\"n\":1}",
+      "signature": "07144983f10bb3ddcf3ba0c9d8207e0989f619e4ad3ebde47c0a627f2a37d376"
+    },
+    {
+      "path": "/product/202309/products/search",
+      "body": {
+        "enabled": true,
+        "values": [
+          "a/b",
+          2
+        ],
+        "description": "line\nvalue"
+      },
+      "query": {
+        "shop_cipher": "fixture-shop +",
+        "page_size": "2",
+        "access_token": "fixture-excluded-from-sign"
+      },
+      "body_bytes_utf8": "{\"enabled\":true,\"values\":[\"a/b\",2],\"description\":\"line\\nvalue\"}",
+      "signature": "94528a074f987b12a41f921b6784370cb0f5b7dad4e25ad646a86fd1083a652e"
+    }
+  ]
+}

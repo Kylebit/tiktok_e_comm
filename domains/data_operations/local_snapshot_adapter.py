@@ -52,7 +52,7 @@ class LocalSnapshotAdaptation:
 def adapt_local_profit_snapshots(
     paths: Iterable[str | Path], *, costs_by_sku: Mapping[str, object] | None = None,
     seller_sku_by_platform_sku: Mapping[str, str] | None = None,
-    reporting_period: tuple[date, date] | None = None,
+    reporting_period: tuple[date, date] | None = None, catalog=None,
 ) -> LocalSnapshotAdaptation:
     """Read explicit local snapshot files without writing or accessing a database.
 
@@ -71,7 +71,7 @@ def adapt_local_profit_snapshots(
             continue
         text = path.read_text(encoding="utf-8-sig", errors="replace")
         updated = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
-        result = adapt_profit_snapshot_text(text, source_name=path.name, source_updated_at=updated, costs_by_sku=costs_by_sku, seller_sku_by_platform_sku=seller_sku_by_platform_sku, reporting_period=reporting_period)
+        result = adapt_profit_snapshot_text(text, source_name=path.name, source_updated_at=updated, costs_by_sku=costs_by_sku, seller_sku_by_platform_sku=seller_sku_by_platform_sku, reporting_period=reporting_period, catalog=catalog)
         all_rows.extend(result.rows); issues.extend(result.issues)
         raw += result.raw_row_count; normalized += result.normalized_row_count; rejected += result.rejected_row_count
         sources.append({"path": str(path), "name": path.name, "checksum": _checksum(text), "raw_row_count": result.raw_row_count, "normalized_row_count": result.normalized_row_count, "rejected_row_count": result.rejected_row_count})
@@ -84,7 +84,7 @@ def adapt_local_profit_snapshots(
 def discover_local_profit_snapshots(
     directories: Iterable[str | Path], *, costs_by_sku: Mapping[str, object] | None = None,
     seller_sku_by_platform_sku: Mapping[str, str] | None = None,
-    reporting_period: tuple[date, date] | None = None,
+    reporting_period: tuple[date, date] | None = None, catalog=None,
 ) -> LocalSnapshotAdaptation:
     """Discover only supported snapshot names in caller-supplied directories."""
     paths: list[Path] = []
@@ -100,23 +100,45 @@ def discover_local_profit_snapshots(
                 path for path in sorted(root.glob("weekly_shopee_profit_*.html"))
                 if _file_overlaps_period(path.name, reporting_period)
             )
-    return adapt_local_profit_snapshots(paths, costs_by_sku=costs_by_sku, seller_sku_by_platform_sku=seller_sku_by_platform_sku, reporting_period=reporting_period)
+    return adapt_local_profit_snapshots(paths, costs_by_sku=costs_by_sku, seller_sku_by_platform_sku=seller_sku_by_platform_sku, reporting_period=reporting_period, catalog=catalog)
 
 
 def adapt_profit_snapshot_text(
     text: str, *, source_name: str, source_updated_at: str,
     costs_by_sku: Mapping[str, object] | None = None, seller_sku_by_platform_sku: Mapping[str, str] | None = None,
-    reporting_period: tuple[date, date] | None = None,
+    reporting_period: tuple[date, date] | None = None, catalog=None,
 ) -> LocalSnapshotAdaptation:
     """Adapt supplied snapshot text; useful for fixtures and non-file callers."""
     if source_name.lower().endswith(".csv") and _TIKTOK_REGION.search(source_name):
-        rows, issues, raw, rejected = _tiktok_rows(text, source_name, source_updated_at, costs_by_sku or {}, seller_sku_by_platform_sku or {}, reporting_period)
+        rows, issues, raw, rejected = _tiktok_rows(text, source_name, source_updated_at, {} if catalog is not None else costs_by_sku or {}, seller_sku_by_platform_sku or {}, reporting_period)
     elif source_name.lower().endswith(".html") and source_name.startswith("weekly_shopee_profit_"):
         rows, issues, raw, rejected = _shopee_rows(text, source_name, source_updated_at, reporting_period)
     else:
         rows, raw, rejected = [], 0, 0
         issues = [_issue("unsupported_snapshot", "snapshot", source_name, "source_name")]
-    checksum = _checksum({"source_name": source_name, "text": text})
+    if catalog is not None:
+        from domains.data_operations.profit_settlement.local_catalog import enrich_settlement_row
+        # Missing costs are evaluated after catalog scope, never before binding.
+        issues = [issue for issue in issues if issue.code != "missing_cost"]
+        bound = []
+        for row in rows:
+            output = enrich_settlement_row(row, catalog)
+            issue = output.get("catalog_scope_issue")
+            if issue:
+                output["source_cost_cny"] = output.get("cost_cny")
+                output["source_unit_cost_cny"] = output.get("unit_cost_cny")
+                output["cost_cny"] = output["unit_cost_cny"] = None
+                issues.append(_issue(issue, "snapshot", output["order_line_id"], "platform/shop/site/currency/product"))
+            elif output["platform"] == "tiktok":
+                unit = _decimal((costs_by_sku or {}).get(output["canonical_sku"]))
+                output["unit_cost_cny"] = unit
+                output["cost_cny"] = unit * output["quantity"] if unit is not None else None
+            if not issue and output.get("cost_cny") is None:
+                issues.append(_issue("missing_cost", "snapshot", output["order_line_id"], "cost_cny"))
+            bound.append(output)
+        rows = bound
+    checksum = _checksum({"source_name": source_name, "text": text,
+                          **({"catalog_snapshot_id": catalog.snapshot_id, "bound_rows": [{key: value for key, value in row.items() if key != "source_updated_at"} for row in rows]} if catalog is not None else {})})
     snapshot_id = f"local-snapshot:{checksum}"
     rows = [{**row, "source_snapshot_id": snapshot_id} for row in rows]
     return LocalSnapshotAdaptation(tuple(rows), tuple(issues), snapshot_id, checksum, (), raw, len(rows), rejected)
@@ -132,7 +154,7 @@ def _tiktok_rows(text: str, source: str, updated: str, costs: Mapping[str, objec
         if kind != "Order":
             rejected += 1; continue
         order = _text(item.get("Order/adjustment ID  ") or item.get("Order/adjustment ID"))
-        source_sku = _text(item.get("SKU ID")); source_seller_sku = _text(sku_map.get(source_sku)); sku = _normalise_seller_sku(source_seller_sku); occurred = _normalise_occurred(item.get("Statement Date"))
+        source_sku = _text(item.get("SKU ID")); source_seller_sku = _text(item.get("Seller SKU") or item.get("seller_sku") or sku_map.get(source_sku)); sku = _normalise_seller_sku(source_seller_sku); occurred = _normalise_occurred(item.get("Statement Date"))
         amount = _decimal(item.get("Total settlement amount"))
         currency = _text(item.get("Currency")) or region_currency
         if not occurred:
@@ -174,6 +196,9 @@ def _tiktok_rows(text: str, source: str, updated: str, costs: Mapping[str, objec
             product_name=_text(item.get("Product name")),
             variant_name=_text(item.get("SKU name")), fee_items=fee_items,
             statement_id=_text(item.get("Statement ID")),
+            shop_id=_text(item.get("shop_id") or item.get("Shop ID")),
+            product_id=_text(item.get("product_id") or item.get("Product ID")),
+            source_platform=_text(item.get("platform")),
         ))
     return rows, issues, raw, rejected
 
@@ -222,14 +247,17 @@ def _shopee_rows(text: str, source: str, updated: str, period: tuple[date, date]
             occurred, updated, source, quantity=quantity, unit_cost=unit_cost,
             buyer_paid=buyer_paid, product_name=value("Product Name"),
             image_url=_text(item.get("image_url")), fee_items=[],
+            shop_id=_text(item.get("shop_id") or data.get("shop_id")),
+            product_id=_text(item.get("product_id")), source_platform=_text(item.get("platform") or data.get("platform")),
         ))
     return rows, issues, raw, rejected
 
 
-def _row(channel, region, order, sku, source_sku, currency, amount, cost, occurred, updated, source, *, quantity=None, unit_cost=None, source_seller_sku=None, buyer_paid=None, product_name="", variant_name="", image_url="", fee_items=None, statement_id=""):
+def _row(channel, region, order, sku, source_sku, currency, amount, cost, occurred, updated, source, *, quantity=None, unit_cost=None, source_seller_sku=None, buyer_paid=None, product_name="", variant_name="", image_url="", fee_items=None, statement_id="", shop_id="", product_id="", source_platform=""):
     line_prefix = f"{statement_id}:" if statement_id else ""
     return {
         "channel": channel, "platform": channel, "region": region,
+        "shop_id": shop_id, "product_id": product_id, "source_platform": source_platform,
         "order_id": order, "statement_id": statement_id,
         "order_line_id": f"{line_prefix}{order}:{source_sku or sku}",
         "sku_id": sku, "canonical_sku": sku, "seller_sku": source_seller_sku or sku,
@@ -257,10 +285,10 @@ def _within(value, period):
     return period[0] <= current <= period[1]
 def _normalise_shopee_sku(value):
     raw = _text(value)
-    return raw[-4:].zfill(4) if raw.isdigit() else ""
+    return raw if raw.isdigit() else ""
 def _normalise_seller_sku(value):
     raw = _text(value)
-    return raw[-4:].zfill(4) if raw.isdigit() else raw
+    return raw
 def _normalise_occurred(value):
     raw = _text(value)
     if not raw: return ""

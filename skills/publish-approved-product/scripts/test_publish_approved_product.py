@@ -1207,7 +1207,7 @@ class ReadbackClassificationTests(unittest.TestCase):
                 )
             ]
         }
-        repo = r"C:\Users\Windows11\Desktop\Agent_PR\tiktok_e_comm"
+        repo = str(_common.DEFAULT_REPO)
         readback_ozon.add_repo_to_path(repo)
         args = type("Args", (), {"repo": repo, "timeout_seconds": 1})()
         with patch("modules.ozon.client.ozon_post", return_value=response):

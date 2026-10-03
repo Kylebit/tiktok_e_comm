@@ -1,0 +1,4 @@
+interface:
+  display_name: "DuoPlus云手机控制"
+  short_description: "通过官方API安全连接并核验DuoPlus云手机"
+  default_prompt: "Use $control-duoplus-cloud-phone to verify my DuoPlus API connection and cloud-phone HTTP-control readiness without making changes."

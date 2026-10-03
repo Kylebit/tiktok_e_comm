@@ -47,7 +47,7 @@ def _request(url, *, method="GET", payload=None):
         return error.code, json.loads(error.read())
 
 
-def test_publish_http_is_short_202_job_start_not_legacy_loop(
+def test_legacy_publish_http_is_retired_without_starting_a_job(
     monkeypatch, product_http_server
 ):
     calls = []
@@ -82,10 +82,11 @@ def test_publish_http_is_short_202_job_start_not_legacy_loop(
         },
     )
 
-    assert status == 202
-    assert response["job"]["phase"] == "PENDING"
-    assert response["external_writes_performed"] == []
-    assert len(calls) == 1
+    assert status == 410
+    assert response["code"] == "legacy_publication_write_retired"
+    assert response["external_write_count"] == 0
+    assert response["migration"]["required_snapshot_schema"] == "approved-publication-snapshot/v4"
+    assert calls == []
 
 
 def test_publish_post_cannot_reopen_legacy_job_before_collectbox_step(monkeypatch):
@@ -586,7 +587,7 @@ def test_mvp_approved_context_does_not_reblock_start_on_current_content_gate(
     monkeypatch.setattr(
         product_server,
         "_approved_plan_matches_current_payload",
-        lambda _plan, _preview: True,
+        lambda _plan, _preview, **_kwargs: True,
     )
 
     context, failure = product_server._oneclick_approved_context(

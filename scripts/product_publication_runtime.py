@@ -34,29 +34,42 @@ class ServiceSpec(NamedTuple):
     health_url: str
     expected_service: str
     command: tuple[str, ...]
+    root: str = str(ROOT)
+    profile_path: str | None = None
+    settings_path: str | None = None
 
 
 def service_specs(
-    *, root: str | Path = ROOT, executable: str | Path | None = None
+    *, root: str | Path = ROOT, executable: str | Path | None = None,
+    include_rus: bool = False, profile_path: str | Path | None = None,
+    settings_path: str | Path | None = None,
+    product_port: int = 8765,
 ) -> tuple[ServiceSpec, ...]:
     repository = Path(root).resolve()
+    if type(product_port) is not int or not 1 <= product_port <= 65535:
+        raise ValueError('product port must be between 1 and 65535')
+    if settings_path is not None and profile_path is None:
+        raise ValueError('settings path requires an explicit runtime profile')
     python = str(executable or sys.executable)
-    return (
+    specs = (
         ServiceSpec(
             name="product-center",
-            port=8765,
-            health_url="http://127.0.0.1:8765/api/health",
+            port=product_port,
+            health_url=f"http://127.0.0.1:{product_port}/api/health",
             expected_service="orbit-hive-local-console",
             command=(
                 python,
                 str(repository / "main.py"),
                 "serve",
                 "--port",
-                "8765",
+                str(product_port),
                 "--page",
                 "product",
                 "--no-browser",
             ),
+            root=str(repository),
+            profile_path=str(profile_path) if profile_path else None,
+            settings_path=str(settings_path) if settings_path else None,
         ),
         ServiceSpec(
             name="new-product-workbench",
@@ -68,8 +81,17 @@ def service_specs(
                 str(repository / "scripts" / "start_new_product_server.py"),
                 "8766",
             ),
+            root=str(repository),
+            profile_path=str(profile_path) if profile_path else None,
+            settings_path=str(settings_path) if settings_path else None,
         ),
     )
+    if include_rus:
+        specs += (ServiceSpec('orbit-rus', 8767, 'http://127.0.0.1:8767/health',
+                              'orbit_rus', (python, str(repository / 'scripts/start_rus_server.py'), '8767'),
+                              str(repository), str(profile_path) if profile_path else None,
+                              str(settings_path) if settings_path else None),)
+    return specs
 
 
 def _fetch_json(url: str, timeout: float) -> object:
@@ -77,7 +99,8 @@ def _fetch_json(url: str, timeout: float) -> object:
         url,
         headers={"Accept": "application/json", "User-Agent": "orbit-runtime-health/1"},
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    # Loopback health must not inherit an external HTTP proxy.
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=timeout) as response:
         raw = response.read(65_537)
     if len(raw) > 65_536:
         raise ValueError("health response is too large")
@@ -96,7 +119,7 @@ def service_result(
     spec: ServiceSpec, state: str, *, detail: str | None = None
 ) -> dict[str, object]:
     result: dict[str, object] = {
-        "healthy": state == "HEALTHY",
+        "healthy": state == "READY",
         "state": state,
         "port": spec.port,
         "health_url": spec.health_url,
@@ -139,7 +162,12 @@ def probe_service(
         return service_result(
             spec, "WRONG_SERVICE", detail="health endpoint identity mismatch"
         )
-    return service_result(spec, "HEALTHY")
+    from shared_platform.runtime_identity import compare_identity, expected_identity
+
+    expected = expected_identity(spec.root, spec.expected_service, profile_path=spec.profile_path)
+    state = compare_identity(payload, expected)
+    return {**service_result(spec, state), 'identity': payload,
+            'expected': expected, 'business_execution_verified': False}
 
 
 def runtime_status(
@@ -153,7 +181,7 @@ def runtime_status(
     check = probe or probe_service
     services = {spec.name: check(spec) for spec in selected}
     return {
-        "ok": all(row.get("state") == "HEALTHY" for row in services.values()),
+        "ok": all(row.get("state") == "READY" for row in services.values()),
         "services": services,
     }
 
@@ -231,6 +259,72 @@ def takeover_check(
     }
 
 
+def takeover_publication(
+    *,
+    expected_commit: str,
+    data_root: str | Path,
+    offer_id: str,
+    source_binder: Callable[[Path, str], dict[str, object]] | None = None,
+    inspector: Callable[..., dict[str, object]] | None = None,
+) -> dict[str, object]:
+    """Bind one existing packet to this exact source without runtime startup.
+
+    ``data_root`` remains an explicit evidence location.  This intentionally
+    does not consume ``--profile``: a runtime profile identifies a running
+    service's configured stores and must never redirect a historical packet.
+    """
+
+    from shared_platform.publication_takeover import inspect_publication, source_binding
+
+    repository = ROOT.resolve()
+    binding = (source_binder or source_binding)(repository, expected_commit)
+    packet = (inspector or inspect_publication)(offer_id=offer_id, data_root=data_root)
+    return {
+        **packet,
+        "source_binding": binding,
+        "runtime_started": False,
+        "runtime_profile_consumed": False,
+        "data_root_selection": "EXPLICIT_CLI_ARGUMENT",
+    }
+
+
+def runtime_profile_check(
+    *,
+    profile_path: str | Path | None,
+    settings_path: str | Path | None,
+    profile_reader: Callable[[Path, str | Path | None], dict[str, object] | None] | None = None,
+) -> dict[str, object]:
+    """Validate a persistent identity profile without initializing configuration.
+
+    The caller must name both files.  The profile only describes the selected
+    configuration and stores; it does not create, copy, or redirect them.
+    """
+
+    if profile_path is None or settings_path is None:
+        raise ValueError("--profile and --settings-path are required together")
+    from shared_platform.runtime_identity import read_profile
+
+    selected = Path(settings_path).expanduser().resolve()
+    if not selected.is_file():
+        raise ValueError("explicit settings path is not an existing file")
+    profile = (profile_reader or read_profile)(ROOT.resolve(), profile_path)
+    if profile is None or profile.get("settings_path") != str(selected):
+        raise ValueError("runtime profile does not describe the explicit settings path")
+    return {
+        "ok": True,
+        "status": "PROFILE_BOUND",
+        "profile_id": profile["profile_id"],
+        "settings_path": str(selected),
+        "stores": profile["stores"],
+        "configuration_initialized": False,
+        "configuration_read": False,
+        "database_access": False,
+        "provider_calls": 0,
+        "local_write_count": 0,
+        "runtime_started": False,
+    }
+
+
 def _write_pid_record(runtime_dir: Path, spec: ServiceSpec, pid: int) -> None:
     record = {
         "service": spec.name,
@@ -258,6 +352,8 @@ def launch_service(
 ) -> subprocess.Popen[bytes]:
     """Launch one known service hidden, with durable logs and a PID receipt."""
 
+    if spec.settings_path and not spec.profile_path:
+        raise ValueError('settings path requires an explicit runtime profile')
     directory = Path(runtime_dir).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     stdout_path = directory / f"{spec.name}.stdout.log"
@@ -265,12 +361,16 @@ def launch_service(
     stdout_handle = stdout_path.open("ab", buffering=0)
     stderr_handle = stderr_path.open("ab", buffering=0)
     kwargs: dict[str, object] = {
-        "cwd": str(ROOT),
+        "cwd": spec.root,
         "stdin": subprocess.DEVNULL,
         "stdout": stdout_handle,
         "stderr": stderr_handle,
         "close_fds": True,
     }
+    if spec.profile_path:
+        kwargs['env'] = {**os.environ, 'ORBIT_RUNTIME_PROFILE': spec.profile_path}
+    if spec.settings_path:
+        kwargs['env'] = {**kwargs.get('env', os.environ), 'ORBIT_HIVE_SETTINGS': spec.settings_path}
     if os.name == "nt":
         kwargs["creationflags"] = (
             getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -303,9 +403,8 @@ def start_runtime(
     selected = tuple(specs or service_specs())
     check = probe or probe_service
     initial = runtime_status(specs=selected, probe=check)
-    conflict_states = {"PORT_IN_USE", "WRONG_SERVICE"}
     if any(
-        row.get("state") in conflict_states
+        row.get("state") not in {"STOPPED", "READY"}
         for row in initial["services"].values()
     ):
         return {
@@ -361,23 +460,100 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="read-only runtime, Skill parity, git tracking, and entrypoint gate",
     )
+    mode.add_argument(
+        "--takeover-offer-id",
+        help="read one existing Offer from an explicit data root; no runtime startup",
+    )
+    mode.add_argument(
+        "--profile-check",
+        action="store_true",
+        help="read-only validation that an explicit profile describes explicit settings",
+    )
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--runtime-dir", type=Path, default=DEFAULT_RUNTIME_DIR)
+    parser.add_argument("--include-rus", action="store_true", help="also verify the optional Ozon service")
+    parser.add_argument("--profile", type=Path, help="explicit non-secret runtime identity profile")
+    parser.add_argument("--settings-path", type=Path, help="explicit existing settings file paired with --profile")
+    parser.add_argument("--expected-commit", help="exact source commit required by --takeover-offer-id")
+    parser.add_argument("--data-root", type=Path, help="absolute historical evidence root required by --takeover-offer-id")
     return parser
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.takeover_check:
-        result = takeover_check()
-    elif args.start:
-        result = start_runtime(
-            runtime_dir=args.runtime_dir,
-            timeout_seconds=args.timeout,
-        )
+    if args.takeover_offer_id:
+        if args.profile is not None or args.include_rus:
+            result = {
+                "status": "TAKEOVER_REJECTED",
+                "reason": "takeover uses only explicit source, commit, data root, and Offer arguments",
+                "paid_requests": 0,
+                "business_writes": 0,
+            }
+        elif not args.expected_commit or args.data_root is None:
+            result = {
+                "status": "TAKEOVER_REJECTED",
+                "reason": "--expected-commit and --data-root are required for takeover",
+                "paid_requests": 0,
+                "business_writes": 0,
+            }
+        else:
+            try:
+                result = takeover_publication(
+                    expected_commit=args.expected_commit,
+                    data_root=args.data_root,
+                    offer_id=args.takeover_offer_id,
+                )
+            except (OSError, ValueError, RuntimeError) as error:
+                result = {
+                    "status": "TAKEOVER_REJECTED",
+                    "reason": str(error),
+                    "paid_requests": 0,
+                    "business_writes": 0,
+                }
     else:
-        result = runtime_status()
+        if args.profile_check:
+            try:
+                result = runtime_profile_check(profile_path=args.profile, settings_path=args.settings_path)
+            except (OSError, ValueError, RuntimeError) as error:
+                result = {
+                    "ok": False,
+                    "status": "PROFILE_REJECTED",
+                    "reason": str(error),
+                    "provider_calls": 0,
+                    "local_write_count": 0,
+                    "runtime_started": False,
+                }
+        else:
+            try:
+                if args.settings_path is not None:
+                    runtime_profile_check(profile_path=args.profile, settings_path=args.settings_path)
+                specs = service_specs(
+                    include_rus=args.include_rus,
+                    profile_path=args.profile,
+                    settings_path=args.settings_path,
+                )
+                if args.takeover_check:
+                    result = takeover_check(runtime_probe=lambda: runtime_status(specs=specs))
+                elif args.start:
+                    result = start_runtime(
+                        specs=specs,
+                        runtime_dir=args.runtime_dir,
+                        timeout_seconds=args.timeout,
+                    )
+                else:
+                    result = runtime_status(specs=specs)
+            except (OSError, ValueError, RuntimeError) as error:
+                result = {
+                    "ok": False,
+                    "status": "PROFILE_REJECTED",
+                    "reason": str(error),
+                    "provider_calls": 0,
+                    "local_write_count": 0,
+                    "runtime_started": False,
+                }
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    if result.get("status") == "READ_ONLY_BOUND":
+        return 0
     return 0 if result.get("ok") is True else 1
 
 

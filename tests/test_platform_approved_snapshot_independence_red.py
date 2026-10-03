@@ -81,8 +81,8 @@ def test_platform_buttons_execute_from_approved_snapshot_without_current_dashboa
     )
     monkeypatch.setattr(
         product_server,
-        "_approved_ozon_publish_facts",
-        lambda payload: {
+        "_approved_ozon_variant_publish_facts",
+        lambda payload: [{
             "seller_sku": "0959",
             "title": "Approved title",
             "size": (38.0, 85.0),
@@ -93,11 +93,20 @@ def test_platform_buttons_execute_from_approved_snapshot_without_current_dashboa
             "weight_kg": 0.2,
             "quantity": 1,
             "source_category": "wall sticker",
-        },
+        }],
+    )
+    monkeypatch.setattr(
+        "modules.ozon.target_scoped.read_existing_product",
+        lambda **_kwargs: {"checks": {
+            "created": True, "approved": True, "title": True,
+            "price": True, "images": True,
+        }},
     )
     monkeypatch.setattr(
         "modules.ozon.migrate_batch.migrate_one",
-        lambda *_args, **_kwargs: {"ok": True},
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("approved readback must not dispatch again")
+        ),
     )
 
     identity = product_server._server_canonical_digest(plan["targets"])

@@ -1,0 +1,25 @@
+#manualIntakeDialog {width:min(900px,calc(100vw - 24px));max-height:90vh;border:1px solid #c9d2df;border-radius:8px;padding:20px;overflow:auto;color:#172b4d;background:#fff}
+#manualIntakeDialog::backdrop {background:#182b4a66}
+#manualIntakeForm {display:grid;gap:12px}
+#manualIntakeForm label {display:grid;gap:5px}
+#manualIntakeForm input,#manualIntakeForm textarea {box-sizing:border-box;width:100%;padding:8px;border:1px solid #bdc9d9;border-radius:4px;font:inherit}
+#manualVariants input {min-width:74px}
+#manualVariants td:first-child input {min-width:135px}
+.flow-actions {display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+#productHistory table,#publicationFlow table,#manualIntakeDialog table {width:100%;border-collapse:collapse;font-size:13px}
+#productHistory th,#productHistory td,#publicationFlow td,#publicationFlow th,#manualIntakeDialog td,#manualIntakeDialog th {padding:8px;text-align:left;border-bottom:1px solid #e1e7ef;vertical-align:top}
+#publicationFlowReview details {margin:8px 0}
+#publicationFlowReview pre,#roundEvidenceContent pre {white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:360px;overflow:auto}
+#publicationFlowReview .flow-images {display:flex;gap:6px;overflow:auto;margin:8px 0}
+#publicationFlowReview img {width:88px;height:88px;object-fit:contain;border:1px solid #ccd5df}
+#publicationFlow [data-flow-state="error"],#manualStatus[data-state="error"] {color:#a72727}
+#publicationFlowStatus,#manualStatus {overflow-wrap:anywhere}
+#productHistory {margin:14px 0}
+#roundEvidence {margin:12px 0}
+#roundEvidence summary {cursor:pointer;font-weight:600}
+#productHistory td:first-child {max-width:320px;overflow-wrap:anywhere}
+.product-detail,.overview-grid,.next-panel {min-width:0}
+.next-panel li,.next-panel p {overflow-wrap:anywhere}
+#publicationFlowReview .flow-images figure {margin:0;flex:0 0 88px;font-size:11px}
+#roundEvidenceContent .flow-images {display:flex;gap:6px;flex-wrap:wrap}
+@media(max-width:600px){#manualIntakeDialog{padding:12px}#publicationFlow .flow-actions button{max-width:100%}#productHistory table{min-width:560px}}

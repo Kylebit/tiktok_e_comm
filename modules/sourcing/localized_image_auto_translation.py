@@ -13,11 +13,13 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from modules.sourcing.image_suite_plan import chat_completions, message_content
+from pathlib import Path
+
+from modules.sourcing.lingshi_client import LingshiClient
 
 
-MODEL = "gpt-5.4-mini-official"
-PROVIDER = "toapis-chat-completions/v1"
+MODEL = "gpt-5.4-nano"
+PROVIDER = "lingshi-chat-completions/v1"
 SCHEMA_VERSION = "localized-image-auto-translation/v1"
 AUTO_TRANSLATION_LOCALES = ("ms-MY", "th-TH", "vi-VN", "ru-RU", "es-MX")
 _LOCALE_NAMES = {
@@ -26,6 +28,29 @@ _LOCALE_NAMES = {
     "vi-VN": "natural Vietnamese",
     "ru-RU": "natural Russian",
     "es-MX": "natural Mexican Spanish",
+}
+_TERM_GLOSSARY = {
+    "BABY'S BREATH": {
+        "ms-MY": "Bunga gypsophila",
+        "th-TH": "ดอกยิปโซ",
+        "vi-VN": "Hoa bi",
+        "ru-RU": "Гипсофила",
+        "es-MX": "Gipsofila",
+    },
+    "EUCALYPTUS": {
+        "ms-MY": "Eukaliptus",
+        "th-TH": "ยูคาลิปตัส",
+        "vi-VN": "Bạch đàn",
+        "ru-RU": "Эвкалипт",
+        "es-MX": "Eucalipto",
+    },
+    "LAVENDER": {
+        "ms-MY": "Bunga lavender",
+        "th-TH": "ลาเวนเดอร์",
+        "vi-VN": "Hoa oải hương",
+        "ru-RU": "Лаванда",
+        "es-MX": "Lavanda",
+    },
 }
 _SYSTEM_PROMPT = """You translate English text already printed inside ecommerce images.
 Translate only the supplied source_text into every requested locale. Do not add
@@ -57,15 +82,34 @@ def _digest(value: object) -> str:
 
 
 def _default_model_call(
-    messages: list[dict[str, Any]], *, temperature: float, max_tokens: int
+    messages: list[dict[str, Any]], *, temperature: float, max_tokens: int,
+    paid_context=None, business_identity=None, receipt_sink=None, client=None,
 ) -> str:
-    response = chat_completions(
-        messages,
-        model=MODEL,
-        temperature=temperature,
-        max_tokens=max_tokens,
+    del temperature  # The verified Lingshi client deliberately exposes a bounded payload.
+    from shared_platform.publication_paid_requests import require_paid_context
+    context = require_paid_context(paid_context)
+    if not business_identity or business_identity.get('offer_id') != context.offer_id:
+        raise ValueError('translation requires exact product/source business identity')
+    response = context.chat(
+        purpose='image_translation', model=MODEL, messages=messages,
+        business=business_identity, parameters={'max_tokens':max_tokens},
+        call=lambda: (client if client is not None else LingshiClient.from_config(
+            Path(__file__).resolve().parents[2] / "config" / "lingshi.local.json"
+        )).chat_completions(model=MODEL, messages=messages, max_tokens=max_tokens, allow_paid_request=True),
     )
-    return message_content(response)
+    if receipt_sink is not None:receipt_sink.update(response['_paid_request'])
+    choices = response.get("choices") if isinstance(response, dict) else None
+    if not isinstance(choices, list) or not choices:
+        raise LocalizedImageAutoTranslationError(
+            "Lingshi translation response has no choices"
+        )
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str) and content.strip():
+        return content
+    raise LocalizedImageAutoTranslationError(
+        "Lingshi translation response has no text content"
+    )
 
 
 def _json_object(raw: object) -> dict[str, Any]:
@@ -126,6 +170,31 @@ def _requires_translation(source_text: str) -> bool:
     letters = re.findall(r"[A-Za-z]", source_text)
     invariant_code = bool(re.fullmatch(r"[A-Z0-9_.&+\-/]{2,20}", source_text))
     return len(letters) >= 4 and not invariant_code
+
+
+def normalize_translations_for_locale(
+    translations: Sequence[Mapping[str, Any]], locale: str
+) -> list[dict[str, str]]:
+    """Apply durable terminology rules before an image is rendered or retried."""
+
+    if locale not in AUTO_TRANSLATION_LOCALES:
+        raise LocalizedImageAutoTranslationError("unsupported translation locale")
+    normalized: list[dict[str, str]] = []
+    for raw in translations:
+        region_id = str(raw.get("region_id") or "").strip()
+        source_text = str(raw.get("source_text") or "").strip()
+        translated_text = str(raw.get("translated_text") or "").strip()
+        glossary = _TERM_GLOSSARY.get(source_text.upper())
+        if glossary:
+            translated_text = glossary[locale]
+        normalized.append(
+            {
+                "region_id": region_id,
+                "source_text": source_text,
+                "translated_text": translated_text,
+            }
+        )
+    return normalized
 
 
 def _validated_translations(
@@ -195,7 +264,7 @@ def _validated_translations(
                 raise LocalizedImageAutoTranslationError(
                     "ru-RU target language is missing"
                 )
-        result[locale] = clean_rows
+        result[locale] = normalize_translations_for_locale(clean_rows, locale)
     return result
 
 
@@ -203,6 +272,9 @@ def translate_image_regions(
     regions: Sequence[Mapping[str, Any]],
     *,
     model_call: Callable[..., str] = _default_model_call,
+    paid_context=None,
+    business_identity=None,
+    client=None,
 ) -> dict[str, Any]:
     """Translate one image's OCR rows to all locales in exactly one model call."""
 
@@ -228,7 +300,14 @@ def translate_image_regions(
         ],
         "regions": source_rows,
     }
-    raw = model_call(
+    paid_receipt={}
+    if model_call is _default_model_call:
+        def invoke(messages, **kwargs):
+            return _default_model_call(messages, paid_context=paid_context, business_identity=business_identity, receipt_sink=paid_receipt,
+                                       **({'client':client} if client is not None else {}), **kwargs)
+    else:
+        invoke = model_call  # Explicit pure model-call seam for offline parser consumers.
+    raw = invoke(
         [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {
@@ -255,5 +334,6 @@ def translate_image_regions(
             "model_calls": 1,
             "source_digest": source_digest,
             "translation_digest": _digest(translations),
+            **({'paid_request':paid_receipt} if paid_receipt else {}),
         },
     }

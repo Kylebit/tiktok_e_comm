@@ -10,6 +10,7 @@ import subprocess
 import threading
 
 import pytest
+from test_finance_feedback_contract import finance_feedback_contract
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,10 +20,10 @@ BROWSER_CONTRACT = ROOT / "tests" / "browser" / "release_ux_contract.js"
 
 class _ReleaseStaticHandler(http.server.SimpleHTTPRequestHandler):
     route_files = {
-        "/": "index.html",
+        "/": "task_workspace.html",
         "/product-workspace": "product_workspace.html",
         "/ai-image-studio": "ai_image_studio.html",
-        "/profit": "profit_center.html",
+        "/profit-review": "profit_center.html",
     }
 
     def __init__(self, *args, **kwargs):
@@ -105,8 +106,8 @@ def _function_body(source: str, function_name: str) -> str:
     return source[start:next_start]
 
 
-def test_every_formal_async_action_has_loading_success_and_failure_feedback():
-    """Fast source contract; Chromium verifies that the feedback is actually visible."""
+def test_every_formal_async_action_has_loading_success_and_failure_feedback(finance_feedback_contract):
+    """Non-finance source contracts plus actual finance HTTP/browser feedback."""
 
     manifests = {
         "web/static/product_workspace.js": {
@@ -279,24 +280,6 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
                 "finally",
             ],
         },
-        "web/static/profit_center.js": {
-            "loadWeekly": [
-                "setLoading",
-                "try {",
-                "renderWeekly",
-                "catch (error)",
-                "renderUnavailableWeekly",
-                "finally",
-            ],
-            "loadSku": [
-                "setLoading",
-                "try {",
-                "renderSku",
-                "catch (error)",
-                "empty-state",
-                "finally",
-            ],
-        },
     }
     for relative_path, functions in manifests.items():
         source = (ROOT / relative_path).read_text(encoding="utf-8")
@@ -306,6 +289,12 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
             assert not missing, (
                 f"{relative_path}:{function_name} misses release UX tokens {missing}"
             )
+    # The current finance consumer replaced loadWeekly/loadSku. Preserve their
+    # loading, success, failure, unknown-result and finally/retry obligations.
+    checks=finance_feedback_contract['checks']
+    required=[f'{mode}_{state}' for mode in ('weekly','sku')
+              for state in ('loading','success','failure','restored','failure_restored')]
+    assert all(checks.get(key) is True for key in required),{key:checks.get(key) for key in required}
 
 
 def test_common_overwrite_html_contract_is_explicit_and_separate():
@@ -399,7 +388,7 @@ def test_remaining_channel_retry_ui_uses_only_the_target_scoped_seam():
     assert "需要对账" in source
 
 
-def test_formal_pages_expose_accessible_feedback_regions():
+def test_formal_pages_expose_accessible_feedback_regions(finance_feedback_contract):
     html_contract = {
         "web/product_workspace.html": [
             'id="queueGrid"',
@@ -420,18 +409,14 @@ def test_formal_pages_expose_accessible_feedback_regions():
             'id="generationProgress"',
             'id="syncProgress"',
         ],
-        "web/profit_center.html": [
-            'id="weeklyAlert"',
-            'id="weeklyVerdict"',
-            'aria-live="polite"',
-            'id="skuAlert"',
-            'id="skuResult"',
-        ],
     }
     for relative_path, tokens in html_contract.items():
         source = (ROOT / relative_path).read_text(encoding="utf-8")
         missing = [token for token in tokens if token not in source]
         assert not missing, f"{relative_path} misses feedback contracts {missing}"
+    checks=finance_feedback_contract['checks']
+    required=('weekly_status_region','weekly_error_region','sku_status_region')
+    assert all(checks.get(key) is True for key in required),{key:checks.get(key) for key in required}
 
 
 def test_failed_current_queue_read_is_not_presented_as_still_loading():
@@ -628,6 +613,77 @@ def test_platform_publish_ui_polls_the_durable_publication_report():
     assert ".oneclick-target-card:focus-visible" in style
 
 
+def test_publish_all_runs_every_approved_platform_in_fixed_order():
+    """The all-platform control must preserve independent platform execution."""
+
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    publish_all = _function_body(script, "publishSelectedTargets")
+
+    endpoints = (
+        '"/api/product-workspace/publish-tiktok"',
+        '"/api/product-workspace/publish-shopee-global"',
+        '"/api/product-workspace/publish-ozon"',
+    )
+    positions = [publish_all.index(endpoint) for endpoint in endpoints]
+    assert positions == sorted(positions)
+    assert "for (const batch of platformBatches)" in publish_all
+    assert "try {" in publish_all
+    assert "catch (_error)" in publish_all
+    assert "await publishPlatformBatch(...batch)" in publish_all
+
+
+def test_publish_all_continues_after_tiktok_failure_in_real_chromium():
+    """A TikTok blocker, 409 or transport error must not suppress siblings."""
+
+    runtime = _browser_runtime()
+    assert runtime is not None, "bundled Node + Playwright runtime is required"
+    node, modules = runtime
+    chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+    assert chrome.is_file(), "local Chrome executable is required"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "NODE_PATH": str(modules),
+            "ORBIT_CHROMIUM_BIN": str(chrome),
+            "ORBIT_BROWSER_CONTRACT_ONLY": "publish-all-platform-continuation",
+        }
+    )
+    with _static_server() as base_url:
+        result = subprocess.run(
+            [str(node), str(BROWSER_CONTRACT), base_url],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            check=False,
+        )
+    assert result.returncode == 0, (
+        "publish-all continuation Chromium contract failed\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
+def test_platform_success_copy_never_claims_full_product_completion():
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    render = script[
+        script.index("function renderOneClickExecution("):
+        script.index("function focusOneClickTarget(")
+    ]
+    poll = _function_body(script, "pollPublicationReport")
+
+    assert "PUBLISHED · 本次平台范围完成" in render
+    assert "本次范围结果" in render
+    assert "全商品最终状态以下方全目标账本为准" in render
+    assert "本次平台范围完成" in poll
+
+
 def test_approved_release_flow_has_three_isolated_platform_actions():
     """Each platform has one explicit button and one server-owned endpoint."""
 
@@ -658,7 +714,7 @@ def test_collectbox_and_platform_release_actions_are_not_cross_wired():
     assert 'id="collectboxActionPanel"' in html
     assert 'id="collectboxActionMessage"' in html
     assert 'id="collectboxActionStatus"' in html
-    assert "product_workspace.js?v=20260820-v40" in html
+    assert "product_workspace.js?v=20260922-queue-retry" in html
     assert 'COLLECTBOX_ACTION_SCHEMA = "collectbox-action-status/v1"' in script
     assert "/api/product-workspace/collectbox-action/preview?" in script
     assert "/api/product-workspace/collectbox-action/status?" in script
@@ -867,8 +923,8 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     )
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
-    assert "product_workspace.css?v=20260820-v21" in html
-    assert "product_workspace.js?v=20260820-v40" in html
+    assert "product_workspace.css?v=20260908-r2-review" in html
+    assert "product_workspace.js?v=20260922-queue-retry" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script

@@ -2,7 +2,7 @@
 
 The runner reads existing local snapshots and the catalog database, delegates
 all monetary aggregation to data operations, and optionally stores the result
-in the Orbit inbox.  Dry-run is the default and has no write side effects.
+in the local report store.  Dry-run is the default and has no write side effects.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from domains.data_operations import (
     build_weekly_profit_digest,
     discover_local_profit_snapshots,
 )
-from modules.finance.sku_key import seller_sku_tail4
 from shared_platform.report_store import ReportRunStore, StoredReportResult, default_report_store
 
 
@@ -40,6 +39,7 @@ class CatalogProfitInputs:
     version: str
     issues: tuple[DataQualityIssue, ...]
     source_row_count: int
+    catalog: Any = None
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,8 @@ class WeeklyProfitPreview:
             ),
             "realized_sku_buckets": len(self.report.realized_by_sku),
             "negative_profit_sku_buckets": len(self.report.negative_profit_skus),
-            "preliminary_profit_cny": str(
+            "mode": "preliminary_diagnostic",
+            "preliminary_profit_cny": None if not self.report.realized_by_sku else str(
                 sum(
                     (Decimal(str(item["profit_cny"])) for item in self.report.realized_by_sku),
                     Decimal("0"),
@@ -88,83 +89,23 @@ def previous_complete_week(reference: date | datetime | None = None) -> tuple[da
     return this_monday - timedelta(days=7), this_monday - timedelta(days=1)
 
 
-def load_catalog_profit_inputs(database_path: str | Path) -> CatalogProfitInputs:
-    """Read SKU mappings and costs from the commerce database in read-only mode."""
-    path = Path(database_path)
-    if not path.is_file():
-        raise FileNotFoundError(f"catalog database not found: {path}")
-    connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    try:
-        rows = connection.execute(
-            """
-            SELECT p.sku_id, p.seller_sku, p.currency, p.shop_cipher,
-                   s.cost_cny, s.updated_at
-            FROM products p
-            LEFT JOIN sku_costs s ON s.sku_id = p.sku_id
-            WHERE p.seller_sku IS NOT NULL AND TRIM(p.seller_sku) != ''
-            ORDER BY
-                CASE WHEN UPPER(COALESCE(p.currency, '')) = 'THB' THEN 0 ELSE 1 END,
-                COALESCE(s.updated_at, 0) DESC,
-                p.sku_id,
-                p.shop_cipher
-            """
-        ).fetchall()
-    finally:
-        connection.close()
+def load_catalog_profit_inputs(database_path: str | Path, *, period_start=None, period_end=None) -> CatalogProfitInputs:
+    """Compatibility projection of the same I01 reviewed read-only snapshot.
 
-    mapping_candidates: dict[str, set[str]] = defaultdict(set)
-    cost_candidates: dict[str, set[Decimal]] = defaultdict(set)
-    selected_mapping: dict[str, str] = {}
-    selected_cost: dict[str, Decimal] = {}
-    for row in rows:
-        platform_sku = _text(row["sku_id"])
-        canonical_sku = seller_sku_tail4(_text(row["seller_sku"]))
-        if not platform_sku or not canonical_sku:
-            continue
-        mapping_candidates[platform_sku].add(canonical_sku)
-        selected_mapping.setdefault(platform_sku, canonical_sku)
-        cost = _decimal(row["cost_cny"])
-        if cost is not None and cost > 0:
-            cost_candidates[canonical_sku].add(cost)
-            selected_cost.setdefault(canonical_sku, cost)
+    This preliminary runner does not opt into temporary highest/default costs.
+    """
+    from domains.data_operations.profit_settlement.local_catalog import load_local_catalog
+    from domains.data_operations.profit_settlement.cost_policy import resolve_temporary_cost_policy
 
-    issues: list[DataQualityIssue] = []
-    for platform_sku, values in sorted(mapping_candidates.items()):
-        if len(values) > 1:
-            issues.append(
-                DataQualityIssue(
-                    "conflicting_platform_sku_mapping",
-                    "catalog",
-                    platform_sku,
-                    "seller_sku",
-                    f"platform SKU maps to {len(values)} canonical seller SKUs",
-                )
-            )
-    for seller_sku, values in sorted(cost_candidates.items()):
-        if len(values) > 1:
-            issues.append(
-                DataQualityIssue(
-                    "conflicting_cost",
-                    "catalog",
-                    seller_sku,
-                    "cost_cny",
-                    f"seller SKU has {len(values)} positive catalog costs; latest TH-preferred value selected",
-                )
-            )
-
-    version_payload = {
-        "seller_sku_by_platform_sku": selected_mapping,
-        "costs_by_sku": {key: str(value) for key, value in selected_cost.items()},
-    }
-    version = f"catalog-profit:{_checksum(version_payload)}"
-    return CatalogProfitInputs(
-        selected_mapping,
-        selected_cost,
-        version,
-        tuple(issues),
-        len(rows),
-    )
+    catalog = load_local_catalog(database_path)
+    policy = resolve_temporary_cost_policy(catalog, catalog.costs_by_sku,
+                                          period_start=period_start, period_end=period_end)
+    assumed = {warning.canonical_sku for warning in policy.warnings}
+    costs = {sku: Decimal(item["unit_cost_cny"]) for sku, item in policy.values.items() if sku not in assumed}
+    issues = [DataQualityIssue(item.code, "catalog", item.record_id, item.field, item.message) for item in catalog.issues]
+    issues.extend(DataQualityIssue(item["code"], "catalog", item.get("canonical_sku", "report"), "cost", item["message"]) for item in policy.issues)
+    return CatalogProfitInputs(catalog.seller_sku_by_platform_sku, costs,
+                               policy.snapshot_id, tuple(issues), len(catalog.review.get("records", ())), catalog)
 
 
 def load_fx_snapshot(settings_path: str | Path) -> FxSnapshot:
@@ -214,13 +155,16 @@ def build_weekly_profit_preview(
 ) -> WeeklyProfitPreview:
     """Build one reproducible report without persisting or notifying."""
     project_root = Path(root)
-    catalog = load_catalog_profit_inputs(database_path or project_root / "data" / "shop.db")
+    catalog = load_catalog_profit_inputs(database_path or project_root / "data" / "shop.db",
+        period_start=datetime.combine(period_start, datetime.min.time(), _shanghai_timezone()),
+        period_end=datetime.combine(period_end + timedelta(days=1), datetime.min.time(), _shanghai_timezone()))
     fx = load_fx_snapshot(settings_path or project_root / "config" / "settings.json")
     adaptation = discover_local_profit_snapshots(
         [project_root / "CURSOR" / "Income_Data", project_root / "outputs"],
         costs_by_sku=catalog.costs_by_sku,
         seller_sku_by_platform_sku=catalog.seller_sku_by_platform_sku,
         reporting_period=(period_start, period_end),
+        catalog=catalog.catalog,
     )
     adapter_issue_counts = Counter(issue.code for issue in adaptation.issues)
     blocking_adapter_issues = [
@@ -317,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--persist-local",
         action="store_true",
-        help="store the report and one notification in the local Orbit inbox",
+        help="store the report in the local report store",
     )
     parser.add_argument("--root", type=Path, default=ROOT, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -343,7 +287,6 @@ def main(argv: list[str] | None = None) -> int:
     summary["persisted_local"] = bool(result)
     if result:
         summary["report_created"] = result.report_created
-        summary["inbox_created"] = result.inbox_created
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 

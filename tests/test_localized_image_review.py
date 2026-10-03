@@ -4,6 +4,7 @@ from io import BytesIO
 
 import pytest
 from PIL import Image
+from paid_review_fixture import generate_review
 
 from modules.sourcing.localized_image_review import (
     LocalizedImageReviewError,
@@ -141,11 +142,7 @@ def test_initializes_second_round_from_approved_first_review(tmp_path):
 def test_chat_approval_auto_accepts_generated_images_without_miaoshou_dependency(tmp_path):
     store = LocalizedImageReviewStore(tmp_path)
     project = store.initialize(_snapshot(), selected_positions=[1, 5, 6, 7])
-    generated = store.save_generation_bundle(
-        "3899705757",
-        expected_revision=project["revision"],
-        items=_generation_rows(project),
-    )
+    generated = generate_review(store,project)
 
     assert {row["status"] for row in generated["tasks"]} == {"READY_FOR_REVIEW"}
     assert generated["external_generation_count"] == 20
@@ -180,11 +177,7 @@ def test_chat_approval_is_recorded_before_generation_and_reconciles_later(tmp_pa
     assert "approval" not in approved_early
     assert "publication_supplement" not in approved_early
 
-    reconciled = store.save_generation_bundle(
-        "3899705757",
-        expected_revision=approved_early["revision"],
-        items=_generation_rows(project),
-    )
+    reconciled = generate_review(store,project,expected_revision=approved_early['revision'])
 
     assert reconciled["status"] == "APPROVED"
     assert all(row["status"] == "PASSED" for row in reconciled["tasks"])
@@ -195,11 +188,7 @@ def test_chat_approval_is_recorded_before_generation_and_reconciles_later(tmp_pa
 def test_retry_decision_never_falls_back_to_the_english_source(tmp_path):
     store = LocalizedImageReviewStore(tmp_path)
     project = store.initialize(_snapshot(), selected_positions=[1, 5, 6, 7])
-    generated = store.save_generation_bundle(
-        "3899705757",
-        expected_revision=project["revision"],
-        items=_generation_rows(project),
-    )
+    generated = generate_review(store,project)
     task = generated["tasks"][0]
     generated = store.record_miaoshou_pre_review_sync(
         "3899705757",

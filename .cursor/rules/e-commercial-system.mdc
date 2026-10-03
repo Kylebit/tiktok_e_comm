@@ -1,39 +1,10 @@
 ---
-description: TikTok+Ozon 电商控制台：目录结构、Ozon 流程、部署约定
+description: OrbitHive 项目指令入口，详细合同按任务读取
 alwaysApply: true
 ---
 
-# E-commercial 系统约定
+# OrbitHive 项目指令入口
 
-## 目录布局
+从当前仓库的 [AGENTS.md](../../AGENTS.md)读取任务入口，职责与授权只见[线程治理](../../docs/THREAD_OPERATING_MODEL.md)。不在此维护另一套重启、部署、业务批准或定价规则。
 
-- 主项目：`tiktok_e_comm`（本仓库）
-- Ozon Flask：`../ozon/webapp/`（兄弟目录，`modules/ozon/webapp_bridge.py` 内嵌加载）
-- 凭据：`config/settings.json`（gitignore），勿硬编码 API key
-
-## Ozon
-
-- Draft 用 **seller_sku（6位）**；migrate 用 **offer_id（4位）**
-- 草稿表单支持手动改类目（`category_options` + profile）；批量搬运不走编辑 UI
-- 重量取物流实测中位数，不用 package_weight
-- DeepSeek 文案以 TikTok 原标题为主
-
-## 服务
-
-- `python3 main.py serve --port 8765`
-- 改 Python 后端后需重启 serve 才生效
-
-## 新机器
-
-- 克隆本仓库 + 同步 `ozon/webapp` + 拷贝 settings/tokens/shop.db
-- 详见 `docs/DEPLOY.md` 与 `AGENTS.md`
-
-## TikTok MX 搬运
-
-- **每次最终上架前**在对话框展示确认卡片（对齐码、主图、成本、重量、POP 售价）；用户回复「确认 XXXX」后再 publish
-- 妙手只写 **ceil(折前原价)**；POP 折后价仅对话框测算参考；折扣在 TikTok 后台自设
-
-## TikTok UK 定价
-
-- 4PL 直邮价卡见 **`config/uk_4pl_pricing.json`** + **`modules/pricing/uk_4pl.py`**（详见 `uk-4pl-pricing` 规则）
-- 默认卖家包邮；满 **£10** 包邮线以下自动抬价；店铺 **25%** 折扣
+旧 Ozon/MX/UK 流程与参数见[历史参考](../../docs/LEGACY_PLATFORM_REFERENCE.md)，不是当前店铺或任务范围；新机器与工具使用见[接手指南](../../docs/AGENT_HANDOFF.md)。此文件供相应编辑器使用，不证明 Codex 或已运行任务已加载它。

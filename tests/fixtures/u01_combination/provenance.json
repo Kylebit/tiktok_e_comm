@@ -1,0 +1,8 @@
+{
+  "source": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\domain-prep\\04\\u04-b-validation\\handler-fixture",
+  "sha256": {
+    "data.js": "d4c3f0b1c33a07e50f311911dfd11a4e3d5c98df92dd938d2fe5a6188caae970",
+    "inbound-plan.js": "3b86ff5f00abd24968785599b917f46d8e8dd0c8eb226f88579bc605513b5454"
+  },
+  "purpose": "Eight synthetic SKU rows per country from accepted U04 B fixture; no business database"
+}

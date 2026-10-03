@@ -1,5 +1,7 @@
 # Shopee Open API — 接入分析
 
+> **REFERENCE_ONLY / 2026-06-03 快照。** 本文不代表当前能力、凭据状态或执行入口；当前 Shopee 操作必须使用 canonical Skill/adapter 与实时核验。
+
 > 更新：2026-06-03 · 凭据已写入本地 `config/settings.json`（不提交 Git）  
 > 应用状态：**Developing** · Test Partner_id 已配置
 
@@ -67,12 +69,12 @@ x-tts-access-token 头          query: partner_id, timestamp, sign, access_token
 | `v2.discount.*` / `v2.add_on_deal.*` | 促销（比 TK 复杂，需单独封装） |
 | `v2.product.unlist_item` | `deactivate.py` 下架 |
 
-### P2 — 分析与日报
+### P2 — 历史分析设想
 
 | API | 用途 |
 |-----|------|
 | `v2.product.get_item_extra_info` | 销量、浏览、收藏 |
-| `v2.order.get_order_list` | 订单量 → 飞书 digest |
+| `v2.order.get_order_list` | 订单量 → 本地报告（历史设想） |
 | `v2.account_health.*` | 店铺健康分 |
 
 Shopee **无** TikTok 式 Analytics CTR 分段 API → B 类主图策略需用「浏览/转化」或继续以 TK Analytics 驱动、Shopee 只执行同步。

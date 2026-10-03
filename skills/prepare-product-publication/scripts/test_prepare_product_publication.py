@@ -65,7 +65,7 @@ def _preview(*, selected_sites: list[str] | None = None) -> dict:
     }
 
 
-def test_first_round_is_always_zero_write_and_ready_for_human_review():
+def test_first_round_is_zero_write_and_missing_shopee_evidence_needs_review():
     module = _load_module()
 
     result = module.prepare_offer(
@@ -74,8 +74,9 @@ def test_first_round_is_always_zero_write_and_ready_for_human_review():
         preview_builder=lambda _offer: _preview(),
     )
 
-    assert result["status"] == "FIRST_REVIEW_READY"
-    assert result["miaoshou_sync"]["status"] == "DEFERRED_TO_SECOND_ROUND"
+    assert result["status"] == "DECISION_REQUIRED"
+    assert 'CATEGORY_RECEIPT_UNAVAILABLE' in result['blockers']
+    assert result["miaoshou_sync"]["status"] == "DEFERRED_TO_THIRD_ROUND"
     assert result["external_write_count"] == 0
     assert result["request_attempted"] is False
     assert result["readback_verified"] is False
@@ -91,7 +92,7 @@ def test_legacy_skip_flag_is_a_zero_write_compatibility_alias():
         preview_builder=lambda _offer: _preview(selected_sites=["lh_ph"]),
     )
 
-    assert result["miaoshou_sync"]["status"] == "DEFERRED_TO_SECOND_ROUND"
+    assert result["miaoshou_sync"]["status"] == "DEFERRED_TO_THIRD_ROUND"
     assert result["status"] == "FIRST_REVIEW_READY"
     assert result["external_write_count"] == 0
 
@@ -99,7 +100,7 @@ def test_legacy_skip_flag_is_a_zero_write_compatibility_alias():
 def test_first_round_rejects_any_miaoshou_execution_request():
     module = _load_module()
 
-    with pytest.raises(module.PreparationError, match="second round"):
+    with pytest.raises(module.PreparationError, match="third round"):
         module.prepare_offer(
             offer_id="3900000001",
             requested_targets=["lh_ph"],

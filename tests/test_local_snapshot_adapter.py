@@ -7,10 +7,10 @@ from domains.data_operations import adapt_local_profit_snapshots, adapt_profit_s
 
 def test_adapts_tiktok_income_csv_as_realized_rows_and_keeps_source_timestamp():
     text = "Type ,Order/adjustment ID  ,SKU ID,Statement Date,Total settlement amount,Currency,Quantity,Subtotal after seller discounts,Product name,SKU name,Transaction fee\nOrder,O-1,PLATFORM-1,2026/07/20,12.34,USD,2,20,Widget,Blue,-1.20\nTikTok GMV Payment,ADS,PLATFORM-1,2026-07-20,-1,THB,1,,,,\n"
-    result = adapt_profit_snapshot_text(text, source_name="income_TH_202607.csv", source_updated_at="2026-07-21T01:00:00+00:00", costs_by_sku={"0001": "5.50"}, seller_sku_by_platform_sku={"PLATFORM-1": "1"})
+    result = adapt_profit_snapshot_text(text, source_name="income_TH_202607.csv", source_updated_at="2026-07-21T01:00:00+00:00", costs_by_sku={"1": "5.50"}, seller_sku_by_platform_sku={"PLATFORM-1": "1"})
     assert result.raw_row_count == 2 and result.normalized_row_count == 1 and result.rejected_row_count == 1
     row = result.rows[0]
-    assert (row["channel"], row["region"], row["sku_id"], row["source_seller_sku"], row["source_sku_id"], row["currency"], row["quantity"], row["unit_cost_cny"], row["cost_cny"]) == ("tiktok", "TH", "0001", "1", "PLATFORM-1", "USD", Decimal("2"), Decimal("5.50"), Decimal("11.00"))
+    assert (row["channel"], row["region"], row["sku_id"], row["source_seller_sku"], row["source_sku_id"], row["currency"], row["quantity"], row["unit_cost_cny"], row["cost_cny"]) == ("tiktok", "TH", "1", "1", "PLATFORM-1", "USD", Decimal("2"), Decimal("5.50"), Decimal("11.00"))
     assert row["source_updated_at"] == "2026-07-21T01:00:00+00:00"
     assert row["settlement_status"] == "settled"
     assert row["settled_at"] == "2026-07-20"
@@ -25,7 +25,7 @@ def test_adapts_shopee_html_and_retains_overlap_for_digest_deduplication():
     result = adapt_profit_snapshot_text(f"<script>\n const   DATA  =\n {json.dumps(data)} ; \n</script>", source_name="weekly_shopee_profit_20260720_20260726.html", source_updated_at="2026-07-21T00:00:00+00:00")
     assert result.normalized_row_count == 1
     assert result.rows[0]["channel"] == "shopee"
-    assert (result.rows[0]["sku_id"], result.rows[0]["source_sku_id"]) == ("0017", "17")
+    assert (result.rows[0]["sku_id"], result.rows[0]["source_sku_id"]) == ("17", "17")
     assert result.rows[0]["calculation_kind"] == "realized"
     assert result.rows[0]["settlement_amount"] == Decimal("8")
 

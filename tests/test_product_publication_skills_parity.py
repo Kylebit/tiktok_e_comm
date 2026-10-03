@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,7 @@ def test_canonical_publication_skill_set_is_explicit_and_complete():
         "prepare-product-publication",
         "prepare-product-images",
         "publish-approved-product",
+        "apply-product-discounts",
     )
     for name in sync.SKILL_NAMES:
         skill = ROOT / "skills" / name
@@ -103,3 +105,89 @@ def test_check_all_returns_actionable_missing_and_extra_drift(tmp_path):
     assert result["skills"]["prepare-product-images"]["missing_files"] == [
         "agents/openai.yaml"
     ]
+
+
+def test_explicit_skill_install_ignores_and_preserves_other_unmanaged_trees(tmp_path):
+    sync = _module()
+    source = tmp_path / "source"
+    destination = tmp_path / "installed"
+    selected = "publish-approved-product"
+    _write_skill(source, selected, "selected-current")
+    unrelated = _write_skill(
+        destination,
+        "prepare-product-publication",
+        "unrelated-installed",
+    )
+    unmanaged = unrelated / "unmanaged.txt"
+    unmanaged.write_text("preserve exactly", encoding="utf-8")
+
+    result = sync.install_all(
+        source_root=source,
+        destination_root=destination,
+        skill_names=[selected],
+    )
+
+    assert result["ok"] is True
+    assert tuple(result["skills"]) == (selected,)
+    assert unmanaged.read_text(encoding="utf-8") == "preserve exactly"
+    assert (destination / selected / "SKILL.md").is_file()
+
+
+def test_cli_check_with_explicit_skill_reports_only_that_skill(
+    tmp_path,
+    capsys,
+):
+    sync = _module()
+    source = tmp_path / "source"
+    destination = tmp_path / "installed"
+    selected = "publish-approved-product"
+    _write_skill(source, selected, "selected-current")
+
+    exit_code = sync.main([
+        "--check",
+        "--skill",
+        selected,
+        "--source-root",
+        str(source),
+        "--destination-root",
+        str(destination),
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert tuple(payload["skills"]) == (selected,)
+    assert payload["skills"][selected]["missing_files"]
+
+
+def test_cli_install_with_explicit_skill_never_preflights_other_skill(
+    tmp_path,
+    capsys,
+):
+    sync = _module()
+    source = tmp_path / "source"
+    destination = tmp_path / "installed"
+    selected = "publish-approved-product"
+    _write_skill(source, selected, "selected-current")
+    unrelated = _write_skill(
+        destination,
+        "prepare-product-publication",
+        "unrelated-installed",
+    )
+    unmanaged = unrelated / "unmanaged.txt"
+    unmanaged.write_text("preserve exactly", encoding="utf-8")
+
+    exit_code = sync.main([
+        "--install",
+        "--skill",
+        selected,
+        "--source-root",
+        str(source),
+        "--destination-root",
+        str(destination),
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert tuple(payload["skills"]) == (selected,)
+    assert unmanaged.read_text(encoding="utf-8") == "preserve exactly"

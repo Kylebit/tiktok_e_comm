@@ -19,10 +19,12 @@ DASHBOARD = (
 )
 
 
-def _th_batch_quantities() -> tuple[dict[str, int], dict[str, int]]:
+def _th_batch_quantities() -> dict[str, int]:
     plan = (DASHBOARD / "inbound-plan.js").read_text(encoding="utf-8")
-    maps = [json.loads(value) for value in re.findall(r"skuQuantities:\s*(\{.*?\})", plan, re.S)]
-    return maps[0], maps[1]
+    thailand = plan.split("    TH: {", 1)[1].split("    VN: {", 1)[0]
+    maps = [json.loads(value) for value in re.findall(r"skuQuantities:\s*(\{.*?\})", thailand, re.S)]
+    assert len(maps) == 1
+    return maps[0]
 
 def test_inbound_arriving_midway_is_not_available_before_its_date():
     result = project_supply(
@@ -36,6 +38,55 @@ def test_inbound_arriving_midway_is_not_available_before_its_date():
     assert result.projected_stock == 40
     assert result.counted_inbound == 50
     assert result.pending_inbound == 0
+
+
+def test_local_shortage_is_cross_border_fallback_not_total_lost_sales():
+    result = project_supply(
+        snapshot_date=date(2026, 8, 9),
+        next_arrival_date=date(2026, 8, 14),
+        available=10,
+        daily_velocity=3,
+    )
+
+    assert result.local_fulfilled_units == 10
+    assert result.cross_border_fallback_units == 5
+    assert result.cross_border_fallback_days == 2
+    assert result.first_local_stockout_date == date(2026, 8, 12)
+    assert result.local_fulfillment_rate == 10 / 15
+    step = result.steps[0]
+    assert step.local_fulfilled_demand == 10
+    assert step.cross_border_fallback_demand == 5
+    assert step.local_stockout_start_date == date(2026, 8, 12)
+
+
+def test_inbound_arrival_can_end_a_cross_border_fallback_period():
+    result = project_supply(
+        snapshot_date=date(2026, 8, 9),
+        next_arrival_date=date(2026, 8, 14),
+        available=0,
+        daily_velocity=2,
+        inbound_events=(InboundEvent("TH-BATCH-A", 10, date(2026, 8, 11)),),
+    )
+
+    assert result.cross_border_fallback_units == 4
+    assert result.cross_border_fallback_days == 2
+    assert result.first_local_stockout_date == date(2026, 8, 9)
+    assert result.local_fulfilled_units == 6
+    assert result.projected_stock == 4
+
+
+def test_full_local_coverage_has_no_cross_border_fallback():
+    result = project_supply(
+        snapshot_date=date(2026, 8, 9),
+        next_arrival_date=date(2026, 8, 14),
+        available=10,
+        daily_velocity=2,
+    )
+
+    assert result.cross_border_fallback_units == 0
+    assert result.cross_border_fallback_days == 0
+    assert result.first_local_stockout_date is None
+    assert result.local_fulfillment_rate == 1.0
 
 
 def test_inbound_later_than_new_replenishment_is_not_counted():
@@ -138,18 +189,17 @@ def test_th_0021_full_30_day_orders_get_a_separate_arrival_result():
 
 
 def test_every_thailand_inbound_sku_reconciles_to_complete_paginated_batches():
-    old_batch, new_batch = _th_batch_quantities()
+    current_batch = _th_batch_quantities()
     data_text = (DASHBOARD / "data.js").read_text(encoding="utf-8")
     payload = data_text.removeprefix("window.SUPPLY_CHAIN_DATA = ").strip().removesuffix(";")
     thailand = json.loads(payload)["countries"]["TH"]
 
-    assert sum(old_batch.values()) == 2100
-    assert sum(new_batch.values()) == 1250
-    assert old_batch["0021"] == 200
-    assert new_batch["0021"] == 600
+    assert sum(current_batch.values()) == 1270
+    assert current_batch["0021"] == 600
+    assert current_batch["0140"] == 400
     for row in thailand:
         if row["inventory"]["inbound"] > 0:
-            assert old_batch.get(row["sku"], 0) + new_batch.get(row["sku"], 0) == row["inventory"]["inbound"]
+            assert current_batch.get(row["sku"], 0) == row["inventory"]["inbound"]
 
 
 def test_batch_identity_is_required():
@@ -172,21 +222,21 @@ def test_dashboard_uses_batch_level_overrides_and_never_sku_level_eta():
     batch_app = open("domains/supply_chain_operations/dashboard/inbound-batches.js", encoding="utf-8").read()
     plan = open("domains/supply_chain_operations/dashboard/inbound-plan.js", encoding="utf-8").read()
 
-    assert "supply-chain-inbound-batch-timing-v3" in app
+    timeline = open("domains/supply_chain_operations/dashboard/inbound-timeline.js", encoding="utf-8").read()
+    assert "supply-chain-inbound-batch-timing-v3" in timeline
+    assert "OVERRIDE_STORE.current" in app
+    assert "OVERRIDE_STORE.current" in batch_app
     assert "const inboundEtaId = (region, batchId)" in app
     assert "data-sku=\"${escapeHtml(item.sku)}\">修改到货时间" not in app
     assert "inboundEtaDialog" not in app
     assert "overrideId(region, batchId)" in batch_app
     assert "data-action=\"save\"" in batch_app
-    assert "CREATED_PLUS_4_DAYS_ESTIMATE" in plan
-    assert "NOT_YET_INBOUND" in plan
+    assert "REACHED_DOMESTIC_WAREHOUSE" in plan
+    assert "INBOUND_CONFIRMED" in plan
     assert "timingsValid" in app
-    assert 'batchId: "THML4038-58701"' in plan
-    assert 'batchId: "THSL4038-59557"' in plan
-    old_batch, new_batch = _th_batch_quantities()
-    assert old_batch["0021"] == 200
-    assert new_batch["0021"] == 600
-    assert len(old_batch) == 13
-    assert len(new_batch) == 8
+    assert 'batchId: "THSL4038-60638"' in plan
+    current_batch = _th_batch_quantities()
+    assert current_batch["0021"] == 600
+    assert len(current_batch) == 8
     assert "批次 SKU 分摊未对平" in app
     assert "未入库 · 建单+4天估算" in app

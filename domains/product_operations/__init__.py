@@ -4,13 +4,16 @@ from shared_platform.contracts import ApprovedProductPackage, ProductRecord
 
 from .approved_publication_snapshot import (
     APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
+    PUBLICATION_BUSINESS_SNAPSHOT_SCHEMA_VERSION,
     ApprovedPublicationSnapshot,
     ApprovedPublicationSnapshotError,
     approved_publication_snapshot_from_payload,
     build_approved_publication_snapshot,
+    build_publication_business_snapshot,
     publication_category_decision_digest,
     publication_images_for_target,
     validate_approved_publication_snapshot,
+    validate_publication_business_snapshot,
 )
 from .approved_publication_snapshot_inputs import (
     build_approved_publication_snapshot_inputs,
@@ -55,6 +58,7 @@ from .sku_lineage import (
 
 __all__ = [
     "APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION",
+    "PUBLICATION_BUSINESS_SNAPSHOT_SCHEMA_VERSION",
     "ApprovedPublicationSnapshot",
     "ApprovedPublicationSnapshotError",
     "ApprovedProductPackage",
@@ -92,8 +96,10 @@ __all__ = [
     "resolve_sku_lineage_reservation",
     "approved_publication_snapshot_from_payload",
     "build_approved_publication_snapshot",
+    "build_publication_business_snapshot",
     "build_approved_publication_snapshot_inputs",
     "publication_category_decision_digest",
     "publication_images_for_target",
     "validate_approved_publication_snapshot",
+    "validate_publication_business_snapshot",
 ]

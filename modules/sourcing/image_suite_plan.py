@@ -112,10 +112,7 @@ JSON schema:
 
 
 def _load_toapis_config() -> dict[str, Any]:
-    path = ROOT / "config" / "toapis.local.json"
-    if not path.is_file():
-        raise FileNotFoundError(f"missing {path}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    raise ValueError("ToAPI planning is retired; use the governed Lingshi context")
 
 
 def _ensure_proxy(proxy: str | None = DEFAULT_PROXY) -> None:
@@ -167,62 +164,20 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         f"model did not return JSON object ({'; '.join(errors[:2])}): {raw[:400]}"
     )
 
-def chat_completions(
-    messages: list[dict[str, Any]],
-    *,
-    model: str = DEFAULT_VISION_MODEL,
-    temperature: float = 0.2,
-    max_tokens: int = 4096,
-    timeout: int = VISION_PLANNING_TIMEOUT_SECONDS,
-    proxy: str | None = DEFAULT_PROXY,
-) -> dict[str, Any]:
-    """Call ToAPIs OpenAI-compatible chat endpoint. Returns full response JSON."""
-    cfg = _load_toapis_config()
-    key = str(cfg.get("api_key") or "").strip()
-    if not key:
-        raise RuntimeError("toapis.local.json missing api_key")
-    _ensure_proxy(proxy)
-    root = _root_url(cfg)
-    body = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        f"{root}/v1/chat/completions",
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "User-Agent": "OrbitImageSuitePlan/0.1",
-        },
-    )
-    handlers: list[Any] = [urllib.request.HTTPSHandler(context=ssl.create_default_context())]
-    if proxy:
-        handlers.insert(0, urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    opener = urllib.request.build_opener(*handlers)
-    try:
-        with opener.open(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8", errors="replace"))
-    except urllib.error.HTTPError as exc:
-        err = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"ToAPIs chat HTTP {exc.code}: {err[:500]}") from exc
-    except TimeoutError as exc:
-        raise RuntimeError(
-            f"ToAPI 视觉规划等待超过 {timeout} 秒，未收到完整响应。"
-            "为避免一次操作重复消耗 Token，系统没有自动重试；请稍后手动点击重试。"
-        ) from exc
-    except urllib.error.URLError as exc:
-        route = f" via proxy {proxy}" if proxy else ""
-        if isinstance(exc.reason, TimeoutError) or "timed out" in str(exc.reason).lower():
-            raise RuntimeError(
-                f"ToAPI 视觉规划等待超过 {timeout} 秒，未收到完整响应。"
-                "为避免一次操作重复消耗 Token，系统没有自动重试；请稍后手动点击重试。"
-            ) from exc
-        raise RuntimeError(f"ToAPIs chat network error{route}: {exc.reason}") from exc
+def chat_completions(messages: list[dict[str, Any]], *, model: str = DEFAULT_VISION_MODEL,
+                     temperature: float = 0.2, max_tokens: int = 4096,
+                     timeout: int = VISION_PLANNING_TIMEOUT_SECONDS, proxy: str | None = DEFAULT_PROXY,
+                     paid_context=None, business_identity=None) -> dict[str, Any]:
+    """Governed Lingshi planning; legacy UI without context stops before provider/config."""
+    from shared_platform.publication_paid_requests import require_paid_context
+    from modules.sourcing.lingshi_client import LingshiClient
+    context=require_paid_context(paid_context)
+    if not business_identity or business_identity.get('offer_id')!=context.offer_id:
+        raise ValueError('planning requires an exact product business identity')
+    return context.chat(purpose='image_planning',model=model,messages=messages,business=business_identity,
+        parameters={'max_tokens':max_tokens},call=lambda:LingshiClient.from_config(
+            ROOT/'config/lingshi.local.json',timeout=timeout).chat_completions(
+                model=model,messages=messages,max_tokens=max_tokens,allow_paid_request=True))
 
 
 def message_content(response: dict[str, Any]) -> str:

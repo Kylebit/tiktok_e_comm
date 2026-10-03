@@ -1,0 +1,10 @@
+{
+  "schema": "orbit-tool-profile/v1",
+  "tenant_id": "example-tenant",
+  "artifact_root": "artifacts",
+  "providers": {
+    "lingshi": {"origin": "https://api.lk888.ai", "credential_env": "EXAMPLE_LINGSHI_KEY"},
+    "duoplus": {"origin": "https://openapi.duoplus.cn", "credential_env": "EXAMPLE_DUOPLUS_KEY"},
+    "tikhub": {"origin": "https://api.tikhub.io", "credential_env": "TikHub"}
+  }
+}

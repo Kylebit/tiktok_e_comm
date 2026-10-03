@@ -33,7 +33,7 @@ class TikTokProfitReport:
     period_kind: str
     period: Mapping[str, str]
     status: str
-    totals: Mapping[str, Decimal]
+    totals: Mapping[str, Decimal | None]
     order_lines: tuple[Mapping[str, Any], ...]
     quality_issues: tuple[TikTokQualityIssue, ...]
     source: Mapping[str, Any]
@@ -52,6 +52,7 @@ class TikTokProfitReport:
                 "period_kind": self.period_kind,
                 "period": self.period,
                 "status": self.status,
+                "result_scope": "no_calculated_facts" if not self.order_lines else ("partial_diagnostic" if self.quality_issues else "calculated"),
                 "totals": self.totals,
                 "order_lines": self.order_lines,
                 "quality_issues": self.quality_issues,
@@ -142,11 +143,22 @@ def build_monthly_report(
     local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     generated_at: datetime | None = None,
     code_version: str = "unknown",
+    period_site: str | None = None,
+    period_timezone: str | None = None,
 ) -> TikTokProfitReport:
     if period_basis not in {"settled_at", "order_created_at"}:
         raise ValueError("period_basis must be settled_at or order_created_at")
     local_fulfillment=_nonnegative_money(local_fulfillment_fee_cny,"local_fulfillment_fee_cny")
     start,end=_period(period_start,period_end);source_rows=[dict(row) for row in rows];issues=[];prepared=[];rejected=out_of_period=unsettled=0
+    if (period_site is None) != (period_timezone is None):
+        raise ValueError('site-local monthly period requires both site and timezone')
+    period_zone = None
+    if period_site is not None:
+        from .monthly_missing_cost_scope import monthly_cost_period
+        _, local_end = monthly_cost_period(period_site, start, end, period_timezone)
+        period_zone = local_end.tzinfo
+        if any(_text(row.get('region')).upper() != period_site for row in source_rows):
+            raise ValueError('site-local monthly rows target a different site')
     _audit_metadata(issues, fx, code_version)
     for index,row in enumerate(source_rows):
         record_id=_text(row.get("order_line_id") or row.get("order_id")) or str(index)
@@ -156,7 +168,10 @@ def build_monthly_report(
         period_at = settled_at if period_basis == "settled_at" else _datetime(row.get("occurred_at"))
         if period_at is None:
             issues.append(_issue("missing_order_created_at",record_id,"occurred_at"));rejected+=1;continue
-        if not start<=period_at.date()<=end:out_of_period+=1;continue
+        if period_zone is not None and period_at.tzinfo is None:
+            raise ValueError('site-local monthly row timestamp requires timezone')
+        period_day = period_at.astimezone(period_zone).date() if period_zone is not None else period_at.date()
+        if not start<=period_day<=end:out_of_period+=1;continue
         sku=_text(row.get("canonical_sku"));cost=costs.get(sku);currency=_text(row.get("currency")).upper();fx_rate=fx.get(currency);quantity=_decimal(row.get("quantity"));settlement=_decimal(row.get("net_settlement_amount"));paid=_decimal(row.get("buyer_paid_product_amount"));cash_paid=_decimal(row.get("buyer_cash_paid_product_amount"));ad_basis=cash_paid if cash_paid is not None else paid;invalid=False
         for missing,field,code in ((not sku or cost is None,"canonical_sku","missing_cost"),(not currency or fx_rate is None,"currency","missing_fx"),(quantity is None or quantity<=0,"quantity","invalid_quantity"),(settlement is None,"net_settlement_amount","missing_settlement"),(ad_basis is None or ad_basis<0,"buyer_cash_paid_product_amount","missing_ad_basis")):
             if missing:issues.append(_issue(code,record_id,field));invalid=True
@@ -177,8 +192,8 @@ def build_monthly_report(
     charged_local_order_count=_apply_local_fulfillment_costs(lines,local_fulfillment,issues)
     fulfillment_policy=_fulfillment_policy(local_fulfillment, _fulfillment_rule(lines))
     settlement_outcome_policy=_zero_settlement_policy()
-    source_checksum=_checksum(sorted((_json_ready(row) for row in source_rows),key=_canonical));fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":"monthly","period":[start.isoformat(),end.isoformat()],"period_basis":period_basis,"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"advertising":ad or {},"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy,"code_version":code_version})
-    return TikTokProfitReport(report_id=f"tiktok-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_actual_ads",period_kind="monthly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date","basis":period_basis},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"period_basis":period_basis,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"zero_settlement_unshipped_order_count":zero_settlement_order_count,"local_fulfillment_charged_order_count":charged_local_order_count,"fulfillment_order_counts":_fulfillment_order_counts(lines),"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},assumptions={**(ad or {}),"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
+    source_checksum=_checksum(sorted((_json_ready(row) for row in source_rows),key=_canonical));fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":"monthly","period":[start.isoformat(),end.isoformat()],"period_basis":period_basis,"source":source_checksum,"costs":costs.payload(),"fx":fx.payload(),"advertising":ad or {},"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy,"code_version":code_version,**({'period_site':period_site,'period_timezone':period_timezone} if period_zone is not None else {})})
+    return TikTokProfitReport(report_id=f"tiktok-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_actual_ads",period_kind="monthly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":period_timezone or "source_local_date","basis":period_basis},status="needs_review" if issues else ("ready" if lines else "no_data"),totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"period_basis":period_basis,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"zero_settlement_unshipped_order_count":zero_settlement_order_count,"local_fulfillment_charged_order_count":charged_local_order_count,"fulfillment_order_counts":_fulfillment_order_counts(lines),"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},assumptions={**(ad or {}),"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
 
 
 def _build_report(
@@ -335,8 +350,8 @@ def _build_report(
             "period": [start.isoformat(), end.isoformat()],
             "period_basis": period_basis,
             "source": source_fingerprint,
-            "costs": costs.snapshot_id,
-            "fx": fx.snapshot_id,
+            "costs": costs.payload(),
+            "fx": fx.payload(),
             "ad_rate": str(ad_rate),
             "ad_rate_source": ad_rate_source,
             "fulfillment_policy": fulfillment_policy,
@@ -351,7 +366,7 @@ def _build_report(
         calculation_kind="realized_settlement_with_estimated_ads",
         period_kind=period_kind,
         period={"start": start.isoformat(), "end": end.isoformat(), "timezone": "source_local_date", "basis": period_basis},
-        status="ready" if not issues else "needs_review",
+        status="needs_review" if issues else ("ready" if calculated else "no_data"),
         totals=totals,
         order_lines=tuple(calculated),
         quality_issues=tuple(issues),
@@ -585,7 +600,7 @@ def _fulfillment_order_counts(lines: list[Mapping[str, Any]]) -> dict[str, int]:
     return {key: len(value - {""}) for key, value in sorted(orders.items())}
 
 
-def _totals(lines: list[Mapping[str, Any]]) -> dict[str, Decimal]:
+def _calculated_totals(lines: list[Mapping[str, Any]]) -> dict[str, Decimal]:
     return {
         "settlement_cny": sum((line["settlement"]["net_amount_cny"] for line in lines), Decimal("0")),
         "product_cost_cny": sum((line["cost"]["total_cny"] for line in lines), Decimal("0")),
@@ -642,11 +657,12 @@ def _line_settlement_sort_key(item: Mapping[str, Any]) -> tuple[float, str, str]
     )
 
 
-def _decimal(value: object) -> Decimal | None:
+def _decimal(value):
     if value is None or isinstance(value, bool) or str(value).strip() == "":
         return None
     try:
-        return Decimal(str(value))
+        amount = Decimal(str(value))
+        return amount if amount.is_finite() else None
     except (InvalidOperation, ValueError):
         return None
 
@@ -694,3 +710,9 @@ def _canonical(value: object) -> str:
 
 def _checksum(value: object) -> str:
     return sha256(_canonical(value).encode()).hexdigest()
+
+
+def _totals(lines):
+    """An empty calculated set provides no monetary fact."""
+    totals = _calculated_totals(lines)
+    return totals if lines else {field: None for field in totals}

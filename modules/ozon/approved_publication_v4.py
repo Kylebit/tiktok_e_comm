@@ -12,9 +12,11 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import json
 from typing import Any
 
 from domains.product_operations.approved_publication_snapshot import (
+    publication_content_for_target,
     publication_images_for_target,
 )
 
@@ -65,8 +67,45 @@ class OzonDispatchFact:
                 raise ValueError(f"{name} is invalid")
 
 
+@dataclass(frozen=True)
+class OzonStockDispatchFact:
+    """Credential-free result of one batch stock mutation."""
+
+    outcome: str
+    provider_code: str | None = None
+    provider_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.outcome not in {"ACCEPTED", "REJECTED", "UNKNOWN", "PRE_SUBMIT_FAILED"}:
+            raise ValueError("Ozon stock dispatch outcome is invalid")
+        for value, name in (
+            (self.provider_code, "Ozon stock provider code"),
+            (self.provider_reason, "Ozon stock provider reason"),
+        ):
+            if value is not None and (
+                type(value) is not str
+                or not value
+                or value != value.strip()
+                or len(value) > 160
+            ):
+                raise ValueError(f"{name} is invalid")
+
+
 DispatchVariant = Callable[[dict[str, Any]], OzonDispatchFact]
 ReadbackVariants = Callable[[tuple[str, ...]], Sequence[Mapping[str, Any]]]
+UpdateStocks = Callable[[tuple[dict[str, Any], ...]], OzonStockDispatchFact]
+ReadbackStocks = Callable[[tuple[str, ...]], Sequence[Mapping[str, Any]]]
+@dataclass(frozen=True)
+class PreparedStockUpdate:
+    warehouse_id: int
+    submit: Callable[[], OzonStockDispatchFact]
+
+    def __post_init__(self):
+        if type(self.warehouse_id) is not int or self.warehouse_id <= 0 or not callable(self.submit):
+            raise ValueError("prepared Ozon stock submission identity is invalid")
+
+
+PrepareStockUpdate = Callable[[tuple[dict[str, Any], ...]], PreparedStockUpdate]
 OfficialProfileResolver = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 LocalizedCopyResolver = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
@@ -256,7 +295,31 @@ def _category_and_profile(
         "path": deepcopy(profile["category_path"]),
     }
     if approved is not None and approved != resolved:
-        raise OzonApprovedPublicationError("approved and official Ozon categories conflict")
+        # Older frozen snapshots can contain only the approved leaf path while
+        # the current official tree includes its ancestors.  The category is
+        # still exact when the immutable id/name match and the approved path is
+        # an exact suffix of the official path.  Enrich it with the official
+        # hierarchy; never accept a different leaf or a conflicting ancestor.
+        approved_path = approved["path"]
+        resolved_path = resolved["path"]
+        # Display names are localized snapshot evidence, not immutable Ozon
+        # identities.  Ozon may also rename the current official tree.  Bind
+        # the frozen decision to category ids and allow the official names to
+        # enrich the execution payload.  A conflicting ancestor id still
+        # fails closed.
+        approved_path_ids = [str(node["id"]) for node in approved_path]
+        resolved_path_ids = [str(node["id"]) for node in resolved_path]
+        exact_official_suffix = (
+            approved["id"] == resolved["id"]
+            and len(approved_path_ids) <= len(resolved_path_ids)
+            and approved_path_ids
+            == resolved_path_ids[-len(approved_path_ids) :]
+        )
+        if not exact_official_suffix:
+            raise OzonApprovedPublicationError(
+                "approved and official Ozon categories conflict"
+            )
+        approved = resolved
     if approved is None and status != "DEFERRED_TO_SKILL":
         raise OzonApprovedPublicationError("Ozon category decision is invalid")
     return approved or resolved, profile
@@ -277,8 +340,16 @@ def _localized_copy(
         or receipt.get("language") != "ru"
     ):
         raise OzonApprovedPublicationError("Ozon localized copy identity conflicts")
-    title = _text(receipt.get("title"), "Ozon localized title")
-    description = _text(receipt.get("description"), "Ozon localized description")
+    return _validated_russian_copy(
+        receipt.get("title"), receipt.get("description")
+    )
+
+
+def _validated_russian_copy(
+    raw_title: object, raw_description: object
+) -> tuple[str, str]:
+    title = _text(raw_title, "Ozon localized title")
+    description = _text(raw_description, "Ozon localized description")
 
     def has_cyrillic(value: str) -> bool:
         return sum("\u0400" <= character <= "\u04ff" for character in value) >= 5
@@ -315,15 +386,61 @@ def project_ozon_v4_variants(
     _text(snapshot.get("snapshot_digest"), "snapshot digest")
     _exact_ozon_target(snapshot, target_labels)
     product = _mapping(snapshot.get("product"), "approved product")
+    raw_stock_policy = product.get("stock_policy")
+    if raw_stock_policy is None:
+        stock_quantity = 200
+        stock_policy_source = "LEGACY_COMPATIBILITY_DEFAULT"
+    else:
+        stock_policy = _mapping(raw_stock_policy, "approved stock policy")
+        if (
+            stock_policy.get("schema_version") != "publication-default-stock/v1"
+            or stock_policy.get("quantity_per_sku") != 200
+            or stock_policy.get("scope") != "EACH_SELECTED_SKU"
+        ):
+            raise OzonApprovedPublicationError("approved stock policy is invalid")
+        stock_quantity = 200
+        stock_policy_source = str(stock_policy.get("source") or "")
+    raw_stock_decision = product.get("ozon_stock_decision")
+    stock_warehouse_id = None
+    if raw_stock_decision is not None:
+        stock_decision = _mapping(
+            raw_stock_decision, "approved Ozon stock warehouse decision"
+        )
+        stock_warehouse_id = stock_decision.get("warehouse_id")
+        if (
+            stock_decision.get("schema_version")
+            != "ozon-stock-warehouse-decision/v1"
+            or stock_decision.get("selection_policy")
+            != "EXACT_UNIQUE_ACTIVE_OR_CREATED_NON_KGT"
+            or stock_decision.get("source") != "OFFICIAL_PROVIDER_READBACK"
+            or type(stock_warehouse_id) is not int
+            or stock_warehouse_id <= 0
+        ):
+            raise OzonApprovedPublicationError(
+                "approved Ozon stock warehouse decision is invalid"
+            )
     title = _text(product.get("title"), "approved Ozon title")
     description = _text(product.get("description"), "approved Ozon description")
+    target_content = publication_content_for_target(snapshot, OZON_TARGET)
+    if target_content["locale"].lower().startswith("ru"):
+        title, description = _validated_russian_copy(
+            target_content["title"], target_content["description"]
+        )
     base_images = _https_urls(product.get("images"), "approved product images")
     target_images = publication_images_for_target(snapshot, OZON_TARGET)
-    routed_by_base = dict(zip(base_images, target_images, strict=True))
+    if len(base_images) != len(target_images):
+        raise OzonApprovedPublicationError(
+            "Ozon target image route coverage is invalid"
+        )
+    routed_by_base = dict(zip(base_images, target_images))
     category, official_profile = _category_and_profile(
         snapshot, official_profile_resolver
     )
-    if official_profile is not None and official_profile["type_id"] == 93785:
+    if (
+        official_profile is not None
+        and official_profile["type_id"] == 93785
+        and not target_content["locale"].lower().startswith("ru")
+    ):
         title, description = _localized_copy(snapshot, localized_copy_resolver)
     raw_skus = _sequence(snapshot.get("skus"), "approved SKUs")
     if not raw_skus:
@@ -394,6 +511,14 @@ def project_ozon_v4_variants(
                 "price": amount,
                 "old_price": old_price,
                 "currency": "CNY",
+                "stock_quantity": stock_quantity,
+                "stock_policy_schema_version": "publication-default-stock/v1",
+                "stock_policy_source": stock_policy_source,
+                **(
+                    {"stock_warehouse_id": stock_warehouse_id}
+                    if stock_warehouse_id is not None
+                    else {}
+                ),
                 "parcel": normalized_parcel,
                 "images": images,
                 "image_count": len(images),
@@ -505,7 +630,13 @@ def _result(
     stage = stage or ("READBACK" if readback_completed else (
         "DISPATCH" if dispatch_attempted else "PREPARATION"
     ))
-    if stage not in {"PREPARATION", "DISPATCH", "READBACK"}:
+    if stage not in {
+        "PREPARATION",
+        "DISPATCH",
+        "READBACK",
+        "STOCK_READBACK",
+        "STOCK_UPDATE",
+    }:
         raise OzonApprovedPublicationError("Ozon evidence stage is invalid")
     evidence = {
         "target_label": OZON_TARGET,
@@ -532,6 +663,203 @@ def _result(
     }
 
 
+def _governed_stock_required(snapshot: Mapping[str, Any]) -> bool:
+    product = snapshot.get("product")
+    policy = product.get("stock_policy") if isinstance(product, Mapping) else None
+    return isinstance(policy, Mapping) and policy.get("source") == "SYSTEM_GOVERNED_DEFAULT"
+
+
+def _exact_stock_readback(
+    raw_rows: object,
+    *,
+    variants: tuple[dict[str, Any], ...],
+) -> bool:
+    rows = _sequence(raw_rows, "Ozon stock readback rows")
+    if any(not isinstance(row, Mapping) for row in rows):
+        raise OzonApprovedPublicationError("Ozon stock readback row is invalid")
+    expected = {variant["offer_id"]: variant["stock_quantity"] for variant in variants}
+    observed: dict[str, int] = {}
+    for row in rows:
+        offer_id = str(row.get("offer_id") or "").strip()
+        stock = row.get("stock")
+        if (
+            offer_id not in expected
+            or offer_id in observed
+            or type(stock) is not int
+            or stock < 0
+        ):
+            raise OzonApprovedPublicationError("Ozon stock readback identity is ambiguous")
+        observed[offer_id] = stock
+    return observed == expected
+
+
+def _complete_governed_stock(
+    *,
+    variants: tuple[dict[str, Any], ...],
+    update_stocks: UpdateStocks,
+    readback_stocks: ReadbackStocks,
+    before_stock_update: Callable[[tuple[dict[str, Any], ...]], object] | None,
+    prior_external_write_count: int | None,
+    prior_dispatch_attempted: bool,
+    prepare_stock_update: PrepareStockUpdate | None = None,
+) -> dict[str, Any]:
+    offer_ids = tuple(variant["offer_id"] for variant in variants)
+    expected_warehouses = {
+        variant.get("stock_warehouse_id")
+        for variant in variants
+        if variant.get("stock_warehouse_id") is not None
+    }
+    if len(expected_warehouses) > 1:
+        raise OzonApprovedPublicationError(
+            "approved Ozon stock warehouse identities conflict"
+        )
+    expected_warehouse = next(iter(expected_warehouses), None)
+    def warehouse_identity(rows):
+        values = {row.get("warehouse_id") for row in rows if isinstance(row, Mapping)}
+        if len(values) == 1 and all(type(value) is int and value > 0 for value in values):
+            return next(iter(values))
+        return None
+
+    def verified_reason(warehouse_id):
+        return (json.dumps({"warehouse_id":warehouse_id,"stock":"FROZEN_EACH_SKU"},separators=(",",":"))
+            if warehouse_id is not None else "Ozon stock equals the frozen quantity for every approved SKU")
+
+    try:
+        current_stock = readback_stocks(offer_ids)
+        current_warehouse = warehouse_identity(current_stock)
+        if (
+            expected_warehouse is not None
+            and current_warehouse != expected_warehouse
+        ):
+            raise ValueError("live stock warehouse conflicts with approval")
+        if prepare_stock_update is not None and current_warehouse is None:
+            raise ValueError("live stock readback warehouse is unavailable")
+        if _exact_stock_readback(current_stock, variants=variants):
+            return _result(
+                "PUBLISHED",
+                dispatch_attempted=prior_dispatch_attempted,
+                readback_completed=True,
+                external_write_count=prior_external_write_count,
+                requires_human_action=prior_external_write_count is None,
+                stage="STOCK_READBACK",
+                provider_code="ozon_stock_verified",
+                provider_reason=verified_reason(current_warehouse),
+            )
+    except Exception:
+        return _result(
+            "PROCESSING",
+            dispatch_attempted=prior_dispatch_attempted,
+            readback_completed=False,
+            external_write_count=prior_external_write_count,
+            requires_human_action=prior_external_write_count is None,
+            stage="STOCK_READBACK",
+            provider_code="ozon_stock_reconciliation_required",
+            provider_reason="Ozon stock readback is unavailable; no stock update was attempted",
+        )
+
+    updates = tuple(
+        {
+            "offer_id": variant["offer_id"],
+            "stock": variant["stock_quantity"],
+            **(
+                {"warehouse_id": variant["stock_warehouse_id"]}
+                if "stock_warehouse_id" in variant
+                else {}
+            ),
+        }
+        for variant in variants
+    )
+    submit_stock = None
+    if prepare_stock_update is not None:
+        try:
+            submit_stock = prepare_stock_update(deepcopy(updates))
+            if type(submit_stock) is not PreparedStockUpdate or submit_stock.warehouse_id != current_warehouse:
+                raise TypeError("stock preparation must retain the exact readback warehouse")
+        except Exception:
+            return _result("PROCESSING" if prior_external_write_count is None else "FAILED",
+                dispatch_attempted=prior_dispatch_attempted, readback_completed=True,
+                external_write_count=prior_external_write_count, requires_human_action=True,
+                stage="PREPARATION", provider_code="ozon_stock_not_attempted",
+                provider_reason='{"imports_verified":true,"stock_attempted":false}')
+    if before_stock_update is not None:
+        try:
+            before_stock_update(updates)
+        except Exception:
+            return _result(
+                "PROCESSING" if prior_external_write_count is None else "FAILED",
+                dispatch_attempted=prior_dispatch_attempted,
+                readback_completed=True,
+                external_write_count=prior_external_write_count,
+                requires_human_action=True,
+                stage="PREPARATION",
+                provider_code="ozon_stock_not_attempted",
+                provider_reason='{"imports_verified":true,"stock_attempted":false}',
+            )
+    try:
+        fact = submit_stock.submit() if submit_stock is not None else update_stocks(deepcopy(updates))
+        if type(fact) is not OzonStockDispatchFact:
+            raise TypeError("Ozon stock transport returned an invalid fact")
+    except Exception:
+        fact = OzonStockDispatchFact(outcome="UNKNOWN")
+
+    if fact.outcome == "PRE_SUBMIT_FAILED":
+        return _result(
+            "FAILED",
+            dispatch_attempted=prior_dispatch_attempted,
+            readback_completed=False,
+            external_write_count=prior_external_write_count,
+            requires_human_action=True,
+            stage="PREPARATION",
+            provider_code=fact.provider_code or "ozon_stock_preparation_failed",
+            provider_reason=fact.provider_reason or "Ozon stock update preparation failed",
+        )
+    if fact.outcome == "REJECTED":
+        return _result(
+            "FAILED",
+            dispatch_attempted=True,
+            readback_completed=False,
+            external_write_count=prior_external_write_count,
+            requires_human_action=True,
+            stage="STOCK_UPDATE",
+            provider_code=fact.provider_code or "ozon_stock_update_rejected",
+            provider_reason=fact.provider_reason or "Ozon stock update was rejected",
+        )
+
+    combined_count = (
+        None
+        if prior_external_write_count is None or fact.outcome == "UNKNOWN"
+        else prior_external_write_count + 1
+    )
+    try:
+        verified_stock = readback_stocks(offer_ids)
+        exact = _exact_stock_readback(verified_stock, variants=variants)
+        if submit_stock is not None:
+            exact = exact and warehouse_identity(verified_stock) == submit_stock.warehouse_id
+    except Exception:
+        exact = False
+    if exact:
+        return _result(
+            "PUBLISHED",
+            dispatch_attempted=True,
+            readback_completed=True,
+            external_write_count=combined_count,
+            requires_human_action=combined_count is None,
+            stage="STOCK_READBACK",
+            provider_code="ozon_stock_verified",
+            provider_reason=verified_reason(submit_stock.warehouse_id if submit_stock is not None else None),
+        )
+    return _result(
+        "PROCESSING",
+        dispatch_attempted=True,
+        readback_completed=False,
+        external_write_count=combined_count,
+        requires_human_action=combined_count is None,
+        stage="STOCK_READBACK",
+        provider_code="ozon_stock_reconciliation_required",
+        provider_reason="Ozon stock update did not converge to the frozen quantity",
+    )
+
+
 def execute_ozon_v4_publication(
     snapshot: Mapping[str, Any],
     *,
@@ -540,8 +868,20 @@ def execute_ozon_v4_publication(
     localized_copy_resolver: LocalizedCopyResolver | None = None,
     dispatch_variant: DispatchVariant,
     readback_variants: ReadbackVariants,
+    update_stocks: UpdateStocks | None = None,
+    readback_stocks: ReadbackStocks | None = None,
+    prepare_stock_update: PrepareStockUpdate | None = None,
+    before_dispatch: Callable[[Mapping[str, Any]], object] | None = None,
+    before_stock_update: Callable[[tuple[dict[str, Any], ...]], object] | None = None,
+    read_before_dispatch: bool = False,
+    after_projection: Callable[[tuple[dict[str, Any], ...]], object] | None = None,
 ) -> dict[str, Any]:
-    """Dispatch all variants, then always perform one authoritative readback."""
+    """Dispatch all variants, then always perform one authoritative readback.
+
+    Production recovery enables ``read_before_dispatch`` so an already-known
+    offer is never blindly re-imported.  Direct deterministic callers retain
+    the original dispatch-first contract unless they opt in.
+    """
 
     try:
         variants = project_ozon_v4_variants(
@@ -559,11 +899,146 @@ def execute_ozon_v4_publication(
             requires_human_action=True,
         )
 
+    if after_projection is not None:
+        try:after_projection(deepcopy(variants))
+        except Exception:
+            return _result('FAILED',dispatch_attempted=False,readback_completed=False,external_write_count=0,requires_human_action=True,stage='PREPARATION',provider_code='ozon_catalog_scope_not_persisted',provider_reason='Exact catalog account and offer scope could not be persisted')
+    stock_required = _governed_stock_required(snapshot)
+    if stock_required and (
+        not callable(update_stocks) or not callable(readback_stocks)
+    ):
+        return _result(
+            "FAILED",
+            dispatch_attempted=False,
+            readback_completed=False,
+            external_write_count=0,
+            requires_human_action=True,
+            stage="PREPARATION",
+            provider_code="ozon_stock_transport_unavailable",
+            provider_reason="Governed Ozon stock transport is unavailable",
+        )
+
+    offer_ids = tuple(variant["offer_id"] for variant in variants)
+    if read_before_dispatch:
+        try:
+            existing_raw = readback_variants(offer_ids)
+            existing_items = _sequence(existing_raw, "Ozon pre-dispatch readback items")
+            if any(not isinstance(item, Mapping) for item in existing_items):
+                raise OzonApprovedPublicationError(
+                    "Ozon pre-dispatch readback item is invalid"
+                )
+        except Exception:
+            return _result(
+                "PROCESSING",
+                dispatch_attempted=False,
+                readback_completed=False,
+                external_write_count=0,
+                requires_human_action=False,
+                stage="READBACK",
+                provider_code="ozon_pre_dispatch_readback_unavailable",
+                provider_reason="Ozon existing-offer readback is unavailable; import was not retried",
+            )
+        if existing_items:
+            expected_ids = set(offer_ids)
+            existing_by_offer: dict[str, list[Mapping[str, Any]]] = {
+                offer_id: [] for offer_id in offer_ids
+            }
+            unexpected = False
+            for item in existing_items:
+                offer_id = str(item.get("offer_id") or "").strip()
+                if offer_id not in expected_ids:
+                    unexpected = True
+                    continue
+                existing_by_offer[offer_id].append(item)
+            statuses = []
+            for variant in variants:
+                matches = existing_by_offer[variant["offer_id"]]
+                if len(matches) > 1:
+                    statuses.append("FAILED")
+                    continue
+                statuses.append(
+                    _classify_variant(
+                        variant,
+                        matches[0] if matches else None,
+                        OzonDispatchFact(outcome="UNKNOWN"),
+                    )
+                )
+            if unexpected:
+                statuses.append("FAILED")
+            if all(status == "PUBLISHED" for status in statuses):
+                if stock_required:
+                    return _complete_governed_stock(
+                        variants=variants,
+                        update_stocks=update_stocks,
+                        readback_stocks=readback_stocks,
+                        prepare_stock_update=prepare_stock_update,
+                        before_stock_update=before_stock_update,
+                        prior_external_write_count=0,
+                        prior_dispatch_attempted=False,
+                    )
+                return _result(
+                    "PUBLISHED",
+                    dispatch_attempted=False,
+                    readback_completed=True,
+                    external_write_count=0,
+                    requires_human_action=False,
+                    stage="READBACK",
+                    provider_code="ozon_existing_offer_verified",
+                    provider_reason="Existing Ozon variants passed official readback; import was not repeated",
+                )
+            if any(status == "FAILED" for status in statuses):
+                validation_codes = sorted(
+                    {
+                        str(error.get("code") or "").strip()
+                        for item in existing_items
+                        for error in item.get("validation_errors") or ()
+                        if isinstance(error, Mapping)
+                        and str(error.get("code") or "").strip()
+                    }
+                )
+                provider_code = (
+                    validation_codes[0]
+                    if len(validation_codes) == 1
+                    else "ozon_existing_terminal_validation_failed"
+                )
+                provider_reason = (
+                    "Ozon 官方体积重量校验未通过；已保留批准事实且未重复提交"
+                    if provider_code == "ML_INCORRECT_VOLUME_WEIGHT"
+                    else "Existing Ozon variants have terminal official validation failures; facts were not changed or resubmitted"
+                )
+                return _result(
+                    "FAILED",
+                    dispatch_attempted=False,
+                    readback_completed=True,
+                    external_write_count=0,
+                    requires_human_action=True,
+                    stage="READBACK",
+                    provider_code=provider_code,
+                    provider_reason=provider_reason,
+                )
+            return _result(
+                "PROCESSING",
+                dispatch_attempted=False,
+                readback_completed=True,
+                external_write_count=0,
+                requires_human_action=False,
+                stage="READBACK",
+                provider_code="ozon_existing_offer_processing",
+                provider_reason="Existing Ozon variants are still processing; import was not repeated",
+            )
+
     dispatch_facts: dict[str, OzonDispatchFact] = {}
     accepted_count = 0
     unknown_write_count = False
-    for variant in variants:
+    local_stop_index: int | None = None
+    for index, variant in enumerate(variants):
         offer_id = variant["offer_id"]
+        if before_dispatch is not None:
+            try:
+                before_dispatch(variant)
+            except Exception:
+                local_stop_index = index
+                break
         try:
             fact = dispatch_variant(deepcopy(variant))
             if type(fact) is not OzonDispatchFact:
@@ -575,26 +1050,18 @@ def execute_ozon_v4_publication(
             accepted_count += 1
         elif fact.outcome == "UNKNOWN":
             unknown_write_count = True
+        elif fact.outcome == "PRE_SUBMIT_FAILED":
+            local_stop_index = index
+            break
 
-    pre_submit = [
-        fact for fact in dispatch_facts.values()
-        if fact.outcome == "PRE_SUBMIT_FAILED"
-    ]
-    if pre_submit:
-        fact = pre_submit[0]
-        return _result(
-            "FAILED",
-            dispatch_attempted=False,
-            readback_completed=False,
-            external_write_count=0,
-            requires_human_action=True,
-            stage="PREPARATION",
-            provider_code=fact.provider_code or "ozon_preparation_failed",
-            provider_reason=fact.provider_reason or "Ozon preparation failed",
-        )
+    # A local refusal stops the remaining loop. Its exact suffix is safe to
+    # prepare again; an earlier accepted/unknown import is never forgotten.
+    if local_stop_index is not None:
+        for variant in variants[local_stop_index:]:
+            dispatch_facts[variant["offer_id"]] = OzonDispatchFact(outcome="PRE_SUBMIT_FAILED")
+    attempted = any(fact.outcome != "PRE_SUBMIT_FAILED" for fact in dispatch_facts.values())
 
     external_write_count = None if unknown_write_count else accepted_count
-    offer_ids = tuple(variant["offer_id"] for variant in variants)
     try:
         raw_items = readback_variants(offer_ids)
         items = _sequence(raw_items, "Ozon readback items")
@@ -607,7 +1074,7 @@ def execute_ozon_v4_publication(
         )
         return _result(
             "PROCESSING" if pending else "FAILED",
-            dispatch_attempted=True,
+            dispatch_attempted=attempted,
             readback_completed=False,
             external_write_count=external_write_count,
             requires_human_action=not pending,
@@ -638,6 +1105,27 @@ def execute_ozon_v4_publication(
         )
     if unexpected:
         statuses.append("FAILED")
+    if local_stop_index is not None:
+        import json
+
+        prefix_verified = all(status == "PUBLISHED" for status in statuses[:local_stop_index])
+        unresolved = unknown_write_count or any(status == "PROCESSING" for status in statuses[:local_stop_index])
+        return _result(
+            "PROCESSING" if unresolved else "FAILED",
+            dispatch_attempted=attempted,
+            readback_completed=True,
+            external_write_count=external_write_count,
+            requires_human_action=True,
+            stage="PREPARATION",
+            provider_code="ozon_variant_suffix_not_attempted",
+            # Positions refer to the immutable snapshot, avoiding product/SKU
+            # text in the redacted run report. No attempt is inferred from an
+            # absent official listing: the loop itself proves this suffix.
+            provider_reason=json.dumps({"unsent_from":local_stop_index,
+                "variant_count":len(variants),
+                "verified_prefix":local_stop_index if prefix_verified and not unexpected else None},
+                separators=(",", ":")),
+        )
     if all(status == "PUBLISHED" for status in statuses):
         target_status = "PUBLISHED"
     elif any(status == "FAILED" for status in statuses):
@@ -659,6 +1147,16 @@ def execute_ozon_v4_publication(
             provider_code=fact.provider_code or "ozon_dispatch_rejected",
             provider_reason=fact.provider_reason or "Ozon import was rejected",
         )
+    if target_status == "PUBLISHED" and stock_required:
+        return _complete_governed_stock(
+            variants=variants,
+            update_stocks=update_stocks,
+            readback_stocks=readback_stocks,
+            before_stock_update=before_stock_update,
+            prior_external_write_count=external_write_count,
+            prior_dispatch_attempted=True,
+            prepare_stock_update=prepare_stock_update,
+        )
     return _result(
         target_status,
         dispatch_attempted=True,
@@ -672,8 +1170,13 @@ def build_ozon_v4_executor(
     *,
     dispatch_variant: DispatchVariant,
     readback_variants: ReadbackVariants,
+    update_stocks: UpdateStocks | None = None,
+    readback_stocks: ReadbackStocks | None = None,
+    prepare_stock_update: PrepareStockUpdate | None = None,
     official_profile_resolver: OfficialProfileResolver | None = None,
     localized_copy_resolver: LocalizedCopyResolver | None = None,
+    catalog_account_resolver: Callable[[], Mapping[str, str]] | None = None,
+    catalog_observer: Callable | None = None,
 ) -> Callable[[object], dict[str, Any]]:
     """Bind thin provider transports to the shared runner callable shape."""
 
@@ -687,14 +1190,54 @@ def build_ozon_v4_executor(
         if not isinstance(raw_targets, tuple):
             raise OzonApprovedPublicationError("publication request target scope is invalid")
         snapshot = getattr(request, "snapshot", None)
-        return execute_ozon_v4_publication(
+        sink=getattr(request,'catalog_sink',None);account=None;projected=[]
+        if sink is not None:
+            try:
+                if catalog_account_resolver is None:raise ValueError('ozon_account_scope_unavailable')
+                account=dict(catalog_account_resolver())
+            except Exception:
+                return _result('FAILED',dispatch_attempted=False,readback_completed=False,external_write_count=0,requires_human_action=True,stage='PREPARATION',provider_code='ozon_account_scope_unavailable',provider_reason='Exact Ozon account scope is unavailable')
+        def projected_facts(variants):
+            projected.extend(variants)
+            if sink is not None:sink.prepare_ozon(request,account,variants)
+        result = execute_ozon_v4_publication(
             snapshot,
             target_labels=raw_targets,
             official_profile_resolver=official_profile_resolver,
             localized_copy_resolver=localized_copy_resolver,
             dispatch_variant=dispatch_variant,
             readback_variants=readback_variants,
+            update_stocks=update_stocks,
+            readback_stocks=readback_stocks,
+            prepare_stock_update=prepare_stock_update,
+            before_dispatch=(
+                (
+                    lambda _variant: request.write_budget_ledger.reserve_shared(
+                        "import_variant"
+                    )
+                )
+                if getattr(request, "write_budget_ledger", None) is not None
+                else None
+            ),
+            before_stock_update=(
+                (
+                    lambda _updates: request.write_budget_ledger.reserve_shared(
+                        "update_stock"
+                    )
+                )
+                if getattr(request, "write_budget_ledger", None) is not None
+                else None
+            ),
+            read_before_dispatch=True,
+            after_projection=projected_facts,
         )
+        if sink is not None and result['targets'][0]['status']=='PUBLISHED':
+            try:
+                if catalog_observer is None:raise ValueError('ozon_catalog_query_adapter_unavailable')
+                sink.capture(request,catalog_observer(tuple(projected)))
+            except Exception:
+                sink.failures.append({'run_id':request.run_id,'code':'CATALOG_EVIDENCE_PERSISTENCE_FAILED'})
+        return result
 
     return execute
 
@@ -703,6 +1246,7 @@ __all__ = [
     "OZON_TARGET",
     "OzonApprovedPublicationError",
     "OzonDispatchFact",
+    "OzonStockDispatchFact",
     "build_ozon_v4_executor",
     "execute_ozon_v4_publication",
     "project_ozon_v4_variants",

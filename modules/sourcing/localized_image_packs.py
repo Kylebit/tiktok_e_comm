@@ -506,14 +506,22 @@ class LocalizedImagePackStore:
         *,
         expected_revision: object,
         items: Sequence[Mapping[str, Any]],
+        paid_context=None,
+        approved_bridge: Mapping[str,Any] | None = None,
     ) -> dict[str, Any]:
-        """Atomically bind automatic translations and ToAPIs generated previews.
+        """Atomically bind Lingshi previews to their actual durable paid receipts.
 
         Model output is gathered and rendered before this method is called. The
         project is committed once only after every approved source image and
         every locale has passed exact identity checks.
         """
 
+        from shared_platform.publication_paid_requests import require_paid_context,legacy_consumer_binding
+        from modules.sourcing.image_generation_checkpoint import digest
+        from modules.sourcing import localized_image_auto_translation as translator
+        from modules.sourcing.brand_image_lingshi_generation import MODEL_CANDIDATES
+        context=require_paid_context(paid_context)
+        if context.offer_id!=str(offer_id):raise LocalizedImagePackError('paid bundle belongs to another product')
         with self._lock:
             project = self.load(offer_id)
             if not project:
@@ -584,8 +592,8 @@ class LocalizedImagePackStore:
                     or not isinstance(raw_previews, Mapping)
                     or not isinstance(raw_generation_receipts, Mapping)
                     or not isinstance(receipt, Mapping)
-                    or receipt.get("provider") != "toapis-chat-completions/v1"
-                    or receipt.get("model") != "gpt-5.4-mini-official"
+                    or receipt.get("provider") != translator.PROVIDER
+                    or receipt.get("model") != translator.MODEL
                 ):
                     raise LocalizedImagePackError(
                         "automatic translation bundle is invalid"
@@ -597,6 +605,16 @@ class LocalizedImagePackStore:
                         "automatic translation receipt is invalid"
                     ) from error
                 expected_calls = 1 if regions else 0
+                business=legacy_consumer_binding(context,offer_id=str(offer_id),bridge=approved_bridge,source_url=source_url)
+                if receipt.get('source_digest')!=translator._digest(translator._source_rows(regions)):
+                    raise LocalizedImagePackError('automatic translation source receipt differs')
+                if expected_calls:
+                    context.validate_receipt_binding(receipt.get('paid_request'),purpose='image_translation',business=business,model=receipt['model'])
+                    raw=context._raw(receipt['paid_request']['key'])
+                    content=((raw.get('choices') or [{}])[0].get('message') or {}).get('content') if raw else None
+                    restored=translator._validated_translations(translator._json_object(content),translator._source_rows(regions))
+                    if restored!=dict(raw_translations) or receipt.get('translation_digest')!=translator._digest(restored):
+                        raise LocalizedImagePackError('automatic translations differ from the original paid raw response')
                 if (
                     item_calls != expected_calls
                     or receipt.get("status")
@@ -679,8 +697,8 @@ class LocalizedImagePackStore:
                         artifact_digest = hashlib.sha256(artifact).hexdigest()
                         if (
                             generation_receipt.get("status") != "COMPLETED"
-                            or generation_receipt.get("provider") != "toapis-images/v1"
-                            or generation_receipt.get("model") != "gpt-image-2-official"
+                            or generation_receipt.get("provider") != "lingshi-media/v1"
+                            or generation_receipt.get("model") not in MODEL_CANDIDATES
                             or not str(generation_receipt.get("task_id") or "").strip()
                             or not str(
                                 generation_receipt.get("client_business_id") or ""
@@ -689,24 +707,18 @@ class LocalizedImagePackStore:
                             or generation_receipt.get("outcome_unknown") is not False
                             or generation_count != 1
                             or generation_receipt.get("output_digest")
-                            not in {None, f"sha256:{artifact_digest}"}
+                            != f"sha256:{artifact_digest}"
                         ):
                             raise LocalizedImagePackError(
                                 "automatic image generation receipt is invalid"
                             )
-                        generation_receipts[locale] = {
-                            "status": "COMPLETED",
-                            "provider": "toapis-images/v1",
-                            "model": "gpt-image-2-official",
-                            "task_id": str(generation_receipt["task_id"]),
-                            "client_business_id": str(
-                                generation_receipt["client_business_id"]
-                            ),
-                            "request_attempted": True,
-                            "outcome_unknown": False,
-                            "external_generation_count": 1,
-                            "output_digest": f"sha256:{artifact_digest}",
-                        }
+                        image_business=legacy_consumer_binding(context,offer_id=str(offer_id),bridge=approved_bridge,source_url=source_url,locale=locale)
+                        paid=context.validate_receipt_binding(generation_receipt.get('paid_request'),purpose='image_translation',
+                            business={'kind':'localized','business_digest':digest({'kind':'localized',**image_business})},model=generation_receipt['model'])
+                        original_receipt={key:value for key,value in generation_receipt.items() if key!='paid_request'}
+                        if paid.get('receipt_digest')!=digest(original_receipt):
+                            raise LocalizedImagePackError('generated receipt differs from its completed checkpoint')
+                        generation_receipts[locale] = dict(generation_receipt)
                         image_generation_calls += 1
                 prepared.append(
                     {
@@ -715,12 +727,7 @@ class LocalizedImagePackStore:
                         "translations": locale_rows,
                         "previews": preview_bytes,
                         "generation_receipts": generation_receipts,
-                        "receipt": {
-                            "status": receipt.get("status"),
-                            "provider": receipt.get("provider"),
-                            "model": receipt.get("model"),
-                            "model_calls": item_calls,
-                        },
+                        "receipt": dict(receipt),
                     }
                 )
 
@@ -761,7 +768,7 @@ class LocalizedImagePackStore:
                     image["preview"] = {
                         "status": "AUTO_PREVIEW_READY",
                         **artifact,
-                        "renderer": "toapis-reference-image/v1",
+                        "renderer": "lingshi-localized-image/v1",
                         "generation_receipt": dict(
                             item["generation_receipts"][locale]
                         ),
@@ -775,15 +782,16 @@ class LocalizedImagePackStore:
             project["automatic_translation"] = {
                 "schema_version": "localized-image-automatic-run/v1",
                 "status": "AUTO_PREVIEW_READY",
-                "provider": "toapis-chat-completions/v1",
-                "model": "gpt-5.4-mini-official",
+                "provider": translator.PROVIDER,
+                "model": translator.MODEL,
                 "model_calls": model_calls,
-                "renderer": "toapis-reference-image/v1",
-                "image_provider": "toapis-images/v1",
-                "image_model": "gpt-image-2-official",
+                "renderer": "lingshi-localized-image/v1",
+                "image_provider": "lingshi-media/v1",
+                "image_models": sorted({receipt['model'] for item in prepared for receipt in item['generation_receipts'].values()}),
                 "image_generation_calls": image_generation_calls,
                 "inventory_digest": _canonical_digest(inventory_identity),
                 "completed_at": _now(),
+                "paid_requests":context.summary(),
             }
             return self._commit(offer_id, project)
 

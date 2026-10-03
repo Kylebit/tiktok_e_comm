@@ -2861,6 +2861,28 @@ def _regional_readback_evidence(
     }
 
 
+def prepared_account_metadata(region: str) -> dict:
+    """Read safe local readiness only; never create a transport or refresh tokens."""
+    from datetime import datetime, timezone
+    from shared_platform.round1_category_evidence import digest
+    if region not in {'PH', 'MY', 'TH', 'VN'}:
+        raise ValueError('CATEGORY_SOURCE_REGION_REQUIRED')
+    result = dict(region=region, readiness='UNKNOWN', account_identity_digest=None,
+                  shop_id=None, merchant_id=None, checked_at=datetime.now(timezone.utc).isoformat(), reason_code=None)
+    try:
+        credentials = _current_credentials(region)
+        if credentials.region != region:
+            raise ShopeeOneClickPreDispatchError('region mismatch')
+        identity = dict(region=region, shop_id=credentials.shop_id, merchant_id=credentials.merchant_id)
+        result.update(readiness='READY', account_identity_digest=digest(identity),
+                      shop_id=credentials.shop_id, merchant_id=credentials.merchant_id)
+    except ShopeeOneClickPreDispatchError:
+        result.update(readiness='UNPREPARED', reason_code='PREPARED_CREDENTIALS_REQUIRED')
+    except Exception:
+        result['reason_code'] = 'ACCOUNT_READINESS_UNKNOWN'
+    return result
+
+
 def _current_credentials(region: str) -> ShopeeCredentials:
     from domains.channel_operations.target_scoped_retry_adapters import (
         _prepared_shopee_credentials,

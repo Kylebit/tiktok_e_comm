@@ -8,7 +8,7 @@ price, image or parcel facts.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal
@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from domains.product_operations.approved_publication_snapshot import (
     ApprovedPublicationSnapshotError,
+    publication_content_for_target,
     publication_images_for_target,
     validate_approved_publication_snapshot,
 )
@@ -76,6 +77,7 @@ def project_tiktok_v4_execution_plan(
     *,
     collectbox_contexts: Mapping[str, Mapping[str, object]],
     category_resolver: TikTokCategoryResolver | None,
+    target_scope: tuple[str, ...] | None = None,
 ) -> dict[str, object]:
     """Project independent per-store commands from one verified v4 snapshot."""
 
@@ -99,6 +101,24 @@ def project_tiktok_v4_execution_plan(
         raise TikTokV4ExecutionContractError(
             "approved snapshot selects no TikTok targets"
         )
+    if target_scope is not None:
+        if (
+            not target_scope
+            or len(target_scope) != len(set(target_scope))
+            or any(type(label) is not str or not label for label in target_scope)
+        ):
+            raise TikTokV4ExecutionContractError(
+                "TikTok target-only scope is invalid"
+            )
+        available = {row["target_label"] for row in target_rows}
+        if set(target_scope) - available:
+            raise TikTokV4ExecutionContractError(
+                "TikTok target-only scope contains an unapproved target"
+            )
+        selected = set(target_scope)
+        target_rows = [
+            row for row in target_rows if row["target_label"] in selected
+        ]
     selected_labels = [row["target_label"] for row in target_rows]
     extras = sorted(set(collectbox_contexts).difference(selected_labels))
     if extras:
@@ -145,7 +165,7 @@ def project_tiktok_v4_execution_plan(
                 skus=frozen["skus"],
                 resolver=category_resolver,
             )
-        except (TikTokV4ExecutionContractError, RuntimeError, TypeError, ValueError):
+        except (TikTokV4ExecutionContractError, RuntimeError, TypeError, ValueError, OSError):
             blocked.append(
                 {
                     "target_label": label,
@@ -182,10 +202,28 @@ def execute_tiktok_v4_plan(
     *,
     publisher: TikTokTargetPublisher,
     storefront_readback: TikTokStorefrontReadback,
+    before_publish: Callable[[str], object] | None = None,
+    accepted_save_targets: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Execute each TikTok store independently and always read after dispatch."""
 
     plan = _verified_execution_plan(execution_plan)
+    target_order = tuple(plan["target_order"])
+    if (
+        len(accepted_save_targets) != len(set(accepted_save_targets))
+        or set(accepted_save_targets) - set(target_order)
+    ):
+        raise TikTokV4ExecutionContractError(
+            "accepted TikTok SAVE target scope is invalid"
+        )
+    accepted_save_set = set(accepted_save_targets)
+    blocked_reasons = {
+        "DRAFT_IDENTITY_UNAVAILABLE": "Miaoshou draft identity is unavailable",
+        "DRAFT_IDENTITY_CONFLICT": "Miaoshou draft identity conflicts with the approved snapshot",
+        "CATEGORY_CONFIRMATION_REQUIRED": (
+            "TikTok category or exact-shop metadata could not be verified"
+        ),
+    }
     outcomes: dict[str, dict[str, object]] = {
         row["target_label"]: {
             "target_label": row["target_label"],
@@ -202,7 +240,10 @@ def execute_tiktok_v4_plan(
                 status="FAILED",
                 stage="IDENTITY",
                 provider_code=row["reason_code"],
-                provider_reason="Miaoshou draft identity is unavailable",
+                provider_reason=blocked_reasons.get(
+                    str(row["reason_code"]),
+                    "TikTok target preparation is unavailable",
+                ),
                 request_attempted=False,
                 outcome_unknown=False,
                 external_write_count=0,
@@ -220,7 +261,17 @@ def execute_tiktok_v4_plan(
         label = command["target_label"]
         publisher_snapshot = command["publisher_snapshot"]
         try:
-            preflight = publisher.preflight(deepcopy(publisher_snapshot))
+            if label in accepted_save_set:
+                post_save_preflight = getattr(
+                    publisher, "preflight_after_accepted_save", None
+                )
+                if not callable(post_save_preflight):
+                    raise TikTokV4ExecutionContractError(
+                        "TikTok publisher lacks accepted-SAVE preflight"
+                    )
+                preflight = post_save_preflight(deepcopy(publisher_snapshot))
+            else:
+                preflight = publisher.preflight(deepcopy(publisher_snapshot))
             preflight_fact = _preflight_fact(preflight, label)
             preflight_status = str(preflight_fact["status"])
         except Exception:
@@ -283,6 +334,25 @@ def execute_tiktok_v4_plan(
                 continue
             publisher_snapshot = command["publisher_snapshot"]
 
+            if before_publish is not None:
+                from shared_platform.publication_write_budget import PublicationWriteBudgetExceeded
+                try:
+                    before_publish(label)
+                except PublicationWriteBudgetExceeded:
+                    outcomes[label] = {
+                        "target_label": label, "status": "FAILED",
+                        "reason_code": "WRITE_BUDGET_REJECTED",
+                        "dispatch_attempted": False, "dispatch_outcome": "NOT_ATTEMPTED",
+                        "readback_authority": "NOT_ATTEMPTED", "readback_status": "NOT_ATTEMPTED",
+                        "external_write_count": 0, "retry_safe": False,
+                        "evidence": _target_evidence(
+                            label=label, status="FAILED", stage="PUBLISH",
+                            provider_code="write_budget_exceeded",
+                            provider_reason="Publish was not sent; preparation facts remain in the existing checkpoint",
+                            request_attempted=False, outcome_unknown=False, external_write_count=0,
+                        ),
+                    }
+                    continue
             try:
                 receipt = publisher.publish(
                     deepcopy(publisher_snapshot),
@@ -305,7 +375,7 @@ def execute_tiktok_v4_plan(
                     command=deepcopy(command),
                     dispatch=deepcopy(dispatch),
                 )
-                readback = _readback_fact(raw_readback, label)
+                readback = _readback_fact(raw_readback, label, command)
             except Exception:
                 readback = {
                     "target_label": label,
@@ -350,8 +420,13 @@ def _target_command(
 ) -> dict[str, object]:
     label = target["target_label"]
     target_images = publication_images_for_target(frozen, label)
+    target_content = publication_content_for_target(frozen, label)
     base_images = list(frozen["product"]["images"])
-    routed_by_base = dict(zip(base_images, target_images, strict=True))
+    if len(base_images) != len(target_images):
+        raise TikTokV4ExecutionContractError(
+            "TikTok target image route coverage is invalid"
+        )
+    routed_by_base = dict(zip(base_images, target_images))
     skus: list[dict[str, object]] = []
     model_prices: dict[str, str] = {}
     variant_models: dict[str, str] = {}
@@ -389,8 +464,8 @@ def _target_command(
     assert currency is not None
     parent_parcel = _derived_parent_parcel(skus)
     product = {
-        "title": frozen["product"]["title"],
-        "description": frozen["product"]["description"],
+        "title": target_content["title"],
+        "description": target_content["description"],
         "images": deepcopy(target_images),
         "main_category": deepcopy(frozen["product"]["main_category"]),
         "target_category": deepcopy(category),
@@ -404,8 +479,8 @@ def _target_command(
         "expected_variant_specifications": variant_specifications,
         "expected_weight_kg": parent_parcel["weight_kg"],
         "expected_package_cm": parent_parcel["package_cm"],
-        "expected_title": frozen["product"]["title"],
-        "expected_description": frozen["product"]["description"],
+        "expected_title": target_content["title"],
+        "expected_description": target_content["description"],
         "expected_images": deepcopy(target_images),
         "expected_sku_parcels": sku_parcels,
         "expected_currency": currency,
@@ -414,6 +489,13 @@ def _target_command(
             "sha256:"
         ),
     }
+    warehouse_inventory_by_target = frozen["product"].get(
+        "warehouse_inventory_by_target"
+    )
+    if isinstance(warehouse_inventory_by_target, Mapping):
+        publisher_target["expected_warehouse_inventory"] = deepcopy(
+            warehouse_inventory_by_target[label]
+        )
     publisher_snapshot = {
         "schema_version": _PUBLISHER_SNAPSHOT_SCHEMA,
         "offer_id": frozen["offer_id"],
@@ -822,6 +904,19 @@ def _validate_target_command_identity(
     if provider_target.get("target_label") != label:
         raise TikTokV4ExecutionContractError("TikTok publisher target identity drifted")
 
+    frozen_warehouse_inventory = provider_target.get(
+        "expected_warehouse_inventory"
+    )
+    if frozen_warehouse_inventory is not None:
+        if not isinstance(frozen_warehouse_inventory, Mapping):
+            raise TikTokV4ExecutionContractError(
+                "TikTok warehouse inventory is malformed"
+            )
+        if frozen_warehouse_inventory.get("shop_id") != control.get("shop_id"):
+            raise TikTokV4ExecutionContractError(
+                "TikTok warehouse shop identity drifted"
+            )
+
     target_category = product.get("target_category")
     if (
         not isinstance(target_category, Mapping)
@@ -927,7 +1022,9 @@ def _target_evidence(*, label: str, status: str, stage: str, provider_code: obje
     return {"target_label": label, "status": status, "stage": stage, "provider_code": sanitize_tiktok_provider_code(provider_code), "provider_reason": sanitize_tiktok_provider_reason(provider_reason), "request_attempted": request_attempted, "outcome_unknown": outcome_unknown, "external_write_count": external_write_count}
 
 
-def _readback_fact(value: Mapping[str, object], label: str) -> dict[str, object]:
+def _readback_fact(
+    value: Mapping[str, object], label: str, command: Mapping[str, object]
+) -> dict[str, object]:
     if not isinstance(value, Mapping) or value.get("target_label") != label:
         raise TikTokV4ExecutionContractError("TikTok readback identity drifted")
     authority = str(value.get("authority") or "").upper()
@@ -936,12 +1033,52 @@ def _readback_fact(value: Mapping[str, object], label: str) -> dict[str, object]
         raise TikTokV4ExecutionContractError("TikTok readback authority is invalid")
     if not status:
         raise TikTokV4ExecutionContractError("TikTok readback status is invalid")
-    return {
+    result = {
         "target_label": label,
         "authority": authority,
         "status": status,
         "exact": value.get("exact") is True,
     }
+    # The execution result keeps a provider-supplied catalog observation only
+    # after the same official, exact readback that proves the storefront
+    # outcome.  Every row is tied to this target's command before it can reach
+    # the catalog sink, which independently rebinds it to the frozen snapshot.
+    if "official_catalog_rows" in value:
+        rows = value["official_catalog_rows"]
+        control = command.get("control")
+        frozen_skus = {
+            (sku.get("model_sku"), sku.get("variant_key"))
+            for sku in command.get("skus", [])
+            if isinstance(sku, Mapping)
+        }
+        if (
+            authority != "OFFICIAL_STOREFRONT"
+            or status != "VERIFIED"
+            or result["exact"] is not True
+            or not isinstance(rows, list)
+            or not rows
+            or any(not isinstance(row, Mapping) for row in rows)
+            or not isinstance(control, Mapping)
+            or not frozen_skus
+        ):
+            raise TikTokV4ExecutionContractError(
+                "TikTok catalog readback is invalid"
+            )
+        for row in rows:
+            identity = row.get("identity")
+            if (
+                row.get("target_label") != label
+                or not isinstance(identity, Mapping)
+                or identity.get("platform") != "tiktok"
+                or identity.get("shop_key") != control.get("shop_id")
+                or (row.get("model_sku"), row.get("variant_key"))
+                not in frozen_skus
+            ):
+                raise TikTokV4ExecutionContractError(
+                    "TikTok catalog readback binding is invalid"
+                )
+        result["official_catalog_rows"] = deepcopy(rows)
+    return result
 
 
 def _classify_target(
@@ -981,7 +1118,7 @@ def _classify_target(
             request_attempted=type(dispatch.get("write_request_count")) is int and int(dispatch["write_request_count"]) > 0,
             outcome_unknown=outcome == "UNKNOWN", external_write_count=dispatch["external_write_count"],
         )
-    return {
+    result = {
         "target_label": dispatch["target_label"],
         "status": status,
         "reason_code": reason,
@@ -993,6 +1130,11 @@ def _classify_target(
         "retry_safe": outcome == "REJECTED" and status == "FAILED",
         "evidence": evidence,
     }
+    if "official_catalog_rows" in readback:
+        result["official_catalog_rows"] = deepcopy(
+            readback["official_catalog_rows"]
+        )
+    return result
 
 
 def _aggregate_status(rows: Sequence[Mapping[str, object]]) -> str:

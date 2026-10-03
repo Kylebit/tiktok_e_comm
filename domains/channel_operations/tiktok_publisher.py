@@ -84,6 +84,11 @@ class TikTokPublishTransport(Protocol):
     def submit(self, target: Mapping[str, object]) -> Mapping[str, object]: ...
 
 
+    def post_save_draft_matches(
+        self, target: Mapping[str, object], draft: Mapping[str, object]
+    ) -> bool: ...
+
+
 def _canonical_digest(value: object) -> str:
     encoded = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -325,11 +330,16 @@ def _validate_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
             raise TikTokPublishContractError(
                 "approved variant, model SKU and price coverage drifted"
             )
+        shop_id = _positive_digits(raw.get("shop_id"), "shop_id")
+        warehouse_inventory = _expected_warehouse_inventory(
+            raw.get("expected_warehouse_inventory"),
+            expected_shop_id=shop_id,
+        )
         targets.append(
             {
                 "target_label": label,
                 "detail_id": _positive_digits(raw.get("detail_id"), "detail_id"),
-                "shop_id": _positive_digits(raw.get("shop_id"), "shop_id"),
+                "shop_id": shop_id,
                 "expected_price": _positive_price(raw.get("expected_price")),
                 **(
                     {"expected_sku_prices": sku_prices}
@@ -357,6 +367,11 @@ def _validate_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
                 "expected_images": _approved_images(raw.get("expected_images")),
                 "expected_sku_parcels": sku_parcels,
                 "expected_currency": currency,
+                **(
+                    {"expected_warehouse_inventory": warehouse_inventory}
+                    if warehouse_inventory is not None
+                    else {}
+                ),
                 # This is approved product evidence.  It is intentionally not
                 # derived from the site or a platform-wide default.
                 "expected_category_id": (
@@ -433,7 +448,7 @@ def _sha256(value: object, name: str) -> str:
 def _safe_code(value: object) -> str:
     code = str(value or "business_rejected").strip()
     if not code or not code.isascii() or len(code) > 80 or any(
-        not (char.isalnum() or char in {"_", "-"}) for char in code
+        not (char.isalnum() or char in {"_", "-", ".", ":"}) for char in code
     ):
         return "business_rejected"
     return code
@@ -469,6 +484,23 @@ def sanitize_tiktok_provider_reason(value: object) -> str:
     """Return the redacted, bounded provider reason used in target evidence."""
 
     return _safe_reason(value)
+
+
+def sanitize_tiktok_provider_field_path(value: object) -> str:
+    """Return a bounded provider field path without arbitrary response text."""
+
+    field_path = str(value or "").strip()
+    if (
+        not field_path
+        or not field_path.isascii()
+        or len(field_path) > 160
+        or any(
+            not (character.isalnum() or character in {"_", "-", ".", "[", "]"})
+            for character in field_path
+        )
+    ):
+        return ""
+    return field_path
 
 
 def _provider_acceptance(response: Mapping[str, object]) -> tuple[str, str]:
@@ -767,3 +799,173 @@ class TikTokPublisher:
                 "external_write_count": confirmed_write_count,
                 "write_request_count": write_request_count,
             }
+
+
+    def preflight_after_accepted_save(
+        self, snapshot: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Read back an accepted SAVE and avoid an optimistic-locking re-save."""
+
+        approved = _validate_snapshot(snapshot)
+        snapshot_digest = _canonical_digest(approved)
+        results: list[dict[str, object]] = []
+        for target in approved["targets"]:
+            label = str(target["target_label"])
+            try:
+                draft = self.transport.read_draft(target)
+                if self.transport.post_save_draft_matches(target, draft):
+                    results.append(
+                        {
+                            "target_label": label,
+                            "status": "READY",
+                            "save_required": False,
+                        }
+                    )
+                    continue
+                prepared = self.transport.prepare_approved_draft(target, draft)
+                json.dumps(
+                    prepared,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                results.append(
+                    {
+                        "target_label": label,
+                        "status": "REPAIR_REQUIRED",
+                        "save_required": True,
+                        "prepared_save": prepared,
+                    }
+                )
+            except MiaoshouBusinessRejectedError as error:
+                results.append(
+                    {
+                        "target_label": label,
+                        "status": "READ_REJECTED",
+                        "provider_code": _safe_code(error.code),
+                        "provider_reason": _safe_reason(error),
+                    }
+                )
+            except TikTokPreWritePreparationError as error:
+                results.append(
+                    {
+                        "target_label": label,
+                        "status": "PREPARATION_REJECTED",
+                        "provider_code": _safe_code(error.code),
+                        "provider_reason": _safe_reason(error),
+                    }
+                )
+            except (TypeError, ValueError) as error:
+                raise TikTokBatchPreflightError(
+                    "TikTok prepared SAVE payload is not JSON serializable"
+                ) from error
+            except TikTokBatchPreflightError:
+                raise
+            except Exception:
+                results.append(
+                    {
+                        "target_label": label,
+                        "status": "READ_UNKNOWN",
+                        "provider_code": "transport_unknown",
+                        "provider_reason": "Miaoshou draft read outcome is unknown",
+                    }
+                )
+        results.extend(
+            {
+                "target_label": row["target_label"],
+                "status": "IDENTITY_UNAVAILABLE",
+                "provider_code": row["reason_code"],
+                "provider_reason": "Miaoshou draft identity is unavailable",
+            }
+            for row in approved["unavailable_targets"]
+        )
+        return {
+            "schema_version": TIKTOK_PREFLIGHT_RECEIPT_SCHEMA,
+            "offer_id": approved["offer_id"],
+            "plan_id": approved["plan_id"],
+            "snapshot_digest": snapshot_digest,
+            "targets": results,
+        }
+
+
+def _expected_warehouse_inventory(
+    value: object, *, expected_shop_id: str
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema_version",
+        "shop_id",
+        "warehouses",
+        "total_stock",
+        "source",
+        "approved_by",
+        "approved_at",
+    }:
+        raise TikTokPublishContractError("expected_warehouse_inventory is invalid")
+    shop_id = _positive_digits(value.get("shop_id"), "warehouse shop_id")
+    rows = value.get("warehouses")
+    if shop_id != expected_shop_id or not isinstance(rows, list) or not rows:
+        raise TikTokPublishContractError("expected_warehouse_inventory is invalid")
+    warehouses: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+    seen_names: set[str] = set()
+    total = 0
+    for raw in rows:
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "warehouse_id",
+            "warehouse_name",
+            "stock",
+        }:
+            raise TikTokPublishContractError(
+                "expected_warehouse_inventory is invalid"
+            )
+        warehouse_id = _positive_digits(
+            raw.get("warehouse_id"), "warehouse_id"
+        )
+        warehouse_name = raw.get("warehouse_name")
+        stock = raw.get("stock")
+        if (
+            type(warehouse_name) is not str
+            or not warehouse_name.strip()
+            or warehouse_name != warehouse_name.strip()
+            or type(stock) is not int
+            or stock < 0
+            or warehouse_id in seen_ids
+            or warehouse_name in seen_names
+        ):
+            raise TikTokPublishContractError(
+                "expected_warehouse_inventory is invalid"
+            )
+        seen_ids.add(warehouse_id)
+        seen_names.add(warehouse_name)
+        total += stock
+        warehouses.append(
+            {
+                "warehouse_id": warehouse_id,
+                "warehouse_name": warehouse_name,
+                "stock": stock,
+            }
+        )
+    if (
+        value.get("schema_version")
+        != "miaoshou-tiktok-warehouse-allocation/v1"
+        or value.get("source") != "CONVERSATION_APPROVAL"
+        or value.get("total_stock") != total
+        or total <= 0
+        or type(value.get("approved_by")) is not str
+        or not str(value["approved_by"]).strip()
+        or type(value.get("approved_at")) is not str
+        or not str(value["approved_at"]).strip()
+    ):
+        raise TikTokPublishContractError("expected_warehouse_inventory is invalid")
+    return {
+        "schema_version": "miaoshou-tiktok-warehouse-allocation/v1",
+        "shop_id": shop_id,
+        "warehouses": warehouses,
+        "total_stock": total,
+        "source": "CONVERSATION_APPROVAL",
+        "approved_by": value["approved_by"],
+        "approved_at": value["approved_at"],
+    }

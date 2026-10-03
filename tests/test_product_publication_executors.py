@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 import unittest
 from copy import deepcopy
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -26,6 +28,7 @@ def _request(platform: str, targets: tuple[str, ...]) -> PublicationPlatformRequ
         target_labels=targets,
         snapshot={
             "schema_version": "approved-publication-snapshot/v4",
+            "product":{"description":"Approved composition fixture copy.","images":["https://assets.example/approved.jpg"]},
             "publication_targets": [
                 {
                     "target_label": label,
@@ -48,8 +51,9 @@ class _SnapshotStore:
 
 
 class _ReportStore:
-    def __init__(self) -> None:
+    def __init__(self, reports_root: Path) -> None:
         self.report = None
+        self.reports_root = reports_root
 
     def get_report_by_run(self, *, run_id):
         return None
@@ -69,7 +73,8 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
             "target_label": "tiktok:LH_PH",
             "status": "FAILED",
             "stage": "PUBLISH",
-            "provider_code": "bad code with spaces",
+            "provider_code": "FIELD.INVALID",
+            "provider_field_path": "skuMap[0].imgUrls[6]",
             "provider_reason": (
                 "Authorization Bearer secret-token "
                 "https://provider.example/items/123456789012"
@@ -121,7 +126,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
                     "status": "FAILED",
                     "evidence": {
                         **evidence,
-                        "provider_code": "business_rejected",
+                        "provider_code": "FIELD.INVALID",
                         "provider_reason": (
                             "authorization=[redacted] [redacted-url]"
                         ),
@@ -194,6 +199,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
             request.snapshot,
             collectbox_contexts=contexts,
             category_resolver=category_resolver,
+            target_scope=request.target_labels,
         )
         execute.assert_called_once_with(
             {"plan": "v4"},
@@ -351,6 +357,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
             request.snapshot,
             global_item_id="60000001",
             runtime=runtime,
+            target_scope=request.target_labels,
         )
         readback_call.assert_called_once_with(
             request.snapshot,
@@ -358,6 +365,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
             global_item_id="60000001",
             runtime=runtime,
             poll_attempts=1,
+            target_scope=request.target_labels,
         )
         self.assertEqual(
             result,
@@ -417,6 +425,53 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
         self.assertIsNone(result["external_write_count"])
         self.assertFalse(result["requires_human_action"])
 
+    def test_shopee_preparation_exception_records_safe_zero_write_evidence(self) -> None:
+        request = _request("SHOPEE", ("shopee:PH", "shopee:MY"))
+
+        class Resolver:
+            def __call__(self, _request):
+                raise RuntimeError(
+                    "Bearer secret-token https://provider.example/private"
+                )
+
+            def write_count(self, _request):
+                return 0
+
+        with (
+            patch(
+                "shared_platform.product_publication_executors."
+                "validate_description_media_preflight"
+            ),
+            patch(
+                "shared_platform.product_publication_executors."
+                "selected_region_targets",
+                return_value=request.target_labels,
+            ),
+        ):
+            result = build_shopee_region_executor(
+                global_item_id_resolver=Resolver(), runtime=object()
+            )(request)
+
+        self.assertFalse(result["dispatch_attempted"])
+        self.assertEqual(result["external_write_count"], 0)
+        for row in result["targets"]:
+            self.assertEqual(
+                row["evidence"],
+                {
+                    "target_label": row["target_label"],
+                    "status": "FAILED",
+                    "stage": "PREPARATION",
+                    "provider_code": "shopee_credential_preparation_failed",
+                    "provider_field_path": "credential",
+                    "provider_reason": "Shopee credential preparation failed before mutation",
+                    "request_attempted": False,
+                    "outcome_unknown": False,
+                    "external_write_count": 0,
+                },
+            )
+        self.assertNotIn("secret-token", repr(result))
+        self.assertNotIn("provider.example", repr(result))
+
     def test_factory_composes_only_selected_platforms(self) -> None:
         tiktok = TikTokV4ExecutorDependencies(
             collectbox_context_resolver=lambda _request: {},
@@ -458,6 +513,11 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
             readback_variants=ozon.readback_variants,
             official_profile_resolver=None,
             localized_copy_resolver=None,
+            update_stocks=None,
+            readback_stocks=None,
+            prepare_stock_update=None,
+            catalog_account_resolver=None,
+            catalog_observer=None,
         )
         self.assertEqual(
             list(
@@ -474,6 +534,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
     ) -> None:
         snapshot = {
             "schema_version": "approved-publication-snapshot/v4",
+            "product":{"description":"Approved composition fixture copy.","images":["https://assets.example/approved.jpg"]},
             "offer_id": "3838616043",
             "plan_id": "release-plan:3838616043:r42",
             "product_revision": 42,
@@ -526,6 +587,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
         }
 
         with (
+            TemporaryDirectory() as report_directory,
             patch(
                 "shared_platform.product_publication_runner."
                 "validate_approved_publication_snapshot",
@@ -548,7 +610,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
         ):
             receipt = ProductPublicationRunner(
                 release_store=_SnapshotStore(snapshot),
-                report_store=_ReportStore(),
+                report_store=_ReportStore(Path(report_directory) / "product-publication"),
             ).run(
                 run_id="run-independent-composition",
                 offer_id=snapshot["offer_id"],

@@ -32,10 +32,10 @@ def test_task_lifecycle_dashboard_and_audit(tmp_path):
     ]
 
 
-def test_invalid_transition_and_feishu_source_are_safe(tmp_path):
+def test_invalid_transition_and_legacy_import_source_are_safe(tmp_path):
     store = WorkbenchStore(tmp_path / "workbench.db")
-    first = store.create_task({"title": "Message from Feishu", "status": "inbox", "source_key": "feishu:om_1"})
-    same = store.create_task({"title": "duplicate", "status": "inbox", "source_key": "feishu:om_1"})
+    first = store.create_task({"title": "Imported message", "status": "inbox", "source_key": "legacy-import:1"})
+    same = store.create_task({"title": "duplicate", "status": "inbox", "source_key": "legacy-import:1"})
     assert same["task_id"] == first["task_id"]
     with pytest.raises(ValueError, match="invalid transition"):
         store.transition(first["task_id"], "done")

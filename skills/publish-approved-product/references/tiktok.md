@@ -6,6 +6,21 @@ TikTok consumes the approved snapshot and never reads Shopee or Ozon state.
 For each selected store, keep an independent target row. A missing PH target,
 an added HomeBloom target, or a failed GB target must not change another store.
 
+Before the first write, `platform-preflight-report/v2` freezes one exact-store
+mainland-pickup warehouse semantic for every TikTok target: LivelyHive SEA uses
+`The Chinese mainland Pickup Warehouse`, HomeBloom SEA uses `瓯江口`, MX uses
+`中国仓库`, and GB uses `自有仓库`. These names are not reusable across store
+families and are never warehouse IDs. At execution, read the exact store's
+current official warehouse list, resolve the semantic to one active ID, assign
+the frozen stock there, and explicitly assign zero to every other active local
+warehouse. Missing or ambiguous resolution is a zero-write target failure.
+
+When an immutable TikTok report is `PROCESSING` and its evidence records
+`readback_completed=true`, the production command has finished. Treat the
+result as `READBACK_ONLY`: keep provider processing visible, allow only later
+official GET reconciliation, and never restart the worker or repeat draft
+SAVE/PUBLISH because of that state.
+
 ## Draft identity
 
 Persist and read one identity per target:
@@ -89,6 +104,15 @@ zero-write preflight failure: do not call the publish endpoint.
 - Category and price readback are target-specific.
 - Each selected shop is an independent execution target. A failed target must
   not prevent another ready target from being submitted.
+- Product gallery and product description media are two separate required
+  projections of the same approved ordered image route. `imgUrls` must contain
+  every target image in order; rich `notes` must contain the approved text
+  followed by every one of those images in the same order; `notesText` remains
+  the plain-text projection. A plain-text-only `notes` value is a pre-submit
+  mismatch and cannot be classified as ready.
+- After SAVE, require the exact rich-description HTML and the exact number and
+  order of approved image URLs before PUBLISH. A provider projection that omits
+  rich `notes` is not success and must not be hidden by a matching `notesText`.
 
 ### Two-barrier all-target preflight
 
@@ -342,18 +366,54 @@ Required handling:
 1. Bind every approved variant to its exact current provider SKU row first.
 2. Preserve the positive provider stock from that exact row; the frozen
    product snapshot must not invent inventory.
-3. For every TikTok/Miaoshou target shop, reuse one unambiguous, correct
-   warehouse already bound to that exact shop. If absent,
-   read the official warehouse list for that shop and select the unique active
-   warehouse named `The Chinese mainland Pickup Warehouse`, or its clear
-   localized Chinese-mainland pickup equivalent. Do not use default status or
-   provider ordering as a substitute for that name semantic.
+3. For every TikTok/Miaoshou target shop, always read that exact shop's current
+   official warehouse list. Never trust a legacy/default binding: it may point
+   to a local warehouse. Require exactly one active warehouse named
+   `The Chinese mainland Pickup Warehouse`, or its clear localized
+   Chinese-mainland pickup equivalent. Do not use default status or provider
+   ordering as a substitute for that name semantic.
 4. Set `shopIdToWarehouseIdAndStockMap` independently for every SKU and exact
-   shop. Never reuse another shop's warehouse.
-5. Missing stock, no uniquely matching Chinese-mainland pickup warehouse,
-   ambiguous candidates, or multiple observed warehouses is a zero-write
-   preparation failure. Do not cross-shop bind, guess, or classify it as a
-   provider acceptance.
+   shop. Put the preserved positive provider SKU stock only in the unique
+   Chinese-mainland pickup warehouse, and explicitly set every other active
+   exact-shop warehouse to `0`. Never reuse another shop's warehouse.
+5. Before SAVE and again after SAVE, read back the exact shop and require the
+   warehouse map to contain exactly the current active warehouse IDs, with the
+   mainland pickup quantity equal to the SKU stock and every other quantity
+   equal to zero.
+6. Missing stock, no uniquely matching Chinese-mainland pickup warehouse,
+   ambiguous candidates, an omitted active warehouse, or any positive local
+   warehouse stock is a zero-write or failed-readback condition. Do not
+   cross-shop bind, guess, or classify it as provider acceptance.
+
+### Confirmed HomeBloom mainland pickup warehouse alias
+
+Official Miaoshou warehouse readback on 2026-08-30 confirmed that all four
+HomeBloom SEA shops expose their China-mainland pickup warehouse under the
+operator-defined name `瓯江口`, rather than the standard English label. Treat
+`瓯江口` as a mainland-pickup alias only for the four exact HomeBloom shop IDs
+already frozen in this reference. Never accept that alias for LivelyHive, MX,
+GB, or an unknown shop merely by name.
+
+Continue to resolve the current warehouse ID from each exact shop at runtime;
+never hard-code the returned IDs. Put the positive provider SKU stock only in
+that exact shop's active `瓯江口` warehouse. Explicitly set every other active
+warehouse to zero. HomeBloom TH currently also exposes the local warehouse
+`TH8806`, so the pre-save payload and post-save readback must prove its stock is
+zero. A missing, inactive, duplicated, or renamed alias remains a fail-closed
+pre-write condition.
+
+### Confirmed MX and GB mainland warehouse aliases
+
+Official Miaoshou readback on 2026-08-30 confirmed shop-scoped operator names
+for the two non-SEA TikTok targets:
+
+- `tiktok:MX`, exact `shop_id=16265910`: `中国仓库`
+- `tiktok:GB`, exact `shop_id=10204699`: `自有仓库`
+
+These are mainland-pickup aliases only for those exact shops. In particular,
+`自有仓库` is too generic to accept globally. Resolve the current warehouse ID
+from the exact shop on every run, put positive SKU stock only there, set every
+other active exact-shop warehouse to zero, and verify the full map after SAVE.
 
 ### Confirmed incident: optional-only GB category metadata blocked repair
 
@@ -417,6 +477,24 @@ server rebuilds the approved snapshot and filters it to that exact scope; the
 client cannot inject draft identities or unapproved stores. A scoped retry
 must not create a fresh all-store draft batch. If its exact existing draft is
 not ready, report the preparation failure without touching the other stores.
+
+### Confirmed incident: target-only retry prepared every approved draft
+
+Symptom: the runner and final publish projection selected one failed target,
+but the intermediate Miaoshou draft preparer iterated the immutable snapshot's
+full TikTok target list. It created, claimed, and saved unrelated drafts before
+the scoped receipt validator rejected the result.
+
+Required handling: one explicit retry scope must propagate unchanged through
+official seed-identity reconciliation, claim/create, draft projection, SAVE,
+PUBLISH, and readback. The full immutable snapshot remains the authority for
+facts and the approved-target allowlist, but it is never the execution iterator
+for a scoped retry. Before the first mutation, prove every layer has the same
+non-empty approved target set. A mismatch is a zero-write systemic failure.
+Official identity rows belonging to other approved targets may be observed but
+must not be claimed, saved, published, or allowed to create ambiguity for the
+selected target. Preserve a regression test that asserts the transport sees
+only the scoped target.
 
 ### Confirmed incident: draft verification overrode a rejected dispatch
 
@@ -514,16 +592,54 @@ any non-empty differing `notesText` remains a mismatch.
 
 ### Approved self-adhesive decorative wallpaper fallback
 
+For new snapshots, the first-round approval must freeze `verified_claims.self_adhesive`.
+Legacy manual-intake snapshots created before that field existed may use the
+compatibility projection only when the immutable source authority is
+`manual-intake` and both the frozen title and description explicitly contain
+`Self-Adhesive`. A category match or a single copy field is never sufficient.
+
 Kyle approves `cid=600338` (`Decorative Stickers`) only for the frozen
-`背景墙 > 墙纸、壁纸` family when approved title and description explicitly say
-self-adhesive decorative wall covering. Re-read each exact shop's current tree
-and metadata; require enabled node and valid metadata. Do not use it for
-ordinary wallpaper or share one site's result with another. GB uses the sole
-official Batch Number selection `102255=1000256` (`1`); all other approved
-sites have no required attribute. Any changed or ambiguous fact fails closed.
+`背景墙 > 墙纸、壁纸` family when the immutable product snapshot contains a
+durable `self_adhesive=true` claim approved by Kyle in conversation. The claim
+is independent of title and description wording and must not be requested
+again after it is recorded. A title candidate, selected pending claim, or
+visual guess is insufficient. Re-read each exact shop's current tree and
+metadata; require enabled node and valid metadata. This live technical check
+is not a second human approval gate. Do not use the fallback for ordinary
+wallpaper without the durable claim or share one site's result with another.
+GB uses the sole official Batch Number selection `102255=1000256` (`1`); all
+other approved sites have no required attribute. Any changed or ambiguous
+platform fact fails closed.
 
 For the exact frozen `贴饰 > 墙贴` / `Wall Sticker(s)` semantic, resolve directly
 to the same `cid=600338` only after each selected shop's current official tree
 proves the node enabled and its exact-shop metadata valid. This is an exact
 wall-sticker mapping, not the wallpaper fallback above. Never infer it from
 title keywords or reuse one shop's tree/metadata result for another shop.
+
+### Confirmed incident: gallery images were omitted from the live description
+
+Symptom: the live product had the correct ordered gallery, but its description
+contained only a text paragraph and zero `<img>` elements.
+
+Confirmed root cause: the adapter treated the gallery and description as
+independent fields and accepted draft/submission success without an official
+description-media readback.
+
+Required handling:
+
+1. Before submission, write both the plain auxiliary text and the rich `notes`
+   HTML containing every approved target image in exact order.
+2. A live-product repair must identify exactly one existing active product by
+   the complete approved seller-SKU set. Never create or resubmit a product.
+3. Build the repair HTML from the current official TikTok gallery URLs, with
+   explicit width and height. Do not send pre-upload source URLs to TikTok's
+   official description API.
+4. Update only `description` through Partial Edit Product. Preserve title,
+   category, gallery, variants, price, stock and parcel facts.
+5. Official readback must compare the ordered TikTok object identities in the
+   description with the ordered gallery. CDN host, query-string and rendition
+   changes may differ; object order and identity may not.
+6. Provider acceptance without exact official readback is `PROCESSING`, not
+   `PUBLISHED`. A route with no official storefront readback/edit capability
+   remains explicitly unresolved.

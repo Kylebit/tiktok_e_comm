@@ -16,8 +16,8 @@ from typing import Any, Mapping
 from domains.product_operations import (
     APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
     ApprovedPublicationSnapshotError,
-    build_approved_publication_snapshot,
 )
+from domains.product_operations.approved_publication_snapshot import build_publication_preview
 
 
 @dataclass(frozen=True)
@@ -85,6 +85,32 @@ def _candidate_payload(
         product_facts["category"] = inputs["main_category"]
     if _text(inputs.get("description")):
         product_facts["description"] = inputs["description"]
+    if "warehouse_inventory_by_target" in inputs:
+        if isinstance(inputs["warehouse_inventory_by_target"], Mapping):
+            product_facts["warehouse_inventory_by_target"] = deepcopy(
+                inputs["warehouse_inventory_by_target"]
+            )
+        else:
+            missing.append("product_facts.warehouse_inventory_by_target")
+    if "stock_policy" in inputs:
+        if isinstance(inputs["stock_policy"], Mapping):
+            product_facts["stock_policy"] = deepcopy(inputs["stock_policy"])
+        else:
+            missing.append("product_facts.stock_policy")
+    if "ozon_stock_decision" in inputs:
+        if isinstance(inputs["ozon_stock_decision"], Mapping):
+            product_facts["ozon_stock_decision"] = deepcopy(
+                inputs["ozon_stock_decision"]
+            )
+        else:
+            missing.append("product_facts.ozon_stock_decision")
+    if "approved_postpublish_promotion_policy" in inputs:
+        if isinstance(inputs["approved_postpublish_promotion_policy"], Mapping):
+            candidate["approved_postpublish_promotion_policy"] = deepcopy(
+                inputs["approved_postpublish_promotion_policy"]
+            )
+        else:
+            missing.append("approved_postpublish_promotion_policy")
     if isinstance(inputs.get("categories_by_target"), Mapping):
         product_facts["categories_by_target"] = inputs[
             "categories_by_target"
@@ -182,28 +208,8 @@ def project_release_plan_for_publication_snapshot(
     candidate["approved_publication_snapshot_schema_version"] = (
         APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION
     )
-    digest = _canonical_digest(candidate)
-    plan_id = candidate.get("plan_id")
-    approved_at = "2000-01-01T00:00:00+00:00"
-    validation_plan = {
-        "plan_id": plan_id,
-        "product_id": candidate.get("product_id"),
-        "targets": list(candidate.get("targets") or ()),
-        "payload": candidate,
-        "payload_digest": digest,
-        "status": "APPROVED",
-        "approved_at": approved_at,
-        "approval": {
-            "status": "APPROVED",
-            "approved_by": "Kyle",
-            "approved_at": approved_at,
-            "user_approved": True,
-            "plan_id": plan_id,
-            "payload_digest": digest,
-        },
-    }
     try:
-        build_approved_publication_snapshot(validation_plan)
+        build_publication_preview(candidate)
     except ApprovedPublicationSnapshotError as error:
         return PublicationSnapshotPlanProjection(
             ready=False,

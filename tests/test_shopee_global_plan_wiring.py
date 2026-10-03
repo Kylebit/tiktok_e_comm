@@ -49,6 +49,23 @@ def _dashboard() -> dict:
             "cost_cny": 8.1,
         }
     )
+    dashboard["pricing_review"]["target_pricing"]["shopee:PH"]["sku_prices"] = [
+        {
+            "model_sku": "0952",
+            "variant_key": "default",
+            "list_price": "329",
+            "currency": "PHP",
+            "global_original_price_cny": "40.95",
+        }
+    ]
+    dashboard["pricing_review"]["master_price_source"] = {
+        "region": "PH",
+        "target_key": "lh_ph",
+    }
+    dashboard["pricing_review"]["target_pricing"]["shopee:PH"]["source"] = {
+        "region": "PH",
+        "target_key": "lh_ph",
+    }
     return dashboard
 
 
@@ -614,11 +631,20 @@ def test_server_seed_uses_approved_master_price_source_across_regions(
     dashboard, _store = governed_context
     dashboard["publication_scope"]["selected_labels"].append("shopee:MY")
     ph = dashboard["pricing_review"]["target_pricing"]["shopee:PH"]
-    ph["source"] = {"target_key": "lh_ph"}
+    ph["source"] = {"region": "PH", "target_key": "lh_ph"}
     dashboard["pricing_review"]["target_pricing"]["shopee:MY"] = {
         "status": "ready",
         "target_site": "MY",
-        "source": {"target_key": "lh_my"},
+        "source": {"region": "MY", "target_key": "lh_my"},
+        "sku_prices": [
+            {
+                "model_sku": "0952",
+                "variant_key": "default",
+                "list_price": "29",
+                "currency": "MYR",
+                "global_original_price_cny": "50.75",
+            }
+        ],
         "derived_preview": {
             "global_original_price_cny": 50.75,
             "local_original_price": 29,
@@ -627,7 +653,7 @@ def test_server_seed_uses_approved_master_price_source_across_regions(
         },
     }
     dashboard["pricing_review"]["master_price_source"] = {
-        "target_key": "lh_ph"
+        "region": "PH", "target_key": "lh_ph"
     }
     dashboard["omnichannel_preview"]["targets"].append(
         {
@@ -662,6 +688,60 @@ def test_server_seed_uses_approved_master_price_source_across_regions(
         my_seed["target_pricing"]["contract_digest"]
         != ph_seed["target_pricing"]["contract_digest"]
     )
+
+
+def test_server_seed_reads_exact_single_current_sku_price():
+    assert product_server._shopee_global_price_from_target_row(
+        {
+            "sku_prices": [
+                {"model_sku": "0952", "global_original_price_cny": 40.95}
+            ]
+        }
+    ) == "40.95"
+
+
+@pytest.mark.parametrize(
+    "sku_prices",
+    [
+        [],
+        [
+            {"model_sku": "0952", "global_original_price_cny": 40.95},
+            {"model_sku": "0953", "global_original_price_cny": 40.95},
+        ],
+        [{"model_sku": "0952"}],
+    ],
+)
+def test_server_seed_rejects_ambiguous_current_sku_prices(sku_prices):
+    with pytest.raises(ValueError, match="exactly one SKU price"):
+        product_server._shopee_global_price_from_target_row(
+            {"sku_prices": sku_prices}
+        )
+
+
+def test_server_seed_rejects_conflicting_legacy_and_current_prices():
+    with pytest.raises(ValueError, match="schemas disagree"):
+        product_server._shopee_global_price_from_target_row(
+            {
+                "derived_preview": {"global_original_price_cny": 40.95},
+                "sku_prices": [
+                    {"model_sku": "0952", "global_original_price_cny": 41}
+                ],
+            }
+        )
+
+
+def test_server_seed_price_failure_is_auditable(monkeypatch):
+    monkeypatch.setattr(
+        product_server,
+        "_shopee_global_plan_seed",
+        lambda _payload: (_ for _ in ()).throw(
+            product_server._ShopeeGlobalPlanPriceError("missing")
+        ),
+    )
+    with pytest.raises(ShopeeGlobalPlanObservationError) as caught:
+        product_server._observe_shopee_global_plan_candidate({})
+    assert caught.value.category == "CAPABILITY"
+    assert caught.value.code == "shopee_global_plan_seed_invalid"
 
 
 def test_local_binding_rejects_observer_selected_image_subset(

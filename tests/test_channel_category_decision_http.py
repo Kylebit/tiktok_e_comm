@@ -18,6 +18,7 @@ from shared_platform.channel_category_decisions import (
 )
 from shared_platform.release_store import ReleaseStore
 from tests.test_shopee_global_plan_wiring import _dashboard
+from tests.test_product_release_v1 import _fixture_target_price
 
 
 def _digest(label: str) -> str:
@@ -118,6 +119,15 @@ def _observed_options(*, missing_required: bool = False) -> dict:
 @pytest.fixture
 def category_context(tmp_path, monkeypatch):
     dashboard = _dashboard()
+    # The category flow consumes a frozen publication snapshot. Keep the
+    # synthetic Shopee target's per-SKU price facts complete so this fixture
+    # reaches category admission rather than the earlier price-freeze gate.
+    source = {"region": "PH", "target_key": "synthetic:shopee:PH"}
+    dashboard["pricing_review"]["master_price_source"] = source
+    dashboard["pricing_review"]["target_pricing"]["shopee:PH"].update(
+        sku_prices=_fixture_target_price("shopee:PH")["sku_prices"],
+        source=source,
+    )
     store = ReleaseStore(tmp_path / "release.sqlite3")
     monkeypatch.setattr(release_store, "default_release_store", lambda: store)
     monkeypatch.setattr(
@@ -604,7 +614,7 @@ def test_required_attribute_single_post_rechecks_and_replay_is_local(
     assert calls[-1] is False
 
 
-def test_recheck_required_is_resumed_by_get_without_second_post(
+def test_recheck_required_uses_readonly_get_then_saved_intent_resume_without_second_approval(
     category_context,
     http_server,
     monkeypatch,
@@ -674,7 +684,21 @@ def test_recheck_required_is_resumed_by_get_without_second_post(
     assert pending["status"] == "RECHECK_REQUIRED"
     assert pending["selection"] is None
     allow_recheck["value"] = True
-    status, completed = _request(preview_url)
+    before = _store.path.read_bytes()
+    status, preview = _request(preview_url)
+    assert status == 200 and preview["status"] == "RECHECK_REQUIRED"
+    assert _store.path.read_bytes() == before
+    assert preview["next_action"]["action"] == "resume_channel_category_attributes"
+    status, completed = _request(
+        http_server + "/api/product-workspace/channel-category-decision/resume",
+        method="POST",
+        payload={
+            "offer_id": dashboard["product"]["offer_id"],
+            "target_label": "shopee:GLOBAL",
+            "expected_product_revision": dashboard["product"]["revision"],
+            "selection_digest": preview["attribute_selection"]["selection_digest"],
+        },
+    )
     assert status == 200
     assert completed["status"] == "SELECTED"
     assert completed["attribute_selection"]["selection_count"] == 1

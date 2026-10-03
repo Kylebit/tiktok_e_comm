@@ -362,14 +362,14 @@ def build_draft(
 ) -> dict:
     """Build an Ozon draft without requiring a particular title provider.
 
-    A release flow with an audited ToAPI candidate sets
+    A release flow with an audited title candidate sets
     ``allow_deepseek=False`` and passes that candidate explicitly.  The local
     rules still derive attributes and descriptions from verified facts.
     """
 
     def invoke_model(**kwargs):
         if not allow_deepseek:
-            raise RuntimeError("DeepSeek disabled for audited ToAPI title flow")
+            raise RuntimeError("DeepSeek disabled for audited title flow")
         return _invoke_deepseek(**kwargs)
 
     sync_catalog_to_tk_map(max_items=50)
@@ -588,7 +588,7 @@ def build_draft(
             wid_cm=wid_cm,
             migrate_profile=migrate_profile,
         )
-        title_source = "toapi_approved_candidate"
+        title_source = "approved_listing_candidate"
     elif ai_title:
         draft_title = polish_ozon_title(
             ai_title,

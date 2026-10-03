@@ -198,34 +198,9 @@ def _collect_image_urls(detail: dict) -> list[str]:
 
 
 def _download_image(url: str, dest: Path) -> Path:
-    try:
-        proc = subprocess.run(
-            [
-                "curl.exe",
-                "-L",
-                "-sS",
-                "--noproxy",
-                "*",
-                "-m",
-                "90",
-                "-A",
-                "Mozilla/5.0",
-                "-o",
-                str(dest),
-                url,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode == 0 and dest.is_file() and dest.stat().st_size > 0:
-            return dest
-    except Exception:
-        pass
-
+    from core.resource_download import save_resource_image
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urlopen(req, timeout=60, context=DEFAULT_SSL_CTX, attempts=4) as resp:
-        dest.write_bytes(resp.read())
-    return dest
+    return save_resource_image(req, dest, source="shopee_image", timeout=60)
 
 
 def _strip_html(html: str) -> str:
@@ -613,7 +588,7 @@ def _upload_images(urls: list[str], *, max_images: int = 8) -> list[str]:
     return ids
 
 
-def _upload_images_exact(urls: list[str], *, max_images: int = 9) -> list[str]:
+def _upload_images_exact(urls: list[str], *, max_images: int = 9, before_upload=None) -> list[str]:
     """Upload one frozen ordered image set without skipping failed rows."""
 
     clean_urls = [str(value or "").strip() for value in urls]
@@ -625,22 +600,36 @@ def _upload_images_exact(urls: list[str], *, max_images: int = 9) -> list[str]:
     ):
         raise ValueError("Shopee exact image URLs are invalid")
     ids: list[str] = []
+    request_count = 0
     with tempfile.TemporaryDirectory(prefix="shopee_exact_img_") as tmp:
         for index, url in enumerate(clean_urls):
-            path = Path(tmp) / f"img_{index}.jpg"
-            _download_image(url, path)
-            response = upload_image(path, scene="normal" if index == 0 else "desc")
-            info = response.get("image_info") if isinstance(response, dict) else None
-            image_id = info.get("image_id") if isinstance(info, dict) else None
-            if not image_id and isinstance(response, dict):
-                rows = response.get("image_info_list")
-                row = rows[0] if isinstance(rows, list) and len(rows) == 1 else None
-                nested = row.get("image_info") if isinstance(row, dict) else None
-                image_id = nested.get("image_id") if isinstance(nested, dict) else None
-            clean_id = str(image_id or "").strip()
-            if not clean_id or clean_id in ids:
-                raise RuntimeError("Shopee exact image upload response is invalid")
-            ids.append(clean_id)
+            sent = False
+            try:
+                path = Path(tmp) / f"img_{index}.jpg"
+                _download_image(url, path)
+                if before_upload is not None:
+                    before_upload()
+                sent = True
+                request_count += 1
+                response = upload_image(path, scene="normal" if index == 0 else "desc")
+                info = response.get("image_info") if isinstance(response, dict) else None
+                image_id = info.get("image_id") if isinstance(info, dict) else None
+                if not image_id and isinstance(response, dict):
+                    rows = response.get("image_info_list")
+                    row = rows[0] if isinstance(rows, list) and len(rows) == 1 else None
+                    nested = row.get("image_info") if isinstance(row, dict) else None
+                    image_id = nested.get("image_id") if isinstance(nested, dict) else None
+                clean_id = str(image_id or "").strip()
+                if not clean_id or clean_id in ids:
+                    raise RuntimeError("Shopee exact image upload response is invalid")
+                ids.append(clean_id)
+            except Exception as error:
+                # Download/reservation failure is local. A started upload or an
+                # invalid receipt retains its reservation and remains unknown.
+                error.completed_image_upload_count = len(ids)
+                error.image_upload_request_count = request_count
+                error.image_upload_outcome_unknown = sent
+                raise
     if len(ids) != len(clean_urls):
         raise RuntimeError("Shopee exact image upload coverage is incomplete")
     return ids

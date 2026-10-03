@@ -9,8 +9,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core.http_retry import DEFAULT_SSL_CTX as SSL_CTX
-from core.http_retry import urlopen as urlopen_retry
+from core.resource_download import read_resource
 
 from modules.sourcing.utils import parse_offer_id
 
@@ -25,8 +24,7 @@ UA = (
 
 def _fetch(url: str, *, timeout: int = 45) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": UA}, method="GET")
-    with urlopen_retry(req, timeout=timeout, context=SSL_CTX) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    return read_resource(req, source="sourcing_html", timeout=timeout).decode("utf-8", errors="replace")
 
 
 def _find_json_after(html: str, key: str):

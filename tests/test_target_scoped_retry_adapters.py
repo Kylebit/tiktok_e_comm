@@ -13,7 +13,7 @@ from shared_platform.target_scoped_release_contracts import (
 
 def request(target="shopee:MY"):
     kind = "shopee_safe_pre_submit_retry_v1" if target.startswith("shopee") else "ozon_existing_product_stock_reconciliation_v1"
-    command = ({"target_label": target, "operation_kind": kind, "region": target[-2:], "model_sku": "0954", "approved_master_digest": "master", "approved_copy_digest": "copy", "approved_source_image_manifest_digest": "source", "global_image_observation_policy_version": "shopee-global-rehost-observation/v1", "regional_copy_policy_version": "v1", "regional_copy_lint_policy_version": "v1", "regional_image_verification_policy_version": "v1", "regional_observation_policy_digest": "policy", "parcel": {"weight_kg": .12, "package_cm": [40, 3, 3]}, "excluded_logistics_ids": [50052] if target.endswith("VN") else [], "local_original_price": 10, "item_status": "NORMAL"} if target.startswith("shopee") else {"target_label": target, "operation_kind": kind})
+    command = ({"target_label": target, "operation_kind": kind, "region": target[-2:], "model_sku": "0954", "approved_master_digest": "master", "approved_copy_digest": "copy", "approved_source_image_manifest_digest": "source", "global_image_observation_policy_version": "shopee-global-rehost-observation/v1", "regional_copy_policy_version": "v1", "regional_copy_lint_policy_version": "v1", "regional_image_verification_policy_version": "v1", "regional_observation_policy_digest": "policy", "parcel": {"weight_kg": .12, "package_cm": [40, 3, 3]}, "excluded_logistics_ids": [50052] if target.endswith("VN") else [], "local_original_price": 10, "item_status": "NORMAL"} if target.startswith("shopee") else {"schema_version":"ozon-existing-product-stock-command/v2","builder_policy_version":"target-scoped-ozon-stock/v2","target_label": target, "operation_kind": kind,"product_id":"7654321098","seller_sku":"0954","offer_id":"0954","expected_listing_digest":"listing-digest-0954","desired_stock_quantity":50,"warehouse_id":7654321,"warehouse_policy":"exact_active_non_kgt","existing_product_only":True,"forbid_import":True,"forbid_create":True})
     command_digest = adapters.canonical_digest(command)
     failure = target_failure_digest(target_label=target, attempts=1, error="failed", failure_event_digests=[])
     return TargetScopedOperationRequest(plan_id="plan", confirmation_token="token", approval_scope_digest="scope", product_id="3838616043", seller_sku="0954", product_package_id="product", content_package_id="content", run_id="run", target_label=target, operation_kind=kind, product_revision=31, payload_digest="payload", planned_command=command, planned_command_digest=command_digest, failure_attempt=1, failure_digest=failure, target_idempotency_key="idempotency", preflight_digest=target_preflight_digest(plan_id="plan", run_id="run", target_label=target, operation_kind=kind, product_revision=31, payload_digest="payload", planned_command_digest=command_digest, failure_attempt=1, failure_digest=failure, target_idempotency_key="idempotency"))
@@ -107,9 +107,34 @@ def test_scan_rejects_other_missing_or_invalid_item_shapes(monkeypatch, response
 
 def test_ozon_proof_requires_exact_existing_product_and_no_stock(monkeypatch):
     req = request("ozon:RU")
-    monkeypatch.setattr("modules.ozon.target_scoped.read_existing_product", lambda **_kw: {"product_id": "5687436857", "checks": {key: True for key in ("created", "approved", "title", "price", "images", "stock_false")}})
+    monkeypatch.setattr("modules.ozon.target_scoped.read_existing_product", lambda **_kw: {"product_id": "7654321098", "listing_digest":"listing-digest-0954", "checks": {key: True for key in ("created", "approved", "title", "price", "images", "stock_false")}})
+    monkeypatch.setattr("modules.ozon.target_scoped.read_bound_warehouse", lambda **_kw: {"exact":True,"warehouse_id":7654321})
     proof = adapters.build_official_target_proof(req)
     assert OfficialTargetProof.from_value(proof, request=req).checks["no_import_or_create"]
+
+
+def test_ozon_runner_requires_exact_stock_receipt_for_success(monkeypatch):
+    req = request("ozon:RU")
+    monkeypatch.setattr(adapters, "_assert_proof", lambda *_args: {})
+    monkeypatch.setattr(
+        "modules.ozon.target_scoped.stock_existing_product",
+        lambda **_kwargs: {
+            "verified": False,
+            "product_id": "7654321098",
+            "warehouse_id": 7654321,
+            "quantity": 2,
+            "external_writes_performed": ["ozon:stock:update"],
+        },
+    )
+
+    result = adapters.execute_target_scoped_operation(req, {})
+
+    assert result.succeeded is False
+    assert result.readback_verified is False
+    assert result.readback_evidence["reconciliation_required"] is True
+    assert result.readback_evidence["external_writes_performed"] == [
+        "ozon:stock:update"
+    ]
 
 
 def test_execute_never_uses_legacy_publish_or_ozon_import(monkeypatch):

@@ -50,171 +50,38 @@ def _png() -> bytes:
     return output.getvalue()
 
 
-def test_selected_review_generation_is_paid_but_has_zero_platform_writes(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(
-        workbench, "LOCALIZED_IMAGE_REVIEWS_DIR", tmp_path / "localized_image_reviews"
-    )
-    prepared = workbench.initialize_localized_image_review(
-        "3899705757", release_store=_ReleaseStore()
-    )
-    review = prepared["review"]
-    source_urls = list(dict.fromkeys(row["source_url"] for row in review["tasks"]))
-    calls: list[tuple[str, str]] = []
-
-    from modules.sourcing import localized_image_auto_translation as translation
-    from modules.sourcing import localized_image_ocr as ocr
-
-    monkeypatch.setattr(
-        ocr,
-        "detect_english_text_regions",
-        lambda _raw, engine=None: [
-            {
-                "region_id": "text-aaaaaaaaaaaaaaaaaaaa",
-                "source_text": "Easy to install",
-                "bbox": [0.1, 0.1, 0.8, 0.2],
-                "confidence": 0.99,
-                "origin": "rapidocr-local/v1",
-            }
-        ],
-    )
-    monkeypatch.setattr(
-        translation,
-        "translate_image_regions",
-        lambda _regions, model_call=None: {
-            "translations": {
-                locale: [
-                    {
-                        "region_id": "text-aaaaaaaaaaaaaaaaaaaa",
-                        "source_text": "Easy to install",
-                        "translated_text": f"translated-{locale}",
-                    }
-                ]
-                for locale in ("ms-MY", "th-TH", "vi-VN", "ru-RU", "es-MX")
-            }
-        },
-    )
-
-    def generator(**kwargs):
-        calls.append((kwargs["source_url"], kwargs["locale"]))
-        number = len(calls)
-        return {
-            "image_bytes": _png(),
-            "receipt": {
-                "status": "COMPLETED",
-                "provider": "toapis-images/v1",
-                "model": "gpt-image-2-official",
-                "task_id": f"provider-{number}",
-                "client_business_id": f"localized-{number}",
-                "request_attempted": True,
-                "outcome_unknown": False,
-                "external_generation_count": 1,
-            },
-        }
-
-    generated = workbench.generate_localized_image_review(
-        "3899705757",
-        expected_revision=review["revision"],
-        source_bytes_by_url={url: b"source-bytes" for url in source_urls},
-        confirm_paid_generation=True,
-        image_generator=generator,
-    )
-
-    assert len(calls) == 20
-    assert generated["review"]["external_generation_count"] == 20
-    assert generated["review"]["status"] == "REVIEW_REQUIRED"
-    assert generated["platform_writes"] == 0
-    assert generated["product_center_mutated"] is False
+def test_selected_review_generation_is_paid_but_has_zero_platform_writes(workflow,monkeypatch):
+    store,project,kwargs=prepared_review(workflow,monkeypatch)
+    result=workbench.generate_localized_image_review(OFFER,**kwargs)
+    assert len(FixtureClient.calls)==6
+    assert result['review']['platform_writes']==0
+    assert result['review']['product_center_mutated'] is False
+    assert all(t['generation_receipt']['provider']=='lingshi-media/v1' for t in result['review']['tasks'])
 
 
-def test_generation_cannot_start_without_explicit_paid_confirmation(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        workbench, "LOCALIZED_IMAGE_REVIEWS_DIR", tmp_path / "localized_image_reviews"
-    )
-    prepared = workbench.initialize_localized_image_review(
-        "3899705757", release_store=_ReleaseStore()
-    )
-
-    try:
-        workbench.generate_localized_image_review(
-            "3899705757",
-            expected_revision=prepared["review"]["revision"],
-            source_bytes_by_url={},
-        )
-    except ValueError as error:
-        assert "explicit paid" in str(error)
-    else:
-        raise AssertionError("paid generation started without confirmation")
+def test_generation_cannot_start_without_explicit_paid_confirmation(workflow,monkeypatch):
+    store,project,kwargs=prepared_review(workflow,monkeypatch)
+    kwargs['confirm_paid_generation']=False
+    with pytest.raises(ValueError,match='explicit paid'):
+        workbench.generate_localized_image_review(OFFER,**kwargs)
+    assert not FixtureClient.calls
 
 
-def test_retry_reuses_frozen_translations_instead_of_creating_a_new_job_identity(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(
-        workbench, "LOCALIZED_IMAGE_REVIEWS_DIR", tmp_path / "localized_image_reviews"
-    )
-    prepared = workbench.initialize_localized_image_review(
-        "3899705757", release_store=_ReleaseStore()
-    )
-    review = prepared["review"]
-    source_urls = list(dict.fromkeys(row["source_url"] for row in review["tasks"]))
+def test_retry_reuses_frozen_translations_instead_of_creating_a_new_job_identity(workflow,monkeypatch):
+    store,project,kwargs=prepared_review(workflow,monkeypatch)
+    def timeout(self,**params):
+        self.record('localized')
+        raise TimeoutError('fixture POST outcome unknown')
+    monkeypatch.setattr(FixtureClient,'create_media_generation',timeout)
+    with pytest.raises(TimeoutError):workbench.generate_localized_image_review(OFFER,**kwargs)
+    path=workflow.root/'data/localized_image_reviews'/OFFER/'translation-plan.json'
+    raw=path.read_bytes()
+    count=len(FixtureClient.calls)
+    with pytest.raises(Exception):workbench.generate_localized_image_review(OFFER,**kwargs)
+    assert len(FixtureClient.calls)==count==2
+    assert path.read_bytes()==raw
+    assert workflow.context().summary()['unknown']==1
 
-    from modules.sourcing import localized_image_auto_translation as translation
-    from modules.sourcing import localized_image_ocr as ocr
-
-    monkeypatch.setattr(
-        ocr,
-        "detect_english_text_regions",
-        lambda _raw, engine=None: [
-            {
-                "region_id": "text-aaaaaaaaaaaaaaaaaaaa",
-                "source_text": "Easy to install",
-                "bbox": [0.1, 0.1, 0.8, 0.2],
-                "confidence": 0.99,
-                "origin": "rapidocr-local/v1",
-            }
-        ],
-    )
-    translation_calls = 0
-
-    def changing_translation(_regions, model_call=None):
-        nonlocal translation_calls
-        translation_calls += 1
-        return {
-            "translations": {
-                locale: [
-                    {
-                        "region_id": "text-aaaaaaaaaaaaaaaaaaaa",
-                        "source_text": "Easy to install",
-                        "translated_text": f"attempt-{translation_calls}-{locale}",
-                    }
-                ]
-                for locale in ("ms-MY", "th-TH", "vi-VN", "ru-RU", "es-MX")
-            }
-        }
-
-    monkeypatch.setattr(translation, "translate_image_regions", changing_translation)
-    observed: list[list[dict]] = []
-
-    def interrupted_generator(**kwargs):
-        observed.append(kwargs["translations"])
-        raise ConnectionResetError(10054, "connection reset")
-
-    kwargs = {
-        "offer_id_or_url": "3899705757",
-        "expected_revision": review["revision"],
-        "source_bytes_by_url": {url: b"source-bytes" for url in source_urls},
-        "confirm_paid_generation": True,
-        "image_generator": interrupted_generator,
-    }
-    for _attempt in range(2):
-        try:
-            workbench.generate_localized_image_review(**kwargs)
-        except ConnectionResetError:
-            pass
-        else:
-            raise AssertionError("the fake transport should interrupt both attempts")
-
-    assert translation_calls == len(source_urls)
-    assert observed[0] == observed[1]
+from test_publication_paid_entry import workflow,FixtureClient,OFFER
+import pytest
+from paid_workbench_fixture import prepared_review

@@ -1,0 +1,13 @@
+# TikTok continuation protocol integration
+
+This package imports pure compilation and validation from `formal-once-final-approval-20260914` at `fb37a63b37314c4527b95d99f3e3083a5e31b0a6` (latest module change `554d7b7d`). It preserves public compiler/validator parameters and the existing frozen candidate, approval, snapshot, full ten-target lineage, and bounded subset identities. Reusing a valid recorded approval does not require another user approval.
+
+No HTTP write endpoint, runner, provider adapter, private Skill installation, or deployed process is changed. `execute_tiktok_lineage_recovery` and `read_https_asset_digest` are intentionally NOT_AVAILABLE. The snapshot comparator keeps its explicit `asset_digest_reader` parameter; its default raises `ASSET_READER_NOT_AVAILABLE`, never fetches an asset or substitutes guessed digests.
+
+Dependencies are standard-library data operations, the existing approved-publication-snapshot target projection/validator, and `product_publication_reports.validate_publication_report`. Continuation report-field compatibility is a separately reviewed dependency: v2/v3 zero-write retry cannot be considered integrated until that strict reader support and positive fixtures pass.
+
+The follow-up reader package adds the original strict continuation-evidence validator and includes that optional field in stored-envelope reconstruction, alongside both existing Shopee recovery authorization fields. It changes no stored report or database digest. Synthetic tests cover positive v2/v3 compilation, forbidden third-depth retry, unknown or processing outcomes, write accounting, predecessor identity, nested verification/retry digests, and coexistence with legacy recovery/retry fields. This completes offline protocol compatibility only; execution admission remains outside this package.
+
+The original implementation contains historical restrictions: completion authority subject `Kyle`, exact ten configured TikTok labels, retry revision 5, a specific predecessor run ID, and HB_TH/SKU0988 transport-only rehosting. They remain restrictions, not reusable authorization for other goods or automatic general-purpose retry. UNKNOWN, PROCESSING, PUBLISHED and SUBMITTED_UNVERIFIED are excluded from retry subsets. No protocol acceptance is external publication proof.
+
+Tests use synthetic in-memory facts and digest strings, never original report files or the live ledger. The package's isolated test runner is recorded under the round2-publication evidence directory; it clears ORBIT and home/profile environment before imports, forbids SQLite, socket/network and subprocess access, and blocks original evidence-root file reads. The module intentionally does not import provider or execution components.

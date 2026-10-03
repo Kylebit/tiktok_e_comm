@@ -15,21 +15,34 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING
 import hashlib
 import json
+import re
 import time
 from typing import Callable, Protocol
 
 from domains.product_operations.approved_publication_snapshot import (
     ApprovedPublicationSnapshotError,
+    publication_content_for_target,
     publication_images_for_target,
     validate_approved_publication_snapshot,
 )
-from modules.miaoshou.client import MiaoshouBusinessRejectedError, post_open
+from modules.miaoshou.client import (
+    MiaoshouBusinessRejectedError,
+    post_open,
+    sanitize_provider_code,
+    sanitize_provider_field_path,
+    sanitize_provider_reason,
+)
 from modules.miaoshou.tiktok_publisher import EXPECTED_SHOP_ID_BY_TARGET
 from modules.miaoshou.tiktok_variant_binding import (
     TikTokVariantBindingError,
     approved_variant_key_bindings,
 )
 from shared_platform.collectbox_action import CollectBoxTargetDetailIdentity
+
+
+from modules.miaoshou.tiktok_warehouses import is_china_mainland_pickup_warehouse
+from shared_platform.product_description_media import miaoshou_rich_description
+from shared_platform.publication_write_budget import PublicationWriteBudgetExceeded
 
 
 PREPARATION_SCHEMA_VERSION = "miaoshou-tiktok-v4-draft-preparation/v1"
@@ -73,6 +86,9 @@ WAREHOUSE_GET_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/"
     "get_shop_warehouse_list"
 )
+CATEGORY_METADATA_PATH = (
+    "/open/v1/product/collect_box/tiktok/collect_box/get_category_metadata"
+)
 
 
 class TikTokV4DraftPreparationError(ValueError):
@@ -91,6 +107,9 @@ class DraftWriteFact:
     outcome: str
     detail_id: str | None = None
     shop_id: str | None = None
+    provider_code: str | None = None
+    provider_field_path: str | None = None
+    provider_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.operation not in _OPERATIONS:
@@ -103,9 +122,30 @@ class DraftWriteFact:
             raise ValueError("TikTok draft write identity is incomplete")
         object.__setattr__(self, "detail_id", detail_id)
         object.__setattr__(self, "shop_id", shop_id)
+        diagnostics = (
+            self.provider_code,
+            self.provider_field_path,
+            self.provider_reason,
+        )
+        if self.outcome != "REJECTED" and any(value is not None for value in diagnostics):
+            raise ValueError("TikTok provider diagnostics require a rejected outcome")
+        if self.outcome == "REJECTED":
+            object.__setattr__(self, "provider_code", sanitize_provider_code(self.provider_code))
+            object.__setattr__(
+                self,
+                "provider_field_path",
+                sanitize_provider_field_path(self.provider_field_path) or None,
+            )
+            object.__setattr__(self, "provider_reason", sanitize_provider_reason(self.provider_reason))
 
     def public_fact(self) -> dict[str, str]:
-        return {"operation": self.operation, "outcome": self.outcome}
+        result = {"operation": self.operation, "outcome": self.outcome}
+        if self.outcome == "REJECTED":
+            result["provider_code"] = str(self.provider_code)
+            if self.provider_field_path is not None:
+                result["provider_field_path"] = self.provider_field_path
+            result["provider_reason"] = str(self.provider_reason)
+        return result
 
 
 class TikTokCategoryResolver(Protocol):
@@ -143,6 +183,7 @@ def prepare_tiktok_v4_drafts(
     *,
     category_resolver: TikTokCategoryResolver | None,
     transport: TikTokV4DraftTransport,
+    target_scope: Sequence[str] | None = None,
 ) -> dict[str, object]:
     """Claim/create and save every selected TikTok target independently."""
 
@@ -164,6 +205,22 @@ def prepare_tiktok_v4_drafts(
     ]
     if not selected:
         raise TikTokV4DraftPreparationError("snapshot selects no TikTok targets")
+    if target_scope is not None:
+        requested = list(target_scope)
+        available = {row["target_label"] for row in selected}
+        if (
+            not requested
+            or len(requested) != len(set(requested))
+            or any(type(label) is not str or not label for label in requested)
+            or set(requested) - available
+        ):
+            raise TikTokV4DraftPreparationError(
+                "TikTok draft target-only scope is invalid"
+            )
+        requested_set = set(requested)
+        selected = [
+            row for row in selected if row["target_label"] in requested_set
+        ]
 
     # Phase A completes across the target set before identity mutations.
     phase_a: list[dict[str, object]] = []
@@ -189,6 +246,7 @@ def prepare_tiktok_v4_drafts(
         provider_target["shop_id"] = shop_id
         try:
             draft = _draft_payload(frozen, target=target, category=category)
+            _validate_miaoshou_specification_lengths(draft["skus"])
         except Exception as error:
             raise TikTokV4SystemicPreflightError(
                 "TikTok frozen draft projection failed"
@@ -216,6 +274,10 @@ def prepare_tiktok_v4_drafts(
                 ordinal=ordinal,
             )
             claim_facts = _claim_facts(raw_claim, shop_id=shop_id)
+        except PublicationWriteBudgetExceeded:
+            # The rejected reservation did not call a provider. The durable
+            # observer retains any preceding create/claim facts for the caller.
+            raise
         except Exception:
             claim_facts = (DraftWriteFact("CLAIM_OR_CREATE", "UNKNOWN"),)
         target_writes.extend(claim_facts)
@@ -301,10 +363,12 @@ def prepare_tiktok_v4_drafts(
                 prepared=deepcopy(row["prepared"]),
             )
             save = _save_fact(raw_save, identity=identity)
-        except MiaoshouBusinessRejectedError:
-            save = DraftWriteFact(
+        except PublicationWriteBudgetExceeded:
+            raise
+        except MiaoshouBusinessRejectedError as error:
+            save = _business_rejected_fact(
                 "SAVE_DRAFT",
-                "REJECTED",
+                error,
                 detail_id=identity["detail_id"],
                 shop_id=identity["shop_id"],
             )
@@ -430,9 +494,14 @@ def _draft_payload(
     category: Mapping[str, object],
 ) -> dict[str, object]:
     label = target["target_label"]
+    target_content = publication_content_for_target(frozen, label)
     target_images = publication_images_for_target(frozen, label)
     base_images = list(frozen["product"]["images"])
-    routed_by_base = dict(zip(base_images, target_images, strict=True))
+    if len(base_images) != len(target_images):
+        raise TikTokV4DraftPreparationError(
+            "TikTok target image route coverage is invalid"
+        )
+    routed_by_base = dict(zip(base_images, target_images))
     skus = [
         {
             "variant_key": row["variant_key"],
@@ -450,6 +519,15 @@ def _draft_payload(
         for row in frozen["skus"]
     ]
     parent = _parent_parcel(skus)
+    warehouse_inventory_by_target = frozen["product"].get(
+        "warehouse_inventory_by_target"
+    )
+    warehouse_inventory = (
+        deepcopy(warehouse_inventory_by_target[label])
+        if isinstance(warehouse_inventory_by_target, Mapping)
+        and label in warehouse_inventory_by_target
+        else None
+    )
     return {
         "schema_version": DRAFT_SCHEMA_VERSION,
         "snapshot_digest": frozen["snapshot_digest"],
@@ -457,12 +535,17 @@ def _draft_payload(
         "offer_id": frozen["offer_id"],
         "product_revision": frozen["product_revision"],
         "target_label": label,
-        "title": frozen["product"]["title"],
-        "description": frozen["product"]["description"],
+        "title": target_content["title"],
+        "description": target_content["description"],
         "images": deepcopy(target_images),
         "category": deepcopy(dict(category)),
         "parent_parcel": parent,
         "skus": skus,
+        **(
+            {"warehouse_inventory": warehouse_inventory}
+            if warehouse_inventory is not None
+            else {}
+        ),
     }
 
 
@@ -536,6 +619,24 @@ def _combined_outcome(facts: Sequence[DraftWriteFact]) -> str:
     return "ACCEPTED"
 
 
+def _business_rejected_fact(
+    operation: str,
+    error: MiaoshouBusinessRejectedError,
+    *,
+    detail_id: object = None,
+    shop_id: object = None,
+) -> DraftWriteFact:
+    return DraftWriteFact(
+        operation,
+        "REJECTED",
+        detail_id=detail_id,
+        shop_id=shop_id,
+        provider_code=error.code,
+        provider_field_path=error.field_path,
+        provider_reason=str(error),
+    )
+
+
 def _collectbox_context(
     frozen: Mapping[str, object], *, identity: Mapping[str, str]
 ) -> dict[str, object]:
@@ -564,13 +665,23 @@ def _target_result(
     reason_code: str,
     writes: Sequence[DraftWriteFact],
 ) -> dict[str, object]:
-    return {
+    result = {
         "target_label": label,
         "status": status,
         "reason_code": reason_code,
         "writes": [row.public_fact() for row in writes],
         "external_write_count": _write_count(writes),
     }
+    rejected = next((row for row in reversed(writes) if row.outcome == "REJECTED"), None)
+    if rejected is not None:
+        result.update(
+            {
+                "provider_code": rejected.provider_code,
+                "provider_field_path": rejected.provider_field_path or "",
+                "provider_reason": rejected.provider_reason,
+            }
+        )
+    return result
 
 
 def _local_failure(label: str, reason_code: str) -> dict[str, object]:
@@ -652,6 +763,7 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
         platform_detail_ids_by_target: Mapping[str, object] | None = None,
         post: Callable[[str, dict[str, object]], Mapping[str, object]] = post_open,
         fact_observer: Callable[[str, DraftWriteFact], None] | None = None,
+        before_mutation: Callable[[str, str], object] | None = None,
         read_attempts: int = 3,
         read_retry_seconds: float = 1.1,
         sleep: Callable[[float], None] = time.sleep,
@@ -677,8 +789,11 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
             raise TypeError("Miaoshou OpenAPI post transport is invalid")
         if fact_observer is not None and not callable(fact_observer):
             raise TypeError("Miaoshou draft fact observer is invalid")
+        if before_mutation is not None and not callable(before_mutation):
+            raise TypeError("Miaoshou draft mutation callback is invalid")
         self._post = post
         self._fact_observer = fact_observer
+        self._before_mutation = before_mutation
         if type(read_attempts) is not int or read_attempts < 1:
             raise ValueError("Miaoshou read attempts are invalid")
         if read_retry_seconds < 0 or not callable(sleep):
@@ -725,6 +840,8 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
             detail_id = self._initial_platform_detail_id
             self._initial_platform_detail_consumed = True
         if detail_id is None:
+            if self._before_mutation is not None:
+                self._before_mutation(label, "create_platform_draft")
             try:
                 response = self._post(
                     DETAIL_CREATE_PATH,
@@ -738,10 +855,10 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
                         ]
                     },
                 )
-            except MiaoshouBusinessRejectedError:
+            except MiaoshouBusinessRejectedError as error:
                 return (
                     self._observed(
-                        label, DraftWriteFact("CREATE_DRAFT", "REJECTED")
+                        label, _business_rejected_fact("CREATE_DRAFT", error)
                     ),
                 )
             except Exception:
@@ -771,18 +888,20 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
                     ),
                 )
             )
+        if self._before_mutation is not None:
+            self._before_mutation(label, "claim_draft")
         try:
             self._post(
                 SHOP_CLAIM_PATH,
                 {"detailIds": [int(detail_id)], "shopIds": [int(shop_id)]},
             )
-        except MiaoshouBusinessRejectedError:
+        except MiaoshouBusinessRejectedError as error:
             facts.append(
                 self._observed(
                     label,
-                    DraftWriteFact(
+                    _business_rejected_fact(
                         "CLAIM_TO_SHOP",
-                        "REJECTED",
+                        error,
                         detail_id=detail_id,
                         shop_id=shop_id,
                     ),
@@ -851,10 +970,11 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
                         "shopId": int(shop_id),
                     }
                 desired = _miaoshou_draft_info(draft)
-                warehouse_id = _tiktok_warehouse_id(
+                approved_warehouse_map, warehouse_id, zero_stock_warehouse_ids, approved_total = _tiktok_warehouse_allocation(
                     self._post,
                     current=current,
                     shop_id=shop_id,
+                    approved=draft.get("warehouse_inventory"),
                 )
                 desired["skuMap"] = _provider_bound_sku_map(
                     current=current,
@@ -862,7 +982,16 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
                     desired=desired["skuMap"],
                     shop_id=shop_id,
                     warehouse_id=warehouse_id,
+                    zero_stock_warehouse_ids=zero_stock_warehouse_ids,
+                    approved_warehouse_map=approved_warehouse_map,
+                    approved_total=approved_total,
                 )
+                if label == "tiktok:GB":
+                    desired["isCodOpen"] = "0"
+                    desired["productAttributes"] = self._gb_required_attributes(
+                        shop_id=shop_id,
+                        category_id=str(desired["cid"]),
+                    )
                 current.update(desired)
                 body = {
                     **identity_fields,
@@ -881,6 +1010,69 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
         _require_json_serializable(prepared, boundary="TikTok prepared SAVE payload")
         return prepared
 
+    def _gb_required_attributes(
+        self, *, shop_id: str, category_id: str
+    ) -> list[dict[str, object]]:
+        response = self._post(
+            CATEGORY_METADATA_PATH,
+            {
+                "site": "GB",
+                "cid": int(_positive_id(category_id, "category_id")),
+                "shopIds": [int(shop_id)],
+            },
+        )
+        data = response.get("data") if isinstance(response, Mapping) else None
+        metadata = data.get("categoryMetadata") if isinstance(data, Mapping) else None
+        attributes = (
+            metadata.get("categoryProductAttrList")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        if not isinstance(attributes, list):
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou GB category attributes are unavailable"
+            )
+        expected = None
+        mandatory_ids: set[str] = set()
+        for raw in attributes:
+            if not isinstance(raw, Mapping) or raw.get("isMandatory") is not True:
+                continue
+            attr_id = str(raw.get("attrId") or "").strip()
+            mandatory_ids.add(attr_id)
+            values = raw.get("values")
+            if attr_id == "102255" and isinstance(values, list):
+                matching = [
+                    value
+                    for value in values
+                    if isinstance(value, Mapping)
+                    and str(value.get("id") or "").strip() == "1000256"
+                ]
+                if len(matching) == 1:
+                    expected = (raw, matching[0])
+        if mandatory_ids != {"102255"} or expected is None:
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou GB mandatory Batch Number metadata drifted"
+            )
+        raw, value = expected
+        return [
+            {
+                "attributeId": "102255",
+                "attributeName": str(raw.get("name") or "Batch Number"),
+                "attributeNameAlias": str(
+                    raw.get("attributeNameAlias") or raw.get("name") or "Batch Number"
+                ),
+                "attributeValues": [
+                    {
+                        "valueName": str(value.get("name") or "1"),
+                        "valueId": "1000256",
+                        "valueNameAlias": str(
+                            value.get("valueNameAlias") or value.get("name") or "1"
+                        ),
+                    }
+                ],
+            }
+        ]
+
     def save_prepared_draft(
         self,
         *,
@@ -897,13 +1089,18 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
         if path not in {SAVE_SITE_DRAFT_PATH, SAVE_SHOP_DRAFT_PATH} or not isinstance(body, Mapping):
             raise TikTokV4DraftPreparationError("Miaoshou prepared SAVE is invalid")
         _require_json_serializable(prepared, boundary="TikTok prepared SAVE payload")
+        if self._before_mutation is not None:
+            self._before_mutation(label, "save_draft")
         try:
             self._post(str(path), deepcopy(dict(body)))
-        except MiaoshouBusinessRejectedError:
+        except MiaoshouBusinessRejectedError as error:
             return self._observed(
                 label,
-                DraftWriteFact(
-                    "SAVE_DRAFT", "REJECTED", detail_id=detail_id, shop_id=shop_id
+                _business_rejected_fact(
+                    "SAVE_DRAFT",
+                    error,
+                    detail_id=detail_id,
+                    shop_id=shop_id,
                 ),
             )
         except Exception:
@@ -1010,7 +1207,7 @@ def _tiktok_warehouse_id(
     rows: list[Mapping[str, object]] = []
     for group in groups:
         group_shop_id = str(group.get("shopId") or "")
-        if group_shop_id and group_shop_id != shop_id:
+        if group_shop_id != shop_id:
             continue
         warehouses = group.get("warehouseList")
         if not isinstance(warehouses, list) or any(
@@ -1023,13 +1220,19 @@ def _tiktok_warehouse_id(
     active = [
         row
         for row in rows
-        if str(row.get("warehouseEffectStatus") or "1") == "1"
+        if type(row.get("warehouseEffectStatus")) in (str, int)
+        and str(row["warehouseEffectStatus"]) == "1"
         and type(row.get("warehouseId")) is str
         and bool(str(row.get("warehouseId") or "").strip())
     ]
     if not active:
         raise TikTokV4DraftPreparationError(
             "Miaoshou active warehouse is unavailable"
+        )
+    active_ids = [str(row["warehouseId"]).strip() for row in active]
+    if len(active_ids) != len(set(active_ids)):
+        raise TikTokV4DraftPreparationError(
+            "Miaoshou warehouse identity is duplicated or ambiguous"
         )
     active.sort(
         key=lambda row: (
@@ -1048,6 +1251,9 @@ def _provider_bound_sku_map(
     desired: object,
     shop_id: str,
     warehouse_id: str,
+    zero_stock_warehouse_ids: tuple[str, ...] = (),
+    approved_warehouse_map: Mapping[str, str] | None = None,
+    approved_total: int | None = None,
 ) -> dict[object, object]:
     skus = draft.get("skus")
     current_map = current.get("skuMap")
@@ -1104,7 +1310,7 @@ def _provider_bound_sku_map(
             raise TikTokV4DraftPreparationError(
                 "Miaoshou SKU binding is incomplete"
             )
-        stock = current_row.get("stock")
+        stock = approved_total if approved_total is not None else current_row.get("stock")
         if (
             isinstance(stock, bool)
             or not str(stock or "").isdigit()
@@ -1116,8 +1322,15 @@ def _provider_bound_sku_map(
         merged = deepcopy(dict(current_row))
         merged.update(deepcopy(dict(desired_row)))
         merged["stock"] = int(str(stock))
+        warehouse_stock_map = dict(approved_warehouse_map or {})
+        if approved_warehouse_map is None:
+            warehouse_stock_map = {
+                local_warehouse_id: "0"
+                for local_warehouse_id in zero_stock_warehouse_ids
+            }
+            warehouse_stock_map[warehouse_id] = str(int(str(stock)))
         merged["shopIdToWarehouseIdAndStockMap"] = {
-            shop_id: {warehouse_id: str(int(str(stock)))}
+            shop_id: warehouse_stock_map
         }
         result[raw_key] = merged
     return result
@@ -1143,6 +1356,7 @@ def _miaoshou_draft_info(draft: Mapping[str, object]) -> dict[str, object]:
     skus = draft.get("skus")
     if not isinstance(parent, Mapping) or not isinstance(skus, list) or not skus:
         raise TikTokV4DraftPreparationError("Miaoshou v4 draft facts are invalid")
+    _validate_miaoshou_specification_lengths(skus)
     package = parent["package_cm"]
     sku_map: dict[str, object] = {}
     for row in skus:
@@ -1165,7 +1379,7 @@ def _miaoshou_draft_info(draft: Mapping[str, object]) -> dict[str, object]:
         }
     return {
         "title": draft["title"],
-        "notes": draft["description"],
+        "notes": miaoshou_rich_description(draft["description"], draft["images"]),
         "notesText": draft["description"],
         "imgUrls": deepcopy(draft["images"]),
         "cid": category["id"],
@@ -1179,7 +1393,6 @@ def _miaoshou_draft_info(draft: Mapping[str, object]) -> dict[str, object]:
         "deliveryOptionSetType": "default",
         "sizeChart": "",
         "sizeChartType": "",
-        "isCodOpen": "0",
     }
 
 
@@ -1203,3 +1416,140 @@ __all__ = [
     "TikTokV4DraftPreparationError",
     "prepare_tiktok_v4_drafts",
 ]
+
+
+def _tiktok_warehouse_allocation(
+    post: Callable[[str, dict[str, object]], Mapping[str, object]],
+    *,
+    current: Mapping[str, object],
+    shop_id: str,
+    approved: object = None,
+) -> tuple[dict[str, str] | None, str, tuple[str, ...], int | None]:
+    sku_map = current.get("skuMap")
+    if not isinstance(sku_map, Mapping) or not sku_map:
+        raise TikTokV4DraftPreparationError("Miaoshou SKU map is unavailable")
+    for raw_row in sku_map.values():
+        if not isinstance(raw_row, Mapping):
+            raise TikTokV4DraftPreparationError("Miaoshou SKU map is malformed")
+
+    response = post(WAREHOUSE_GET_PATH, {"shopIds": [shop_id]})
+    data = response.get("data") if isinstance(response, Mapping) else None
+    groups = data.get("shopWarehouseList") if isinstance(data, Mapping) else None
+    if not isinstance(groups, list) or any(
+        not isinstance(group, Mapping) for group in groups
+    ):
+        raise TikTokV4DraftPreparationError(
+            "Miaoshou warehouse response is malformed"
+        )
+    rows: list[Mapping[str, object]] = []
+    for group in groups:
+        group_shop_id = str(group.get("shopId") or "")
+        if group_shop_id != shop_id:
+            continue
+        warehouses = group.get("warehouseList")
+        if not isinstance(warehouses, list) or any(
+            not isinstance(row, Mapping) for row in warehouses
+        ):
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou warehouse response is malformed"
+            )
+        rows.extend(warehouses)
+    active = [
+        row
+        for row in rows
+        if type(row.get("warehouseEffectStatus")) in (str, int)
+        and str(row["warehouseEffectStatus"]) == "1"
+        and type(row.get("warehouseId")) is str
+        and bool(str(row.get("warehouseId") or "").strip())
+    ]
+    if not active:
+        raise TikTokV4DraftPreparationError(
+            "Miaoshou active warehouse is unavailable"
+        )
+    active_ids = [str(row["warehouseId"]).strip() for row in active]
+    if len(active_ids) != len(set(active_ids)):
+        raise TikTokV4DraftPreparationError(
+            "Miaoshou warehouse identity is duplicated or ambiguous"
+        )
+    if approved is not None:
+        if not isinstance(approved, Mapping) or str(approved.get("shop_id") or "") != shop_id:
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou approved warehouse allocation is invalid"
+            )
+        approved_rows = approved.get("warehouses")
+        total = approved.get("total_stock")
+        if not isinstance(approved_rows, list) or not approved_rows or type(total) is not int or total <= 0:
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou approved warehouse allocation is invalid"
+            )
+        observed = {
+            str(row.get("warehouseId") or "").strip(): str(
+                row.get("warehouseName") or row.get("name") or ""
+            ).strip()
+            for row in active
+        }
+        expected_names: dict[str, str] = {}
+        stock_map: dict[str, str] = {}
+        calculated_total = 0
+        for row in approved_rows:
+            if not isinstance(row, Mapping):
+                raise TikTokV4DraftPreparationError(
+                    "Miaoshou approved warehouse allocation is invalid"
+                )
+            warehouse_id = str(row.get("warehouse_id") or "").strip()
+            name = str(row.get("warehouse_name") or "").strip()
+            stock = row.get("stock")
+            if not warehouse_id or not name or type(stock) is not int or stock < 0 or warehouse_id in stock_map:
+                raise TikTokV4DraftPreparationError(
+                    "Miaoshou approved warehouse allocation is invalid"
+                )
+            expected_names[warehouse_id] = name
+            stock_map[warehouse_id] = str(stock)
+            calculated_total += stock
+        if set(observed) != set(stock_map) or observed != expected_names or calculated_total != total:
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou active warehouses do not match approved allocation"
+            )
+        return stock_map, "", (), total
+    mainland_pickup = [
+        row
+        for row in active
+        if is_china_mainland_pickup_warehouse(row, shop_id=shop_id)
+    ]
+    if len(mainland_pickup) != 1:
+        raise TikTokV4DraftPreparationError(
+            "Miaoshou China mainland pickup warehouse is unavailable or ambiguous"
+        )
+    mainland_id = str(mainland_pickup[0]["warehouseId"]).strip()
+    zero_stock_ids = tuple(
+        sorted(
+            {
+                str(row.get("warehouseId") or "").strip()
+                for row in active
+                if str(row.get("warehouseId") or "").strip() != mainland_id
+            }
+        )
+    )
+    return None, mainland_id, zero_stock_ids, None
+
+
+def _validate_miaoshou_specification_lengths(skus: object) -> None:
+    """Fail before provider mutations when a TikTok option exceeds 50 chars."""
+
+    if not isinstance(skus, list) or not skus:
+        raise TikTokV4DraftPreparationError("Miaoshou v4 SKU facts are invalid")
+    for row in skus:
+        specification = row.get("specification") if isinstance(row, Mapping) else None
+        if not isinstance(specification, Mapping) or not specification:
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou SKU specification is unavailable"
+            )
+        for value in specification.values():
+            if type(value) is not str or not value:
+                raise TikTokV4DraftPreparationError(
+                    "Miaoshou SKU specification option is invalid"
+                )
+            if len(value) > 50:
+                raise TikTokV4DraftPreparationError(
+                    "Miaoshou SKU specification option exceeds 50 characters"
+                )

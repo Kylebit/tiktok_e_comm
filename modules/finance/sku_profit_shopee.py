@@ -9,7 +9,12 @@ from typing import Any
 
 from core.config import ROOT, get
 from core.db import connect_readonly
-from modules.finance.sku_key import seller_sku_tail4, same_seller_sku, sku_variants_for_lookup
+from modules.finance.sku_key import (
+    read_current_internal_sku_cost,
+    seller_sku_tail4,
+    same_seller_sku,
+    sku_variants_for_lookup,
+)
 from modules.finance.sku_profit_model import (
     DEFAULT_AD_RATE,
     DEFAULT_LOOKBACK_DAYS,
@@ -85,7 +90,7 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
         item_model_id = f"item_{q}" if q.isdigit() else q
         exact_rows = conn.execute(
             """
-            SELECT model_id, item_id, seller_sku, product_name, model_name, image_url, price, currency, status
+            SELECT model_id, shop_id, item_id, seller_sku, product_name, model_name, image_url, price, currency, status
             FROM shopee_products
             WHERE region = ? AND (model_id = ? OR model_id = ? OR item_id = ?)
             ORDER BY
@@ -111,7 +116,7 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
     for v in (() if platform_id_query else variants):
         row = conn.execute(
             """
-            SELECT model_id, item_id, seller_sku, product_name, model_name, image_url, price, currency, status
+            SELECT model_id, shop_id, item_id, seller_sku, product_name, model_name, image_url, price, currency, status
             FROM shopee_products
             WHERE region = ? AND seller_sku = ?
             LIMIT 1
@@ -124,7 +129,7 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
         # 末四位对齐扫 TH 店
         for r in conn.execute(
             """
-            SELECT model_id, item_id, seller_sku, product_name, model_name, image_url, price, currency, status
+            SELECT model_id, shop_id, item_id, seller_sku, product_name, model_name, image_url, price, currency, status
             FROM shopee_products WHERE region = ?
             """,
             (REGION,),
@@ -134,31 +139,23 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
                 break
 
     cost = None
-    cost_source = None
+    cost_source = "canonical_internal_sku_missing"
     seller = str(row["seller_sku"] or "") if row else q
     seller_tail = seller_sku_tail4(seller) if row else tail
-    if row and seller_tail:
-        cost_rows = conn.execute(
-            """
-            SELECT p.seller_sku, s.cost_cny
-            FROM products p
-            JOIN sku_costs s ON s.sku_id = p.sku_id AND s.cost_cny > 0
-            ORDER BY s.updated_at DESC
-            """
-        ).fetchall()
-        for r in cost_rows:
-            if seller_sku_tail4(str(r["seller_sku"] or "")) == seller_tail:
-                cost = float(r["cost_cny"])
-                cost_source = "sku_costs_via_tk_seller_sku_tail4"
-                break
+    if row:
+        cost, cost_source = read_current_internal_sku_cost(
+            conn,
+            {
+                "platform": "shopee",
+                "shop_key": str(row["shop_id"] or ""),
+                "product_id": str(row["item_id"] or ""),
+                "variant_id": str(row["model_id"] or ""),
+                "seller_sku": str(row["seller_sku"] or ""),
+            },
+        )
     conn.close()
     if not row:
         return None
-    if cost is None:
-        weekly = _cost_from_weekly(seller)
-        if weekly is not None:
-            cost = weekly
-            cost_source = "shopee_weekly_product_cost"
     return {
         "model_id": str(row["model_id"] or ""),
         "item_id": str(row["item_id"] or ""),

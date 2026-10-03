@@ -10,7 +10,14 @@ from domains.product_operations import (
 from shared_platform.approved_publication_snapshot_projection import (
     project_release_plan_for_publication_snapshot,
 )
-from test_approved_publication_snapshot import _approved_plan, _rebind
+from shared_platform.postpublish_promotions import (
+    build_approved_postpublish_promotion_policy,
+)
+from test_approved_publication_snapshot import (
+    _approved_plan,
+    _rebind,
+    _warehouse_allocations,
+)
 
 
 def _raw_approval_inputs(*, sku_count: int = 2):
@@ -227,6 +234,37 @@ def test_bridge_freezes_multisku_shopee_parcel_envelope_with_ceiled_dimensions()
     }
 
 
+def test_bridge_freezes_stock_and_exact_promotion_policy_into_v4_snapshot():
+    dashboard, payload = _raw_approval_inputs(sku_count=1)
+    stock_policy = {
+        "schema_version": "publication-default-stock/v1",
+        "quantity_per_sku": 200,
+        "scope": "EACH_SELECTED_SKU",
+        "source": "SYSTEM_GOVERNED_DEFAULT",
+        "review_round": "ROUND1",
+    }
+    promotion_policy = build_approved_postpublish_promotion_policy(
+        approval_reference="final-review-fixture"
+    )
+    payload["product_facts"]["stock_policy"] = deepcopy(stock_policy)
+    dashboard["product"]["stock_policy"] = deepcopy(stock_policy)
+    payload["approved_postpublish_promotion_policy"] = promotion_policy
+
+    inputs = build_approved_publication_snapshot_inputs(
+        dashboard=dashboard, release_plan_payload=payload
+    )
+    projection = project_release_plan_for_publication_snapshot(
+        payload, approved_inputs=inputs
+    )
+    assert projection.ready is True, projection.missing_fields
+    snapshot = build_approved_publication_snapshot(
+        _approved_from_projected(projection.payload)
+    ).payload()
+
+    assert snapshot["product"]["stock_policy"] == stock_policy
+    assert snapshot["product"]["postpublish_promotion_policy"] == promotion_policy
+
+
 def test_bridge_does_not_treat_title_workflow_status_as_description_approval():
     """A frozen, exact description is valid even when title workflow metadata drifted."""
 
@@ -349,6 +387,98 @@ def test_bridge_output_is_detached_from_mutable_approval_inputs():
     assert inputs["sku_details_by_key"]["blue-38x45"]["image_urls"] == [
         "https://img.example/blue.jpg"
     ]
+
+
+def test_bridge_freezes_exact_approved_warehouse_allocation_for_00_projection():
+    dashboard, payload = _raw_approval_inputs(sku_count=1)
+    allocation = _warehouse_allocations()
+    payload["product_facts"]["warehouse_inventory_by_target"] = deepcopy(allocation)
+    dashboard["product"]["warehouse_inventory_by_target"] = deepcopy(allocation)
+
+    inputs = build_approved_publication_snapshot_inputs(
+        dashboard=dashboard,
+        release_plan_payload=payload,
+    )
+
+    assert inputs["warehouse_inventory_by_target"] == allocation
+    payload["product_facts"]["warehouse_inventory_by_target"][
+        "tiktok:LH_PH"
+    ]["total_stock"] = 1
+    assert inputs["warehouse_inventory_by_target"]["tiktok:LH_PH"][
+        "total_stock"
+    ] == 540
+
+
+def test_bridge_rejects_dashboard_plan_warehouse_shop_identity_conflict():
+    dashboard, payload = _raw_approval_inputs(sku_count=1)
+    allocation = _warehouse_allocations()
+    payload["product_facts"]["warehouse_inventory_by_target"] = deepcopy(allocation)
+    dashboard["product"]["warehouse_inventory_by_target"] = deepcopy(allocation)
+    dashboard["product"]["warehouse_inventory_by_target"]["tiktok:LH_PH"][
+        "shop_id"
+    ] = "99999999"
+
+    with pytest.raises(ApprovedPublicationSnapshotError, match="warehouse.*conflict"):
+        build_approved_publication_snapshot_inputs(
+            dashboard=dashboard,
+            release_plan_payload=payload,
+        )
+
+
+@pytest.mark.parametrize("side", ["dashboard", "plan", "both"])
+@pytest.mark.parametrize("field", ["stock", "total_stock"])
+@pytest.mark.parametrize("invalid_number", [True, 1.0])
+def test_b2a_fix_bridge_rejects_type_aliases_in_either_warehouse_input(
+    side, field, invalid_number
+):
+    dashboard, payload = _raw_approval_inputs(sku_count=1)
+    allocation = _warehouse_allocations()
+    allocation["tiktok:LH_PH"]["warehouses"][0]["stock"] = 1
+    allocation["tiktok:LH_PH"]["warehouses"][1]["stock"] = 0
+    allocation["tiktok:LH_PH"]["total_stock"] = 1
+    payload["product_facts"]["warehouse_inventory_by_target"] = deepcopy(allocation)
+    dashboard["product"]["warehouse_inventory_by_target"] = deepcopy(allocation)
+    sources = {"dashboard": dashboard["product"], "plan": payload["product_facts"]}
+    for name in sources if side == "both" else [side]:
+        row = sources[name]["warehouse_inventory_by_target"]["tiktok:LH_PH"]
+        if field == "stock":
+            row["warehouses"][0]["stock"] = invalid_number
+        else:
+            row["total_stock"] = invalid_number
+
+    with pytest.raises(ApprovedPublicationSnapshotError, match="warehouse"):
+        build_approved_publication_snapshot_inputs(
+            dashboard=dashboard, release_plan_payload=payload
+        )
+
+
+@pytest.mark.parametrize("field", ["stock", "approved_by", "approved_at"])
+def test_b2a_fix_valid_warehouse_facts_are_detached_and_bound_to_policy_digest(field):
+    dashboard, payload = _raw_approval_inputs(sku_count=1)
+    allocation = _warehouse_allocations()
+    payload["product_facts"]["warehouse_inventory_by_target"] = deepcopy(allocation)
+    dashboard["product"]["warehouse_inventory_by_target"] = dict(
+        reversed(list(deepcopy(allocation).items()))
+    )
+    original = build_approved_publication_snapshot_inputs(
+        dashboard=dashboard, release_plan_payload=payload
+    )
+    changed = dashboard["product"]["warehouse_inventory_by_target"]["tiktok:LH_PH"]
+    if field == "stock":
+        changed["warehouses"][0]["stock"] += 1
+        changed["total_stock"] += 1
+    elif field == "approved_by":
+        changed[field] = "AuditOperator"
+    else:
+        changed[field] = "2026-08-30T00:02:00+08:00"
+    payload["product_facts"]["warehouse_inventory_by_target"] = deepcopy(
+        dashboard["product"]["warehouse_inventory_by_target"]
+    )
+    successor = build_approved_publication_snapshot_inputs(
+        dashboard=dashboard, release_plan_payload=payload
+    )
+    assert original["warehouse_inventory_by_target"] == allocation
+    assert original["digests"]["policy"] != successor["digests"]["policy"]
 
 
 @pytest.mark.parametrize(

@@ -471,52 +471,14 @@ def format_confirm_card_dialog(card: MxConfirmCard) -> str:
     return "\n".join(lines)
 
 
-def send_feishu_confirm(card: MxConfirmCard) -> bool:
-    """飞书自建应用 / webhook：推送与对话框一致的富文本审批卡。"""
-    try:
-        from modules.hub.feishu_app import app_ready
-        from modules.miaoshou.mx_feishu_approval import (
-            build_single_mx_approval_card,
-            default_chat_id,
-            send_mx_approval_card,
-        )
-
-        if app_ready():
-            interactive = build_single_mx_approval_card(
-                card,
-                task_id=f"MX_CONFIRM_{card.token}",
-                title=f"MX 上架确认 · {card.match_key}",
-                risk_note="批准后将执行 save + publish（西班牙语）",
-            )
-            send_mx_approval_card(interactive, chat_id=default_chat_id())
-            return True
-    except Exception:
-        pass
-    try:
-        from core.config import get
-        from modules.hub.feishu import send_post
-
-        cfg = get("feishu") or {}
-        if cfg.get("enabled") and cfg.get("webhook_url"):
-            title = f"MX 上架确认 · {card.match_key}"
-            body = format_confirm_card_dialog(card)
-            rows = [[{"tag": "text", "text": body[:4000]}]]
-            send_post(title, rows)
-            return True
-    except Exception:
-        return False
-    return False
-
-
 def dispatch_confirm_card(card: MxConfirmCard, *, file: Any = None) -> str:
-    """输出到对话框（stdout）；飞书打通后同时发飞书。"""
+    """输出到本地对话框（stdout）。"""
     text = format_confirm_card_dialog(card)
     out = file or sys.stdout
     print(CONFIRM_MARKER_BEGIN, file=out)
     print(text, file=out)
     print(CONFIRM_MARKER_END, file=out)
     print(f"{CONFIRM_TOKEN_PREFIX}{card.token}", file=out)
-    send_feishu_confirm(card)
     return text
 
 

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>利润中心 · Orbit</title>
+<link rel="stylesheet" href="/static/operations_shell.css"><link rel="stylesheet" href="/static/profit_hub.css"><script defer src="/static/operations_shell.js"></script><script defer src="/static/profit_hub.js"></script></head>
+<body data-core="profit"><main class="profit-shell">
+  <header class="profit-heading"><div><p class="eyebrow">ORBIT · 数据运营</p><h1>利润中心</h1><p>按月组织结算覆盖、成本与广告证据；每个站点独立核对。</p></div><a href="/" class="secondary-link">返回任务工作台</a></header>
+  <div id="profitConnection" class="notice" role="status">正在读取任务状态…</div><div id="profitError" class="error" role="alert" hidden></div>
+  <section class="panel history-access" aria-labelledby="historyTitle"><div><h2 id="historyTitle">2026 年 7 月 TikTok 完整原始报告 <span class="tag">只读历史结果</span></h2><p>这是你指定的旧版完整报表，按站点查看；不属于下面的新利润任务，也不证明八月已结算。</p></div>
+    <nav id="julyTikTokReports" aria-label="七月 TikTok 历史报告"><a data-site="MY" href="/profit-original/artifacts/profit_reports_monthly/2026-07/tiktok_MY_2026-07-01_2026-07-31.monthly-profit.html" target="_blank" rel="noopener noreferrer">马来西亚 MY</a><a data-site="TH" href="/profit-original/artifacts/profit_reports_monthly/2026-07/tiktok_TH_2026-07-01_2026-07-31.monthly-profit.html" target="_blank" rel="noopener noreferrer">泰国 TH</a><a data-site="VN" href="/profit-original/artifacts/profit_reports_monthly/2026-07/tiktok_VN_2026-07-01_2026-07-31.monthly-profit.html" target="_blank" rel="noopener noreferrer">越南 VN</a><a data-site="PH" href="/profit-original/artifacts/profit_reports_monthly/2026-07/tiktok_PH_2026-07-01_2026-07-31.monthly-profit.html" target="_blank" rel="noopener noreferrer">菲律宾 PH</a><a href="/profit-original/artifacts/profit_reports_monthly/2026-07/index.html" target="_blank" rel="noopener noreferrer">全部七月报告</a></nav>
+  </section>
+  <section class="panel" aria-labelledby="newProfitTitle"><div class="section-heading"><div><h2 id="newProfitTitle">发起或继续月度利润</h2><p>先核对完整店铺范围；同月同范围会复用已有任务。创建只保存本地任务，不代表已经取数或计算。</p></div></div>
+    <form id="profitForm" class="profit-form"><label>统计月份<input id="profitMonth" type="month" required></label><label>精确店铺名称或 ID（每行一个）<textarea id="profitShops" rows="2" required placeholder="例如：tiktok:MY:店铺 ID"></textarea></label><button id="submitProfit" class="primary" type="submit">查找或创建任务</button></form>
+    <p id="sameMonthHint" class="hint" role="status"></p><p id="formError" class="error" role="alert"></p>
+  </section>
+  <section class="panel" aria-labelledby="taskTitle"><div class="section-heading"><div><h2 id="taskTitle">月度任务</h2><p>历史观测按原时间展示，不作为当前结算结果。</p></div><button id="refreshProfit" type="button">刷新</button></div><div id="profitTasks" class="task-grid"><p>正在读取…</p></div></section>
+  <section class="panel" aria-labelledby="detailTitle"><div class="section-heading"><h2 id="detailTitle">逐店覆盖与证据</h2></div><div id="profitDetail"><p class="hint">选择一个任务查看已登记的结构化结果。没有可信字段时保持“待核”。</p></div></section>
+  <section class="panel references" aria-labelledby="referenceTitle"><h2 id="referenceTitle">方法说明</h2><a href="/knowledge?tool=manage-profit-settlement">知识工具 · manage-profit-settlement 使用说明</a><p>历史报告不能替代本月结算证据或执行授权。</p></section>
+</main></body></html>

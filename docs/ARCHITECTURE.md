@@ -1,4 +1,11 @@
-# TikTok Shop 控制台 — 架构说明
+# TikTok Shop 控制台 — 历史架构说明
+
+> **REFERENCE_ONLY / 仅供追溯。** 本文记录早期 CLI 控制台设想，不是当前
+> OrbitHive 的功能目录、启动指南或待实施计划。当前入口以根目录
+> `AGENTS.md`、`docs/OPERATIONS_TASK_RUNTIME.md` 和 `config/capability_catalog.json`
+> 为准；本文中的命令、端口和里程碑不得直接执行。
+
+现行部署边界与切换顺序见[部署入口](DEPLOY.md)；此处的 CLI 优先、旧广告/联盟计划及成本命令均为原始历史文本，不能从本页推定当前实现状态。
 
 ## 已锁定决策
 

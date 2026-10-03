@@ -64,6 +64,17 @@ def test_inventory_validator_rejects_bool_float_string_and_negative_quantities()
         assert validator.validate_payload([record])
 
 
+def test_inventory_validator_blocks_every_duplicate_raw_identity():
+    validator = _load_validator()
+    first = _valid_record()
+    identical = dict(first)
+    conflicting = {**first, "available": 1, "allocated": 1}
+
+    for duplicate in (identical, conflicting):
+        errors = validator.validate_payload([first, duplicate])
+        assert any("BLOCKED_INVENTORY" in error for error in errors)
+
+
 def test_country_isolation_removes_cross_country_channel_facts():
     applier = _load_shopee_applier()
     rows = [

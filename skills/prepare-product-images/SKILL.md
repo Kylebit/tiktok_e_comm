@@ -1,74 +1,52 @@
 ---
 name: prepare-product-images
-description: Lock a conversation-approved first-round Product Center scope, optionally generate only the user-selected localized product images through ToAPIs, synchronize and verify the common Miaoshou baseline exactly once, record conversation approval, and atomically freeze the approved ReleasePlan handoff without publishing. Use after the user finishes the first-round review and asks to start, resume, approve, or finish the second round.
+description: Consume an immutable round-1 technical snapshot and prepare auditable dual-brand master and localized image candidates through Lingshi AI, with a shared product budget, durable recovery, rework and automated QA. Use for round-2 product image preparation; do not create an intermediate human approval gate, write Miaoshou or publish.
 ---
 
 # Prepare Product Images
 
-Use the deterministic script in `scripts/prepare_product_images.py`. Do not reconstruct this workflow with ad hoc API calls.
+Before resuming an existing product, use the selected project's commit-bound
+`scripts/publication_takeover.py` as described in
+`docs/PUBLICATION_SOURCE_CONTRACT.md`. Preserve prior paid receipts and QA;
+the read-only result never starts a new task or converts generated assets to keep.
 
-## Workflow
+Use `scripts/prepare_product_images.py` for R2 and `scripts/run_automated_image_qa.py` for visual QA. Keep the frozen R1 product, brand, target and source identities intact. Read [the local budget and recovery contract](references/paid-recovery.md) before handling unknown results, legacy records or technical drift.
 
-1. Require the exact Offer ID and current Kyle-approved first-round Product Center revision.
-2. Require `reports/product-preparation/<offer_id>/first-review.json` to be `FIRST_REVIEW_READY` and to match the current revision.
-3. Treat the first-review image plan as authoritative. Do not use OCR or model judgment to add translation positions.
-4. Exclude source images marked `REMOVE`. Remap retained source positions deterministically.
-5. Run the script without paid flags first. Report the frozen input digest, selected positions, locale routes, and paid task count.
-6. If no positions were selected for translation, continue with zero paid tasks. Do not invent image work. Otherwise start paid generation only after explicit user authorization by supplying both `--execute-paid` and `--confirm-paid-generation`.
-7. Require one completed ToAPIs receipt per task and an exact output count. Do not retry blindly after an unknown outcome; inspect the durable generation checkpoints first.
-8. Write the English master image set to the common Miaoshou collect box exactly once and require official readback before publication execution. Use both `--execute-miaoshou` and `--confirm-miaoshou-write`. This technical condition must not block or erase conversation approval.
-9. Keep localized artifacts frozen by target route. Do not place several country image sets in the common collect box; the publication workflow projects them into their matching site drafts later. Persist the public HTTPS result URL returned by ToAPIs. For a legacy artifact without that fact, require an explicit uploaded-assets manifest; never fabricate or silently re-upload it.
-10. Product Center `/new-product?offer_id=<offer_id>#localizedImageResults` is the only human review surface. The page `/localized-image-review?offer_id=<offer_id>` is a technical result view with one action: refresh. It must not contain generation, per-image PASS, retry, paid-confirmation, or final-approval buttons.
-11. Treat Kyle's explicit approval in the conversation as the only human approval entry. Record it immediately even when generation, Miaoshou sync, or another technical check is incomplete.
-12. The approval intent automatically accepts ready artifacts and reconciles later artifacts under the same frozen input. Technical blockers prevent execution only; they never invalidate the approval intent or require Kyle to approve again.
-13. After one verified Miaoshou sync and conversation approval, run the final handoff. Reuse an exact active approved base plan or locally freeze the current exact plan. If localized tasks exist, atomically create and approve an image-routing-only successor. If no localized tasks exist, retain the exact base plan. Persist `workflow-handoff.json` only after the frozen v4 snapshot and route coverage read back exactly.
+## Authority and inputs
 
-## Safety boundaries
+Require a valid `round1-approved-snapshot/v1` and matching current Product Center technical freeze. The schema's `approved` wording is historical: an autopilot snapshot with `human_approval=false` is the normal input and grants no marketplace execution authority. Fact or target changes rebuild the candidate lineage and invalidate any later final marketplace approval bound to the old candidate.
 
-- ReleasePlan changes are local only: freeze the exact base plan and, when needed, atomically create one image-routing-only approved successor. Never leave the predecessor superseded without a usable approved successor.
-- Do not write Miaoshou during paid generation. Run the separate common-baseline sync only after generation receipts are complete and the conversation has authorized that write.
-- Do not publish, claim, create drafts, or update listing images.
-- Do not generate for an unapproved or stale revision.
-- Do not generate a locale that is absent from the approved first-review plan and selected targets.
-- Treat paid image calls as external writes and report their exact confirmed count.
-- OCR is allowed only to extract text inside a user-selected image; it must never choose which images are translated.
-- Do not publish from this Skill. A `READY_TO_PUBLISH` handoff is consumed only by `publish-approved-product`.
+Paid execution requires the existing applicable policy loaded by `shared_platform.publication_autopilot`. Its attributed authority, allowed purposes and product cap must cover this action. Record the selected model, current price, purpose and QA plan in the candidate evidence. Continue without an approval prompt when existing authority covers the exact paid purpose and budget. A new paid purpose, provider, or scope outside that authority requires explicit authorization before the request.
 
-## Commands
+The bundled `historical-autopilot-policy.example.json` is inactive source evidence. Its original names, date and ACTIVE state are not current authority. Do not activate it as default configuration. Offline fixtures and green tests never establish live generation authority.
 
-Preflight:
+## Execute one phase
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id>
-```
+1. Run with only `--offer-id` to inspect local status. Help/status do not call paid providers. Legacy UI consumers without the existing R1/budget bridge return `PAID_CONTEXT_REQUIRED` or `LEGACY_R2_BRIDGE_REQUIRED` before a provider call.
+2. Validate the frozen brand roles and reuse plan. With applicable paid authority, run `--execute-brand-generation --paid-policy <existing-policy>`. Complete source bytes and frozen facts bind the technical plan and each checkpoint. Continue through automated master-image QA; a rendered review is an audit artifact, not a human gate.
+3. Run `run_automated_image_qa.py --offer-id <id> --model <approved-model> --paid-policy <existing-policy>` for master QA. Retain raw replies, exact artifact digests and the QA receipt. Passed QA belongs only to those artifacts and that R1 snapshot.
+4. Freeze the policy-selected numbered-image scope with `--approve-translation-images <numbers> --dimension-only-images <numbers-or-none>`. The CLI defaults to the governed technical actor `orbit-product-publication-default-v1`; an explicit `--approved-by Kyle` is blocked because this command has no independent conversation-receipt binding. Existing Kyle plans retain their original bytes and digest as historical evidence, but cannot authorize new R2 paid execution without independently verifiable provenance. This runtime currently has no trusted historical approval registry or automatic successor migration, so affected products remain blocked for new paid translation work. These plans do not grant final marketplace approval. An existing plan with different scope or authority is preserved and requires an explicit successor rather than an in-place rewrite. Route locales within frozen R1 targets; dimension-only images create no translation tasks.
+5. With matching paid authority, run `--execute-paid --paid-policy <existing-policy>`. OCR, text translation and localized image generation share the product ledger with masters and QA. Empty OCR regions are reused without a paid model request.
+6. Run localized QA using the exact passed master QA receipt and current localized artifacts. Preserve failures in factual alignment, OCR language or duplication as blockers or bounded rework evidence. Passed artifacts flow to R3 candidate compilation without an intermediate approval prompt.
 
-Paid generation after explicit approval:
+For wallpaper and wall stickers consume the existing product-family rule packs under `prepare-product-publication/references`. Do not invent missing facts in prompts.
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --execute-paid --confirm-paid-generation
-```
+## Budget and recovery
 
-Synchronize and verify the common Miaoshou baseline before review:
+`reports/product-preparation/<id>/paid-requests/events.jsonl` is the accounting authority. Brand, locale, QA, retries, new processes and changed approval digests share it. A durable reservation occupies a slot before POST. Attempted, unknown, failed, superseded and completed work remains counted. The ledger lock is released before provider waits.
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --execute-miaoshou --confirm-miaoshou-write
-```
+For a new product, code inventories complete known R1/R2 report and localized review/pack metadata roots. Ordinary review HTML/Markdown and local plans are evidence, not paid calls. Positive old receipts are imported with source hashes and same-provider task duplicates count once. Missing metadata, redirected roots, ambiguous ownership and unknown prior work cannot become zero.
 
-Persist Kyle's explicit conversation approval at any point in the frozen round:
+Reports separate planned requests for the current phase, occupied, attempted, unknown, confirmed and new requests in this invocation. Asset counts and old receipt generation counts are lifetime artifact facts. Raw usage/cost is separate from price estimates. Prior R1 title/copy calls count only when the applicable product policy includes that purpose and a bound actual request receipt exists.
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --approve-all --approved-by Kyle
-```
+For SUBMITTING, UNKNOWN or post-submit timeout, inspect local request/checkpoint state. Existing task IDs resume by querying, never by creating again. Raw chat replies are durable before parsing and can be parsed again locally. Timeout without raw reply requires upstream reconciliation; changing prompt or retry number is not authorization to resend.
 
-Freeze the exact approved handoff after Miaoshou verification and conversation approval:
+Use the local recovery CLI in `references/paid-recovery.md`. It checks exact product/request/attempt/revision, source hashes, verifier, timestamp and evidence reference. It does not discover or prove external billing facts. Preserve bad and legacy bytes; never manufacture a no-charge conclusion.
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --finalize-release-handoff
-```
+## Rework and technical rebuild
 
-For legacy generated artifacts whose ToAPIs receipt predates persisted public
-result URLs, add `--uploaded-assets <PATH>`. The JSON file must contain an
-exact `uploaded_assets` map of approved artifact ID to its matching digest and
-public HTTPS URL. Extra, missing, or drifted entries fail closed.
+A completed paid artifact rejected by exact QA or explicitly selected for redo may create a new attempt under existing rework policy and remaining product budget. Use `--prepare-brand-rework` for the bounded brand request, or `--retry-localized-review-number <n> --retry-locale <locale> --retry-failure-code <code> --retry-authorized-by <existing-actor>` for one localized artifact. Bind old task/artifact, QA or user intent, current input and next attempt. A known failed exact artifact may be retried within the existing policy without another prompt; a new paid purpose or expanded scope may not. Maximum three retries applies; old successful work remains counted and needs no false no-charge proof.
 
-The command emits one JSON summary. Approval and execution readiness are separate fields: approval may be recorded while the result still reports `MIAOSHOU_SYNC_REQUIRED` or another technical blocker. A verified baseline sync reports `miaoshou_external_write_count: 1`, `platform_writes: 0`. Finalization reports `READY_TO_PUBLISH`, the exact plan and snapshot identities, and never asks for another page approval.
+TECHNICAL_PLAN_DRIFT writes a digest-bound proposal and preserves the active plan. Once existing approval provides valid current inputs, explicitly activate that proposal through the local CLI. Activation archives the old plan and affected R2 projections, emits R3 invalidation evidence and retains all paid events. Unknown product requests block activation. Never delete ledger/checkpoint files to make a new plan run.
+
+R2 does not write Miaoshou, ReleaseStore, ReleasePlan, marketplace drafts or publication. R3 consumes the technically adopted image evidence and `round2-technical-invalidation.json` through its own authority. Offline tests, image QA and compatibility fields named `approved` do not authorize publication. Only the later digest-bound `FINAL_MARKETPLACE_PUBLISH` receipt does.

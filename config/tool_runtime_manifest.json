@@ -1,0 +1,54 @@
+{
+  "schema": "orbit-tool-runtime/v1",
+  "hash_format": "utf8-lf-text/raw-binary-sha256",
+  "files": {
+    "config/capability_catalog.json": "a1c60c8113a889b7805beb5e15d81d6bd792d7365f5137499faca1e31a19555f",
+    "config/tool_profile.example.json": "c6ebccc467ec31ba4a08060a199f1dee1dc7509cf7938d91191441d9d5d85391",
+    "docs/knowledge/README.md": "657aaaa6dcfc7b234bb1bf6eb942b60ce960bb09993761db73ee61f03d7de839",
+    "docs/tools/README.md": "f85e898dc96214c3a390ab950282307bcdd2ba5c75d8c23368a7ed1200dadad6",
+    "modules/product_agent/__init__.py": "c0b954b3084937eb11c950d8c0e3915c93d6eeea543d7429f490e5d036c7e6c8",
+    "modules/product_agent/knowledge.py": "864e6653ded7710229a3fd7564d5f01e4cd55bea8209d613b0ab9ff8d3e8af56",
+    "modules/sourcing/image_generation_checkpoint.py": "843368c3ed1922fa208b98e327f5da79ff16fab35ffee7dea4fec86b6a22ce4d",
+    "modules/sourcing/lingshi_client.py": "00870d5abf2b401c96bed8cad67677b13e74a0bcf4cd51cefa17131fd26531b4",
+    "modules/tools/duoplus.py": "79b0f9b578c1e50d8b12ba8b9e1daa58dba33c1f65e9adec5c06852ad1d9ef88",
+    "modules/tools/provider_http.py": "dd194f4a3f29dc9c137b185681b3ff2e129870b9a6f6f22a4193196e4c87a906",
+    "modules/tools/tikhub.py": "328c69e5122cf2a315acef008296d7b290b26be39826d626281c987092aa310a",
+    "scripts/analyze_tikhub_market_snapshot.py": "c6a7865580e629bfee08a2720bd9ec7d96322f1e22ee4260eb3682d788d89f83",
+    "scripts/orbit_tools.py": "a9424a96f3b76d7ff6aba9b72c1bb164ce274861859d1f39c7f6860f98ffc780",
+    "scripts/package_agent_tools.py": "9da64f20703c000297f1c04121f6bfa8809aa021a69756e625d2bd5b283809bf",
+    "scripts/sync_product_publication_knowledge.py": "19aa38c907e8c5dc2e4ea236bfd932c2de352b3912f6813be4eed77690365283",
+    "scripts/sync_product_publication_skills.py": "5cae808e284a8f21a3b76ad11ea6127d20951cd2b10caa226004bd3a3a2fc928",
+    "scripts/sync_publish_approved_product_skill.py": "5baaf137efac1c3dd59f3080433eab91629a9821a885c908621f5273c1ba72be",
+    "shared_platform/capability_runtime.py": "19bcc6b31313527908c69b7f59ac59e7dba453f5ad449903a20454b61cd28ba2",
+    "skills/control-duoplus-cloud-phone/SKILL.md": "55898a8836ef54dc13dcc4e2c624bd4710446c68eaac107335af20178c93a217",
+    "skills/control-duoplus-cloud-phone/agents/openai.yaml": "253071517e87e1b3e7d54b202fc0b8e7f618d6559bdba04af5d5328a2aa4aa22",
+    "skills/control-duoplus-cloud-phone/references/api.md": "dff0e085741862a17f6257f6baa0c71a51dbcc581ce1be1b87a7334dca9558ad",
+    "skills/publish-approved-product/scripts/close_product_publication.py": "5e233467f2795371fbebe111dafe3c832351cfb94c3adfd28e0f567731b7968e",
+    "skills/research-tikhub-reference/SKILL.md": "9d5de2fc05c1ee7c62ba08ba60b69cf0f0285f2725e40d509170465a4a404413",
+    "skills/research-tikhub-reference/references/query-contract.md": "a7e305e190c8b8acf62c9d66a48dd5a83b968b29feaee866e4c82d9611843060",
+    "skills/use-lingshi-ai/SKILL.md": "3e776e1f270189b21a33f99c52983d43e8beb42fb6e50445b7d3c6c74b6f8161",
+    "skills/use-lingshi-ai/references/portable-entry.md": "31828f229a8d2fc130dbc090cde186e7969fd685ce305dcf0260b2bbf0021eb0",
+    "skills/use-lingshi-ai/references/provider-contract.md": "384da7b430a025a9aeba2355fd0ec313aaf37b6469219b266ba6fce79f11b98b"
+  },
+  "package_version": "orbit-portable-tools/6",
+  "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+  "runtime_requirements": {
+    "minimum_python": "3.11",
+    "required_capabilities": [
+      "BaseException.add_note",
+      "atomic same-directory hard-link for knowledge export"
+    ],
+    "validated_python": "3.12.8",
+    "validated_platform": "Windows",
+    "other_python_versions_validated": false,
+    "modules_by_provider": {
+      "lingshi": [
+        "requests"
+      ],
+      "duoplus": [],
+      "tikhub": [],
+      "publication-knowledge": []
+    }
+  },
+  "digest": "b699a0df9cbe3c0c2030e724b18bc3b2f7f77af2d50e3eb0b8b27dda7fdcc5af"
+}

@@ -11,6 +11,7 @@ from modules.sourcing.localized_image_packs import (
     LocalizedImagePackError,
     LocalizedImagePackStore,
 )
+from shared_platform.publication_paid_requests import PaidRequestBlocked
 
 
 def _snapshot() -> dict:
@@ -261,7 +262,7 @@ def test_preview_artifact_is_bound_to_translation_revision(tmp_path):
     assert saved["external_writes"] == 0
 
 
-def test_automatic_bundle_commits_all_locales_once_and_is_bound_to_inventory(tmp_path):
+def test_automatic_bundle_rejects_legacy_receipts_without_paid_context(tmp_path):
     store = LocalizedImagePackStore(tmp_path)
     project = store.initialize_from_approved_snapshot(_snapshot())
     source_url = project["base_package"]["ordered_image_urls"][0]
@@ -348,27 +349,10 @@ def test_automatic_bundle_commits_all_locales_once_and_is_bound_to_inventory(tmp
             }
         )
 
-    saved = store.save_automatic_bundle(
-        "3900088343",
-        expected_revision=scanned["revision"],
-        items=items,
-    )
-
-    assert saved["revision"] == scanned["revision"] + 1
-    assert saved["automatic_translation"]["status"] == "AUTO_PREVIEW_READY"
-    assert saved["automatic_translation"]["renderer"] == "toapis-reference-image/v1"
-    assert saved["automatic_translation"]["image_generation_calls"] == 5
-    assert saved["automatic_translation"]["model_calls"] == 1
-    assert saved["packs"]["th-TH"]["status"] == "AUTO_PREVIEW_READY"
-    translated_image = saved["packs"]["th-TH"]["images"][0]
-    assert translated_image["translations"][0]["translated_text"] == "ติดตั้งง่าย"
-    assert store.preview_artifact_path(
-        "3900088343", translated_image["preview"]["artifact_id"]
-    ).is_file()
-    assert saved["packs"]["th-TH"]["images"][1]["status"] == "REUSE_BASE_NO_TEXT"
-    assert saved["external_writes"] == 0
-
-    with pytest.raises(LocalizedImagePackError, match="revision"):
+    with pytest.raises(PaidRequestBlocked, match="PAID_CONTEXT_REQUIRED"):
         store.save_automatic_bundle(
             "3900088343", expected_revision=scanned["revision"], items=items
         )
+    unchanged = store.load("3900088343")
+    assert unchanged == scanned
+    assert unchanged["external_writes"] == 0

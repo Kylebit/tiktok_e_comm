@@ -1,0 +1,61 @@
+{
+  "artifact_digests": [
+    "sha256:0109b93b572b3ffff950dd0d8c0e7e076b2974d27eb09c585e5869c37512c112",
+    "sha256:0cb862128aa4222171f15113b5903e70797da6fd8b6afcf634b67ab7d01cee00",
+    "sha256:124f6aa13a1f26aa88a0acef016616c668207a05bf0fb0f80ebccafe10090153",
+    "sha256:3f498aeee56ef2c393d1471bed51a5956e76a2c6a3f87bc7fc5c56c318c4645d",
+    "sha256:42bbc170bd7bd2f6ab3b363327fca85862f1feac79e0c34f51f7d3d901811b51",
+    "sha256:47cc1f4a45bb5fc2b08bdcaa8bd77276e04766ca4a76ee633628175355f2f5eb",
+    "sha256:665c480eaa14238790222401a440cc2cccd55cc56c495955a4eba608dae60752",
+    "sha256:7686bcfc5aecf681f08c0714bbe8c0fe5ee0b24c8d565c8716f596d00fb1f6a1",
+    "sha256:7a2f304a6f7154ace085bd62cd0500b1f88067b424e208881bae60a7565a923d",
+    "sha256:7f4819ffbfb2bc97cdae2025feed98e32ec5bbf854bd11542bdaf0aec21eebbc",
+    "sha256:86eb88eddd4ac07db58743081b3739cb8f4d01189c191a3c0ccac4543fe0f8d8",
+    "sha256:891dcaa6a4a4275e80af2b568afe1e04ab876d8c1a10aba7564dfebff1e8c7bd",
+    "sha256:8ec4f24127893dbe6c50c963452d2b5b8a064d6671e62ce6b4d759facd0e1b7d",
+    "sha256:99c52260446731e6b0cb38e55c7f0d9061be6896f93ad9616a54ee6a2c9eb420",
+    "sha256:9c6b41e4b6ead8c68cdb9b79d8e11dd7902197048a52b326e37f229f5dcde9fd",
+    "sha256:a5f610d69769fcc65aa5d4bd9aabeea1d366ebfdb613dae2b19d0098b7ca3fbc",
+    "sha256:a67914d5c134e1c81a6502539690e8d2b7aae47517b16e0ecd7b68958bc103b5",
+    "sha256:aa1a8fb2e424a45e04934ed0282aed58a1c2ab2fb298010941e3102d48a5c7df",
+    "sha256:cd8660acd8dfc1f11fef5e0fe88397d0d512148de5bae5014f10e5aea094ef5e",
+    "sha256:d0d5b1b8c6f3f83e7f0a1cda26ad61c79340dc11a2b19feb9498ed03212f59c5",
+    "sha256:dae71c8acec33df56fbfceca3d2a7eff31bb9ad07ae8466375c72952298c765a"
+  ],
+  "asset_findings": [],
+  "checks": [
+    {
+      "code": "ROLE_COVERAGE",
+      "status": "PASSED"
+    },
+    {
+      "code": "FACTUAL_ALIGNMENT",
+      "evidence": "sha256:12b1c00fe05aa9b578b7063ddf3159440475d86ab8e1e7c0b95f2046d4be9184",
+      "status": "PASSED"
+    },
+    {
+      "code": "OCR_LANGUAGE",
+      "evidence": "sha256:12b1c00fe05aa9b578b7063ddf3159440475d86ab8e1e7c0b95f2046d4be9184",
+      "status": "PASSED"
+    },
+    {
+      "code": "DUPLICATION",
+      "evidence": "sha256:12b1c00fe05aa9b578b7063ddf3159440475d86ab8e1e7c0b95f2046d4be9184",
+      "status": "PASSED"
+    },
+    {
+      "code": "TARGET_ROUTING",
+      "status": "PASSED"
+    }
+  ],
+  "external_write_count": 0,
+  "generated_asset_count": 14,
+  "generation_identity_digest": "sha256:8746af101cafc862e90768d09a2e437f95962e18e899c7518015572658213c9c",
+  "localized_asset_count": 7,
+  "offer_id": "9000052",
+  "qa_digest": "sha256:ffafcc65c230167110a6ad8947ebf92912e83c672840db97a9fc66d118f0401f",
+  "round1_snapshot_digest": "sha256:61e42461cad84c058309cca1931e42f9339a3909137a3aa5dd36c739dc3fa6cc",
+  "schema_version": "automated-image-qa/v1",
+  "status": "PASSED",
+  "visual_assessment_digest": "sha256:12b1c00fe05aa9b578b7063ddf3159440475d86ab8e1e7c0b95f2046d4be9184"
+}

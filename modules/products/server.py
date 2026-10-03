@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import ipaddress
 import logging
 import mimetypes
@@ -27,11 +28,99 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from uuid import uuid4
 
 from core.config import ROOT
+from core.static_files import resolve_static_path
 from modules.products import costs as cost_mod
 from shared_platform.product_snapshot import TIKTOK_PUBLISH_TARGETS
 from shared_platform.registry import http_registry
+from shared_platform import publication_runtime_config
+
+R3_STARTUP_CONFIG = publication_runtime_config.capture_startup_config(root=ROOT)
+
+# Service lifetime dependency; installing it neither reads config nor dispatches.
+_COMMON_DETAIL_OBSERVER_FACTORY = None
+
+
+_COMMON_STANDING_POLICY_READER = None
+_COMMON_SIGNING_CONTEXT_CONFIG = None
+
+
+def _install_service_common_standing_policy(config):
+    global _COMMON_STANDING_POLICY_READER
+    from shared_platform.publication_common_standing_policy import NativeCommonStandingPolicyReader
+    if type(config) is not publication_runtime_config.StartupConfig:
+        raise TypeError('COMMON_POLICY_STARTUP_CONFIG_REQUIRED')
+    try:
+        reader = NativeCommonStandingPolicyReader(config)
+    except (ValueError, OSError, RuntimeError):
+        reader = None
+    _COMMON_STANDING_POLICY_READER = reader
+    return reader
+
+
+def _service_common_standing_policy_reader():
+    from shared_platform.publication_common_standing_policy import NativeCommonStandingPolicyReader
+    reader = _COMMON_STANDING_POLICY_READER
+    return reader if type(reader) is NativeCommonStandingPolicyReader else None
+
+
+def _install_service_common_detail_observer(config):
+    """Install a lazy observer pinned to the trusted startup configuration."""
+    global _COMMON_DETAIL_OBSERVER_FACTORY
+    if type(config) is not publication_runtime_config.StartupConfig:
+        raise TypeError('COMMON_OBSERVER_STARTUP_CONFIG_REQUIRED')
+
+    def factory():
+        from modules.miaoshou.client import NativeCommonDetailObserver, MiaoshouLocalConfigMissing
+        try:
+            raw = publication_runtime_config._read(config.root, 'config/miaoshou.local.json')
+        except FileNotFoundError:
+            raise MiaoshouLocalConfigMissing('Pinned Miaoshou local config was not found.') from None
+        try:
+            value = json.loads(raw.decode('utf-8-sig'))
+        except (UnicodeError, ValueError, RecursionError):
+            raise ValueError('COMMON_OBSERVER_CONFIG_INVALID') from None
+        return NativeCommonDetailObserver(value)
+
+    _COMMON_DETAIL_OBSERVER_FACTORY = factory
+    return factory
+
+
+def _service_common_detail_observer():
+    if _COMMON_DETAIL_OBSERVER_FACTORY is None:
+        return None
+    from modules.miaoshou.client import NativeCommonDetailObserver
+    observer = _COMMON_DETAIL_OBSERVER_FACTORY()
+    if type(observer) is not NativeCommonDetailObserver:
+        raise TypeError('COMMON_OBSERVER_SERVICE_DEPENDENCY_INVALID')
+    return observer
+
+
+def _install_service_common_signing_context(config):
+    """Pin the native read-only context factory, without reading config or DB."""
+    global _COMMON_SIGNING_CONTEXT_CONFIG
+    if type(config) is not publication_runtime_config.StartupConfig:
+        raise TypeError('COMMON_SIGNING_STARTUP_CONFIG_REQUIRED')
+    _COMMON_SIGNING_CONTEXT_CONFIG = config
+    return config
+
+
+def _service_common_signing_context_reader(store):
+    from shared_platform.native_common_signing_context import NativeCommonSigningContextReader
+    if _COMMON_SIGNING_CONTEXT_CONFIG is None:
+        return None
+    return NativeCommonSigningContextReader(_COMMON_SIGNING_CONTEXT_CONFIG, store)
+
+
+def _service_common_baseline_reader(store):
+    from shared_platform.native_common_baseline_source import NativeCommonBaselineReader
+    if _COMMON_SIGNING_CONTEXT_CONFIG is None:
+        return None
+    return NativeCommonBaselineReader(_COMMON_SIGNING_CONTEXT_CONFIG, store)
+
 
 WEB_DIR = ROOT / "web"
+from shared_platform.runtime_identity import capture_runtime_identity
+RUNTIME_IDENTITY = capture_runtime_identity("orbit-hive-local-console", root=ROOT, web_root=WEB_DIR)
 DEFAULT_PORT = 8765
 IMAGE_CACHE_DIR = ROOT / "data" / "web_image_cache"
 PRODUCT_APPROVAL_BODY_LIMIT = 64 * 1024
@@ -55,6 +144,7 @@ _CHANNEL_CATEGORY_PREVIEW_PATH = (
 _CHANNEL_CATEGORY_APPROVAL_PATH = (
     "/api/product-workspace/channel-category-decision"
 )
+_CHANNEL_CATEGORY_RESUME_PATH = _CHANNEL_CATEGORY_APPROVAL_PATH + "/resume"
 _READONLY_SHOPEE_RECONCILE_CHECKS = frozenset(
     {
         "seller_sku",
@@ -100,6 +190,58 @@ def _product_publication_run_store():
     return default_product_publication_run_store()
 
 
+def _reconcile_product_publication_readonly(data: dict) -> tuple[int, dict]:
+    """Refresh one completed PROCESSING run through provider readback only."""
+
+    if not isinstance(data, dict) or set(data) != {"run_id"}:
+        return 400, {
+            "ok": False,
+            "error": "exact run_id is required",
+            "external_writes_performed": [],
+        }
+    try:
+        from shared_platform.product_publication_live_dependencies import (
+            build_live_ozon_dependencies,
+        )
+        from shared_platform.product_publication_readonly_reconciliation import (
+            ProductPublicationReadonlyReconciliationError,
+            reconcile_completed_processing_run_readonly,
+        )
+
+        result = reconcile_completed_processing_run_readonly(
+            run_id=data["run_id"],
+            report_store=_product_publication_report_store(),
+            run_store=_product_publication_run_store(),
+            release_store=_release_store(),
+            ozon_dependencies=build_live_ozon_dependencies(),
+        )
+    except ProductPublicationReadonlyReconciliationError as error:
+        return 409, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    except (TypeError, ValueError, OSError) as error:
+        return 409, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    evidence = result["evidence"]
+    return 200, {
+        "ok": True,
+        "schema_version": evidence["schema_version"],
+        "run_id": evidence["run_id"],
+        "report_id": evidence["report_id"],
+        "source_final_report_status": evidence["source_final_report"]["status"],
+        "derived": evidence["derived"],
+        "evidence_digest": evidence["evidence_digest"],
+        "idempotent": result["idempotent"],
+        "external_writes_performed": [],
+        "mutation_reservations": [],
+    }
+
+
 def _launch_product_publication_background(callback) -> threading.Thread:
     """Start one daemon worker without inheriting provider latency in the POST."""
 
@@ -110,6 +252,354 @@ def _launch_product_publication_background(callback) -> threading.Thread:
     )
     worker.start()
     return worker
+
+
+_ROUND1_CATEGORY_PREFIX = "/api/product-workspace/round1-category/"
+_ROUND1_CATEGORY_INSTANCE = uuid4().hex
+
+
+def _round1_category_context(data):
+    from shared_platform.round1_category_observations import workspace_context
+    from modules.shopee.oneclick_release import prepared_account_metadata
+    from shared_platform.release_store import default_release_store
+    review = _round1_category_review(data)
+    return workspace_context(review, prepared_account_metadata(data['source_region']), default_release_store())
+
+
+def _round1_category_attempt_response(store, request_id, offer_id):
+    row = store.category_capture_request(request_id, offer_id, _ROUND1_CATEGORY_INSTANCE)
+    if row is None:
+        return {'ok':True, 'request_id':request_id, 'status':'NOT_STARTED', 'observer_reference':None}
+    result = {'ok':True, 'request_id':request_id, 'status':row['status'], 'observer_reference':row['observer_reference'], 'code':row['code']}
+    progress=store.category_request_progress(request_id)
+    result['progress']=progress
+    if progress['purpose']=='OPTIONS':
+        result['options_reference']=row['observer_reference'];result['observer_reference']=None
+        if row['status']=='SUCCEEDED':
+            from shared_platform.round1_category_observations import options_projection
+            result['options']=options_projection(store.category_options_record(row['observer_reference'],offer_id))
+        return result
+    if row['status'] == 'SUCCEEDED':
+        from shared_platform.round1_category_observations import build_receipt
+        observed = store.round1_category_observation(row['observer_reference'])
+        if observed is None:
+            raise ValueError('CATEGORY_REQUEST_RESULT_MISSING')
+        result['receipt'] = build_receipt(observed)
+    return result
+
+
+def _round1_category_initial_request(action,data,*,worker_origin=None):
+    from shared_platform.round1_category_observations import OPTIONS_REQUEST_SCHEMA,SELECTION_REQUEST_SCHEMA,resolve_options_selection
+    from shared_platform.round1_category_evidence import digest,input_digest,CategoryEvidenceError
+    from shared_platform.release_store import default_release_store,ReleaseStoreError,WorkerCategoryOrigin
+    common={'schema_version','request_id','context_digest','offer_id','product_center_revision','requested_targets','source_region','account_identity_digest'}
+    extra=set() if action=='options' else {'options_reference','options_digest','selected_category_identity','attribute_selections'}
+    schema=OPTIONS_REQUEST_SCHEMA if action=='options' else SELECTION_REQUEST_SCHEMA
+    if (type(data) is not dict or set(data)!=common|extra or data['schema_version']!=schema
+            or type(data['offer_id']) is not str or not re.fullmatch(r'[0-9]{1,32}',data['offer_id'])
+            or type(data['request_id']) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,96}',data['request_id'])
+            or type(data['product_center_revision']) is not int or data['product_center_revision']<0
+            or type(data['source_region']) is not str or data['source_region'] not in {'PH','MY','TH','VN'}
+            or type(data['requested_targets']) is not list or not data['requested_targets']
+            or any(type(x) is not str for x in data['requested_targets'])
+            or len(set(data['requested_targets']))!=len(data['requested_targets'])
+            or any(type(data[k]) is not str or not re.fullmatch(r'sha256:[0-9a-f]{64}',data[k]) for k in ['context_digest','account_identity_digest'])):
+        return 400,{'ok':False,'code':'CATEGORY_INITIAL_REQUEST_INVALID'}
+    store=default_release_store();purpose='OPTIONS' if action=='options' else 'CAPTURE'
+    try:
+        incoming=digest(data)
+        existing=store.category_capture_request(data['request_id'],data['offer_id'],_ROUND1_CATEGORY_INSTANCE)
+        if existing:
+            if json.loads(existing['request_json']).get('_ui_request_digest')!=incoming:
+                return 409,{'ok':False,'code':'CATEGORY_REQUEST_ID_CONFLICT'}
+            if worker_origin is not None:
+                expected = (dict(request_id=data['request_id'],task_id=worker_origin.task_id,
+                    purpose=purpose,release=worker_origin.release,ui_request_digest=incoming)
+                    if (type(worker_origin) is WorkerCategoryOrigin
+                        and worker_origin.request_id==data['request_id']
+                        and worker_origin.purpose==purpose
+                        and worker_origin.ui_request_digest==incoming) else None)
+                if expected is None or store.category_worker_origin(data['request_id']) != expected:
+                    return 409,{'ok':False,'code':'CATEGORY_WORKER_ORIGIN_CONFLICT'}
+            return 200,_round1_category_attempt_response(store,data['request_id'],data['offer_id'])
+        payload=dict(data,_ui_request_digest=incoming)
+        option=None
+        if action!='options':
+            record=store.category_options_record(data['options_reference'],data['offer_id'])
+            if record['options_digest']!=data['options_digest'] or record['source_region']!=data['source_region'] or record['account_identity_digest']!=data['account_identity_digest']:
+                raise CategoryEvidenceError('CATEGORY_OPTIONS_CONTEXT_MISMATCH')
+            option,selected=resolve_options_selection(record,data['selected_category_identity'],data['attribute_selections'])
+            payload.update(category_id=option['category_id'],selected_attributes=selected)
+        if not store.begin_category_capture(payload,_ROUND1_CATEGORY_INSTANCE,purpose=purpose,
+                                            worker_origin=worker_origin):
+            return 200,_round1_category_attempt_response(store,data['request_id'],data['offer_id'])
+    except (CategoryEvidenceError,ValueError,TypeError,KeyError):
+        return 409,{'ok':False,'code':'CATEGORY_OPTIONS_SELECTION_INVALID'}
+    except ReleaseStoreError:
+        return 409,{'ok':False,'code':'CATEGORY_REQUEST_ID_CONFLICT'}
+    try:
+        with _product_workbench_lock(data['offer_id']):
+            context=_round1_category_context(data);review=_round1_category_review(data)
+            if context['source_account']['readiness']!='READY' or context['context_digest']!=data['context_digest'] or context['source_account']['account_identity_digest']!=data['account_identity_digest']:
+                raise CategoryEvidenceError('CATEGORY_CONTEXT_MISMATCH')
+            if option is not None and record['input_digest']!=input_digest(review):
+                raise CategoryEvidenceError('CATEGORY_OPTIONS_CONTEXT_MISMATCH')
+            progress=lambda phase,path:store.record_category_get(data['request_id'],phase,path)
+            from modules.shopee.global_plan_candidate import capture_round1_options,capture_round1_category
+            if action=='options':
+                observed=capture_round1_options(review,source_region=data['source_region'],account_identity_digest=data['account_identity_digest'],progress=progress)
+            else:
+                observed=capture_round1_category(review,source_region=data['source_region'],account_identity_digest=data['account_identity_digest'],
+                    category_id=payload['category_id'],selected_attributes=payload['selected_attributes'],progress=progress)
+                original_path=[{'id':x['category_id'],'name':x['name']} for x in option['path']]
+                if observed['category']['path']!=original_path or observed['attribute_tree']!=option['attribute_tree']:
+                    raise CategoryEvidenceError('RECHECK_REQUIRED')
+            if input_digest(_round1_category_review(data))!=input_digest(review):
+                raise CategoryEvidenceError('CATEGORY_INPUT_CHANGED_DURING_CAPTURE')
+            kwargs={'options':observed} if action=='options' else {'observation':observed}
+            store.finish_category_capture(data['request_id'],_ROUND1_CATEGORY_INSTANCE,**kwargs)
+    except Exception as error:
+        from modules.shopee.global_plan_candidate import ShopeeGlobalPlanCandidateError
+        known=isinstance(error,(CategoryEvidenceError,ShopeeGlobalPlanCandidateError))
+        code=str(error) if isinstance(error,CategoryEvidenceError) else error.reason_code if isinstance(error,ShopeeGlobalPlanCandidateError) else 'CATEGORY_INITIAL_OUTCOME_UNKNOWN'
+        if code == 'shopee_official_observation_transport_unavailable':
+            known = False
+        try:store.finish_category_capture(data['request_id'],_ROUND1_CATEGORY_INSTANCE,code=code,unknown=not known)
+        except Exception:return 409,{'ok':False,'status':'UNKNOWN','request_id':data['request_id']}
+    return 200,_round1_category_attempt_response(store,data['request_id'],data['offer_id'])
+
+
+def _round1_category_capture_v2(data):
+    from shared_platform.round1_category_observations import UI_CAPTURE_SCHEMA
+    from shared_platform.round1_category_evidence import digest, input_digest, CategoryEvidenceError
+    from shared_platform.release_store import default_release_store, ReleaseStoreError
+    fields = {'schema_version','request_id','context_digest','offer_id','product_center_revision','requested_targets',
+              'source_region','account_identity_digest','category_id','selected_attributes'}
+    if (type(data) is not dict or set(data)!=fields or data['schema_version']!=UI_CAPTURE_SCHEMA
+            or type(data['request_id']) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,96}',data['request_id'])
+            or type(data['offer_id']) is not str or not re.fullmatch(r'[0-9]{1,32}',data['offer_id'])
+            or type(data['product_center_revision']) is not int or data['product_center_revision']<0
+            or type(data['source_region']) is not str or data['source_region'] not in {'PH','MY','TH','VN'}
+            or type(data['requested_targets']) is not list or not data['requested_targets']
+            or any(type(x) is not str for x in data['requested_targets'])
+            or len(set(data['requested_targets']))!=len(data['requested_targets'])
+            or type(data['category_id']) is not int or data['category_id']<=0 or type(data['selected_attributes']) is not list
+            or any(type(data[k]) is not str or not re.fullmatch(r'sha256:[0-9a-f]{64}',data[k]) for k in ['context_digest','account_identity_digest'])):
+        return 400, {'ok':False,'code':'INVALID_CATEGORY_CAPTURE_REQUEST'}
+    store=default_release_store()
+    try:
+        if not store.begin_category_capture(data,_ROUND1_CATEGORY_INSTANCE):
+            return 200,_round1_category_attempt_response(store,data['request_id'],data['offer_id'])
+    except (CategoryEvidenceError, TypeError, ValueError):
+        return 400,{'ok':False,'code':'INVALID_CATEGORY_CAPTURE_REQUEST'}
+    except ReleaseStoreError:
+        return 409,{'ok':False,'code':'CATEGORY_REQUEST_ID_CONFLICT'}
+    try:
+        with _product_workbench_lock(data['offer_id']):
+            context=_round1_category_context(data)
+            if context['source_account']['readiness']!='READY':
+                raise CategoryEvidenceError('PREPARED_CREDENTIALS_REQUIRED')
+            if context['context_digest']!=data['context_digest'] or context['source_account']['account_identity_digest']!=data['account_identity_digest']:
+                raise CategoryEvidenceError('CATEGORY_CONTEXT_MISMATCH')
+            review=_round1_category_review(data)
+            from modules.shopee.global_plan_candidate import capture_round1_category
+            observed=capture_round1_category(review,source_region=data['source_region'],category_id=data['category_id'],
+                selected_attributes=data['selected_attributes'],account_identity_digest=data['account_identity_digest'],
+                progress=lambda phase,path:store.record_category_get(data['request_id'],phase,path))
+            if input_digest(_round1_category_review(data))!=input_digest(review):
+                raise CategoryEvidenceError('CATEGORY_INPUT_CHANGED_DURING_CAPTURE')
+            store.finish_category_capture(data['request_id'],_ROUND1_CATEGORY_INSTANCE,observation=observed)
+    except Exception as error:
+        from modules.shopee.global_plan_candidate import ShopeeGlobalPlanCandidateError
+        known=isinstance(error,(CategoryEvidenceError,ShopeeGlobalPlanCandidateError))
+        code=str(error) if isinstance(error,CategoryEvidenceError) else error.reason_code if isinstance(error,ShopeeGlobalPlanCandidateError) else 'CATEGORY_CAPTURE_OUTCOME_UNKNOWN'
+        if code == 'shopee_official_observation_transport_unavailable':
+            known = False
+        try:
+            store.finish_category_capture(data['request_id'],_ROUND1_CATEGORY_INSTANCE,code=code,unknown=not known)
+        except Exception:
+            return 409,{'ok':False,'status':'UNKNOWN','request_id':data['request_id'],'code':'CATEGORY_CAPTURE_OUTCOME_UNKNOWN'}
+    return 200,_round1_category_attempt_response(store,data['request_id'],data['offer_id'])
+
+
+def _round1_category_review(data):
+    """Build R1 inputs from current server facts, without client fact overlays."""
+    import importlib.util
+    from shared_platform.release_control import build_release_dashboard
+    script = Path(__file__).resolve().parents[2] / 'skills/prepare-product-publication/scripts/prepare_product_publication.py'
+    spec = importlib.util.spec_from_file_location('_server_round1_prepare', script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    packet = module.prepare_offer(offer_id=data['offer_id'], requested_targets=data['requested_targets'],
+                                  category_source_region=data['source_region'],
+                                  preview_builder=lambda offer: build_release_dashboard(offer_id=offer))
+    from shared_platform.round1_category_evidence import CategoryEvidenceError, input_digest
+    if packet['product_center_revision'] != data['product_center_revision']:
+        raise CategoryEvidenceError('CATEGORY_REVISION_MISMATCH')
+    if packet['target_selection']['missing_from_product_center']:
+        raise CategoryEvidenceError('CATEGORY_TARGETS_NOT_SELECTED')
+    if any(code != 'CATEGORY_RECEIPT_UNAVAILABLE' for code in packet['blockers']):
+        raise CategoryEvidenceError('CATEGORY_PRODUCT_INPUT_UNREADY')
+    input_digest(packet)
+    return packet
+
+
+def _round1_workspace_request(action, data):
+    import sys
+    from shared_platform import round1_workspace
+    try:
+        if action == 'prepare':
+            result = round1_workspace.prepare(sys.modules[__name__], data)
+        elif action == 'freeze':
+            result = round1_workspace.freeze(sys.modules[__name__], data)
+        elif action == 'approve':
+            result = round1_workspace.freeze(sys.modules[__name__], data, approve=True)
+        else:
+            result = round1_workspace.status(sys.modules[__name__], data['offer_id'], request_id=data['request_id'])
+        if action in {'approve', 'freeze'} and result.get('status') in {'APPROVED_NOT_FROZEN', 'FROZEN'}:
+            from shared_platform.release_control import build_release_dashboard
+            result['dashboard'] = _product_workspace_view(build_release_dashboard(offer_id=data['offer_id']))
+        return 200, result
+    except (ValueError, TypeError, KeyError) as error:
+        return 409, {'ok': False, 'status': 'BLOCKED', 'code': str(error)}
+    except Exception:
+        return 409, {'ok': False, 'status': 'UNKNOWN', 'code': 'R1_OUTCOME_REQUIRES_RECONCILIATION'}
+
+
+def _round1_category_request(action, data):
+    if action in {'prepare', 'freeze'}:
+        return _round1_workspace_request(action, data)
+    if action=='options' or (action=='capture' and isinstance(data,dict) and data.get('schema_version')=='round1-category-capture-request/v3'):
+        return _round1_category_initial_request(action,data)
+    if action=='capture' and isinstance(data,dict) and ('schema_version' in data or 'request_id' in data):
+        return _round1_category_capture_v2(data)
+    from shared_platform.round1_category_evidence import CategoryEvidenceError, input_digest, REGIONS
+    from shared_platform.round1_category_observations import resolve_record, build_receipt
+    from shared_platform.release_store import default_release_store, ReleaseStoreError
+    common = {'offer_id', 'product_center_revision', 'requested_targets', 'source_region', 'account_identity_digest'}
+    extra = {'category_id', 'selected_attributes'} if action == 'capture' else {'observer_reference'}
+    code = 'INVALID_CATEGORY_CAPTURE_REQUEST' if action == 'capture' else 'INVALID_CATEGORY_RESOLVE_REQUEST'
+    if (action not in {'capture', 'resolve'} or type(data) is not dict or set(data) != common | extra
+            or type(data.get('offer_id')) is not str or not re.fullmatch(r'[0-9]{1,32}', data['offer_id'])
+            or type(data.get('product_center_revision')) is not int or data['product_center_revision'] < 0
+            or type(data.get('requested_targets')) is not list or not data['requested_targets']
+            or any(type(target) is not str for target in data['requested_targets'])
+            or len(set(data['requested_targets'])) != len(data['requested_targets'])
+            or type(data.get('source_region')) is not str or data['source_region'] not in REGIONS
+            or type(data.get('account_identity_digest')) is not str
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}', data['account_identity_digest'])):
+        return 400, {'ok': False, 'code': code}
+    if action == 'capture' and (type(data['category_id']) is not int or data['category_id'] <= 0
+                               or type(data['selected_attributes']) is not list):
+        return 400, {'ok': False, 'code': code}
+    try:
+        with _product_workbench_lock(data['offer_id']):
+            review = _round1_category_review(data)
+            store = default_release_store()
+            if action == 'capture':
+                from modules.shopee.global_plan_candidate import capture_round1_category
+                observed = capture_round1_category(review, source_region=data['source_region'],
+                    category_id=data['category_id'], selected_attributes=data['selected_attributes'],
+                    account_identity_digest=data['account_identity_digest'])
+                if input_digest(_round1_category_review(data)) != input_digest(review):
+                    raise CategoryEvidenceError('CATEGORY_INPUT_CHANGED_DURING_CAPTURE')
+                observed = store.persist_round1_category_observation(observed)
+            else:
+                observed = resolve_record(store, data['observer_reference'], review=review,
+                                          account_identity_digest=data['account_identity_digest'])
+            return 200, {'ok': True, 'status': 'CAPTURED' if action == 'capture' else 'RESOLVED',
+                         'receipt': build_receipt(observed), 'external_write_count': 0}
+    except CategoryEvidenceError as error:
+        return 409, {'ok': False, 'code': str(error), 'external_write_count': 0}
+    except ReleaseStoreError:
+        return 409, {'ok': False, 'code': 'CATEGORY_RECORD_CONFLICT', 'external_write_count': 0}
+    except Exception as error:
+        from modules.shopee.global_plan_candidate import ShopeeGlobalPlanCandidateError
+        code = error.reason_code if isinstance(error, ShopeeGlobalPlanCandidateError) else 'CATEGORY_CAPTURE_UNAVAILABLE'
+        return 409, {'ok': False, 'code': code, 'external_write_count': 0}
+
+
+_PUBLICATION_CLOSURE_PREFIX = "/api/product-workspace/publication-closure/"
+
+
+def _product_publication_closure_service():
+    from shared_platform.product_publication_closure import PublicationClosureService
+    from shared_platform import publication_r3_image_bridge as bridge
+    reports = _product_publication_report_store()
+    return PublicationClosureService(release_store=_release_store(), run_store=_product_publication_run_store(),
+        report_store=reports, authority_root=bridge.REPORTS_ROOT, closure_root=reports.reports_root)
+
+
+def _publication_closure_request(action, data):
+    import sqlite3
+    from shared_platform.release_store import ReleaseStoreError
+    from shared_platform.product_publication_reports import ProductPublicationReportError
+    from shared_platform.product_publication_runs import ProductPublicationRunError
+    common = {'schema_version':'publication-closure-http/v1','external_writes_performed':[]}
+    required = {'offer_id','plan_id'} if action == 'latest' else {'offer_id','plan_id','recorded_by','recorded_at'}
+    allowed = required if action == 'latest' else required | {'manual_handoffs'}
+    if action == 'record':
+        required = required | {'input_digest'}
+        allowed = allowed | {'input_digest'}
+    if (not isinstance(data, dict) or not required <= set(data) or set(data) - allowed
+            or any(not isinstance(data[key], str) or not data[key] or data[key] != data[key].strip() for key in required)
+            or len(data['offer_id']) > 32 or not data['offer_id'].isascii()
+            or not data['offer_id'].isdigit() or int(data['offer_id']) <= 0):
+        return 400, {**common,'ok':False,'code':'INVALID_CLOSURE_REQUEST','error':'exact closure inputs are required'}
+    plan = None
+    def evidence_error(code, message):
+        payload = {**common,'ok':False,'code':code,'error':message}
+        if action != 'latest' and plan is not None and plan['product_id']==data['offer_id']:
+            from shared_platform.publication_status_projection import pending_targets
+            payload.update(status='BLOCKED',closure=None,writes_performed=[],
+                target_results=pending_targets(plan['targets'],status='RECONCILIATION_REQUIRED',blocker=code),
+                blockers=[{'target_label':label,'code':code} for label in plan['targets']])
+        return 409, payload
+    try:
+        service = _product_publication_closure_service()
+        from shared_platform.immutable_approval_files import require_local_path
+        require_local_path(service.release_store.path,root=service.release_store.path.parent)
+        plan = service.release_store.get_plan(data['plan_id'])
+        if plan is None:
+            return 404, {**common,'ok':False,'code':'CLOSURE_PLAN_NOT_FOUND','error':'closure plan was not found'}
+        if plan['product_id'] != data['offer_id']:
+            return 409, {**common,'ok':False,'code':'CLOSURE_PLAN_CONFLICT','error':'closure plan does not belong to offer'}
+        if action == 'latest':
+            document = service.latest(offer_id=data['offer_id'],plan_id=data['plan_id'])
+            return 200, {**common,'ok':True,'status':'RECORDED' if document else 'NOT_RECORDED',
+                         'closure':document,'writes_performed':[]}
+        inputs = {key:value for key,value in data.items() if key != 'input_digest'}
+        prepared = service.prepare(**inputs)
+        if prepared['status'] == 'BLOCKED':
+            return 409, {**common,'ok':False,**prepared}
+        if action == 'prepare':
+            return 200, {**common,'ok':True,**prepared}
+        if data['input_digest'] != prepared['input_digest']:
+            return 409, {**common,'ok':False,'code':'STALE_CLOSURE_INPUT','error':'closure inputs or evidence changed',
+                         'target_results':prepared['target_results']}
+        service.record(prepared)
+        return 200, {**common,'ok':True,'status':'RECORDED','closure':prepared['closure'],
+                     'input_digest':prepared['input_digest'],'local_persistence':'IMMUTABLE_RECORD_CONFIRMED'}
+    except (ValueError, TypeError, KeyError, ReleaseStoreError, ProductPublicationReportError, ProductPublicationRunError):
+        return evidence_error('CLOSURE_EVIDENCE_CONFLICT',
+            'closure inputs or durable evidence are invalid; refresh the exact plan')
+    except (OSError, sqlite3.Error):
+        return evidence_error('CLOSURE_EVIDENCE_UNAVAILABLE','closure evidence could not be read or persisted')
+
+
+def _closure_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate closure JSON field')
+        result[key] = value
+    return result
+
+
+def _catalog_publication_sync():
+    from core.db import db_path
+    from shared_platform.catalog_publication_sync import CatalogPublicationSync
+    return CatalogPublicationSync(db_path(), _product_publication_report_store().reports_root / "catalog-sync")
 
 
 def _release_store():
@@ -146,8 +636,13 @@ _PRODUCT_PUBLICATION_COMMON_EXECUTION_FILES = (
 )
 _PRODUCT_PUBLICATION_PLATFORM_EXECUTION_FILES = {
     "TIKTOK": ("domains/channel_operations/tiktok_publisher.py", "domains/channel_operations/tiktok_v4_execution.py", "modules/miaoshou/client.py", "modules/miaoshou/tiktok_publisher.py", "modules/miaoshou/tiktok_v4_drafts.py"),
-    "SHOPEE": ("modules/shopee/client.py", "modules/shopee/global_v4_executor.py", "modules/shopee/global_v4_live_runtime.py", "modules/shopee/global_sku_map.py", "modules/shopee/skill_regions.py"),
-    "OZON": ("modules/ozon/approved_publication_v4.py", "modules/ozon/client.py"),
+    "SHOPEE": ("modules/shopee/client.py", "modules/shopee/global_v4_executor.py", "modules/shopee/global_v4_live_runtime.py", "modules/shopee/global_sku_map.py", "modules/shopee/skill_regions.py", "shared_platform/shopee_publication_checkpoint.py", "shared_platform/shopee_regional_recovery.py"),
+    "OZON": (
+        "modules/ozon/approved_publication_v4.py",
+        "modules/ozon/client.py",
+        "modules/ozon/config.py",
+        "shared_platform/ozon_runtime_credentials.py",
+    ),
 }
 
 
@@ -161,7 +656,18 @@ def _product_publication_execution_identity(platform: str) -> dict[str, str]:
     files = tuple(sorted({*_PRODUCT_PUBLICATION_COMMON_EXECUTION_FILES, *_PRODUCT_PUBLICATION_PLATFORM_EXECUTION_FILES[platform]}))
     manifest = {relative: hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() for relative in files}
     code_digest = hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-    return {"skill_digest": skill_digest, "git_commit": git_commit, "code_digest": code_digest}
+    identity = {
+        "skill_digest": skill_digest,
+        "git_commit": git_commit,
+        "code_digest": code_digest,
+    }
+    if platform == "OZON":
+        from shared_platform.ozon_runtime_credentials import (
+            required_pinned_ozon_credentials,
+        )
+
+        identity.update(required_pinned_ozon_credentials().public())
+    return identity
 
 
 def _initialize_product_publication_platform_executors() -> dict[str, object]:
@@ -271,19 +777,62 @@ def _execute_product_publication_background(
     report_store,
     run_store,
     expected_execution_identity: dict[str, str],
+    candidate_digest: str | None = None,
+    target_scope: tuple[str, ...] | None = None,
+    retry_attempt: dict[str, str] | None = None,
+    write_budget_overrides: dict[str, dict] | None = None,
+    recovery_authorization: dict | None = None,
+    recovery_retry_authorization: dict | None = None,
+    recovery_continuation: dict | None = None,
+    recovery_source_roots: tuple[Path, ...] | None = None,
+    recovery_authorization_validator=None,
+    require_domain_lock=False,
+    continuation_domain_guard=None,
 ) -> None:
     """Run one exact platform after the durable QUEUED event is committed."""
 
     from shared_platform.product_publication_runner import ProductPublicationRunner
+    from shared_platform.registered_r3_legacy_publish_guard import (
+        RegisteredR3PublishAdmissionBlocked, require_legacy_publish_admission,
+    )
 
     try:
         if _product_publication_execution_identity(platform) != expected_execution_identity:
             run_store.mark_failed(run_id=run_id, failure_code="EXECUTION_IDENTITY_DRIFT")
             return
+        # Registration can change after QUEUED. Stop before domain claim or executor.
+        require_legacy_publish_admission(offer_id)
+        if recovery_authorization_validator is not None:
+            checked_authorization = recovery_authorization_validator(
+                recovery_authorization
+            )
+            if checked_authorization != recovery_authorization:
+                raise ValueError("recovery authorization changed before execution")
+            recovery_authorization = checked_authorization
+        final_packet = {}
+        if candidate_digest is not None:
+            from shared_platform.publication_autopilot import load_release_candidate, load_final_approval_receipt
+            preparation_root = report_store.reports_root.parent / "product-preparation"
+            candidate = load_release_candidate(offer_id, candidate_digest, reports_root=preparation_root)
+            final_packet = {"release_candidate": candidate,
+                "final_approval": load_final_approval_receipt(candidate, reports_root=preparation_root)}
+        from shared_platform.operations_domain_guard import begin_snapshot_publication
+        operation_guard = continuation_domain_guard() if continuation_domain_guard is not None else begin_snapshot_publication(
+            release_store, offer_id, snapshot_digest, platform, ROOT,
+            retry_attempt=retry_attempt, target_scope=target_scope,
+            recovery_continuation=recovery_continuation,
+            recovery_authorization=recovery_authorization,
+            recovery_candidate=final_packet.get("release_candidate"),
+            recovery_approval=final_packet.get("final_approval"),
+            recovery_source_roots=recovery_source_roots,
+            expected_run_id=run_id)
+        if require_domain_lock and operation_guard is None:
+            raise ValueError('continuation requires configured domain coordination')
         run_store.mark_running(run_id=run_id)
         receipt = ProductPublicationRunner(
             release_store=release_store,
             report_store=report_store,
+            catalog_sink=_catalog_publication_sync(),
         ).run(
             run_id=run_id,
             offer_id=offer_id,
@@ -291,6 +840,11 @@ def _execute_product_publication_background(
             platform_scope=(platform,),
             platform_executors={platform: executor},
             execution_identity=expected_execution_identity,
+            target_scope=target_scope,
+            write_budget_overrides=write_budget_overrides,
+            recovery_authorization=recovery_authorization,
+            recovery_retry_authorization=recovery_retry_authorization,
+            **final_packet,
         )
         if (
             receipt.report["run_id"] != run_id
@@ -302,6 +856,11 @@ def _execute_product_publication_background(
             run_id=run_id,
             final_report_id=receipt.report["report_id"],
         )
+        if operation_guard is not None and receipt.report.get('targets') and all(r.get('status') == 'PUBLISHED' and r.get('evidence') for r in receipt.report['targets']):
+            operation_guard[0].complete_domain_operation(operation_guard[1], provider_readback_ref=receipt.report['report_id'])
+    except RegisteredR3PublishAdmissionBlocked:
+        run_store.mark_failed(run_id=run_id, failure_code="REGISTERED_R3_PUBLISH_ADMISSION_BLOCKED")
+        return
     except Exception as error:
         # Provider/client exceptions are already reduced to redacted target
         # outcomes by ProductPublicationRunner.  Reaching this boundary means
@@ -320,6 +879,106 @@ def _execute_product_publication_background(
         )
 
 
+_TIKTOK_CONTINUATION_HOST = None
+
+
+def _preview_tiktok_continuation_admission(data, *, completion):
+    # Host code may register audited readers and an executor. HTTP and env
+    # payloads cannot register adapters. Maintenance routes remain blocked.
+    from shared_platform.tiktok_continuation_admission import endpoint
+    from shared_platform.tiktok_continuation_admission import validate_request_shape, validate_admission
+    from copy import deepcopy
+    host = _TIKTOK_CONTINUATION_HOST
+    if host is None:
+        return endpoint(data, completion=completion)
+    if (not isinstance(host, dict) or not {'context_reader', 'executor'} <= set(host)
+            or set(host) - {'context_reader', 'executor', 'authority_root'}
+            or not callable(host['context_reader']) or not callable(host['executor'])):
+        return 503, {'ok': False, 'code': 'CONTINUATION_HOST_NOT_AVAILABLE', 'external_write_count': 0}
+    authority_root = host.get('authority_root')
+    if completion and authority_root is None:
+        return 503, {'ok': False, 'code': 'CONTINUATION_SOURCE_EVIDENCE_NOT_CONFIGURED', 'external_write_count': 0}
+    if os.environ.get('ORBIT_PUBLICATION_REQUIRE_VERIFIED_RUNTIME') == '1':
+        from shared_platform.runtime_identity import health_payload
+        runtime = health_payload('orbit-hive-local-console', root=ROOT, web_root=WEB_DIR, startup=RUNTIME_IDENTITY)
+        if runtime.get('state') != 'READY':
+            return 503, {'ok': False, 'code': 'RUNTIME_IDENTITY_NOT_VERIFIED', 'external_write_count': 0}
+    from shared_platform.product_publication_runner import prepare_product_publication_run, claim_product_publication_request
+    try:
+        manifest = validate_request_shape(data)
+        data = deepcopy(data)
+        context_reader = host['context_reader']
+        admitted = validate_admission(data, completion=completion, **context_reader(data))
+        release_store = _release_store()
+        report_store = _product_publication_report_store()
+        run_store = _product_publication_run_store()
+        if completion:
+            from shared_platform.tiktok_completion_receipts import verify_completion_receipts
+            verify_completion_receipts(manifest,authority_root=authority_root,
+                                       run_store=run_store,report_store=report_store)
+        prepared = prepare_product_publication_run(release_store=release_store,
+            offer_id=data['offer_id'],plan_id=data['plan_id'],platform_scope=('TIKTOK',),
+            target_scope=admitted['approved_target_labels'])
+        execution_identity = _product_publication_execution_identity('TIKTOK')
+        stored = claim_product_publication_request(prepared=prepared,platform='TIKTOK',
+            execution_identity=execution_identity,run_store=run_store,report_store=report_store,
+            release_store=release_store,tiktok_continuation_context={
+                'data':data,'completion':completion,'context_reader':context_reader,
+                'authority_root':authority_root})
+    except (ValueError, TypeError, KeyError, OSError) as error:
+        code = getattr(error, 'code', None)
+        if code not in {'CONTINUATION_SOURCE_EVIDENCE_UNAVAILABLE','CONTINUATION_SOURCE_EVIDENCE_MISMATCH'}:
+            code = 'CONTINUATION_ADMISSION_REJECTED'
+        return 409, {'ok': False, 'code': code, 'external_write_count': 0,
+                     'resolution': 'RECONCILE_EXISTING_EVIDENCE', 'new_approval_required': False}
+    if stored.created:
+        def executor(request):
+            # The original background handler obtains the domain lock before
+            # invoking this callback. Re-read revocation/approval after that lock.
+            current = validate_admission(data, completion=completion, **context_reader(data))
+            if current != admitted:
+                raise ValueError('continuation policy changed before dispatch')
+            if completion:
+                from shared_platform.tiktok_completion_receipts import verify_completion_receipts
+                verify_completion_receipts(manifest,authority_root=authority_root,
+                                           run_store=run_store,report_store=report_store)
+            result = host['executor'](request, manifest)
+            if manifest.get('zero_write_retry') and isinstance(result, dict) and 'continuation_evidence' in result:
+                from shared_platform.tiktok_continuation_admission import _digest
+                binding = manifest['zero_write_retry']
+                retry_source = {'kind':'TIKTOK_FIRST_COMPLETION_ZERO_WRITE_RETRY',
+                    'authority_digest':manifest['authority_addendum_digest'],'manifest_digest':manifest['manifest_digest'],
+                    'retry_of_run_id':binding['source_run_id'],
+                    **{key:binding[key] for key in ('source_report_digest','source_result_digest','source_manifest_digest')}}
+                retry_source['binding_digest'] = _digest(retry_source)
+                result = deepcopy(result)
+                if result['continuation_evidence']['manifest_digest'] != manifest['manifest_digest']:
+                    raise ValueError('executor returned another continuation manifest')
+                result['continuation_evidence']['retry_source'] = retry_source
+            return result
+        domain_guard = None
+        if manifest.get('zero_write_retry'):
+            from shared_platform.tiktok_continuation_domain import begin_tiktok_completion_retry
+            domain_guard = lambda: begin_tiktok_completion_retry(data=data,context_reader=context_reader,
+                authority_root=authority_root,release_store=release_store,run_store=run_store,
+                report_store=report_store,root=ROOT,run_id=stored.run_id)
+        try:
+            _launch_product_publication_background(lambda: _execute_product_publication_background(
+                run_id=stored.run_id,offer_id=prepared.offer_id,snapshot_digest=prepared.snapshot_digest,
+                platform='TIKTOK',executor=executor,release_store=release_store,report_store=report_store,
+                run_store=run_store,expected_execution_identity=execution_identity,
+                candidate_digest=data['candidate_digest'].removeprefix('sha256:'),
+                target_scope=prepared.target_labels_by_platform['TIKTOK'],require_domain_lock=True,
+                continuation_domain_guard=domain_guard))
+        except Exception:
+            try:
+                run_store.mark_failed(run_id=stored.run_id,failure_code='WORKER_LAUNCH_FAILED')
+            except Exception:
+                _PLATFORM_PUBLISH_LOGGER.error('continuation launch cursor failed run_id=%s',stored.run_id)
+    return 202, {'ok': True,'schema_version':'product-publication-start/v1','platform':'TIKTOK',
+                 'report_id':stored.report_id,'run_id':stored.run_id,'reused':not stored.created}
+
+
 def _start_product_publication(
     data: dict,
     *,
@@ -327,7 +986,29 @@ def _start_product_publication(
 ) -> tuple[int, dict]:
     """Validate and queue exactly one frozen platform run, then return 202."""
 
-    from shared_platform.product_publication_runner import prepare_product_publication_run
+    if os.environ.get("ORBIT_PUBLICATION_REQUIRE_VERIFIED_RUNTIME") == "1":
+        from shared_platform.runtime_identity import health_payload
+
+        runtime = health_payload(
+            "orbit-hive-local-console",
+            root=ROOT,
+            web_root=WEB_DIR,
+            startup=RUNTIME_IDENTITY,
+        )
+        if runtime.get("state") != "READY":
+            return 503, {
+                "ok": False,
+                "error": "stable runtime identity is not verified",
+                "external_write_count": 0,
+            }
+
+    from shared_platform.product_publication_runner import (
+        prepare_product_publication_run, claim_product_publication_request,
+    )
+    from shared_platform.release_store import ImmutableReleaseError
+    from shared_platform.shopee_recovery_run_reconciliations import (
+        ShopeeRecoveryRunReconciliationError,
+    )
 
     if platform not in {"TIKTOK", "SHOPEE", "OZON"}:
         return 400, {"ok": False, "error": "unsupported publication platform"}
@@ -335,6 +1016,70 @@ def _start_product_publication(
     plan_id = data.get("plan_id")
     if type(offer_id) is not str or type(plan_id) is not str:
         return 400, {"ok": False, "error": "offer_id and plan_id are required"}
+    from shared_platform.registered_r3_legacy_publish_guard import (
+        RegisteredR3PublishAdmissionBlocked, require_legacy_publish_admission,
+    )
+    try:
+        require_legacy_publish_admission(offer_id)
+    except RegisteredR3PublishAdmissionBlocked as error:
+        return 409, {"ok": False, "code": error.code, "error": str(error),
+                     "external_write_count": 0, "external_writes_performed": []}
+
+    retry_of_run_id = data.get("retry_of_run_id")
+    target_scope = data.get("target_scope")
+    recovery_manifest_digest = data.get("recovery_manifest_digest")
+    recovery_zero_write_receipt_digest = data.get(
+        "recovery_zero_write_receipt_digest"
+    )
+    if recovery_manifest_digest is not None and os.environ.get("ORBIT_SHOPEE_RECOVERY_ENABLED") != "1":
+        return 409, {"ok": False, "error": "Shopee recovery execution is not enabled",
+                     "external_write_count": 0}
+    if recovery_manifest_digest is not None and (
+        platform != "SHOPEE" or "target_scope" not in data
+    ):
+        return 409, {
+            "ok": False,
+            "error": "Shopee recovery requires an exact Shopee target_scope",
+            "external_write_count": 0,
+        }
+    if recovery_zero_write_receipt_digest is not None and (
+        recovery_manifest_digest is None or retry_of_run_id is None
+    ):
+        return 409, {
+            "ok": False,
+            "error": "Shopee recovery retry receipt requires an exact recovery and retry source",
+            "external_write_count": 0,
+        }
+    if recovery_manifest_digest is not None and retry_of_run_id is not None and (
+        type(recovery_zero_write_receipt_digest) is not str
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}", recovery_zero_write_receipt_digest
+        ) is None
+    ):
+        return 409, {
+            "ok": False,
+            "error": "Shopee recovery retry requires a baseline-unchanged receipt",
+            "external_write_count": 0,
+        }
+    if recovery_manifest_digest is not None and retry_of_run_id is None \
+            and recovery_zero_write_receipt_digest is not None:
+        return 409, {
+            "ok": False,
+            "error": "Shopee recovery receipt cannot be used without a retry source",
+            "external_write_count": 0,
+        }
+    if retry_of_run_id is None and recovery_manifest_digest is None and "target_scope" in data:
+        return 409, {
+            "ok": False,
+            "error": "target_scope requires an explicit retry_of_run_id",
+            "external_write_count": 0,
+        }
+    if retry_of_run_id is not None and "target_scope" not in data:
+        return 409, {
+            "ok": False,
+            "error": "retry_of_run_id requires an exact target_scope",
+            "external_write_count": 0,
+        }
 
     executors = _product_publication_platform_executors()
     executor = executors.get(platform)
@@ -344,25 +1089,479 @@ def _start_product_publication(
     report_store = _product_publication_report_store()
     run_store = _product_publication_run_store()
     try:
+        require_legacy_publish_admission(
+            offer_id, release_store=release_store, plan_id=plan_id,
+        )
         prepared = prepare_product_publication_run(
             release_store=release_store,
             offer_id=offer_id,
             plan_id=plan_id,
             platform_scope=(platform,),
+            target_scope=target_scope,
         )
-        run_id = f"product-center-{platform.lower()}-{uuid4().hex}"
-        stored_run = run_store.create_run(
-            run_id=run_id,
-            offer_id=prepared.offer_id,
-            revision=prepared.revision,
-            plan_id=prepared.plan_id,
-            snapshot_digest=prepared.snapshot_digest,
-            platform_scope=(platform,),
-            target_count=len(prepared.target_labels_by_platform[platform]),
-            execution_identity=(execution_identity := _product_publication_execution_identity(platform)),
+        if "snapshot_digest" in data and data["snapshot_digest"] != prepared.snapshot_digest:
+            raise ValueError("approved publication snapshot digest identity conflicts")
+        if "publication_targets" in data:
+            requested = data["publication_targets"]
+            frozen = [row["target_label"] for row in prepared.snapshot["publication_targets"]]
+            if not isinstance(requested, list) or any(type(label) is not str for label in requested) or len(requested) != len(set(requested)) or set(requested) != set(frozen):
+                raise ValueError("target scope changes require a new exact frozen approval")
+        if "tiktok_target_scope" in data:
+            raise ValueError("legacy target scope requires a new exact frozen approval")
+        execution_identity = _product_publication_execution_identity(platform)
+        candidate_digest = data.get("candidate_digest")
+        if "candidate_digest" in data and (type(candidate_digest) is not str or not candidate_digest):
+            raise ValueError("candidate_digest must identify an approved final packet")
+        from shared_platform.publication_autopilot import resolve_persisted_execution_authority
+        authority = resolve_persisted_execution_authority(snapshot=prepared.snapshot,
+            platform_scope=(platform,), target_labels=prepared.target_labels_by_platform[platform],
+            reports_root=report_store.reports_root.parent / "product-preparation",
+            candidate_digest=candidate_digest)
+        if authority is not None:
+            candidate_digest = authority[0]["candidate_digest"]
+        recovery_manifest = None
+        recovery_reconciliation_receipt = None
+        recovery_zero_write_receipt = None
+        reportless_continuation_authority = None
+        known_zero_continuation_authority = None
+        known_zero_continuation_validation = None
+        known_zero_receipt = None
+        recovery_source_roots = None
+        manifest_validator = None
+        if recovery_manifest_digest is not None:
+            operations_data_root = os.environ.get("ORBIT_OPERATIONS_DATA_ROOT")
+            if not operations_data_root or not Path(operations_data_root).is_dir():
+                raise ValueError("stable operations evidence root is unavailable")
+            recovery_source_roots = (
+                report_store.reports_root,
+                report_store.reports_root.parent / "product-preparation",
+                Path(operations_data_root),
+            )
+            digest_hex = str(recovery_manifest_digest).removeprefix("sha256:")
+            if not re.fullmatch(r"[0-9a-f]{64}", digest_hex) or authority is None:
+                raise ValueError("Shopee recovery manifest identity is invalid")
+            recovery_path = (
+                report_store.reports_root.parent / "product-preparation" / offer_id
+                / "shopee-recovery-candidates" / f"{digest_hex}.json"
+            )
+            try:
+                recovery_manifest = json.loads(recovery_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise ValueError("Shopee recovery manifest is unavailable or invalid") from error
+            from shared_platform.shopee_regional_recovery import build_recovery_executor
+            if recovery_manifest.get("schema_version") \
+                    == "shopee-known-zero-recovery-execution-manifest/v1":
+                if retry_of_run_id is not None or recovery_zero_write_receipt_digest is not None:
+                    raise ValueError("known-zero continuation does not accept retry parameters")
+                from shared_platform.evidence_relocation_attestations import (
+                    EvidenceRelocationError, EvidenceRelocationResolver,
+                )
+                from shared_platform.shopee_known_zero_recovery import (
+                    ShopeeKnownZeroRecoveryStore,
+                )
+                from shared_platform.shopee_known_zero_continuation import (
+                    validate_known_zero_continuation_manifest,
+                )
+                from shared_platform.shopee_reportless_recovery_reconciliations import (
+                    ShopeeReportlessRecoveryReconciliationStore,
+                    validate_reportless_continuation_manifest,
+                )
+
+                allowed_paths = [Path(root).resolve(strict=True) for root in recovery_source_roots]
+
+                def _load_stable_ref(meta):
+                    if not isinstance(meta, dict) or set(meta) != {"path", "sha256"}:
+                        raise EvidenceRelocationError("stable lineage ref is invalid")
+                    path = Path(str(meta["path"])).resolve()
+                    if (not path.is_file()
+                            or not any(path == root or root in path.parents
+                                       for root in allowed_paths)):
+                        raise EvidenceRelocationError("stable lineage ref escapes roots")
+                    raw = path.read_bytes()
+                    if "sha256:" + hashlib.sha256(raw).hexdigest() != meta["sha256"]:
+                        raise EvidenceRelocationError("stable lineage bytes drifted")
+                    return json.loads(raw.decode("utf-8"))
+
+                try:
+                    source_manifest = _load_stable_ref(
+                        recovery_manifest["source_refs"]["original_manifest"]
+                    )
+                    source_attestation_ref = source_manifest["source_refs"][
+                        "evidence_relocation"
+                    ]
+                    source_attestation = _load_stable_ref(source_attestation_ref)
+                    source_preflight = _load_stable_ref(
+                        source_manifest["source_refs"]["preflight"]
+                    )
+                    source_original = _load_stable_ref(
+                        source_manifest["source_refs"]["original_manifest"]
+                    )
+                    source_resolver = EvidenceRelocationResolver(
+                        source_attestation,
+                        allowed_target_root=Path(source_attestation_ref["path"]).parent,
+                        expected_authority_digests={
+                            "reportless_receipt": source_manifest[
+                                "source_receipt_digest"
+                            ],
+                            "domain_closure": source_preflight["closure_digest"],
+                            "unauthorized_continuation": source_preflight[
+                                "unauthorized_continuation_digest"
+                            ],
+                            "continuation_preflight": source_manifest[
+                                "preflight_digest"
+                            ],
+                            "original_recovery_manifest": source_original[
+                                "manifest_digest"
+                            ],
+                        },
+                    )
+                    reportless_store = ShopeeReportlessRecoveryReconciliationStore(
+                        Path(operations_data_root) / "sr-reportless" / "receipts",
+                        run_store=run_store,
+                        report_store=report_store,
+                        snapshot=prepared.snapshot,
+                        candidate=authority[0],
+                        approval=authority[1],
+                        allowed_evidence_roots=recovery_source_roots,
+                        evidence_resolver=source_resolver,
+                    )
+                    source_reportless_receipt = reportless_store.get(
+                        run_id=source_manifest["direct_predecessor_run_id"],
+                        receipt_digest=source_manifest["source_receipt_digest"],
+                    )
+                    if source_reportless_receipt is None:
+                        raise ValueError("known-zero source receipt is unavailable")
+
+                    def _validate_source_manifest(value, **_ignored):
+                        return validate_reportless_continuation_manifest(
+                            value,
+                            receipt=source_reportless_receipt,
+                            run_store=run_store,
+                            report_store=report_store,
+                            snapshot=prepared.snapshot,
+                            candidate=authority[0],
+                            approval=authority[1],
+                            operations_db=Path(operations_data_root) / "tasks.db",
+                            allowed_evidence_roots=recovery_source_roots,
+                        )
+
+                    known_store = ShopeeKnownZeroRecoveryStore(
+                        Path(operations_data_root) / "sr-known-zero" / "receipts",
+                        allowed_root=Path(operations_data_root),
+                        run_store=run_store,
+                        report_store=report_store,
+                        manifest_validator=_validate_source_manifest,
+                    )
+                    known_zero_receipt = known_store.get(
+                        run_id=recovery_manifest["direct_predecessor_run_id"]
+                    )
+                    if (known_zero_receipt is None
+                            or known_zero_receipt.get("receipt_digest")
+                            != recovery_manifest.get("source_receipt_digest")):
+                        raise ValueError("known-zero receipt is unavailable")
+                    new_attestation_ref = recovery_manifest["source_refs"][
+                        "evidence_relocation"
+                    ]
+                    new_attestation_path = Path(new_attestation_ref["path"]).resolve()
+                    if (not new_attestation_path.is_file()
+                            or not any(new_attestation_path == root
+                                       or root in new_attestation_path.parents
+                                       for root in allowed_paths)):
+                        raise ValueError("known-zero relocation evidence is unavailable")
+                    relocation_root = new_attestation_path.parent
+
+                    def _validate_known_zero(value, **_ignored):
+                        return validate_known_zero_continuation_manifest(
+                            value,
+                            allowed_relocation_root=relocation_root,
+                            run_store=run_store,
+                            report_store=report_store,
+                            manifest_validator=_validate_source_manifest,
+                            operations_db=Path(operations_data_root) / "tasks.db",
+                            allowed_evidence_roots=recovery_source_roots,
+                        )
+
+                    recovery_manifest = _validate_known_zero(recovery_manifest)
+                    known_zero_continuation_authority = recovery_manifest
+                    known_zero_continuation_validation = {
+                        "candidate": authority[0],
+                        "approval": authority[1],
+                        "operations_db": Path(operations_data_root) / "tasks.db",
+                        "allowed_evidence_roots": recovery_source_roots,
+                        "allowed_relocation_root": relocation_root,
+                        "source_reportless_receipt": source_reportless_receipt,
+                    }
+                    manifest_validator = _validate_known_zero
+                except (EvidenceRelocationError, KeyError, OSError, TypeError,
+                        ValueError, json.JSONDecodeError) as error:
+                    raise ValueError("known-zero continuation authority is invalid") from error
+            elif recovery_manifest.get("schema_version") \
+                    == "shopee-reportless-recovery-execution-manifest/v1":
+                if retry_of_run_id is not None or recovery_zero_write_receipt_digest is not None:
+                    raise ValueError("reportless continuation does not accept retry parameters")
+                from shared_platform.shopee_reportless_recovery_reconciliations import (
+                    ShopeeReportlessRecoveryReconciliationStore,
+                    validate_reportless_continuation_manifest,
+                )
+                from shared_platform.evidence_relocation_attestations import (
+                    EvidenceRelocationError, EvidenceRelocationResolver,
+                )
+                relocation_ref = (recovery_manifest.get("source_refs") or {}).get(
+                    "evidence_relocation")
+                if not isinstance(relocation_ref, dict) or set(relocation_ref) != {"path", "sha256"}:
+                    raise ValueError("reportless continuation relocation evidence is unavailable")
+                relocation_path = Path(str(relocation_ref["path"])).resolve()
+                allowed_paths = [Path(root).resolve(strict=True) for root in recovery_source_roots]
+                if (not relocation_path.is_file()
+                        or not any(relocation_path == root or root in relocation_path.parents
+                                   for root in allowed_paths)):
+                    raise ValueError("reportless continuation relocation evidence is unavailable")
+                relocation_raw = relocation_path.read_bytes()
+                if ("sha256:" + hashlib.sha256(relocation_raw).hexdigest()
+                        != relocation_ref["sha256"]):
+                    raise ValueError("reportless continuation relocation evidence drifted")
+                try:
+                    relocation = json.loads(relocation_raw.decode("utf-8"))
+                    if (relocation.get("attestation_digest")
+                            != recovery_manifest.get("evidence_relocation_digest")):
+                        raise EvidenceRelocationError(
+                            "relocation authority digest conflicts")
+                    def _load_stable_ref(meta):
+                        if not isinstance(meta, dict) or set(meta) != {"path", "sha256"}:
+                            raise EvidenceRelocationError("stable lineage ref is invalid")
+                        path = Path(str(meta["path"])).resolve()
+                        if (not path.is_file()
+                                or not any(path == root or root in path.parents
+                                           for root in allowed_paths)):
+                            raise EvidenceRelocationError("stable lineage ref escapes roots")
+                        raw = path.read_bytes()
+                        if "sha256:" + hashlib.sha256(raw).hexdigest() != meta["sha256"]:
+                            raise EvidenceRelocationError("stable lineage bytes drifted")
+                        return json.loads(raw.decode("utf-8"))
+                    preflight_source = _load_stable_ref(
+                        recovery_manifest["source_refs"]["preflight"])
+                    original_manifest_source = _load_stable_ref(
+                        recovery_manifest["source_refs"]["original_manifest"])
+                    expected_relocation_authorities = {
+                        "reportless_receipt": recovery_manifest["source_receipt_digest"],
+                        "domain_closure": preflight_source["closure_digest"],
+                        "unauthorized_continuation": preflight_source[
+                            "unauthorized_continuation_digest"],
+                        "continuation_preflight": recovery_manifest["preflight_digest"],
+                        "original_recovery_manifest": original_manifest_source[
+                            "manifest_digest"],
+                    }
+                    provisional_resolver = EvidenceRelocationResolver(
+                        relocation, allowed_target_root=relocation_path.parent,
+                        expected_authority_digests=expected_relocation_authorities,
+                    )
+                except (EvidenceRelocationError, KeyError, TypeError, ValueError,
+                        json.JSONDecodeError) as error:
+                    raise ValueError(
+                        "reportless continuation relocation evidence is invalid"
+                    ) from error
+                reportless_store = ShopeeReportlessRecoveryReconciliationStore(
+                    Path(operations_data_root) / "sr-reportless" / "receipts",
+                    run_store=run_store, report_store=report_store,
+                    snapshot=prepared.snapshot, candidate=authority[0], approval=authority[1],
+                    allowed_evidence_roots=recovery_source_roots,
+                    evidence_resolver=provisional_resolver,
+                )
+                recovery_reconciliation_receipt = reportless_store.get(
+                    run_id=str(recovery_manifest.get("direct_predecessor_run_id") or ""),
+                    receipt_digest=str(recovery_manifest.get("source_receipt_digest") or ""),
+                )
+                if recovery_reconciliation_receipt is None:
+                    raise ValueError("reportless continuation receipt is unavailable")
+                def _validate_reportless(value, **_ignored):
+                    return validate_reportless_continuation_manifest(
+                        value, receipt=recovery_reconciliation_receipt,
+                        run_store=run_store, report_store=report_store,
+                        snapshot=prepared.snapshot, candidate=authority[0], approval=authority[1],
+                        operations_db=Path(operations_data_root) / "tasks.db",
+                        allowed_evidence_roots=recovery_source_roots,
+                    )
+                recovery_manifest = _validate_reportless(recovery_manifest)
+                reportless_continuation_authority = recovery_manifest
+                manifest_validator = _validate_reportless
+            else:
+                from shared_platform.shopee_regional_recovery import validate_recovery_manifest
+                recovery_manifest = validate_recovery_manifest(
+                    recovery_manifest, snapshot=prepared.snapshot,
+                    candidate=authority[0], approval=authority[1],
+                    allowed_source_roots=recovery_source_roots,
+                )
+                manifest_validator = None
+            if recovery_manifest["manifest_digest"].removeprefix("sha256:") != digest_hex:
+                raise ValueError("Shopee recovery manifest digest conflicts")
+            if recovery_manifest["target_labels"] != list(
+                prepared.target_labels_by_platform[platform]
+            ):
+                raise ValueError("Shopee recovery manifest target scope conflicts")
+            if (recovery_manifest.get("continuation") is not None
+                    and reportless_continuation_authority is None
+                    and known_zero_continuation_authority is None):
+                try:
+                    receipt_path = Path(recovery_manifest["source_file_paths"]["reconciliation_receipt"])
+                    recovery_reconciliation_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                except (KeyError, OSError, json.JSONDecodeError) as error:
+                    raise ValueError("Shopee recovery continuation receipt is unavailable") from error
+            if retry_of_run_id is not None:
+                from shared_platform.shopee_recovery_run_reconciliations import (
+                    ShopeeRecoveryRunReconciliationStore,
+                )
+                try:
+                    recovery_zero_write_receipt = ShopeeRecoveryRunReconciliationStore(
+                        run_store.path
+                    ).get(
+                        run_id=retry_of_run_id,
+                        allowed_evidence_roots=recovery_source_roots,
+                        snapshot=prepared.snapshot,
+                        candidate=authority[0],
+                        approval=authority[1],
+                    )
+                except ShopeeRecoveryRunReconciliationError as error:
+                    raise ValueError(
+                        "Shopee recovery retry receipt is invalid"
+                    ) from error
+                if (
+                    recovery_zero_write_receipt is None
+                    or recovery_zero_write_receipt.get("receipt_digest")
+                    != recovery_zero_write_receipt_digest
+                ):
+                    raise ValueError(
+                        "Shopee recovery retry receipt is unavailable or conflicts"
+                    )
+            from modules.shopee.skill_regions import OfficialShopeeRegionRuntime
+            executor = build_recovery_executor(
+                manifest=recovery_manifest, approval=authority[1],
+                allowed_source_roots=recovery_source_roots,
+                runtime=OfficialShopeeRegionRuntime(),
+                manifest_validator=manifest_validator,
+            )
+        stored_run = claim_product_publication_request(
+            prepared=prepared, platform=platform, execution_identity=execution_identity,
+            run_store=run_store, report_store=report_store, release_store=release_store,
+            retry_of_run_id=retry_of_run_id,
+            recovery_manifest_digest=(
+                recovery_manifest["manifest_digest"] if recovery_manifest is not None else None
+            ),
+            recovery_continuation=(
+                recovery_manifest.get("continuation") if recovery_manifest is not None else None
+            ),
+            reportless_continuation_authority=reportless_continuation_authority,
+            known_zero_continuation_authority=known_zero_continuation_authority,
+            known_zero_continuation_validation=known_zero_continuation_validation,
+            known_zero_receipt=known_zero_receipt,
+            reportless_continuation_validation=(
+                {
+                    "candidate": authority[0],
+                    "approval": authority[1],
+                    "operations_db": Path(operations_data_root) / "tasks.db",
+                    "allowed_evidence_roots": recovery_source_roots,
+                }
+                if reportless_continuation_authority is not None else None
+            ),
+            recovery_reconciliation_receipt=recovery_reconciliation_receipt,
+            recovery_evidence_roots=recovery_source_roots,
+            recovery_zero_write_receipt=recovery_zero_write_receipt,
+            recovery_zero_write_validation=(
+                {
+                    "allowed_evidence_roots": recovery_source_roots,
+                    "snapshot": prepared.snapshot,
+                    "candidate": authority[0],
+                    "approval": authority[1],
+                }
+                if recovery_zero_write_receipt is not None else None
+            ),
         )
-    except (TypeError, ValueError) as error:
-        return 409, {"ok": False, "error": str(error)}
+        recovery_retry_authorization = None
+        if recovery_zero_write_receipt is not None:
+            successor = run_store.get_run_by_id(run_id=stored_run.run_id)
+            expected_request_identity = {
+                "kind": "SHOPEE_RECOVERY_RETRY",
+                "authority_digest": recovery_manifest["manifest_digest"],
+                "reconciliation_receipt_digest": recovery_zero_write_receipt["receipt_digest"],
+                "retry_of_run_id": retry_of_run_id,
+            }
+            if (
+                not isinstance(successor, dict)
+                or successor.get("request_identity") != expected_request_identity
+                or not isinstance(
+                    recovery_zero_write_receipt.get("run_identity"), dict
+                )
+            ):
+                raise ValueError("Shopee recovery retry run identity conflicts")
+            recovery_retry_authorization = {
+                "schema_version": "shopee-recovery-retry-authorization/v1",
+                "retry_of_run_id": retry_of_run_id,
+                "receipt_digest": recovery_zero_write_receipt["receipt_digest"],
+                "manifest_digest": recovery_manifest["manifest_digest"],
+                "failed_run_identity": deepcopy(
+                    recovery_zero_write_receipt["run_identity"]
+                ),
+                "successor_request_identity": expected_request_identity,
+            }
+        retry_attempt = None
+        if recovery_manifest is not None:
+            # Run lineage for a pre-running infrastructure retry is the failed
+            # recovery run.  Domain ownership still succeeds the original
+            # PARTIAL publication bound by the immutable recovery manifest.
+            if (reportless_continuation_authority is not None
+                    or known_zero_continuation_authority is not None):
+                retry_attempt = {
+                    "run_id": stored_run.run_id,
+                    "retry_of_run_id": recovery_manifest["direct_predecessor_run_id"],
+                    "source_evidence_digest": recovery_manifest["preflight_digest"],
+                }
+            else:
+                retry_attempt = {
+                    "run_id": stored_run.run_id,
+                    "retry_of_run_id": recovery_manifest["prior_run_id"],
+                    "source_evidence_digest": recovery_manifest["prior_report_digest"],
+                }
+        elif retry_of_run_id is not None:
+            from shared_platform.product_publication_run_reconciliations import (
+                ProductPublicationRunReconciliationStore,
+            )
+            reconciliation = ProductPublicationRunReconciliationStore(
+                run_store.path).get(run_id=retry_of_run_id)
+            if reconciliation is not None:
+                source_evidence_digest = reconciliation["receipt_digest"]
+            else:
+                from shared_platform.product_publication_reports import _digest
+                prior_report = report_store.get_report_by_run(run_id=retry_of_run_id)
+                if prior_report is None:
+                    raise ValueError("retry source evidence is unavailable")
+                source_evidence_digest = _digest(prior_report)
+            retry_attempt = {
+                "run_id": stored_run.run_id,
+                "retry_of_run_id": retry_of_run_id,
+                "source_evidence_digest": source_evidence_digest,
+            }
+    except (
+        TypeError, ValueError, ImmutableReleaseError,
+        ShopeeRecoveryRunReconciliationError,
+    ) as error:
+        safe_error = (
+            "Shopee recovery retry receipt is invalid"
+            if isinstance(error, ShopeeRecoveryRunReconciliationError)
+            else str(error)
+        )
+        result = {"ok": False, "error": safe_error, "external_write_count": 0}
+        if isinstance(error, RegisteredR3PublishAdmissionBlocked):
+            result.update(code=error.code, external_writes_performed=[])
+        if str(error) == "approved publication snapshot is unavailable":
+            result.update(code="approved_publication_snapshot_required", migration={
+                "required_snapshot_schema": "approved-publication-snapshot/v4",
+                "action": "Prepare and explicitly approve the exact product, revision and targets; legacy approval is not migrated automatically.",
+            })
+        return 409, result
+    run_id = stored_run.run_id
+    if not stored_run.created:
+        return 202, {"ok": True, "schema_version": "product-publication-start/v1",
+                     "platform": platform, "report_id": stored_run.report_id,
+                     "run_id": run_id, "reused": True}
     try:
         _launch_product_publication_background(
             lambda: _execute_product_publication_background(
@@ -375,6 +1574,30 @@ def _start_product_publication(
                 report_store=report_store,
                 run_store=run_store,
                 expected_execution_identity=execution_identity,
+                candidate_digest=candidate_digest,
+                target_scope=prepared.target_labels_by_platform[platform],
+                retry_attempt=retry_attempt,
+                write_budget_overrides=(
+                    {"SHOPEE": {
+                        "shared_maximum": 0,
+                        "per_target_maximum": max(
+                            int(row["mutation_budget"]["target_maximum"])
+                            for row in recovery_manifest["targets"]
+                        ),
+                        "target_labels": list(prepared.target_labels_by_platform[platform]),
+                    }}
+                    if recovery_manifest is not None else None
+                ),
+                recovery_authorization=recovery_manifest,
+                recovery_retry_authorization=recovery_retry_authorization,
+                recovery_continuation=(
+                    recovery_manifest.get("continuation") if recovery_manifest is not None else None
+                ),
+                recovery_source_roots=(
+                    tuple(Path(root) for root in recovery_source_roots)
+                    if recovery_source_roots is not None else None
+                ),
+                recovery_authorization_validator=manifest_validator,
             )
         )
     except Exception as error:
@@ -397,6 +1620,89 @@ def _start_product_publication(
         "report_id": stored_run.report_id,
         "run_id": stored_run.run_id,
     }
+
+
+def _reconcile_shopee_recovery(data: dict) -> tuple[int, dict]:
+    """Run one GET-only reconciliation for a durable regional recovery report."""
+    if os.environ.get("ORBIT_SHOPEE_RECOVERY_ENABLED") != "1":
+        return 409, {"ok": False, "error": "Shopee recovery execution is not enabled",
+                     "external_write_count": 0}
+    run_id = data.get("run_id")
+    manifest_digest = data.get("recovery_manifest_digest")
+    if type(run_id) is not str or not run_id or type(manifest_digest) is not str:
+        return 409, {"ok": False, "error": "exact recovery run and manifest are required",
+                     "external_write_count": 0}
+    try:
+        report_store = _product_publication_report_store()
+        report = report_store.get_report_by_run(run_id=run_id)
+        if not isinstance(report, dict) or not isinstance(report.get("recovery_authorization"), dict):
+            raise ValueError("durable recovery attempt is unavailable")
+        manifest = report["recovery_authorization"]
+        if manifest.get("manifest_digest") != manifest_digest:
+            raise ValueError("recovery attempt manifest identity conflicts")
+        operations_data_root = os.environ.get("ORBIT_OPERATIONS_DATA_ROOT")
+        if not operations_data_root or not Path(operations_data_root).is_dir():
+            raise ValueError("stable operations evidence root is unavailable")
+        operations_root = Path(operations_data_root).resolve(strict=True)
+        offer_id = str(report.get("offer_id") or "")
+        manifest_path = (report_store.reports_root.parent / "product-preparation" / offer_id
+                         / "shopee-recovery-candidates"
+                         / f"{manifest_digest.removeprefix('sha256:')}.json")
+        report_path = Path(str(report.get("report_path") or ""))
+        if not report_path.is_file():
+            raise ValueError("durable recovery attempt file is unavailable")
+        release_store = _release_store()
+        snapshot = release_store.approved_publication_snapshot(
+            offer_id=offer_id, snapshot_digest=report["snapshot"]["digest"])
+        if not isinstance(snapshot, dict):
+            raise ValueError("approved recovery snapshot is unavailable")
+        authority = report.get("release_authorization")
+        if not isinstance(authority, dict):
+            raise ValueError("recovery release authority is unavailable")
+        from shared_platform.publication_autopilot import load_release_candidate, load_final_approval_receipt
+        preparation_root = report_store.reports_root.parent / "product-preparation"
+        candidate = load_release_candidate(
+            offer_id, authority["candidate_digest"], reports_root=preparation_root)
+        approval = load_final_approval_receipt(candidate, reports_root=preparation_root)
+        roots = (report_store.reports_root, preparation_root, operations_root)
+        from shared_platform.shopee_regional_recovery import validate_recovery_manifest
+
+        def deep_validate(value):
+            return validate_recovery_manifest(
+                value, snapshot=snapshot, candidate=candidate, approval=approval,
+                allowed_source_roots=roots)
+
+        deep_validate(manifest)
+        from modules.shopee.skill_regions import OfficialShopeeRegionRuntime
+        from shared_platform.shopee_recovery_coordination import (
+            OfficialShopeeRecoveryGetter, reconcile_recovery_attempt,
+        )
+        getter = OfficialShopeeRecoveryGetter(manifest, OfficialShopeeRegionRuntime())
+        receipt = reconcile_recovery_attempt(
+            attempt_path=report_path, manifest_path=manifest_path,
+            evidence_root=operations_root / "re", receipt_root=operations_root / "rr",
+            allowed_evidence_roots=roots, manifest_validator=deep_validate, getter=getter,
+        )
+        from shared_platform.shopee_recovery_reconciliations import reconciliation_gate
+        gate = reconciliation_gate(
+            receipt, run_id=run_id, report_id=report["report_id"],
+            manifest_digest=manifest_digest, allowed_evidence_roots=roots)
+        if gate["result"] in {"CONVERGED", "REMAINING_DIFF"}:
+            from shared_platform.operations_domain_guard import finish_snapshot_recovery_reconciliation
+            finish_snapshot_recovery_reconciliation(
+                release_store, offer_id, report["snapshot"]["digest"], ROOT,
+                target_scope=manifest["target_labels"], retry_attempt={
+                    "run_id": run_id, "retry_of_run_id": manifest["prior_run_id"],
+                    "source_evidence_digest": manifest["prior_report_digest"],
+                }, receipt=receipt, run_id=run_id, report_id=report["report_id"],
+                manifest_digest=manifest_digest, allowed_evidence_roots=roots)
+        return 200, {"ok": True, "schema_version": "shopee-recovery-reconciliation-result/v1",
+                     "run_id": run_id, "result": gate["result"],
+                     "mutation_lock": gate["mutation_lock"], "attempt_closed": gate["attempt_closed"],
+                     "receipt_digest": gate["receipt_digest"], "new_manifest": gate["new_manifest"],
+                     "external_write_count": 0}
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        return 409, {"ok": False, "error": str(error), "external_write_count": 0}
 
 
 def _publication_snapshot_plan_projection(
@@ -558,6 +1864,8 @@ def _first_review_image_plan_view(payload: dict) -> dict:
 
 def _product_workspace_view(payload: dict) -> dict:
     """Present governed evidence and durable V1 state as the formal workspace."""
+    if payload.get("_r3_common_documents") is not None:
+        return _r3_common_stage_view(payload)
     from shared_platform.product_workflow import (
         assert_no_dead_end,
         project_product_field_impacts,
@@ -602,7 +1910,13 @@ def _product_workspace_view(payload: dict) -> dict:
         view_payload["listing_copy"] = listing_copy
     # The fallback is a presentation aid for legacy v2 drafts. It must not
     # alter the digest of an already-approved immutable ReleasePlan.
-    release_v1 = _apply_oneclick_release_authority(_release_v1_view(payload))
+    if payload.get('frozen_review_projection'):
+        release_v1 = {'eligible_for_plan_approval':False,'plan':None,'plan_persisted':False,
+            'plan_approved':False,'run':None,'publish_ready':False,'miaoshou_prepared':False,
+            'blockers':['请先保存本轮图片选择，再完成图片检查与发布准备。'],
+            'adapter_blockers':[],'runnable_target_count':0}
+    else:
+        release_v1 = _apply_oneclick_release_authority(_release_v1_view(payload))
     view = {
         **view_payload,
         "schema_version": "product-workspace-v1",
@@ -611,7 +1925,7 @@ def _product_workspace_view(payload: dict) -> dict:
         "approval": payload.get("approval_rehearsal", {}),
         "publication_plan": payload.get("publication_rehearsal", {}),
         "release_v1": release_v1,
-        "first_review_image_plan": _first_review_image_plan_view(payload),
+        "first_review_image_plan": payload.get('first_review_image_plan') if payload.get('frozen_review_projection') else _first_review_image_plan_view(payload),
     }
     next_action = project_product_workflow_next_action(view)
     assert_no_dead_end(next_action)
@@ -2035,6 +3349,44 @@ def _positive_decimal_text(value: object) -> str:
     return text
 
 
+class _ShopeeGlobalPlanPriceError(ValueError):
+    pass
+
+
+def _shopee_global_price_from_target_row(row: object) -> str:
+    """Read one approved Shopee global price without schema guessing."""
+
+    if not isinstance(row, dict):
+        raise _ShopeeGlobalPlanPriceError("Shopee target pricing row is invalid")
+    candidates: list[object] = []
+    legacy = row.get("derived_preview")
+    if isinstance(legacy, dict) and "global_original_price_cny" in legacy:
+        candidates.append(legacy["global_original_price_cny"])
+    if "sku_prices" in row:
+        sku_prices = row["sku_prices"]
+        if (
+            type(sku_prices) is not list
+            or len(sku_prices) != 1
+            or not isinstance(sku_prices[0], dict)
+            or "global_original_price_cny" not in sku_prices[0]
+        ):
+            raise _ShopeeGlobalPlanPriceError(
+                "Shopee target pricing requires exactly one SKU price"
+            )
+        candidates.append(sku_prices[0]["global_original_price_cny"])
+    if not candidates:
+        raise _ShopeeGlobalPlanPriceError("Shopee global original price is unavailable")
+    try:
+        normalized = [_positive_decimal_text(value) for value in candidates]
+    except (TypeError, ValueError) as error:
+        raise _ShopeeGlobalPlanPriceError(
+            "Shopee global original price is invalid"
+        ) from error
+    if len(set(normalized)) != 1:
+        raise _ShopeeGlobalPlanPriceError("Shopee target pricing schemas disagree")
+    return normalized[0]
+
+
 def _shopee_global_plan_seed(
     payload: dict,
     *,
@@ -2197,13 +3549,7 @@ def _shopee_global_plan_seed(
     bound_target_pricing: dict[str, object] = {}
     for label in targets:
         row = selected_pricing.get(label)
-        derived = row.get("derived_preview") if isinstance(row, dict) else None
-        price = (
-            derived.get("global_original_price_cny")
-            if isinstance(derived, dict)
-            else None
-        )
-        _positive_decimal_text(price)
+        _shopee_global_price_from_target_row(row)
         bound_target_pricing[label] = row
     master_source = (payload.get("pricing") or {}).get(
         "master_price_source"
@@ -2238,12 +3584,7 @@ def _shopee_global_plan_seed(
             )
         master_target_label = matching_targets[0]
     master_row = selected_pricing[master_target_label]
-    master_derived = master_row.get("derived_preview")
-    global_original_price = _positive_decimal_text(
-        master_derived.get("global_original_price_cny")
-        if isinstance(master_derived, dict)
-        else None
-    )
+    global_original_price = _shopee_global_price_from_target_row(master_row)
     pricing_digest = _server_canonical_digest(
         {
             "schema_version": "approved-shopee-target-pricing-binding/v2",
@@ -2615,6 +3956,11 @@ def _observe_shopee_global_plan_candidate(payload: dict):
 
     try:
         seed = _shopee_global_plan_seed(payload)
+    except _ShopeeGlobalPlanPriceError as error:
+        raise ShopeeGlobalPlanObservationError(
+            category="CAPABILITY",
+            code="shopee_global_plan_seed_invalid",
+        ) from error
     except (TypeError, ValueError):
         return _blocked_shopee_global_plan_candidate()
     request = {
@@ -2687,10 +4033,19 @@ def _observe_shopee_global_plan_candidate(payload: dict):
     return candidate
 
 
+def _common_stage_price_cny(value, *, common_stage: bool):
+    """Restore the numeric JSON contract used by the frozen COMMON payload."""
+    if not common_stage or not isinstance(value, str):
+        return value
+    numeric = Decimal(value)
+    return int(numeric) if numeric == numeric.to_integral_value() else float(numeric)
+
+
 def _release_plan_payload_from_dashboard(
     dashboard: dict,
     *,
     bind_shopee_global_plan: bool = False,
+    common_store=None,
 ) -> tuple[dict, list[str]]:
     """Build the exact immutable V1 payload without persisting it.
 
@@ -2703,6 +4058,13 @@ def _release_plan_payload_from_dashboard(
     from domains.content_operations import release_listing_copy_identity
     from domains.product_operations import resolve_source_product_identity
 
+    common_documents = dashboard.get("_r3_common_documents")
+    if common_documents is not None:
+        from shared_platform.publication_r3_image_bridge import prepare_common_stage_dashboard
+        try:
+            dashboard = prepare_common_stage_dashboard(dashboard, common_documents)
+        except (ValueError, TypeError, KeyError) as error:
+            return {}, [str(error)]
     product = dashboard.get("product") or {}
     content = dashboard.get("content") or {}
     scope = dashboard.get("publication_scope") or {}
@@ -2891,7 +4253,10 @@ def _release_plan_payload_from_dashboard(
                 {
                     "key": str(row.get("key") or ""),
                     "label": str(row.get("label") or ""),
-                    "price_cny": row.get("price_cny"),
+                    "price_cny": _common_stage_price_cny(
+                        row.get("price_cny"),
+                        common_stage=common_documents is not None,
+                    ),
                     "model_sku": row.get("model_sku"),
                     "commercial_facts": dict(row.get("commercial_facts") or {}),
                 }
@@ -2934,6 +4299,24 @@ def _release_plan_payload_from_dashboard(
             )
         ),
     }
+    if common_documents is not None:
+        from shared_platform.publication_r3_image_bridge import bind_common_stage_payload
+        from shared_platform.release_store import default_release_store
+        from shared_platform.native_common_budget_facts import read_preparation_source
+        from modules.sourcing import new_product_workbench as workbench
+        if blockers:
+            return payload, list(dict.fromkeys(blockers))
+        try:
+            store = common_store if common_store is not None else default_release_store()
+            preparation_source = read_preparation_source(store, common_documents,
+                workbench.load_state(payload['product_id']))
+            payload = bind_common_stage_payload(
+                payload, common_documents,
+                store=store, preparation_source=preparation_source,
+            )
+        except (ValueError, TypeError, KeyError) as error:
+            return {}, [str(error)]
+        return payload, []
     tiktok_targets = tuple(
         label
         for label in targets
@@ -3005,35 +4388,52 @@ def _release_plan_payload_from_dashboard(
                 "select_channel_category: stored Shopee category "
                 "decision is invalid or stale"
             )
-    if any(
-        label
-        in {
-            "tiktok:LH_PH",
-            "tiktok:LH_MY",
-            "tiktok:LH_TH",
-            "tiktok:LH_VN",
-            "shopee:PH",
-            "shopee:MY",
-            "shopee:TH",
-            "shopee:VN",
-        }
-        for label in targets
-    ):
-        from shared_platform.postpublish_promotions import (
-            build_approved_postpublish_promotion_policy,
+    promotion_policy = _server_owned_postpublish_promotion_policy(targets)
+    if promotion_policy is not None:
+        payload['approved_postpublish_promotion_policy'] = promotion_policy
+    if "warehouse_inventory_by_target" in product:
+        from copy import deepcopy
+
+        payload["product_facts"]["warehouse_inventory_by_target"] = deepcopy(
+            product["warehouse_inventory_by_target"]
+        )
+    snapshot_inputs = dashboard.get("_approved_publication_snapshot_inputs")
+    if not isinstance(snapshot_inputs, dict):
+        from domains.product_operations import (
+            ApprovedPublicationSnapshotError,
+            build_approved_publication_snapshot_inputs,
         )
 
-        # Kyle approved this server-owned, versioned policy on 2026-07-30.
-        # It is derived here for every *new* immutable plan.  Existing stored
-        # plans are never rewritten and browser/dashboard fields cannot
-        # inject, remove, or override it.
-        payload["approved_postpublish_promotion_policy"] = (
-            build_approved_postpublish_promotion_policy(
-                approval_reference=(
-                    "Kyle-20260730-existing-ongoing-direct-discount"
-                ),
+        try:
+            snapshot_inputs = build_approved_publication_snapshot_inputs(
+                dashboard=dashboard,
+                release_plan_payload=payload,
             )
+        except (ApprovedPublicationSnapshotError, TypeError, ValueError) as error:
+            snapshot_inputs = None
+            if not (
+                isinstance(error, ApprovedPublicationSnapshotError)
+                and str(error) == "product facts are not approved"
+                and "商品事实尚未由 Kyle 批准并锁定" in blockers
+            ):
+                blockers.append(
+                    "freeze_approved_publication_snapshot: " + str(error)
+                )
+    snapshot_projection = _publication_snapshot_plan_projection(
+        payload,
+        approved_inputs=(
+            snapshot_inputs if isinstance(snapshot_inputs, dict) else None
+        ),
+    )
+    if snapshot_projection.ready:
+        payload = snapshot_projection.payload
+        payload["plan_id"] = _v4_release_plan_id(payload)
+    elif isinstance(snapshot_inputs, dict):
+        blockers.extend(
+            "freeze_approved_publication_snapshot: " + field
+            for field in snapshot_projection.missing_fields
         )
+    # Match the exact frozen v4 facts used when the Shopee candidate was approved.
     if (
         bind_shopee_global_plan
         and has_shopee_target
@@ -3115,37 +4515,8 @@ def _release_plan_payload_from_dashboard(
                 "review_shopee_global_plan: current exact Shopee global "
                 "plan approval is required"
             )
-    snapshot_inputs = dashboard.get("_approved_publication_snapshot_inputs")
-    if not isinstance(snapshot_inputs, dict):
-        from domains.product_operations import (
-            ApprovedPublicationSnapshotError,
-            build_approved_publication_snapshot_inputs,
-        )
-
-        try:
-            snapshot_inputs = build_approved_publication_snapshot_inputs(
-                dashboard=dashboard,
-                release_plan_payload=payload,
-            )
-        except (ApprovedPublicationSnapshotError, TypeError, ValueError) as error:
-            snapshot_inputs = None
-            blockers.append(
-                "freeze_approved_publication_snapshot: " + str(error)
-            )
-    snapshot_projection = _publication_snapshot_plan_projection(
-        payload,
-        approved_inputs=(
-            snapshot_inputs if isinstance(snapshot_inputs, dict) else None
-        ),
-    )
-    if snapshot_projection.ready:
-        payload = snapshot_projection.payload
+    if snapshot_projection.ready and bind_shopee_global_plan:
         payload["plan_id"] = _v4_release_plan_id(payload)
-    elif isinstance(snapshot_inputs, dict):
-        blockers.extend(
-            "freeze_approved_publication_snapshot: " + field
-            for field in snapshot_projection.missing_fields
-        )
     return payload, list(dict.fromkeys(value for value in blockers if value))
 
 
@@ -3351,6 +4722,9 @@ def _channel_category_preview_projection(
         decision=(current or {}).get("decision"),
     )
     if attribute_summary is not None and projection["selection"] is None:
+        from shared_platform.channel_category_decisions import attribute_selection_matches_options
+
+        resumable = attribute_selection_matches_options(snapshot, attribute_selection)
         projection = {
             **projection,
             "status": "RECHECK_REQUIRED",
@@ -3360,7 +4734,10 @@ def _channel_category_preview_projection(
                 "code": "official_category_attribute_recheck_required",
             },
             "next_action": {
-                "action": "recheck_channel_category_attributes",
+                "action": (
+                    "resume_channel_category_attributes" if resumable
+                    else "recheck_channel_category_attributes"
+                ),
                 "target_focus": "shopee:GLOBAL",
             },
         }
@@ -3402,6 +4779,7 @@ def _finalize_channel_category_decision(
     payload: dict,
     snapshot: dict,
     attribute_selection: dict,
+    expected_selection_digest: str | None = None,
 ) -> dict:
     from shared_platform.channel_category_decisions import (
         approve_category_decision,
@@ -3433,8 +4811,12 @@ def _finalize_channel_category_decision(
         confirm_seller_stock_quantity=True,
         confirm_condition_and_preorder=True,
     )
-    return default_release_store().persist_channel_category_decision(
-        serialize_category_decision(decision)
+    serialized = serialize_category_decision(decision)
+    store = default_release_store()
+    if expected_selection_digest is None:
+        return store.persist_channel_category_decision(serialized)
+    return store.persist_channel_category_decision(
+        serialized, expected_selection_digest=expected_selection_digest,
     )
 
 
@@ -3492,20 +4874,6 @@ def _preview_channel_category_decision(
             payload,
             attribute_selection=attribute_selection,
         )
-        if attribute_selection is not None:
-            from shared_platform.channel_category_decisions import (
-                attribute_selection_matches_options,
-            )
-
-            if attribute_selection_matches_options(
-                snapshot,
-                attribute_selection,
-            ):
-                _finalize_channel_category_decision(
-                    payload=payload,
-                    snapshot=snapshot,
-                    attribute_selection=attribute_selection,
-                )
         return 200, _channel_category_preview_projection(
             payload=payload,
             snapshot=snapshot,
@@ -3523,6 +4891,60 @@ def _preview_channel_category_decision(
             "error": str(error),
             "external_writes_performed": [],
         }
+
+
+def _resume_channel_category_decision_locally(data: dict) -> tuple[int, dict]:
+    """Consume a persisted intent after current readback; never accept new approval."""
+    from shared_platform import release_control
+    from shared_platform.channel_category_decisions import attribute_selection_matches_options
+    from shared_platform.release_store import ImmutableReleaseError, ReleaseStoreError
+    from shared_platform.publication_r2_review import has_registration, review_runtime_root
+
+    fields = {"offer_id", "target_label", "expected_product_revision", "selection_digest"}
+    if type(data) is not dict or set(data) != fields or (
+        type(data.get("offer_id")) is not str
+        or not data["offer_id"].isascii() or not data["offer_id"].isdigit()
+        or not 1 <= len(data["offer_id"]) <= 32
+        or data.get("target_label") != "shopee:GLOBAL"
+        or type(data.get("expected_product_revision")) is not int
+        or data["expected_product_revision"] < 0
+        or type(data.get("selection_digest")) is not str
+        or len(data["selection_digest"]) != 64
+        or any(c not in "0123456789abcdef" for c in data["selection_digest"])
+    ):
+        return 400, {"ok": False, "error": "category resume identity is invalid", "external_writes_performed": []}
+    try:
+        if has_registration(data["offer_id"], runtime_root=review_runtime_root(ROOT)):
+            raise ValueError("registered R3 category resume requires its governed lifecycle")
+        dashboard = release_control.build_release_dashboard(offer_id=data["offer_id"])
+        payload, blockers = _release_plan_payload_from_dashboard(dashboard, bind_shopee_global_plan=False)
+        if blockers or payload["product_revision"] != data["expected_product_revision"]:
+            raise ValueError("product revision or release scope changed; refresh category options")
+        if not any(type(label) is str and label.startswith("shopee:") for label in payload.get("targets") or ()):
+            raise ValueError("current release scope has no Shopee target")
+        intent = _active_channel_category_attribute_selection(payload)
+        if intent is None or intent["selection_digest"] != data["selection_digest"]:
+            raise ValueError("attribute intent changed; recheck required")
+        current = _category_decision_from_payload(payload)
+        if current is not None and current["attribute_selection_digest"] == intent["selection_digest"]:
+            snapshot = _observe_channel_category_options(payload)
+            projection = _channel_category_preview_projection(payload=payload, snapshot=snapshot)
+            if projection["status"] != "SELECTED":
+                raise ValueError("saved category decision no longer matches current options")
+            return 200, {**projection, "persisted": True, "created": False}
+        snapshot = _observe_channel_category_options(payload, attribute_selection=intent)
+        if not attribute_selection_matches_options(snapshot, intent):
+            raise ValueError("category options changed; recheck required")
+        stored = _finalize_channel_category_decision(
+            payload=payload, snapshot=snapshot, attribute_selection=intent,
+            expected_selection_digest=data["selection_digest"],
+        )
+        projection = _channel_category_preview_projection(payload=payload, snapshot=snapshot, attribute_selection=intent)
+        return 200, {**projection, "persisted": True, "created": stored["created"]}
+    except FileNotFoundError as error:
+        return 404, {"ok": False, "error": str(error), "external_writes_performed": []}
+    except (ImmutableReleaseError, ReleaseStoreError, OSError, KeyError, TypeError, ValueError) as error:
+        return 409, {"ok": False, "error": str(error), "external_writes_performed": []}
 
 
 def _approve_channel_category_decision_locally(
@@ -4079,23 +5501,9 @@ def _immutable_listing_copy_preflight(payload: dict) -> list[str]:
     return list(dict.fromkeys(blockers))
 
 
-def _approved_plan_matches_current_payload(
-    persisted_plan: dict,
-    current_preview: dict,
-) -> bool:
-    """Compare immutable business scope while ignoring state-container churn.
-
-    ``product_revision`` is the workbench document revision, not a commercial
-    facts revision. Recording Miaoshou/API evidence advances it even though
-    the approved fingerprint, packages, facts, images, copy, pricing and
-    target scope remain identical. Every business-bearing field stays in the
-    comparison; only that operational counter is excluded.
-    """
-
-    persisted_payload = dict(persisted_plan.get("payload") or {})
-    current_payload = dict(current_preview.get("payload") or {})
-    persisted_payload.pop("product_revision", None)
-    current_payload.pop("product_revision", None)
+def _legacy_category_backfilled_payload(persisted_payload: dict, current_payload: dict) -> dict:
+    """Recover only the existing deterministic category compatibility field."""
+    persisted_payload = dict(persisted_payload)
     if (
         "approved_tiktok_category_decisions" not in persisted_payload
         and "approved_tiktok_category_decisions" in current_payload
@@ -4122,6 +5530,117 @@ def _approved_plan_matches_current_payload(
                 persisted_payload["approved_tiktok_category_decisions"] = (
                     recovered
                 )
+    return persisted_payload
+
+
+def _approved_plan_matches_current_payload(
+    persisted_plan: dict,
+    current_preview: dict,
+    *,
+    current_source_payload: dict | None = None,
+) -> bool:
+    """Compare immutable business scope while ignoring state-container churn.
+
+    ``product_revision`` is the workbench document revision, not a commercial
+    facts revision. Recording Miaoshou/API evidence advances it even though
+    the approved fingerprint, packages, facts, images, copy, pricing and
+    target scope remain identical. Every business-bearing field stays in the
+    comparison. A changed derived ID is excluded only after verifying both
+    full payload IDs with the unchanged historical algorithm.
+    """
+
+    persisted_payload = dict(persisted_plan.get("payload") or {})
+    current_payload = dict(current_preview.get("payload") or {})
+    if any('r3_stage_binding' in payload or str(payload.get('plan_id', '')).startswith('r3-common:')
+           for payload in (persisted_payload, current_payload, current_source_payload or {})):
+        from shared_platform.publication_r3_image_bridge import common_stage_plan_id
+        from shared_platform.release_store import preview_release_plan
+
+        try:
+            if current_source_payload is None:
+                return False
+            if preview_release_plan(current_source_payload)['payload'] != current_payload:
+                return False
+            for payload in (persisted_payload, current_payload, current_source_payload):
+                identity = (payload.get('r3_stage_binding') or {}).get('r2_identity') or {}
+                if payload.get('plan_id') != common_stage_plan_id(payload, offer_id=identity.get('offer_id')):
+                    return False
+                if preview_release_plan(payload)['payload'] != payload:
+                    return False
+            # COMMON uses its own producer hash. No v4 ID/category/revision
+            # relaxation applies, including after original lineage is reused.
+            return persisted_payload == current_payload
+        except (TypeError, ValueError, AttributeError):
+            return False
+    if current_source_payload is not None:
+        from shared_platform.release_store import preview_release_plan
+
+        try:
+            # The store canonicalizes target order after the historical ID is
+            # derived. Admit only the actual current constructor output, whose
+            # complete canonical projection must equal the supplied preview.
+            if preview_release_plan(current_source_payload)["payload"] != current_payload:
+                return False
+            raw_current = dict(current_source_payload)
+            if raw_current.get("plan_id") != _v4_release_plan_id(raw_current):
+                return False
+            raw_persisted = dict(persisted_payload)
+            stored_targets = raw_persisted.get("targets")
+            source_targets = raw_current.get("targets")
+            if (
+                not isinstance(stored_targets, list)
+                or not isinstance(source_targets, list)
+                or len(stored_targets) != len(source_targets)
+                or set(stored_targets) != set(source_targets)
+            ):
+                return False
+            # Recover one candidate order; the original stored hash must
+            # authenticate it. Never enumerate permutations or rewrite storage.
+            raw_persisted["targets"] = list(source_targets)
+            if raw_persisted.get("plan_id") != _v4_release_plan_id(raw_persisted):
+                # Preserve the pre-existing same-ID category backfill seam:
+                # only this deterministic field may be restored, and the
+                # original stored ID must authenticate the restored candidate.
+                raw_persisted = _legacy_category_backfilled_payload(
+                    raw_persisted, raw_current
+                )
+                if raw_persisted.get("plan_id") != _v4_release_plan_id(raw_persisted):
+                    return False
+            persisted_payload = raw_persisted
+            current_payload = raw_current
+        except (TypeError, ValueError):
+            return False
+    persisted_id = persisted_payload.get("plan_id")
+    current_id = current_payload.get("plan_id")
+    if not persisted_id or not current_id:
+        return False
+    if persisted_id != current_id:
+        try:
+            if (
+                not persisted_id
+                or not current_id
+                or persisted_id != _v4_release_plan_id(persisted_payload)
+                or current_id != _v4_release_plan_id(current_payload)
+            ):
+                return False
+        except (TypeError, ValueError):
+            return False
+        persisted_payload.pop("plan_id")
+        current_payload.pop("plan_id")
+    persisted_payload = _legacy_category_backfilled_payload(
+        persisted_payload, current_payload
+    )
+    if persisted_id == current_id:
+        try:
+            if (
+                persisted_id != _v4_release_plan_id(persisted_payload)
+                or current_id != _v4_release_plan_id(current_payload)
+            ):
+                return False
+        except (TypeError, ValueError):
+            return False
+    persisted_payload.pop("product_revision", None)
+    current_payload.pop("product_revision", None)
     return persisted_payload == current_payload
 
 
@@ -4258,6 +5777,12 @@ def _verified_common_evidence_blockers(
         or any(value is not True for value in checks.values())
     ):
         blockers.append("Miaoshou COMMON readback checks are incomplete")
+    if payload.get('r3_stage_binding'):
+        required = {'title', 'seller_sku', 'selected_sku_keys', 'selected_sku_numbers', 'spec_labels',
+            'spec_label_binding', 'weight', 'dimensions', 'images', 'description_notes',
+            'description_image_count', 'video_action', 'common_id', 'source_identity', 'detail_binding', 'sku_logistics'}
+        if not isinstance(checks, dict) or not required.issubset(checks):
+            blockers.append('R3 COMMON readback is missing required comparisons')
     expected_image_count = len(payload.get("images") or ())
     if int(evidence.get("image_count") or -1) != expected_image_count:
         blockers.append("Miaoshou COMMON readback image count does not match plan")
@@ -4343,10 +5868,12 @@ def _release_execution_readonly_gate(
     plan = store.get_plan(plan_id)
     plan_identity_exact = bool(
         plan
-        and plan_id == str(preview.get("plan_id") or "")
+        and plan_id == str(plan.get("plan_id") or "")
         and plan.get("status") == "APPROVED"
         and token == plan.get("confirmation_token")
-        and _approved_plan_matches_current_payload(plan, preview)
+        and _approved_plan_matches_current_payload(
+            plan, preview, current_source_payload=current_payload
+        )
     )
     if not plan_identity_exact:
         blockers.append(
@@ -6194,14 +7721,21 @@ def _release_v1_view(dashboard: dict) -> dict:
     }
 
 
+def _local_product_approval_actor():
+    """Existing single local approval subject; not a browser identity claim."""
+    return "Kyle"
+
+
 def _approve_product_workspace_locally(data: dict) -> tuple[int, dict]:
     """Serialize local SKU reservation, preview, revision check, and save."""
 
+    if isinstance(data, dict) and 'prepared_reference' in data:
+        return _round1_workspace_request('approve', data)
     with _product_approval_lock:
         return _approve_product_workspace_locally_locked(data)
 
 
-def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
+def _approve_product_workspace_locally_locked(data: dict, *, round1_binding=None) -> tuple[int, dict]:
     """Persist one explicit, revision-checked local product approval.
 
     The governed dashboard performs the current content-package validation and
@@ -6240,7 +7774,7 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
             "ok": False,
             "error": "expected_revision must be a non-negative integer",
         }
-    if approved_by != "Kyle":
+    if approved_by != _local_product_approval_actor():
         return 400, {
             "ok": False,
             "error": "approved_by must be Kyle for this local approval surface",
@@ -6307,7 +7841,8 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
 
     current_product = dashboard.get("product") or {}
     if (
-        bool(current_product.get("actual_product_approved"))
+        round1_binding is None
+        and bool(current_product.get("actual_product_approved"))
         and bool((state.get("review") or {}).get("fields_locked"))
         and str((state.get("review") or {}).get("seller_sku") or "") == seller_sku
     ):
@@ -6344,6 +7879,9 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
             f"workbench:{offer_id}:revision:{expected_revision}"
         ),
     }
+
+    if round1_binding is not None:
+        product_approval.update(round1_binding)
 
     next_state = dict(state)
     review = state.get("review")
@@ -6385,6 +7923,17 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
     }
 
 
+def _load_r2_documents_for_service(offer_id):
+    from shared_platform.native_sole_final_service import NativeSoleFinalService
+    from shared_platform.workbench_publication_native import load_service_r2_documents
+    runtime = globals().get('_NATIVE_FINAL_SERVICE')
+    if runtime is not None and type(runtime) is not NativeSoleFinalService:
+        raise ValueError('NATIVE_R2_SERVICE_RUNTIME_REQUIRED')
+    if runtime is not None and runtime._closed:
+        raise ValueError('NATIVE_R2_SERVICE_CLOSED')
+    return load_service_r2_documents(offer_id, runtime._operations if runtime is not None else None)
+
+
 def _release_dashboard_for_request(data: dict) -> tuple[dict | None, tuple[int, dict] | None]:
     from shared_platform import release_control
 
@@ -6406,10 +7955,22 @@ def _release_dashboard_for_request(data: dict) -> tuple[dict | None, tuple[int, 
             400,
             {"ok": False, "error": "publication_targets must be a list"},
         )
+    common_documents = None
+    if data.get("release_stage") == "R3_COMMON":
+        from shared_platform.publication_r3_image_bridge import load_r2_documents, validate_r2_identity
+        if targets != ["miaoshou:COMMON"]:
+            return None, (409, {"ok": False, "error": "COMMON_STAGE_EXACT_SCOPE_REQUIRED", "external_writes_performed": []})
+        try:
+            common_documents = _load_r2_documents_for_service(offer_id)
+            validate_r2_identity(common_documents)
+        except ValueError as error:
+            return None, (409, {"ok": False, "error": str(error), "external_writes_performed": []})
     try:
+        frozen_options = {"frozen_round1": common_documents['round1_snapshot']} if common_documents is not None else {}
         dashboard = release_control.build_release_dashboard(
             offer_id=offer_id,
             publication_targets=targets,
+            **frozen_options,
         )
     except FileNotFoundError as error:
         return None, (404, {"ok": False, "error": str(error)})
@@ -6429,7 +7990,785 @@ def _release_dashboard_for_request(data: dict) -> tuple[dict | None, tuple[int, 
                 "seller_sku": current_seller_sku,
             },
         )
+    if common_documents is not None:
+        dashboard["_r3_common_documents"] = common_documents
     return dashboard, None
+
+
+def _server_owned_postpublish_promotion_policy(targets):
+    # Existing versioned July 30 policy; no browser input or new final approval.
+    eligible = {'tiktok:LH_PH', 'tiktok:LH_MY', 'tiktok:LH_TH', 'tiktok:LH_VN',
+                'shopee:PH', 'shopee:MY', 'shopee:TH', 'shopee:VN'}
+    if not eligible.intersection(targets):
+        return None
+    from shared_platform.postpublish_promotions import build_approved_postpublish_promotion_policy
+    return build_approved_postpublish_promotion_policy(
+        approval_reference='Kyle-20260730-existing-ongoing-direct-discount')
+
+
+def _retained_native_common_stage_facts(store, plan):
+    """Service-owned retained facts and inert matrix in one read-only snapshot.
+
+    No current provider read, EDIT, plan creation or schema installation occurs.
+    The retained graph remains unavailable for approval/execution until the
+    separate native authority inputs are established.
+    """
+    from shared_platform.native_common_baseline_source import NativeCommonBaselineFacts
+    from shared_platform.r3_common_source_facts import NativeCommonSourceReader
+    from shared_platform.native_common_technical_execution import _schema_installed
+    from shared_platform.r3_frozen_review_producer import DomainFrozenReviewProducer
+    from shared_platform.release_store import ReleaseStore, ReleaseStoreError, PLAN_PENDING_APPROVAL, _plan_from_row
+    import sqlite3
+
+    def unknown(reason):
+        return NativeCommonBaselineFacts('UNKNOWN', reason).diagnostic(), None, None
+    if type(store) is not ReleaseStore or not store.path.is_file() or plan is None:
+        return unknown('COMMON_BASELINE_PERSISTED_PLAN_REQUIRED')
+    try:
+        with store._connect_readonly() as db:
+            db.execute('BEGIN')
+            reader = NativeCommonSourceReader(store)
+            reader.validate_context(db)
+            current_plan = db.execute('SELECT * FROM release_plans WHERE plan_id=?', (plan['plan_id'],)).fetchone()
+            if (current_plan is None or current_plan['status'] != PLAN_PENDING_APPROVAL
+                    or current_plan['payload_digest'] != plan['payload_digest']
+                    or current_plan['payload_json'].encode('utf-8') != json.dumps(plan['payload'],
+                        ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')):
+                return unknown('COMMON_BASELINE_CURRENT_PLAN_CHANGED')
+            if not _schema_installed(db):
+                return unknown('COMMON_BASELINE_TECHNICAL_SCHEMA_NOT_INSTALLED')
+            row = db.execute('''SELECT run_id FROM release_runs
+                WHERE plan_id=? AND technical_admission_json IS NOT NULL
+                ORDER BY created_at DESC, run_id DESC LIMIT 1''', (plan['plan_id'],)).fetchone()
+            if row is None:
+                return unknown('COMMON_BASELINE_TECHNICAL_RUN_MISSING')
+            facts = reader.read_completed_baseline(db, plan['plan_id'], row['run_id']).diagnostic()
+            if facts['status'] != 'RETAINED_NATIVE_COMMON_BASELINE':
+                return facts, None, None
+            run = store._run_in_transaction(db, row['run_id'])
+            # Follow only the exact retained COMMON plan/run of this baseline.
+            # The original graph reader validates the entire persisted payload,
+            # R1/R2, route, completion and readback before emitting a manifest.
+            matches = []
+            for market in db.execute('''SELECT * FROM release_plans
+                    WHERE product_id=? AND status!='SUPERSEDED' ORDER BY created_at DESC,plan_id DESC''',
+                    (plan['product_id'],)):
+                binding = json.loads(market['payload_json']).get('r3_marketplace_binding')
+                if (type(binding) is dict and binding.get('common_plan_id') == plan['plan_id']
+                        and binding.get('common_run_id') == run['run_id']):
+                    matches.append(market)
+            if len(matches) != 1:
+                display = {'status':'UNKNOWN', 'reason':'COMMON_BASELINE_EXACT_MARKETPLACE_MATRIX_REQUIRED',
+                    'final_review_available':False, 'execution_authority':False}
+            else:
+                display = DomainFrozenReviewProducer(reader).inspect(db, run['run_id'], matches[0]['plan_id'])
+                display['plan'] = _plan_from_row(matches[0])
+            return facts, run, display
+    except (ValueError, TypeError, KeyError, AttributeError, OSError, ReleaseStoreError, sqlite3.Error):
+        return unknown('COMMON_BASELINE_RETAINED_GETTER_SOURCE_UNVERIFIED')
+
+
+def _common_baseline_user_status(facts, *, matrix_complete=False):
+    """Business summary; the exact source and authority facts stay in details."""
+    retained = facts.get('status') == 'RETAINED_NATIVE_COMMON_BASELINE'
+    if retained:
+        pending = ['最新平台回读', '自动接续保护状态', '本次准备的写入记录覆盖']
+        if not matrix_complete:
+            pending.insert(0, '完整平台候选资料')
+        return {'status':'COMPLETED_PREPARATION', 'summary':'COMMON 已完成，回读结果已保存',
+                'candidate_summary':'完整候选资料已恢复' if matrix_complete else '候选资料仍待补全',
+                'pending_items':pending, 'common_review_needed':False,
+                'confirmed_write_limit':facts['maximum_confirmed_writes'],
+                'confirmed_writes_observed':facts['local_confirmed_writes'],
+                'final_review_available':False}
+    pending = ('既有请求结果对账' if facts.get('reason') ==
+               'COMMON_BASELINE_ACTIVE_RESULT_REQUIRES_RECONCILIATION' else 'COMMON 准备来源与完成记录')
+    return {'status':'PREPARATION_TO_VERIFY', 'summary':'COMMON 准备条件待核对',
+            'pending_items':[pending], 'common_review_needed':False,
+            'final_review_available':False}
+
+
+def _r3_common_stage_view(dashboard: dict, *, store=None) -> dict:
+    """Read-only stage facts for both HTTP and the default workflow CLI."""
+    from shared_platform.release_store import default_release_store
+    payload, blockers = _release_plan_payload_from_dashboard(
+        dashboard, common_store=store,
+    )
+    if blockers:
+        return {"ok": False, "schema_version": "publication-stages/v1", "error": blockers[0],
+                "blockers": blockers, "external_writes_performed": [],
+                "common": {"status": "BLOCKED", "execution_scope": ["miaoshou:COMMON"]}}
+    if store is None:
+        store = default_release_store()
+    preview = store.preview_plan(payload)
+    plan = store.get_plan(preview['plan_id'])
+    run = store.get_run('release-run:' + plan['payload_digest'][:24]) if plan else None
+    target = next((row for row in (run or {}).get('targets') or [] if row['target_label'] == 'miaoshou:COMMON'), None)
+    state = 'TECHNICAL_CONDITIONS_UNKNOWN'
+    evidence_blockers = []
+    if plan and plan['status'] == 'APPROVED':
+        state = 'READY_TO_SYNC'
+    if target:
+        failure = (target.get('latest_failure_evidence') or {}).get('evidence') or {}
+        if target['status'] == 'SUCCEEDED':
+            evidence_blockers = _verified_common_evidence_blockers(run, payload, store=store)
+            state = 'RECONCILIATION_REQUIRED' if evidence_blockers else 'VERIFIED'
+        elif target['status'] == 'RUNNING' or target.get('external_id') or failure.get('external_writes_performed'):
+            state = 'RECONCILIATION_REQUIRED'
+        else:
+            state = target['status']
+    reconciliation = store.common_reconciliation_reference(payload['product_id'])
+    if reconciliation:
+        state = 'RECONCILIATION_REQUIRED'
+        evidence_blockers.append('COMMON original provider-detail claim requires reconciliation')
+    elif target and target['status'] == 'FAILED':
+        failure = (target.get('latest_failure_evidence') or {}).get('evidence') or {}
+        if failure.get('schema_version') in {'common-local-config-not-dispatched/v1', 'common-local-variant-key-not-dispatched/v1'}:
+            state = 'READY_TO_SYNC'
+    from shared_platform.publication_common_write_admission import inspect_common_write_admission
+    technical_admission = inspect_common_write_admission(plan or preview, store=store)
+    baseline_facts, technical_run, retained_display = _retained_native_common_stage_facts(store, plan)
+    marketplace = {'status':'NOT_FROZEN', 'targets':payload['r3_stage_binding']['marketplace_targets']}
+    if plan and plan['status'] != 'APPROVED' and baseline_facts['status'] == 'RETAINED_NATIVE_COMMON_BASELINE':
+        run = technical_run
+        state = 'RETAINED_TECHNICAL_BASELINE'
+        if retained_display and retained_display.get('manifest') and retained_display.get('display'):
+            marketplace.update(status='INERT_COMPLETE_CANDIDATE',
+                candidate=retained_display['display'], manifest=retained_display['manifest'],
+                candidate_digest=retained_display['candidate_digest'],
+                plan_id=retained_display['marketplace_plan_id'],
+                plan=retained_display['plan'],
+                final_review_available=False, execution_authority=False,
+                blockers=retained_display['blockers'])
+        else:
+            marketplace.update(status='UNKNOWN', retained_display=retained_display,
+                final_review_available=False, execution_authority=False)
+    native_details = {} if plan and plan['status'] == 'APPROVED' else {
+        'retained_baseline_facts':baseline_facts,
+        'user_status':_common_baseline_user_status(baseline_facts,
+            matrix_complete=marketplace['status'] == 'INERT_COMPLETE_CANDIDATE'),
+        'technical_details':{'retained_baseline':baseline_facts,
+            'candidate_source':{key:value for key,value in (retained_display or {}).items()
+                if key not in {'display','manifest','plan'}}},
+        'new_common_human_approval_needed':False}
+    return {'ok': True, 'schema_version': 'publication-stages/v1',
+            'offer_id': payload['product_id'], 'external_writes_performed': [],
+            'common': {'status': state, 'plan': plan or preview, 'run': run,
+                       'blockers': evidence_blockers, 'reconciliation_reference': reconciliation,
+                        'technical_admission': technical_admission,
+                        **native_details,
+                       'execution_scope': ['miaoshou:COMMON'], 'approval_source': 'ReleaseStore',
+                       'r2_approval_scope': 'ROUND2_IMAGES_ONLY'},
+              'marketplace': marketplace}
+
+
+def _build_pending_final_review_preview_readonly(*, offer_id: str, source_store,
+                                                 root=ROOT, database_path=None):
+    """Construct a pending preview using one isolated Store image throughout.
+
+    This pure seam is not an HTTP route or an approval/execution authority. The
+    caller remains responsible for auditing non-ReleaseStore input readers.
+    """
+    from shared_platform import release_control
+    from shared_platform.publication_r3_image_bridge import (
+        load_r2_documents, validate_r2_identity,
+    )
+    from shared_platform.publication_final_review_pending import (
+        build_pending_final_review_preview_from_snapshot, pending_store_snapshot,
+    )
+    from shared_platform.publication_final_review_catalog import catalog_snapshot
+
+    clean_offer = str(offer_id or '').strip()
+    if not clean_offer.isdigit() or not 1 <= len(clean_offer) <= 32:
+        raise ValueError('FINAL_REVIEW_OFFER_ID_INVALID')
+    documents = _load_r2_documents_for_service(clean_offer)
+    validate_r2_identity(documents)
+    catalog_source = (Path(database_path) if database_path is not None else
+                      Path(os.environ.get(release_control.RELEASE_EVIDENCE_ROOT_ENV) or root)
+                      / 'data' / 'shop.db')
+    with pending_store_snapshot(source_store) as snapshot:
+        with catalog_snapshot(catalog_source) as catalog_path:
+            dashboard = release_control.build_release_dashboard(
+                offer_id=clean_offer, root=root, database_path=catalog_path,
+                report_store_path=snapshot.path, report_store=snapshot,
+                publication_targets=['miaoshou:COMMON'], strict_catalog=True,
+                frozen_round1=documents['round1_snapshot'],
+            )
+            dashboard['_r3_common_documents'] = documents
+            current_payload, blockers = _release_plan_payload_from_dashboard(
+                dashboard, common_store=snapshot,
+            )
+            if blockers:
+                raise ValueError('FINAL_REVIEW_COMMON_CURRENT_PAYLOAD_BLOCKED')
+            common_view = _r3_common_stage_view(dashboard, store=snapshot)
+            return build_pending_final_review_preview_from_snapshot(
+                documents=documents, dashboard=dashboard, snapshot=snapshot,
+                current_payload=current_payload, common_view=common_view,
+            )
+
+
+def _preview_r3_marketplace_stage(data: dict) -> tuple[int, dict]:
+    configuration, configured = publication_runtime_config.diagnose(R3_STARTUP_CONFIG)
+    status, result = _preview_r3_marketplace_stage_configured(data, configured)
+    return status, {**result, 'configuration': configuration}
+
+
+def _preview_r3_marketplace_stage_configured(data: dict, configured: dict) -> tuple[int, dict]:
+    from shared_platform import publication_r3_image_bridge as bridge
+    from shared_platform import publication_autopilot as authority
+    from shared_platform.release_store import default_release_store
+    from domains.product_operations.approved_publication_snapshot import (
+        build_publication_preview,
+        build_publication_business_snapshot,
+    )
+
+    common_request = {'offer_id': data.get('offer_id'), 'release_stage': 'R3_COMMON',
+                      'publication_targets': ['miaoshou:COMMON']}
+    dashboard, failure = _release_dashboard_for_request(common_request)
+    if failure:
+        return failure
+    view = _r3_common_stage_view(dashboard)
+    from shared_platform.native_sole_final_service import NativeSoleFinalService
+    native_service = _NATIVE_FINAL_SERVICE
+    native_common = (type(native_service) is NativeSoleFinalService
+        and native_service._new_decision_execution_enabled
+        and view['common']['status'] == 'RETAINED_TECHNICAL_BASELINE')
+    if view['common']['status'] != 'VERIFIED' and not native_common:
+        return 409, {**view, 'ok': False, 'error': 'COMMON_VERIFIED_READBACK_REQUIRED'}
+    if not configured:
+        return 409, {**view, 'ok': False, 'error': 'R3_CONFIGURATION_BLOCKED',
+            'marketplace': {'status': 'BLOCKED', 'blockers': ['R3_CONFIGURATION_BLOCKED']},
+            'external_writes_performed': []}
+    try:
+        common = view['common']
+        ozon_stock_decision = None
+        if 'ozon:RU' in view['marketplace']['targets']:
+            from shared_platform.ozon_runtime_credentials import required_pinned_ozon_credentials
+            from shared_platform.ozon_stock_warehouse_decision import validate_warehouse_receipt
+            receipt_path = bridge._report_path(str(data.get('offer_id') or ''), 'ozon-warehouse-readback.json')
+            if not receipt_path.is_file():
+                raise ValueError('OZON_EXACT_STOCK_WAREHOUSE_DECISION_REQUIRED')
+            receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+            round1 = dashboard['_r3_common_documents']['round1_snapshot']
+            verified_receipt = validate_warehouse_receipt(receipt,
+                offer_id=str(data.get('offer_id') or ''), round1=round1,
+                pinned=required_pinned_ozon_credentials())
+            ozon_stock_decision = verified_receipt['decision']
+        store = default_release_store()
+        if native_common:
+            if store.path.resolve() != native_service.store.path.resolve():
+                raise ValueError('NATIVE_COMMON_CANDIDATE_STORE_CHANGED')
+            store = native_service.store
+        with store._connect_readonly() as category_db:
+            category_db.execute('BEGIN')
+            if native_common:
+                from shared_platform.r3_common_source_facts import NativeCommonSourceReader
+                from shared_platform.native_common_retained_completion import read_retained_completion
+                if native_service.store is not store:
+                    raise ValueError('NATIVE_COMMON_CANDIDATE_STORE_CHANGED')
+                completion = read_retained_completion(NativeCommonSourceReader(store), category_db,
+                    common['plan']['plan_id'], common['run']['run_id'])
+                if (completion.offer_id != str(data.get('offer_id'))
+                        or completion.readback_digest != next(row for row in common['run']['targets']
+                            if row['target_label']=='miaoshou:COMMON')['readback']['evidence_digest']):
+                    raise ValueError('NATIVE_COMMON_CANDIDATE_READBACK_CHANGED')
+            payload = bridge.build_marketplace_stage_payload(dashboard['_r3_common_documents'], common['plan'], common['run'],
+                policy=configured['policy'], incidents=configured['incident_registry'],
+                promotion_policy=_server_owned_postpublish_promotion_policy(view['marketplace']['targets']),
+                ozon_stock_decision=ozon_stock_decision, category_store=store,
+                category_connection=category_db)
+        plan = store.preview_plan(payload)
+        snapshot = build_publication_preview(payload)
+        from shared_platform.shopee_category_attribute_successor import (
+            build_shopee_category_attribute_successor_payload,
+            configured_successor_approval,
+        )
+        shopee_successor_approval = configured_successor_approval(payload["product_id"])
+        if shopee_successor_approval is not None:
+            payload = build_shopee_category_attribute_successor_payload(
+                payload,
+                predecessor_snapshot=snapshot,
+                approval=shopee_successor_approval,
+            )
+            plan = store.preview_plan(payload)
+            snapshot = build_publication_preview(payload)
+        binding = payload['r3_marketplace_binding']
+        snapshot = build_publication_preview(payload)
+        with store._connect_readonly() as category_db:
+            category_db.execute('BEGIN')
+            evidence = bridge.marketplace_quality_evidence(snapshot, payload,
+                category_store=store, category_connection=category_db)
+        candidate = authority.compile_release_preview(snapshot, policy=binding['policy'],
+            incident_registry=binding['incident_registry'], durable_evidence=evidence)
+        if candidate.get('status') != 'READY_FOR_FINAL_REVIEW':
+            view['marketplace'] = {
+                'status': 'BLOCKED',
+                'final_review_available': False,
+                'targets': payload['targets'],
+                'plan': plan,
+                'snapshot': snapshot,
+                'preview': candidate,
+                'blockers': candidate.get('blockers') or ['FINAL_CANDIDATE_NOT_READY'],
+                'approval_source': 'ReleaseStore',
+                'final_review': {
+                    'status': 'BLOCKED',
+                    'candidate_digest': candidate.get('candidate_digest'),
+                    'approval_recorded': False,
+                    'execution_recorded': False,
+                },
+            }
+            from shared_platform.publication_status_projection import pending_targets
+            view['marketplace']['target_results'] = pending_targets(payload['targets'])
+            return 200, view
+        # Bind the entire reviewed material into the existing immutable plan.
+        # Digest-dependent envelope fields stay outside to avoid a hash cycle.
+        material = dict(candidate)
+        material.pop('candidate_digest')
+        material.pop('snapshot_digest')
+        binding['reviewed_candidate_facts'] = material
+        snapshot = build_publication_preview(payload)
+        business_snapshot = build_publication_business_snapshot(payload)
+        candidate = {**material, 'snapshot_digest': business_snapshot['business_snapshot_digest']}
+        candidate['candidate_digest'] = authority._canonical_digest(candidate)
+        plan = store.preview_plan(payload)
+        view['marketplace'] = {'status': 'APPROVAL_REQUIRED' if candidate['status'] == 'READY_FOR_FINAL_REVIEW' else 'BLOCKED',
+            'targets': payload['targets'], 'plan': plan, 'snapshot': snapshot, 'preview': candidate,
+            'blockers': candidate['blockers'], 'approval_source': 'ReleaseStore',
+            'final_review': {'status': 'AWAITING_APPROVAL' if candidate['status']=='READY_FOR_FINAL_REVIEW' else 'BLOCKED',
+                             'candidate_digest': candidate['candidate_digest'],
+                             'approval_recorded': False, 'execution_recorded': False}}
+        from shared_platform.publication_status_projection import pending_targets
+        view['marketplace']['target_results'] = pending_targets(payload['targets'])
+        if native_common:
+            # Explicit preparation persists an inert immutable candidate. GET
+            # never creates it, and only the native owner-bound decision can
+            # approve or execute this plan after another complete recheck.
+            view['marketplace']['plan'] = store.create_plan(payload)
+            from shared_platform.native_sole_final_service import check_current_rounds
+            installed = globals().get('_NATIVE_FINAL_SERVICE')
+            from shared_platform.native_sole_final_service import NativeSoleFinalService
+            operations = installed._operations if type(installed) is NativeSoleFinalService else None
+            check_current_rounds(store, view['marketplace']['plan']['plan_id'], operations=operations)
+            view['current_r2_matches_approved'] = True
+            return 200, native_service.project(view)
+        from shared_platform.publication_post_common_admission import inspect_post_common_final_review
+        admission = inspect_post_common_final_review(
+            offer_id=str(data.get('offer_id') or ''), market=view['marketplace'],
+            common_plan=common['plan'], common_run=common['run'],
+            official_readback_blockers=common.get('blockers') or [])
+        view['marketplace'].update(
+            status='BLOCKED', blockers=admission['blockers'],
+            final_review_available=False, final_review_admission=admission)
+        view['marketplace']['final_review']['status'] = 'BLOCKED'
+        return 200, view
+    except (ValueError, TypeError, KeyError, OSError) as error:
+        return 409, {**view, 'ok': False, 'error': str(error),
+            'marketplace': {'status': 'BLOCKED', 'blockers': [str(error)]}, 'external_writes_performed': []}
+
+
+def _publication_stages_for_request_legacy(data: dict) -> tuple[int, dict]:
+    status, result = _publication_stages_for_request_impl(data)
+    if 'configuration' not in result:
+        configuration, _ = publication_runtime_config.diagnose(R3_STARTUP_CONFIG)
+        result = {**result, 'configuration': configuration}
+    market = result.get('marketplace') or {}
+    if (result['configuration']['status'] == 'BLOCKED'
+            and market.get('status') == 'APPROVAL_REQUIRED'
+            and (market.get('plan') or {}).get('status') != 'APPROVED'):
+        result = {**result, 'marketplace': {**market, 'status': 'BLOCKED',
+            'blockers': result['configuration']['blockers']}}
+        market = result['marketplace']
+    predecessor = market.get('candidate') or market.get('preview')
+    if isinstance(predecessor, dict):
+        try:
+            from shared_platform.publication_successor_preview import load_successor_preview
+            from shared_platform import publication_r3_image_bridge as bridge
+            successor = load_successor_preview(
+                offer_id=str(result.get('offer_id') or ''),
+                predecessor=predecessor,
+                reports_root=bridge.REPORTS_ROOT,
+                snapshot=market.get('snapshot'),
+            )
+            if successor is not None:
+                result = {**result, 'marketplace': {**market, 'successor_preview': successor}}
+        except (ValueError, TypeError, KeyError, OSError, json.JSONDecodeError) as error:
+            result = {**result, 'marketplace': {**market,
+                'successor_preview_error': str(error)}}
+    # Existing approved payloads/UNKNOWN runs keep their original authority and
+    # recovery action. Current configuration only governs a new preview.
+    return status, result
+
+
+def _publication_stages_for_request_impl(data: dict) -> tuple[int, dict]:
+    """One read-only consumer contract; COMMON and each marketplace retain separate outcomes."""
+    from shared_platform.release_store import default_release_store
+    from shared_platform import publication_r3_image_bridge as bridge
+    from shared_platform import publication_autopilot as authority
+    offer = str(data.get('offer_id') or '')
+    try:
+        bridge._report_path(offer, 'round1-approved-snapshot.json')
+    except ValueError as error:
+        return 409, {'ok': False, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
+            'stage': 'RECONCILIATION_REQUIRED', 'error': str(error), 'external_writes_performed': []}
+    store = default_release_store()
+    active = store.get_plan(str(data['plan_id'])) if data.get('plan_id') else store.active_plan_for_product(offer)
+    if data.get('plan_id') and (not active or active['product_id'] != offer):
+        return 409, {'ok': False, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
+            'stage': 'RECONCILIATION_REQUIRED', 'error': 'Exact plan does not belong to requested offer', 'external_writes_performed': []}
+    documents, current_r2_error = None, None
+    try:
+        documents = _load_r2_documents_for_service(offer)
+    except ValueError as error:
+        current_r2_error = str(error)
+    if active and active['product_id'] == offer and active['payload'].get('r3_marketplace_binding'):
+        binding = active['payload']['r3_marketplace_binding']
+        common_plan = store.get_plan(binding['common_plan_id'])
+        if active['status'] == 'PENDING_APPROVAL' and common_plan and common_plan['status'] != 'APPROVED':
+            baseline, technical_run, display = _retained_native_common_stage_facts(store, common_plan)
+            retained = baseline['status'] == 'RETAINED_NATIVE_COMMON_BASELINE'
+            common = {'status':'RETAINED_TECHNICAL_BASELINE' if retained else 'TECHNICAL_CONDITIONS_UNKNOWN',
+                'plan':common_plan, 'run':technical_run, 'retained_baseline_facts':baseline,
+                'blockers':[] if retained else [baseline['reason']],
+                'execution_scope':['miaoshou:COMMON'], 'new_common_human_approval_needed':False}
+            market = {'status':'UNKNOWN', 'plan':active, 'targets':active['targets'],
+                'final_review_available':False, 'execution_authority':False,
+                'final_review':{'status':'BLOCKED', 'approval_recorded':False, 'execution_recorded':False}}
+            if (retained and display and display.get('manifest') and display.get('display')
+                    and display.get('marketplace_plan_id') == active['plan_id']):
+                market.update(status='INERT_COMPLETE_CANDIDATE', candidate=display['display'],
+                    manifest=display['manifest'], candidate_digest=display['candidate_digest'],
+                    plan=display['plan'],
+                    blockers=display['blockers'])
+            else:
+                market.update(retained_display=display,
+                    blockers=[baseline['reason']] if not retained else ['COMMON_BASELINE_EXACT_MARKETPLACE_MATRIX_REQUIRED'])
+            common['user_status'] = _common_baseline_user_status(baseline,
+                matrix_complete=market['status'] == 'INERT_COMPLETE_CANDIDATE')
+            common['technical_details'] = {'retained_baseline':baseline,
+                'candidate_source':{key:value for key,value in (display or {}).items()
+                    if key not in {'display','manifest','plan'}}}
+            return 200, {'ok':True, 'schema_version':'publication-stages/v1', 'offer_id':offer,
+                'common':common, 'marketplace':market, 'external_writes_performed':[],
+                'current_r2_matches_approved':documents is not None and binding['r2_identity'] == bridge.validate_r2_identity(documents),
+                'current_r2_error':current_r2_error}
+        common_run = store.get_run(binding['common_run_id'])
+        blockers = _verified_common_evidence_blockers(common_run, common_plan['payload'], store=store) if common_plan else ['COMMON plan unavailable']
+        common = {'status': 'RECONCILIATION_REQUIRED' if blockers else 'VERIFIED', 'plan': common_plan,
+                  'run': common_run, 'blockers': blockers, 'execution_scope': ['miaoshou:COMMON']}
+        market = {'status': 'APPROVAL_REQUIRED', 'plan': active, 'targets': active['targets'], 'platforms': []}
+        from shared_platform.publication_status_projection import pending_targets, project_execution
+        market['target_results'] = pending_targets(active['targets'])
+        market['final_review'] = {'status': 'AWAITING_APPROVAL', 'approval_recorded': False,
+                                  'execution_recorded': False}
+        if active['status'] == 'PENDING_APPROVAL':
+            market.update(status='BLOCKED', blockers=blockers or
+                          ['POST_COMMON_FINAL_CANDIDATE_RESTORATION_PENDING'],
+                          final_review_available=False)
+            market['final_review']['status'] = 'BLOCKED'
+        if active['status'] == 'PENDING_APPROVAL' and not blockers:
+            code, restored = _preview_r3_marketplace_stage({'offer_id': offer})
+            restored_market = restored.get('marketplace') or {}
+            restored_plan = restored_market.get('plan') or {}
+            if (code == 200 and restored_plan.get('plan_id') == active['plan_id']
+                    and restored_plan.get('payload_digest') == active['payload_digest']):
+                market.update(restored_market)
+            else:
+                configuration = restored.get('configuration') or {}
+                diagnostic = (configuration.get('blockers')
+                    if configuration.get('status') == 'BLOCKED' else None)
+                market.update(status='RECONCILIATION_REQUIRED', blockers=(
+                    diagnostic or restored_market.get('blockers')
+                    or ['Frozen final candidate changed during restoration']))
+        if active['status'] in {'APPROVED', 'SUPERSEDED'} and active.get('approval'):
+            market['status'] = 'APPROVAL_BINDING_REQUIRED'
+            market['final_review'].update(status='APPROVED', approval_recorded=True, execution_recorded=None,
+                approved_at=active['approval']['approved_at'], approval_id=active['approval']['approval_id'])
+            try:
+                snapshot = store.approved_publication_snapshot(offer_id=offer, plan_id=active['plan_id'])
+                platforms = list(dict.fromkeys(label.split(':')[0].upper() for label in active['targets']))
+                packet = authority.resolve_persisted_execution_authority(snapshot=snapshot, platform_scope=platforms,
+                    target_labels=active['targets'], reports_root=bridge.REPORTS_ROOT)
+                if packet and not blockers:
+                    market.update(status='READY_TO_PUBLISH', candidate=packet[0], approval=packet[1])
+                    projection = project_execution(plan=active, snapshot=snapshot, candidate=packet[0], approval=packet[1],
+                        run_store=_product_publication_run_store(), report_store=_product_publication_report_store(),
+                        authority_root=bridge.REPORTS_ROOT)
+                    market.update(projection)
+                    market['final_review'].update(candidate_digest=packet[0]['candidate_digest'],
+                        execution_recorded=bool(projection['execution_summary']['run_count']) if projection['execution_summary']['index_valid'] else None,
+                        status='RECONCILIATION_REQUIRED' if not projection['execution_summary']['index_valid'] else
+                            'EXECUTION_RECORDED' if projection['execution_summary']['run_count'] else 'APPROVED')
+                    if active['status']=='SUPERSEDED':
+                        market['status']='SUPERSEDED'
+                        market['final_review'].update(status='SUPERSEDED', superseded_at=active['superseded_at'],
+                            superseded_by_plan_id=active['superseded_by_plan_id'])
+                        for row in market['target_results'] + market['platforms']:
+                            row['next_action']='READ_ONLY_HISTORY'
+                else:
+                    market['target_results'] = pending_targets(active['targets'],
+                        status='RECONCILIATION_REQUIRED', blocker='APPROVED_EVIDENCE_UNAVAILABLE')
+            except (ValueError, KeyError) as error:
+                if market['status'] != 'APPROVAL_BINDING_REQUIRED':
+                    market['status'] = 'RECONCILIATION_REQUIRED'
+                market['blockers'] = [str(error)]
+                market['target_results'] = pending_targets(active['targets'],
+                    status='RECONCILIATION_REQUIRED', blocker='APPROVED_EVIDENCE_UNAVAILABLE')
+        return 200, {'ok': True, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
+            'common': common, 'marketplace': market, 'external_writes_performed': [],
+            'current_r2_matches_approved': documents is not None and binding['r2_identity'] == bridge.validate_r2_identity(documents),
+            'current_r2_error': current_r2_error}
+    # A retained provider claim is authoritative even when current dashboard
+    # facts are incomplete or changed. Do not compile a replacement preview
+    # before presenting the original unresolved run to read-only consumers.
+    reference = store.common_reconciliation_reference(offer)
+    if reference:
+        return 200, {'ok': True, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
+            'common': {'status': 'RECONCILIATION_REQUIRED', 'reconciliation_reference': reference,
+                'plan': store.get_plan(reference['plan_id']), 'run': store.get_run(reference['run_id']),
+                'blockers': [current_r2_error] if current_r2_error else ['Original COMMON provider claim requires reconciliation'],
+                'execution_scope': ['miaoshou:COMMON']},
+            'marketplace': {'status': 'NOT_FROZEN'}, 'external_writes_performed': []}
+    # Preserve verified terminal evidence from the original immutable COMMON
+    # payload when today's dashboard can no longer compile a candidate. Current
+    # preparation errors are marketplace blockers, not a new COMMON write.
+    retained_common = None
+    if active and active['payload'].get('r3_stage_binding') and active['targets'] == ['miaoshou:COMMON']:
+        original_run = store.get_run('release-run:' + active['payload_digest'][:24])
+        if original_run and not _verified_common_evidence_blockers(original_run, active['payload'], store=store):
+            retained_common = {'status': 'VERIFIED', 'plan': active, 'run': original_run,
+                'blockers': [], 'execution_scope': ['miaoshou:COMMON']}
+
+    def retained_preparation_blocked(blockers):
+        return 200, {'ok': True, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
+            'common': retained_common, 'marketplace': {'status': 'BLOCKED', 'blockers': blockers},
+            'current_preparation_blocked': True, 'external_writes_performed': []}
+
+    if current_r2_error:
+        if retained_common:
+            return retained_preparation_blocked([current_r2_error])
+        missing = [key for key, filename in bridge.R2_DOCUMENTS.items() if not bridge._report_path(offer, filename).is_file()]
+        stage = 'FIRST_ROUND_REQUIRED' if {'round1_snapshot', 'first_review'}.intersection(missing) else (
+            'SECOND_ROUND_REQUIRED' if missing else 'RECONCILIATION_REQUIRED')
+        return 409, {'ok': False, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
+            'stage': stage, 'error': current_r2_error, 'missing_documents': missing,
+            'next_action': 'REVIEW_FIRST_ROUND_TARGET_SCOPE' if stage == 'FIRST_ROUND_REQUIRED' else (
+                'PREPARE_ROUND2' if stage == 'SECOND_ROUND_REQUIRED' else 'RECONCILE_R2_EVIDENCE'),
+            'external_writes_performed': []}
+    status, common = _preview_r3_common_stage({'offer_id': offer, 'release_stage': 'R3_COMMON',
+        'publication_targets': ['miaoshou:COMMON']})
+    if status != 200 and retained_common:
+        return retained_preparation_blocked(common.get('blockers') or [common.get('error') or 'Current COMMON preparation is blocked'])
+    if status != 200 or common['common']['status'] != 'VERIFIED':
+        return status, {**common, 'schema_version': 'publication-stages/v1', 'offer_id': offer}
+    return _preview_r3_marketplace_stage({'offer_id': offer})
+
+
+_NATIVE_FINAL_SERVICE = None
+
+
+def _publication_stages_for_request(data: dict) -> tuple[int, dict]:
+    status, payload = _publication_stages_for_request_legacy(data)
+    from shared_platform.native_sole_final_service import NativeSoleFinalService
+    installed = _NATIVE_FINAL_SERVICE
+    if status == 200 and type(installed) is NativeSoleFinalService:
+        payload = installed.project(payload)
+    return status, payload
+
+
+def _approve_r3_marketplace_stage(data: dict, *, native_service=None) -> tuple[int, dict]:
+    """Persist one explicit reviewed marketplace decision; derive its authority recoverably."""
+    if native_service is not None:
+        from shared_platform.native_sole_final_service import NativeSoleFinalService
+        if type(native_service) is not NativeSoleFinalService or set(data) != {'nonce','review_digest'}:
+            return 409, {'ok':False,'error':'NATIVE_SOLE_FINAL_FIELDS_INVALID','external_writes_performed':[]}
+        return native_service.approve_and_submit(**data)
+    from shared_platform.release_store import default_release_store, ReleaseStoreError
+    from shared_platform import publication_autopilot as authority
+    from shared_platform import publication_r3_image_bridge as bridge
+    from shared_platform.publication_post_common_admission import inspect_post_common_final_review
+    store = default_release_store()
+    plan_id = str(data.get('plan_id') or '')
+    existing = store.get_plan(plan_id)
+    if existing and existing.get('status') == 'APPROVED':
+        if (str(data.get('offer_id')) != existing['product_id']
+                or data.get('confirmation_token') != existing['confirmation_token']):
+            return 409, {'ok': False, 'error': 'MARKETPLACE_APPROVED_IDENTITY_CONFLICT', 'external_writes_performed': []}
+        return _resume_r3_marketplace_stage(data)
+    if data.get('user_approved') is not True or data.get('approved_by') != 'Kyle':
+        return 409, {'ok': False, 'error': 'MARKETPLACE_EXPLICIT_APPROVAL_REQUIRED', 'external_writes_performed': []}
+    status, view = _preview_r3_marketplace_stage(data)
+    if status != 200:
+        return status, view
+    market = view.get('marketplace') or {}
+    plan = market.get('plan') or {}
+    preview = market.get('preview') or {}
+    if (market.get('status') not in {'APPROVAL_REQUIRED', 'BLOCKED'}
+            or plan_id != plan.get('plan_id')
+            or data.get('confirmation_token') != plan.get('confirmation_token')
+            or not preview.get('candidate_digest')
+            or data.get('preview_digest') != preview['candidate_digest']):
+        return 409, {**view, 'ok': False, 'error': 'MARKETPLACE_REVIEW_IDENTITY_CONFLICT'}
+    binding = (plan.get('payload') or {}).get('r3_marketplace_binding') or {}
+    common_plan = store.get_plan(str(binding.get('common_plan_id') or ''))
+    common_run = store.get_run(str(binding.get('common_run_id') or ''))
+    readback_blockers = (_verified_common_evidence_blockers(
+        common_run, common_plan.get('payload') or {}, store=store)
+        if common_plan else ['COMMON_PLAN_UNAVAILABLE'])
+    admission = inspect_post_common_final_review(
+        offer_id=str(data.get('offer_id') or ''), market=market,
+        common_plan=common_plan, common_run=common_run,
+        official_readback_blockers=readback_blockers)
+    if admission['status'] != 'READY':
+        return 409, {'ok': False, 'error': 'POST_COMMON_FINAL_REVIEW_BLOCKED',
+                     'blockers': admission['blockers'],
+                     'final_review_available': False,
+                     'execution_authority': False,
+                     'external_writes_performed': []}
+    try:
+        authority.persist_release_candidate(
+            market['preview'], reports_root=bridge.REPORTS_ROOT
+        )
+        store.create_plan(plan['payload'])
+        # Re-read after reservation creation, immediately before recording the decision.
+        status, refreshed = _preview_r3_marketplace_stage(data)
+        refreshed_market = refreshed.get('marketplace') or {}
+        refreshed_plan = refreshed_market.get('plan') or {}
+        refreshed_preview = refreshed_market.get('preview') or {}
+        reserved_plan = store.get_plan(plan_id)
+        if (status != 200 or refreshed_plan.get('plan_id') != plan_id
+                or refreshed_plan.get('confirmation_token') != plan['confirmation_token']
+                or refreshed_plan.get('payload_digest') != plan['payload_digest']
+                or refreshed_plan.get('payload') != plan['payload']
+                or refreshed_market.get('targets') != market.get('targets')
+                or refreshed_preview != preview
+                or not reserved_plan or reserved_plan.get('status') != 'PENDING_APPROVAL'
+                or reserved_plan.get('payload_digest') != plan['payload_digest']
+                or reserved_plan.get('payload') != plan['payload']):
+            return 409, {'ok': False, 'error': 'MARKETPLACE_FACTS_CHANGED_BEFORE_APPROVAL', 'external_writes_performed': []}
+        refreshed_binding = (refreshed_plan.get('payload') or {}).get('r3_marketplace_binding') or {}
+        refreshed_common_plan = store.get_plan(str(refreshed_binding.get('common_plan_id') or ''))
+        refreshed_common_run = store.get_run(str(refreshed_binding.get('common_run_id') or ''))
+        refreshed_readback_blockers = (_verified_common_evidence_blockers(
+            refreshed_common_run, refreshed_common_plan.get('payload') or {}, store=store)
+            if refreshed_common_plan else ['COMMON_PLAN_UNAVAILABLE'])
+        refreshed_admission = inspect_post_common_final_review(
+            offer_id=str(data.get('offer_id') or ''), market=refreshed_market,
+            common_plan=refreshed_common_plan, common_run=refreshed_common_run,
+            official_readback_blockers=refreshed_readback_blockers)
+        if (refreshed_binding != binding or refreshed_common_plan != common_plan
+                or refreshed_common_run != common_run
+                or refreshed_admission != admission
+                or refreshed_admission.get('status') != 'READY'):
+            return 409, {'ok': False, 'error': 'MARKETPLACE_ADMISSION_CHANGED_BEFORE_APPROVAL',
+                         'blockers': refreshed_admission.get('blockers') or ['POST_COMMON_ADMISSION_CHANGED'],
+                         'final_review_available': False, 'execution_authority': False,
+                         'external_writes_performed': []}
+        store.approve_plan(plan_id, user_approved=True, approved_by=data['approved_by'],
+                           confirmation_token=data['confirmation_token'])
+    except (ValueError, ReleaseStoreError, OSError) as error:
+        return 409, {'ok': False, 'error': str(error), 'external_writes_performed': []}
+    return _resume_r3_marketplace_stage(data)
+
+
+def _r3_marketplace_business_execution_gate() -> tuple[int, dict] | None:
+    """Require the same verified runtime mode exposed by /api/health."""
+    from shared_platform.runtime_identity import health_payload
+
+    try:
+        runtime = health_payload(
+            "orbit-hive-local-console", root=ROOT, web_root=WEB_DIR,
+            startup=RUNTIME_IDENTITY,
+        )
+    except Exception:
+        runtime = None
+    if (not isinstance(runtime, dict) or runtime.get('state') != 'READY'
+            or runtime.get('identity_only') is not False
+            or runtime.get('business_execution_verified') is not True):
+        return 409, {
+            'ok': False, 'error': 'MARKETPLACE_BUSINESS_EXECUTION_DISABLED',
+            'final_review_available': False, 'execution_authority': False,
+            'external_writes_performed': [],
+        }
+    return None
+
+
+def _resume_r3_marketplace_stage(data: dict, *, native_service=None) -> tuple[int, dict]:
+    """Complete only the already persisted decision from its original immutable payload."""
+    if native_service is not None:
+        from shared_platform.native_sole_final_service import NativeSoleFinalService
+        if type(native_service) is not NativeSoleFinalService or set(data) != {'decision_id'}:
+            return 409, {'ok':False,'error':'NATIVE_SOLE_FINAL_FIELDS_INVALID','external_writes_performed':[]}
+        return native_service.submit(data['decision_id'])
+    from shared_platform.release_store import default_release_store, ReleaseStoreError
+    from shared_platform import publication_r3_image_bridge as bridge
+    from shared_platform import publication_autopilot as authority
+    from domains.product_operations.approved_publication_snapshot import (
+        build_publication_preview,
+        build_publication_business_snapshot,
+    )
+    store = default_release_store()
+    try:
+        plan = store.get_plan(str(data.get('plan_id') or ''))
+        if not plan or plan['status'] != 'APPROVED' or plan['product_id'] != str(data.get('offer_id') or ''):
+            raise ValueError('MARKETPLACE_DURABLE_APPROVAL_REQUIRED')
+        payload = plan['payload']
+        binding = payload.get('r3_marketplace_binding') or {}
+        if binding.get('schema_version') != 'r3-marketplace-stage/v1':
+            raise ValueError('MARKETPLACE_APPROVAL_BINDING_REQUIRED')
+        common_plan = store.get_plan(binding['common_plan_id'])
+        common_run = store.get_run(binding['common_run_id'])
+        if not common_plan or common_plan['payload_digest'] != binding['common_payload_digest']:
+            raise ValueError('MARKETPLACE_COMMON_PROVENANCE_CONFLICT')
+        blockers = _verified_common_evidence_blockers(common_run, common_plan['payload'], store=store)
+        common = next(row for row in common_run['targets'] if row['target_label'] == 'miaoshou:COMMON')
+        if blockers or common['readback'] != binding['common_readback']:
+            raise ValueError('MARKETPLACE_COMMON_READBACK_CHANGED')
+        snapshot = store.approved_publication_snapshot(offer_id=plan['product_id'], plan_id=plan['plan_id'])
+        preview = build_publication_preview(payload)
+        business_snapshot = build_publication_business_snapshot(payload)
+        stored_business_snapshot = store.publication_business_snapshot(
+            offer_id=plan['product_id'], plan_id=plan['plan_id']
+        )
+        if stored_business_snapshot != business_snapshot:
+            raise ValueError('MARKETPLACE_BUSINESS_SNAPSHOT_CHANGED')
+        material = binding['reviewed_candidate_facts']
+        if (binding.get('final_candidate_contract_version') != 'stable-final-review/v1'
+                or material.get('status') != 'READY_FOR_FINAL_REVIEW'
+                or material.get('schema_version') != authority.CANDIDATE_SCHEMA):
+            raise ValueError('MARKETPLACE_REVIEW_NOT_READY')
+        candidate = {**material, 'snapshot_digest': business_snapshot['business_snapshot_digest']}
+        candidate['candidate_digest'] = authority._canonical_digest(candidate)
+        persisted_candidate = authority.load_release_candidate(
+            plan['product_id'], candidate['candidate_digest'], reports_root=bridge.REPORTS_ROOT
+        )
+        if persisted_candidate != candidate:
+            raise ValueError('MARKETPLACE_REVIEWED_CANDIDATE_CHANGED')
+        candidate = persisted_candidate
+        authority.validate_release_candidate_for_execution(candidate, snapshot=snapshot,
+            platform_scope=candidate['platform_scope'], target_labels=candidate['target_labels'])
+        authority.persist_release_candidate(candidate, reports_root=bridge.REPORTS_ROOT)
+        receipt = authority.build_final_approval_receipt(candidate, approved_by=plan['approval']['approved_by'])
+        receipt['approved_at'] = plan['approval']['approved_at']
+        receipt['source_release_approval_id'] = plan['approval']['approval_id']
+        receipt.pop('approval_digest')
+        receipt['approval_digest'] = authority._canonical_digest(receipt)
+        authority.persist_final_approval_receipt(receipt, candidate, reports_root=bridge.REPORTS_ROOT)
+        return 200, {'ok': True, 'schema_version': 'publication-stages/v1', 'offer_id': plan['product_id'],
+            'external_writes_performed': [], 'marketplace': {'status': 'READY_TO_PUBLISH', 'plan': plan,
+            'candidate': candidate, 'approval': receipt, 'targets': candidate['target_labels']}}
+    except (ValueError, KeyError, TypeError, OSError, ReleaseStoreError) as error:
+        return 409, {'ok': False, 'error': str(error), 'external_writes_performed': [],
+            'marketplace': {'status': 'APPROVAL_BINDING_REQUIRED', 'plan_id': str(data.get('plan_id') or '')}}
+
+
+def _preview_r3_common_stage(data: dict) -> tuple[int, dict]:
+    if data.get('release_stage') != 'R3_COMMON':
+        return 400, {'ok': False, 'error': 'release_stage=R3_COMMON is required', 'external_writes_performed': []}
+    dashboard, failure = _release_dashboard_for_request(data)
+    if failure:
+        return failure
+    result = _r3_common_stage_view(dashboard)
+    return (200 if result['ok'] else 409), result
 
 
 def _reconcile_existing_shopee_target_readonly(
@@ -7629,6 +9968,33 @@ def _repair_existing_shopee_target_price(data: dict) -> tuple[int, dict]:
         }
 
 
+def _registered_r3_post_allowed(path: str, data: dict) -> bool:
+    """Permit only preparation routes after authenticating registered R2.
+
+    This is an admission gate, not approval: the original domain handler still
+    verifies the exact plan, confirmation token and explicit human decision.
+    """
+    common_routes = {
+        '/api/product-workspace/release-plan/approve',
+        '/api/product-workspace/r3-common/preview',
+    }
+    if path in common_routes:
+        if (data.get('release_stage') != 'R3_COMMON'
+            or data.get('publication_targets') != ['miaoshou:COMMON']):
+            return False
+    elif path not in {'/api/product-workspace/r3-marketplace/preview','/api/product-workspace/r3-marketplace/approve','/api/product-workspace/r3-marketplace/resume-binding','/api/product-workspace/publish-tiktok','/api/product-workspace/publish-shopee-global','/api/product-workspace/publish-ozon'}:
+        return False
+    from shared_platform.publication_r2_review import review_view, review_runtime_root
+    from shared_platform.publication_r3_image_bridge import load_r2_documents, validate_r2_identity
+    offer_id = str(data.get('offer_id') or '')
+    view = review_view(offer_id, runtime_root=review_runtime_root(ROOT))
+    consumer = view.get('r2_consumer') or {}
+    if (view.get('offer_id') != offer_id or consumer.get('status') != 'PASSED'
+        or not consumer.get('identity')):
+        return False
+    return validate_r2_identity(_load_r2_documents_for_service(offer_id)) == consumer['identity']
+
+
 def _approve_release_plan_locally(data: dict) -> tuple[int, dict]:
     """Persist the exact plan and Kyle approval; perform no external action."""
     from shared_platform.release_store import (
@@ -7659,6 +10025,14 @@ def _approve_release_plan_locally(data: dict) -> tuple[int, dict]:
             "blockers": blockers,
             "dashboard": current_dashboard,
             "external_writes_performed": [],
+        }
+    if (plan_payload.get('r3_stage_binding') or {}).get('schema_version') == 'r3-common-stage/v1':
+        # The old ReleasePlan POST creates a second human approval before the
+        # one frozen marketplace review. Preserve historical plans, but never
+        # create another R3 COMMON decision through caller-declared fields.
+        return 409, {
+            'ok': False, 'error': 'R3_COMMON_LEGACY_APPROVAL_RETIRED',
+            'external_writes_performed': [],
         }
     store = default_release_store()
     preview = store.preview_plan(plan_payload)
@@ -7823,6 +10197,167 @@ def _adapter_result_has_external_outcome(result) -> bool:
     )
 
 
+def _prepare_native_common_ledger(data, store):
+    """COMMON-only native coordinator, distinct from marketplace human runs.
+
+    Existing native claims retain their original run/attempt. A read-only
+    continuation of a completed baseline does not request a fresh EDIT grant.
+    Fresh EDIT still uses the genuine managed account/coverage admission.
+    """
+    import json
+    from shared_platform import native_common_technical_execution as technical
+    from shared_platform.native_common_edit_boundary import service_boundary
+    from shared_platform.release_store import ReleaseStore, ReleaseStoreError
+    from shared_platform.r3_common_source_facts import NativeCommonSourceReader
+    from shared_platform.r3_frozen_review_producer import DomainReviewBlocked
+    from modules.products.release_adapters import (
+        readback_miaoshou_common, write_miaoshou_common_from_plan, bind_native_common_readback)
+    plan_id = str(data.get('plan_id') or '').strip()
+    post = None
+    read_attempted = False
+    reuse_claim = None
+    recovery_claim = None
+    if plan_id.startswith('r3-common:') and (type(store) is not ReleaseStore or not store.path.is_file()):
+        return 409, {'ok':False, 'error':'COMMON_TECHNICAL_STORE_UNAVAILABLE',
+            'state':'BLOCKED', 'execution_authority':False, 'external_writes_performed':[]}
+    if not plan_id or type(store) is not ReleaseStore or not store.path.is_file():
+        return None
+    try:
+        with store._connect_readonly() as db:
+            db.execute('BEGIN')
+            row = db.execute('SELECT * FROM release_plans WHERE plan_id=?', (plan_id,)).fetchone()
+            if row is None:
+                if plan_id.startswith('r3-common:'):
+                    raise ValueError('COMMON_TECHNICAL_PLAN_MISSING')
+                return None
+            payload = json.loads(row['payload_json'])
+            if (payload.get('targets') != [technical.COMMON]
+                    or not (payload.get('r3_stage_binding') or {}).get('native_preparation_source')):
+                return None
+            NativeCommonSourceReader(store).read_source_facts(db, plan_id)
+            if str(data.get('offer_id') or '') != row['product_id']:
+                raise ValueError('COMMON_TECHNICAL_REQUEST_OFFER_CHANGED')
+            if not technical._schema_installed(db):
+                raise ValueError('COMMON_TECHNICAL_SCHEMA_NOT_INSTALLED')
+            existing = db.execute('SELECT * FROM release_runs WHERE plan_id=?', (plan_id,)).fetchone()
+            if existing is not None and existing['approval_id'] is not None:
+                return None  # Preserve the existing genuine approved legacy run.
+            if existing is not None and existing['technical_execution_state'] in {'CONFIRMED_WRITE','READONLY_REUSE'}:
+                from shared_platform.native_common_baseline_source import inspect_service_baseline
+                facts = inspect_service_baseline(_service_common_baseline_reader(store), db, plan_id, existing['run_id'])
+                if facts.status != 'RETAINED_NATIVE_COMMON_BASELINE':
+                    raise ValueError(facts.reason or 'COMMON_BASELINE_SOURCE_UNVERIFIED')
+                receipt = technical._receipt(existing)
+                return 200, {'ok':True, 'idempotent':True, 'mode':'retained_native_common_baseline',
+                    'native_run':receipt, 'baseline_facts':facts.diagnostic(), 'external_writes_performed':[]}
+            if existing is not None and existing['technical_execution_state'] == 'UNKNOWN':
+                try:
+                    recovery_claim = technical.accepted_edit_for_recovery(store, db, plan_id, existing['run_id'])
+                except (ValueError, TypeError, KeyError, ReleaseStoreError) as error:
+                    return 409, {'ok':False, 'error':'COMMON_PRIOR_ATTEMPT_RECONCILIATION_REQUIRED',
+                        'recovery_reason':str(error), 'state':'UNKNOWN', 'native_run':technical._receipt(existing),
+                        'execution_authority':False, 'request_attempted':False,
+                        'prior_external_write_outcome':'UNKNOWN', 'external_writes_performed':[]}
+        if recovery_claim is not None:
+            observer = _service_common_detail_observer()
+            if observer is None:
+                raise ValueError('COMMON_SERVICE_OBSERVATION_READER_REQUIRED')
+            read_attempted = True
+            try:
+                readback = readback_miaoshou_common(payload, observation_reader=observer)
+                evidence = bind_native_common_readback(readback, {**readback,
+                    'mode':'native_common_technical_write', 'source':'miaoshou_open_api',
+                    'prior_external_write_evidence_digest':recovery_claim['accepted_edit_digest'],
+                    'external_writes_performed':['miaoshou:COMMON:immutable_plan_write']})
+                result = technical.retain_readback(store, plan_id, recovery_claim['run_id'],
+                                                   recovery_claim['target_attempt'], evidence)
+            except Exception:
+                technical.retain_read_failure(store, plan_id, recovery_claim['run_id'],
+                    recovery_claim['target_attempt'], 'COMMON_ACCEPTED_EDIT_READBACK_UNPROVEN')
+                raise
+            return 200, {'ok':True, 'idempotent':False, 'mode':'same_attempt_readonly_recovery',
+                'native_run':result, 'external_writes_performed':[]}
+        if data.get('confirm_miaoshou_overwrite') is True:
+            raise ValueError('COMMON_TECHNICAL_OVERWRITE_NOT_AUTHORIZED')
+        if data.get('reuse_miaoshou_readback') is not True:
+            if data.get('confirm_miaoshou_write') is not True:
+                raise ValueError('COMMON_TECHNICAL_REQUEST_MODE_REQUIRED')
+            technical._preflight_source_readonly(store, plan_id)
+        # Configuration/READ context remains distinct from permission to EDIT.
+        observer = _service_common_detail_observer()
+        if observer is None:
+            raise ValueError('COMMON_SERVICE_OBSERVATION_READER_REQUIRED')
+        if data.get('reuse_miaoshou_readback') is True:
+            claim = technical.reserve_completed_reuse(store, plan_id)
+            reuse_claim = claim
+            read_attempted = True
+            readback = readback_miaoshou_common(payload, observation_reader=observer)
+            packet = readback.get('native_common_observation') or {}
+            if packet.get('credential_scope_digest') != claim['read_signing_context_digest']:
+                raise ValueError('COMMON_SIGNING_CURRENT_CONTEXT_CHANGED')
+            evidence = bind_native_common_readback(readback, {**readback,
+                'mode':'readback_reuse_no_write', 'predecessor':claim['predecessor'],
+                'external_writes_performed':[]})
+            result = technical.retain_readback(store, plan_id, claim['run_id'], claim['target_attempt'], evidence)
+            return 200, {'ok':True, 'idempotent':False, 'mode':'readback_reuse_no_write',
+                'native_run':result, 'external_writes_performed':[]}
+        boundary = service_boundary()
+        if boundary is None:
+            raise ValueError('COMMON_EDIT_BOUNDARY_NOT_INSTALLED')
+        # The managed transport performs genuine admission before committing
+        # UNKNOWN; it owns the claim instead of creating a second human run.
+        from modules.miaoshou.client import post_open
+        post = boundary.bind_post(store, plan_id, post_open)
+        value = write_miaoshou_common_from_plan(payload, post=post, observation_reader=observer)
+        readback = value['readback']
+        evidence = bind_native_common_readback(readback, {**readback,
+            'mode':'native_common_technical_write',
+            'source':'miaoshou_open_api',
+            'external_writes_performed':['miaoshou:COMMON:immutable_plan_write']})
+        result = post.retain_readback(evidence)
+        return 200, {'ok':True, 'idempotent':False, 'mode':'native_common_technical_write',
+            'native_run':result, 'external_writes_performed':value['external_writes_performed']}
+    except (ValueError, TypeError, KeyError, ReleaseStoreError, DomainReviewBlocked) as error:
+        attempted = post is not None and post._native_claim is not None
+        if attempted and post._accepted_response_retained:
+            post.retain_read_failure()
+        response = {'ok':False, 'error':str(error), 'state':'UNKNOWN' if attempted or read_attempted or recovery_claim else 'BLOCKED',
+            'execution_authority':False, 'native_attempt_not_redispatched':True,
+            'request_attempted':attempted or read_attempted, 'edit_request_attempted':attempted}
+        if attempted:
+            response.update(native_run_id=post._native_claim[0], external_write_outcome='UNKNOWN',
+                            edit_acceptance_retained=post._accepted_response_retained)
+        else:
+            response['external_writes_performed'] = []
+            if reuse_claim is not None:
+                response.update(native_run_id=reuse_claim['run_id'], native_state='READONLY_RESERVED',
+                                readback_outcome='UNKNOWN')
+            elif recovery_claim is not None:
+                response.update(native_run_id=recovery_claim['run_id'], native_state='UNKNOWN',
+                                readback_outcome='UNKNOWN', edit_acceptance_retained=True)
+        return 409, response
+    except RuntimeError:
+        attempted = post is not None and post._native_claim is not None
+        if attempted and post._accepted_response_retained:
+            post.retain_read_failure()
+        response = {'ok':False, 'error':'COMMON_NATIVE_TRANSPORT_OR_READBACK_UNKNOWN',
+            'state':'UNKNOWN', 'request_attempted':attempted or read_attempted,
+            'edit_request_attempted':attempted, 'execution_authority':False,
+            'native_attempt_not_redispatched':True}
+        if attempted:
+            response.update(native_run_id=post._native_claim[0], external_write_outcome='UNKNOWN',
+                            edit_acceptance_retained=post._accepted_response_retained)
+        else:
+            response['external_writes_performed'] = []
+            if reuse_claim is not None:
+                response.update(native_run_id=reuse_claim['run_id'], native_state='READONLY_RESERVED',
+                                readback_outcome='UNKNOWN')
+            elif recovery_claim is not None:
+                response.update(native_run_id=recovery_claim['run_id'], native_state='UNKNOWN',
+                                readback_outcome='UNKNOWN', edit_acceptance_retained=True)
+        return 502, response
+
+
 def _prepare_miaoshou_release(
     data: dict,
     *,
@@ -7833,6 +10368,7 @@ def _prepare_miaoshou_release(
         MiaoshouDraftVerificationError,
         miaoshou_common_overwrite_review,
         readback_miaoshou_common,
+        bind_native_common_readback,
         write_miaoshou_common_from_plan,
     )
     from shared_platform.release_store import (
@@ -7858,6 +10394,9 @@ def _prepare_miaoshou_release(
                 "confirm_miaoshou_write=true is required"
             ),
         }
+    native_result = _prepare_native_common_ledger(data, default_release_store())
+    if native_result is not None:
+        return native_result
     dashboard, failure = _release_dashboard_for_request(data)
     if failure:
         return failure
@@ -7875,9 +10414,11 @@ def _prepare_miaoshou_release(
     token = str(data.get("confirmation_token") or "").strip()
     plan = store.get_plan(plan_id)
     if (
-        plan_id != preview["plan_id"]
-        or not plan
-        or not _approved_plan_matches_current_payload(plan, preview)
+        not plan
+        or plan_id != str(plan.get("plan_id") or "")
+        or not _approved_plan_matches_current_payload(
+            plan, preview, current_source_payload=plan_payload
+        )
         or plan.get("status") != "APPROVED"
         or token != plan.get("confirmation_token")
     ):
@@ -7886,6 +10427,20 @@ def _prepare_miaoshou_release(
             "error": "approved ReleasePlan no longer matches current facts",
             "external_writes_performed": [],
         }
+    if confirm_write and 'miaoshou:COMMON' in (plan.get('targets') or ()):
+        from shared_platform.publication_common_write_admission import inspect_common_write_admission
+        admission = inspect_common_write_admission(plan, store=store, policy_reader=_service_common_standing_policy_reader())
+        if admission['status'] != 'READY' or not admission.get('receipt_digest'):
+            return 409, {
+                'ok': False, 'error': 'COMMON_TECHNICAL_ADMISSION_BLOCKED',
+                'blockers': admission['blockers'],
+                'binding': admission['binding'],
+                'source_facts': admission.get('source_facts'),
+                'authority_facts': admission.get('authority_facts'),
+                'standing_policy_facts': admission.get('standing_policy_facts'),
+                'execution_authority': admission['execution_authority'],
+                'external_writes_performed': [],
+            }
     if confirm_overwrite:
         try:
             supplied_revision = int(data.get("expected_revision"))
@@ -8037,7 +10592,9 @@ def _prepare_miaoshou_release(
                 "dashboard": _product_workspace_view(dashboard),
             }
         try:
-            readback = readback_miaoshou_common(plan.get("payload") or {})
+            observer = _service_common_detail_observer()
+            options = {'observation_reader': observer} if observer is not None else {}
+            readback = readback_miaoshou_common(plan.get('payload') or {}, **options)
         except Exception as error:
             return 502, {
                 "ok": False,
@@ -8197,7 +10754,7 @@ def _prepare_miaoshou_release(
                     run["run_id"],
                     "miaoshou:COMMON",
                     external_id=str(plan_payload["product_id"]),
-                    readback_evidence=reuse_evidence,
+                    readback_evidence=bind_native_common_readback(readback, reuse_evidence),
                 )
                 store.resolve_common_overwrite_review(plan_id)
             except (ReleaseAuthorizationError, ReleaseStoreError, StopIteration) as error:
@@ -8225,6 +10782,16 @@ def _prepare_miaoshou_release(
             if row["target_label"] == "miaoshou:COMMON"
         )
         if target["status"] == "SUCCEEDED":
+            if (plan.get("payload") or {}).get("r3_stage_binding") is not None:
+                evidence_blockers = _verified_common_evidence_blockers(
+                    run, plan["payload"], store=store,
+                )
+                if evidence_blockers:
+                    return 409, {
+                        "ok": False, "error": "COMMON durable readback requires reconciliation",
+                        "blockers": evidence_blockers, "reconciliation_required": True,
+                        "external_writes_performed": [], "run": run,
+                    }
             return 200, {
                 "ok": True,
                 "idempotent": True,
@@ -8265,8 +10832,10 @@ def _prepare_miaoshou_release(
                         "run": run,
                     }
                 try:
+                    observer = _service_common_detail_observer()
+                    options = {'observation_reader': observer} if observer is not None else {}
                     readback = readback_miaoshou_common(
-                        plan.get("payload") or {}
+                        plan.get('payload') or {}, **options
                     )
                 except Exception as error:
                     return 502, {
@@ -8313,8 +10882,10 @@ def _prepare_miaoshou_release(
                     run = store.record_common_reconciled_success(
                         run["run_id"],
                         external_id=str(target.get("external_id") or ""),
-                        readback_evidence=reconciliation_evidence,
+                        readback_evidence=bind_native_common_readback(readback, reconciliation_evidence),
                     )
+                    from shared_platform.operations_domain_guard import reconcile_common
+                    reconcile_common(plan,reconciliation_evidence,ROOT)
                 except (
                     ReleaseAuthorizationError,
                     ReleaseStoreError,
@@ -8355,12 +10926,40 @@ def _prepare_miaoshou_release(
     result = None
     common_readback_evidence = None
     try:
+        if (plan.get("payload") or {}).get("r3_stage_binding") is not None:
+            # Claim first, then re-read server-owned R1/R2/current facts before
+            # dispatch. A changed report cannot borrow the earlier preflight.
+            current_dashboard, current_failure = _release_dashboard_for_request(data)
+            if current_failure:
+                raise ValueError("COMMON_CURRENT_STAGE_CHANGED_BEFORE_DISPATCH")
+            current_payload, current_blockers = _release_plan_payload_from_dashboard(current_dashboard)
+            if current_blockers or not _approved_plan_matches_current_payload(
+                plan, store.preview_plan(current_payload),
+                current_source_payload=current_payload,
+            ):
+                raise ValueError("COMMON_CURRENT_STAGE_CHANGED_BEFORE_DISPATCH")
+        if confirm_write and 'miaoshou:COMMON' in (plan.get('targets') or ()):
+            # Re-read immediately before dispatch; a stale preview, saved
+            # checkpoint, or old approval never authorizes this provider POST.
+            latest_admission = inspect_common_write_admission(store.get_plan(plan_id), store=store, policy_reader=_service_common_standing_policy_reader())
+            if (latest_admission.get('status') != 'READY'
+                    or latest_admission.get('binding') != admission.get('binding')
+                    or latest_admission.get('receipt_digest') != admission.get('receipt_digest')):
+                raise ValueError('COMMON_TECHNICAL_ADMISSION_CHANGED_BEFORE_DISPATCH')
+        observer = _service_common_detail_observer()
+        options = {'observation_reader': observer} if observer is not None else {}
+        from shared_platform.native_common_edit_boundary import service_boundary
+        from modules.miaoshou.client import post_open
+        options['post'] = service_boundary().bind_post(store, plan_id, post_open)
+        from shared_platform.operations_domain_guard import begin_common, finish_common
+        common_operations_guard = begin_common(plan, ROOT)
         if overwrite_guard is None:
-            result = write_miaoshou_common_from_plan(plan.get("payload") or {})
+            result = write_miaoshou_common_from_plan(plan.get('payload') or {}, **options)
         else:
             result = write_miaoshou_common_from_plan(
                 plan.get("payload") or {},
                 overwrite_guard=overwrite_guard,
+                **options,
             )
         if not result.get("written_to_miaoshou") or not result.get("verified"):
             failed_checks = [
@@ -8409,12 +11008,15 @@ def _prepare_miaoshou_release(
                 or ["miaoshou:COMMON:immutable_plan_write"]
             ),
         }
+        common_readback_evidence = bind_native_common_readback(
+            result.get('readback') or {}, common_readback_evidence)
         store.record_target_success(
             run["run_id"],
             "miaoshou:COMMON",
             external_id=str(result.get("offer_id") or plan_payload["product_id"]),
             readback_evidence=common_readback_evidence,
         )
+        finish_common(common_operations_guard, common_readback_evidence)
         if overwrite_guard is not None:
             store.resolve_common_overwrite_review(plan_id)
     except Exception as error:
@@ -9476,12 +12078,14 @@ def _oneclick_approved_context(
     approval = (plan or {}).get("approval") or {}
     if (
         not plan
-        or plan_id != str(preview.get("plan_id") or "")
+        or plan_id != str(plan.get("plan_id") or "")
         or plan.get("status") != "APPROVED"
         or approval.get("status") != "APPROVED"
         or approval.get("approved_by") != "Kyle"
         or (require_token and token != plan.get("confirmation_token"))
-        or not _approved_plan_matches_current_payload(plan, preview)
+        or not _approved_plan_matches_current_payload(
+            plan, preview, current_source_payload=payload
+        )
     ):
         blockers = [
             *blockers,
@@ -11056,7 +13660,7 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
         "failed_targets": [],
         "retryable": True,
     }
-def _publish_selected_release(data: dict) -> tuple[int, dict]:
+def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dict]:
     """Execute the approved plan once through durable per-target adapters."""
     from domains.channel_operations.release_executor import AdapterExecutionRequest
     from shared_platform.release_store import (
@@ -11070,10 +13674,18 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
             "ok": False,
             "error": "explicit confirm_publish=true is required",
         }
-    store = default_release_store()
+    if native_gate is not None:
+        from shared_platform.native_sole_final_execution import _NativeExecution, _ACTIVE
+        if type(native_gate) is not _NativeExecution or _ACTIVE.get() is not native_gate:
+            raise ValueError('NATIVE_SOLE_FINAL_EXECUTION_SCOPE_REQUIRED')
+        store = native_gate.store
+        execution_gate = native_gate.gate
+    else:
+        store = default_release_store()
+        execution_gate = _release_execution_readonly_gate
     plan_id = str(data.get("plan_id") or "").strip()
     token = str(data.get("confirmation_token") or "").strip()
-    gate, failure = _release_execution_readonly_gate(data, store=store)
+    gate, failure = execution_gate(data, store=store)
     if failure:
         return failure
     assert gate is not None
@@ -11081,12 +13693,16 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
     with _release_execution_lock:
         # Repeat the whole pure gate under the execution lock before retry,
         # recovery, begin_target, or any adapter call can mutate durable state.
-        gate, failure = _release_execution_readonly_gate(data, store=store)
+        gate, failure = execution_gate(data, store=store)
         if failure:
             return failure
         assert gate is not None
         dashboard = gate["dashboard"]
         plan_payload = gate["payload"]
+        if native_gate is not None and gate['run'] is None:
+            store.start_run(plan_id)
+            gate, failure = execution_gate(data, store=store)
+            if failure:return failure
         run = gate["run"]
         predecessor_run = gate.get("predecessor_run")
         registry = gate["registry"]
@@ -11155,7 +13771,7 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
                     "external_writes_performed": [],
                     "target_recovery_actions": recovery_actions,
                     "run": run,
-                    "dashboard": _product_workspace_view(dashboard),
+                    "dashboard": dashboard if native_gate is not None else _product_workspace_view(dashboard),
                 }
             return 409, {
                 "ok": False,
@@ -11214,7 +13830,9 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
             }
             dependencies = _release_target_dependencies(label, statuses)
             if dependencies and not all(
-                statuses.get(dependency) == "SUCCEEDED"
+                statuses.get(dependency) == "SUCCEEDED" or (
+                    dependency == 'miaoshou:COMMON' and native_gate is not None
+                    and native_gate.common_dependency_verified(gate))
                 for dependency in dependencies
             ):
                 continue
@@ -11222,7 +13840,7 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
             # An adapter can advance an operational workbench revision, but it
             # must never silently carry a plan across commercial/input drift or
             # supersession. Rebuild the exact read-only gate before each begin.
-            fresh_gate, fresh_failure = _release_execution_readonly_gate(
+            fresh_gate, fresh_failure = execution_gate(
                 data,
                 store=store,
             )
@@ -11453,7 +14071,7 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
                 registry=registry,
             ),
             "run": final_run,
-            "dashboard": _product_workspace_view(refreshed_dashboard),
+            "dashboard": gate["dashboard"] if native_gate is not None else _product_workspace_view(refreshed_dashboard),
         }
 
 
@@ -11496,9 +14114,11 @@ def _manually_verify_release_target(data: dict) -> tuple[int, dict]:
     token = str(data.get("confirmation_token") or "").strip()
     plan = store.get_plan(plan_id)
     if (
-        plan_id != preview["plan_id"]
-        or not plan
-        or not _approved_plan_matches_current_payload(plan, preview)
+        not plan
+        or plan_id != str(plan.get("plan_id") or "")
+        or not _approved_plan_matches_current_payload(
+            plan, preview, current_source_payload=plan_payload
+        )
         or plan.get("status") != "APPROVED"
         or token != plan.get("confirmation_token")
     ):
@@ -11777,63 +14397,11 @@ _push_job: dict = {
     "error": None,
 }
 
-_promo_scan_lock = threading.Lock()
-_promo_scan_job: dict = {
-    "running": False,
-    "message": "",
-    "count": 0,
-    "error": None,
-}
 
-_promo_push_lock = threading.Lock()
-_promo_push_job: dict = {
-    "running": False,
-    "message": "",
-    "ok_count": 0,
-    "fail_count": 0,
-    "skip_count": 0,
-    "errors": [],
-    "error": None,
-}
 
-_deact_scan_lock = threading.Lock()
-_deact_scan_job: dict = {
-    "running": False,
-    "message": "",
-    "count": 0,
-    "error": None,
-}
 
-_deact_push_lock = threading.Lock()
-_deact_push_job: dict = {
-    "running": False,
-    "message": "",
-    "ok_count": 0,
-    "fail_count": 0,
-    "skip_count": 0,
-    "errors": [],
-    "error": None,
-}
 
-_mx_publish_lock = threading.Lock()
-_mx_publish_job: dict = {
-    "running": False,
-    "message": "",
-    "token": "",
-    "match_key": "",
-    "error": None,
-    "result": None,
-}
 
-_uk_publish_lock = threading.Lock()
-_uk_publish_job: dict = {
-    "running": False,
-    "message": "",
-    "token": "",
-    "match_key": "",
-    "error": None,
-    "result": None,
-}
 
 _analytics_sync_lock = threading.Lock()
 _analytics_sync_job: dict = {
@@ -12030,128 +14598,16 @@ def _push_status() -> dict:
         return dict(_push_job)
 
 
-def _run_promo_scan(
-    days: int,
-    max_units: int,
-    limit: int,
-    region: str | None,
-    scope: str,
-    mode: str = "velocity",
-) -> None:
-    global _promo_scan_job
-    try:
-        from modules.products import promotions as promo_mod
-
-        if mode == "analytics":
-            _promo_scan_job["message"] = "同步 Analytics A 类，生成促销建议..."
-            n = promo_mod.scan_analytics_high_interest(
-                limit=limit,
-                region=region,
-                scope=scope,
-                quiet=True,
-            )
-        else:
-            _promo_scan_job["message"] = "正在统计动销并拉取促销活动..."
-            n = promo_mod.scan_low_velocity(
-                days=days,
-                max_units=max_units,
-                limit=limit,
-                region=region,
-                scope=scope,
-                quiet=True,
-            )
-        _promo_scan_job.update(
-            running=False,
-            message=f"完成，共 {n} 条待确认",
-            count=n,
-            error=None,
-        )
-    except Exception as e:
-        _promo_scan_job.update(running=False, message="", error=str(e))
 
 
-def _start_promo_scan(
-    days: int,
-    max_units: int,
-    limit: int,
-    region: str | None,
-    scope: str = "adjust",
-    mode: str = "velocity",
-) -> tuple[bool, str]:
-    with _promo_scan_lock:
-        if _promo_scan_job["running"]:
-            return False, "已有扫描任务在进行中，请稍候"
-        _promo_scan_job.update(running=True, message="启动中...", count=0, error=None)
-    t = threading.Thread(
-        target=_run_promo_scan,
-        args=(days, max_units, limit, region, scope, mode),
-        daemon=True,
-    )
-    t.start()
-    return True, "已开始扫描"
 
 
-def _promo_scan_status() -> dict:
-    with _promo_scan_lock:
-        return dict(_promo_scan_job)
 
 
-def _run_promo_push(items: list[dict]) -> None:
-    global _promo_push_job
-    from modules.products import promotions as promo_mod
-
-    try:
-        edits = [{
-            "product_id": it.get("product_id"),
-            "shop_cipher": it.get("shop_cipher"),
-            "new_discount": it.get("new_discount"),
-            "flash_price": it.get("flash_price"),
-            "promo_price": it.get("promo_price"),
-            "action": it.get("action"),
-        } for it in items]
-        promo_mod.save_edits(edits)
-        ids = [int(it["id"]) for it in items if it.get("id")]
-        total = len(ids)
-        _promo_push_job["message"] = f"正在推送 0/{total}..."
-        result = promo_mod.push_approved(ids if ids else None)
-        _promo_push_job.update(
-            running=False,
-            message=(
-                f"完成：成功 {result['ok']} · 失败 {result['fail']} · 跳过 {result['skip']}"
-            ),
-            ok_count=result["ok"],
-            fail_count=result["fail"],
-            skip_count=result["skip"],
-            errors=result["errors"][:10],
-            error=None,
-        )
-    except Exception as e:
-        _promo_push_job.update(running=False, message="", error=str(e))
 
 
-def _start_promo_push(items: list[dict]) -> tuple[bool, str]:
-    if not items:
-        return False, "没有可推送的条目"
-    with _promo_push_lock:
-        if _promo_push_job["running"]:
-            return False, "已有推送任务在进行中，请稍候"
-        _promo_push_job.update(
-            running=True,
-            message="启动中...",
-            ok_count=0,
-            fail_count=0,
-            skip_count=0,
-            errors=[],
-            error=None,
-        )
-    t = threading.Thread(target=_run_promo_push, args=(items,), daemon=True)
-    t.start()
-    return True, "已开始推送"
 
 
-def _promo_push_status() -> dict:
-    with _promo_push_lock:
-        return dict(_promo_push_job)
 
 
 def _run_analytics_sync(region: str | None) -> None:
@@ -12189,169 +14645,28 @@ def _analytics_sync_status() -> dict:
         return dict(_analytics_sync_job)
 
 
-def _run_deact_scan(limit: int, region: str | None) -> None:
-    global _deact_scan_job
-    try:
-        from modules.products import deactivate as deact_mod
-
-        _deact_scan_job["message"] = "同步 Analytics 并筛选下架候选..."
-        n = deact_mod.scan_candidates(region=region, limit=limit, quiet=True)
-        _deact_scan_job.update(
-            running=False,
-            message=f"完成，共 {n} 条待确认",
-            count=n,
-            error=None,
-        )
-    except Exception as e:
-        _deact_scan_job.update(running=False, message="", error=str(e))
 
 
-def _start_deact_scan(limit: int, region: str | None) -> tuple[bool, str]:
-    with _deact_scan_lock:
-        if _deact_scan_job["running"]:
-            return False, "已有扫描任务在进行中，请稍候"
-        _deact_scan_job.update(running=True, message="启动中...", count=0, error=None)
-    t = threading.Thread(target=_run_deact_scan, args=(limit, region), daemon=True)
-    t.start()
-    return True, "已开始扫描"
 
 
-def _deact_scan_status() -> dict:
-    with _deact_scan_lock:
-        return dict(_deact_scan_job)
 
 
-def _run_deact_push(items: list[dict]) -> None:
-    global _deact_push_job
-    from modules.products import deactivate as deact_mod
-
-    try:
-        ids = [int(it["id"]) for it in items if it.get("id")]
-        total = len(ids)
-        _deact_push_job["message"] = f"正在下架 0/{total}..."
-        result = deact_mod.push_approved(ids if ids else None)
-        _deact_push_job.update(
-            running=False,
-            message=(
-                f"完成：成功 {result['ok']} · 失败 {result['fail']} · 跳过 {result['skip']}"
-            ),
-            ok_count=result["ok"],
-            fail_count=result["fail"],
-            skip_count=result["skip"],
-            errors=result["errors"][:10],
-            error=None,
-        )
-    except Exception as e:
-        _deact_push_job.update(running=False, message="", error=str(e))
 
 
-def _start_deact_push(items: list[dict]) -> tuple[bool, str]:
-    if not items:
-        return False, "没有可下架的条目"
-    with _deact_push_lock:
-        if _deact_push_job["running"]:
-            return False, "已有下架任务在进行中，请稍候"
-        _deact_push_job.update(
-            running=True,
-            message="启动中...",
-            ok_count=0,
-            fail_count=0,
-            skip_count=0,
-            errors=[],
-            error=None,
-        )
-    t = threading.Thread(target=_run_deact_push, args=(items,), daemon=True)
-    t.start()
-    return True, "已开始下架"
 
 
-def _deact_push_status() -> dict:
-    with _deact_push_lock:
-        return dict(_deact_push_job)
 
 
-def _run_mx_publish(token: str) -> None:
-    global _mx_publish_job
-    from modules.miaoshou import mx_web_approval as mx_web
-
-    try:
-        _mx_publish_job["message"] = "正在 claim + publish…"
-        result = mx_web.publish_token(token)
-        _mx_publish_job.update(
-            running=False,
-            message=f"✅ {result['match_key']} 上架完成 · {result['list_price_ceil_mxn']} MXN",
-            match_key=result.get("match_key") or "",
-            result=result,
-            error=None,
-        )
-    except Exception as e:
-        _mx_publish_job.update(running=False, message="", error=str(e), result=None)
 
 
-def _start_mx_publish(token: str) -> tuple[bool, str]:
-    token = (token or "").strip()
-    if not token:
-        return False, "缺少 token"
-    with _mx_publish_lock:
-        if _mx_publish_job.get("running"):
-            return False, "已有上架任务进行中"
-        _mx_publish_job.update(
-            running=True,
-            message="排队中…",
-            token=token,
-            match_key="",
-            error=None,
-            result=None,
-        )
-    threading.Thread(target=_run_mx_publish, args=(token,), daemon=True).start()
-    return True, "started"
 
 
-def _mx_publish_status() -> dict:
-    with _mx_publish_lock:
-        return dict(_mx_publish_job)
 
 
-def _run_uk_publish(token: str) -> None:
-    global _uk_publish_job
-    from modules.miaoshou import uk_web_approval as uk_web
-
-    try:
-        _uk_publish_job["message"] = "正在 claim + publish…"
-        result = uk_web.publish_token(token)
-        _uk_publish_job.update(
-            running=False,
-            message=f"✅ {result['match_key']} 上架完成 · £{result['list_price_ceil_gbp']}",
-            match_key=result.get("match_key") or "",
-            result=result,
-            error=None,
-        )
-    except Exception as e:
-        _uk_publish_job.update(running=False, message="", error=str(e), result=None)
 
 
-def _start_uk_publish(token: str) -> tuple[bool, str]:
-    token = (token or "").strip()
-    if not token:
-        return False, "缺少 token"
-    with _uk_publish_lock:
-        if _uk_publish_job.get("running"):
-            return False, "已有上架任务进行中"
-        _uk_publish_job.update(
-            running=True,
-            message="排队中…",
-            token=token,
-            match_key="",
-            error=None,
-            result=None,
-        )
-    threading.Thread(target=_run_uk_publish, args=(token,), daemon=True).start()
-    return True, "started"
 
 
-def _uk_publish_status() -> dict:
-    with _uk_publish_lock:
-        return dict(_uk_publish_job)
 
 
 def _run_shopee_sync(mode: str, payload: dict) -> None:
@@ -13015,8 +15330,6 @@ def _image_scan_status() -> dict:
 def _api_status() -> dict:
     from core import auth
     from modules.products import titles as title_mod
-    from modules.products import promotions as promo_mod
-    from modules.products import deactivate as deact_mod
     from modules.products import images as image_mod
 
     def safe_count(label: str, fn) -> tuple[int, str | None]:
@@ -13030,26 +15343,16 @@ def _api_status() -> dict:
         access_exp = auth.access_expires_at(tok)
         refresh_exp = auth.refresh_expires_at(tok)
         pending, w_titles = safe_count("titles", lambda: title_mod.load_queue("pending"))
-        pending_promos, w_promos = safe_count("promotions", lambda: promo_mod.load_queue("pending"))
-        pending_deact, w_deact = safe_count("deactivate", lambda: deact_mod.load_queue("pending"))
         pending_images, w_images = safe_count("images", image_mod.load_active_queue)
-        from modules.miaoshou import mx_web_approval as mx_web
-        from modules.miaoshou import uk_web_approval as uk_web
 
-        pending_mx = len(mx_web.list_cards(status="pending"))
-        pending_uk = len(uk_web.list_cards(status="pending"))
-        warnings = [x for x in (w_titles, w_promos, w_deact, w_images) if x]
+        warnings = [x for x in (w_titles, w_images) if x]
         return {
             "ok": True,
             "seller_name": tok.get("seller_name"),
             "access_expires": access_exp.isoformat() if access_exp else None,
             "refresh_expires": refresh_exp.isoformat() if refresh_exp else None,
             "pending_titles": pending,
-            "pending_promos": pending_promos,
-            "pending_deactivate": pending_deact,
             "pending_images": pending_images,
-            "pending_mx": pending_mx,
-            "pending_uk": pending_uk,
             "warnings": warnings,
         }
     except Exception as e:
@@ -13206,6 +15509,13 @@ def _placeholder_image_bytes(message: str = "image unavailable") -> bytes:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _operations(self, method):
+        if not urlparse(self.path).path.startswith(("/api/orbit/tasks", "/api/orbit/operations-runtime")):
+            return False
+        from shared_platform.operations_http import handle
+        from shared_platform.operations_service import get_runtime
+        return handle(self, method=method, runtime=get_runtime(self.server, ROOT))
+
     def log_message(self, fmt, *args):
         pass
 
@@ -13281,11 +15591,30 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _isolated_html(self, html: str):
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+            "img-src data:; frame-ancestors 'self'; sandbox allow-scripts",
+        )
+        self.end_headers()
+        self.wfile.write(body)
+
     def _file(self, path: Path, *, cache_seconds: int | None = None):
         if not path.is_file():
             self.send_error(404)
             return
         data = path.read_bytes()
+        if path.name == "operations_shell.js":
+            from shared_platform.orbit_registry import NAVIGATION
+            rows = [{"key": row.key, "label": row.label, "href": row.href} for row in NAVIGATION if row.level == "primary"]
+            data = data.replace(b"/* ORBIT_REGISTERED_NAVIGATION */[]", json.dumps(rows, ensure_ascii=False).encode("utf-8"))
         ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         if ctype.startswith("text/") and "charset=" not in ctype:
             ctype += "; charset=utf-8"
@@ -13293,12 +15622,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Content-Type-Options", "nosniff")
-        if path.name in {
+        if path.name == "profit_legacy_layout.html":
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                "img-src data:; frame-ancestors 'self'; sandbox allow-scripts",
+            )
+            self.send_header("Cache-Control", "no-store")
+        elif path.name in {
             "index.html",
+            "inbound-batches.html",
             "release.html",
             "product_workspace.html",
             "ai_image_studio.html",
             "profit_center.html",
+            "profit_archive.html",
+            "profit_legacy.html",
+            "task_workspace.html",
         }:
             self.send_header(
                 "Content-Security-Policy",
@@ -13335,6 +15675,17 @@ class Handler(BaseHTTPRequestHandler):
         if not parsed.path.startswith(prefix):
             return False
         action = parsed.path[len(prefix) :].strip("/")
+        from shared_platform.publication_r2_review import has_registration, review_runtime_root
+        query_offer = (parse_qs(parsed.query).get('offer_id') or [''])[0]
+        review_root = review_runtime_root(ROOT)
+        if method == 'GET' and query_offer.isdigit() and has_registration(query_offer, runtime_root=review_root):
+            if action == 'preview':
+                from shared_platform.publication_review_projection import source_preview
+                try:
+                    self._json(200, source_preview(query_offer, runtime_root=review_root))
+                except (ValueError, OSError):
+                    self._json(409, {'ok':False,'error':'当前冻结档案校验失败，请重新读取。'})
+                return True
         allowed_get = {
             "preview",
             "content-report",
@@ -13398,6 +15749,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(413, {"ok": False, "error": "request body is too large"})
                 return True
             body = self.rfile.read(length) if length else b"{}"
+            try:
+                frozen_offer = str(json.loads(body).get('offer_id') or '')
+                if frozen_offer.isdigit() and has_registration(frozen_offer, runtime_root=review_root):
+                    self._json(409, {'ok':False,'error':'本轮事实与来源图片已冻结，请在多语言图片结果中保存图片选择。'})
+                    return True
+            except (ValueError, AttributeError):
+                self._json(400, {'ok':False,'error':'invalid json'});return True
         request = urllib.request.Request(
             target,
             data=body,
@@ -13560,7 +15918,73 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self):
+        from shared_platform.native_sole_final_service import handle_native_final
+        if handle_native_final(self, method="GET"):
+            return
+        from shared_platform.local_operator_http import handle_private_local_review
+        if handle_private_local_review(self, method="GET"):
+            return
+        if self._operations("GET"):
+            return
         path = urlparse(self.path).path
+        if path == "/api/profit-center/captured-review":
+            from domains.data_operations.profit_settlement.http_review import handle_captured_review
+
+            return handle_captured_review(self, method="GET", body_limit=PRODUCT_APPROVAL_BODY_LIMIT)
+        from shared_platform.publication_r2_review_http import handle as handle_r2_review
+        from shared_platform.publication_r2_review import review_runtime_root
+        if handle_r2_review(self, runtime_root=review_runtime_root(ROOT), method='GET'):
+            return
+        if path.startswith(_ROUND1_CATEGORY_PREFIX):
+            if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+                return self._json(403,{'ok':False,'code':'CATEGORY_LOOPBACK_REQUIRED'})
+            if not self._closure_local_host():
+                return
+            action=path[len(_ROUND1_CATEGORY_PREFIX):]
+            if action not in {'context','capture-status','prepare-status'}:
+                return self._json(405, {'ok': False, 'code': 'CATEGORY_ACTION_REQUIRES_POST'})
+            query=parse_qs(urlparse(self.path).query,keep_blank_values=True)
+            required={'offer_id','product_center_revision','requested_targets','source_region'} if action=='context' else {'offer_id','request_id'}
+            if set(query)!=required or any(len(values)!=1 for values in query.values()):
+                return self._json(400,{'ok':False,'code':'CATEGORY_CONTEXT_QUERY_INVALID'})
+            data={key:values[0] for key,values in query.items()}
+            if not re.fullmatch(r'[0-9]{1,32}',data['offer_id']):
+                return self._json(400,{'ok':False,'code':'CATEGORY_CONTEXT_QUERY_INVALID'})
+            try:
+                if action=='context':
+                    if not re.fullmatch(r'[0-9]{1,16}',data['product_center_revision']) or data['source_region'] not in {'PH','MY','TH','VN'}:
+                        raise ValueError()
+                    data['product_center_revision']=int(data['product_center_revision'])
+                    data['requested_targets']=json.loads(data['requested_targets'])
+                    if type(data['requested_targets']) is not list or not data['requested_targets'] or any(type(x) is not str for x in data['requested_targets']):
+                        raise ValueError()
+                    if len(set(data['requested_targets']))!=len(data['requested_targets']):
+                        raise ValueError()
+                    result=_round1_category_context(data)
+                else:
+                    if not re.fullmatch(r'[A-Za-z0-9_-]{1,96}',data['request_id']):
+                        raise ValueError()
+                    if action == 'prepare-status':
+                        status_code, result = _round1_workspace_request(action, data)
+                        return self._json(status_code, result)
+                    from shared_platform.release_store import default_release_store
+                    result=_round1_category_attempt_response(default_release_store(),data['request_id'],data['offer_id'])
+                return self._json(200,result)
+            except Exception:
+                return self._json(409,{'ok':False,'code':'CATEGORY_CONTEXT_UNAVAILABLE'})
+        if path.startswith(_PUBLICATION_CLOSURE_PREFIX):
+            if not self._closure_local_host():
+                return
+            action = path[len(_PUBLICATION_CLOSURE_PREFIX):]
+            if action in {'prepare','record'}:
+                return self._json(405, {'ok':False,'error':'closure action requires POST'})
+            if action != 'latest':
+                return self._json(404, {'ok':False,'error':'unknown closure action'})
+            query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            if set(query) != {'offer_id','plan_id'} or any(len(values)!=1 for values in query.values()):
+                return self._json(400, {'ok':False,'error':'exact offer_id and plan_id are required'})
+            status, payload = _publication_closure_request('latest',{key:values[0] for key,values in query.items()})
+            return self._json(status,payload)
         if path in (
             "/new-product",
             "/new-product.html",
@@ -13568,23 +15992,10 @@ class Handler(BaseHTTPRequestHandler):
             "/product-workspace.html",
         ):
             return self._file(WEB_DIR / "product_workspace.html")
-        if path in (
-            "/new-product/images",
-            "/new-product/images.html",
-            "/ai-image-studio",
-            "/ai-image-studio.html",
-            "/ai-images",
-            "/ai-images.html",
-        ):
-            return self._file(WEB_DIR / "ai_image_studio.html")
-        if path in ("/localized-image-review", "/localized-image-review.html"):
-            return self._file(WEB_DIR / "localized_image_review.html")
         if path in ("/new-product-legacy", "/new-product-legacy.html"):
             return self._module_moved("Orbit Treasury", "http://127.0.0.1:8766/")
         if path in ("/workbench", "/workbench.html"):
-            return self._file(WEB_DIR / "workbench.html")
-        if path in ("/ozon", "/ozon.html", "/rus", "/rus.html"):
-            return self._module_moved("Orbit Rus", "http://127.0.0.1:8767/")
+            return self._redirect("/", code=308)
         if self._handle_product_flow_proxy("GET"):
             return
         if path.startswith("/api/new-product/"):
@@ -13595,16 +16006,83 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(410, {"ok": False, "error": "Orbit Rus moved to http://127.0.0.1:8767/"})
 
         if path in ("/", "/index.html"):
-            return self._file(WEB_DIR / "index.html")
+            view=parse_qs(urlparse(self.path).query).get('view',[''])[0]
+            if not view or view in {'tasks', 'workbench'}:
+                return self._file(WEB_DIR / 'task_workspace.html')
+            destination={'product':'/product-workspace','content':'/product-workspace','channel':'/product-workspace',
+                         'supply-chain':'/supply-chain/','data':'/profit','knowledge':'/knowledge',
+                         'approvals':'/product-workspace','tasks':'/product-workspace','audit':'/profit','system':'/knowledge'}.get(view,'/catalog')
+            offer=parse_qs(urlparse(self.path).query).get('offer_id')
+            if destination=='/product-workspace' and offer:
+                from urllib.parse import urlencode
+                destination+='?'+urlencode({'offer_id':offer[0]})
+            return self._redirect(destination,code=308)
+        if path in ('/knowledge','/knowledge.html'):
+            return self._file(WEB_DIR/'knowledge.html')
+        if path=='/api/catalog/data-mode':
+            return self._json(200,{'ok':True,'review_copy':getattr(self.server,'catalog_review_copy',None)})
+        if path=='/api/catalog/skus':
+            from modules.catalog.sku_directory import list_skus
+            q=parse_qs(urlparse(self.path).query)
+            try:
+                result=list_skus(query=q.get('q',[''])[0],region=q.get('region',[''])[0],cost_status=q.get('cost_status',[''])[0],limit=int(q.get('limit',['50'])[0]),offset=int(q.get('offset',['0'])[0]))
+                return self._json(200,{'ok':True,**result,'review_copy':getattr(self.server,'catalog_review_copy',None)})
+            except Exception as error:return self._json(500,{'ok':False,'error':str(error)})
+        if path=='/api/catalog/image':
+            cache=getattr(self.server,'catalog_image_cache',None)
+            if cache is None:return self._json(503,{'ok':False,'error':'商品图片读取未启用'})
+            try:
+                key=parse_qs(urlparse(self.path).query).get('key',[''])[0]
+                body,mime=cache.get(key)
+                return self._bytes(200,body,mime)
+            except Exception as error:return self._json(502,{'ok':False,'error':'商品原图暂不可用','reason':type(error).__name__})
         if path in ("/release", "/release.html"):
             return self._redirect("/new-product")
         if path in ("/internal/release", "/internal/release.html"):
             return self._file(WEB_DIR / "release.html")
         if path in ("/profit", "/profit.html"):
+            return self._file(WEB_DIR / "profit_hub.html")
+        if path.startswith("/profit-original/artifacts/"):
+            from shared_platform.original_profit_reports import serve
+            return serve(self, self.path, ROOT)
+        if path in ("/profit-partial-review", "/profit-partial-review.html"):
+            return self._file(WEB_DIR / "profit_legacy.html")
+        if path in ("/profit-historical-partial", "/profit-historical-partial.html"):
+            from domains.data_operations.profit_settlement.historical_partial_view import (
+                render_historical_partial_from_root,
+            )
+
+            return self._isolated_html(render_historical_partial_from_root(ROOT))
+        if path in ("/profit-legacy-layout", "/profit-legacy-layout.html"):
+            return self._file(WEB_DIR / "profit_legacy_layout.html")
+        if path in ("/profit-archive", "/profit-archive.html"):
+            return self._file(WEB_DIR / "profit_archive.html")
+        if path in ("/profit-review", "/profit-review.html"):
             return self._file(WEB_DIR / "profit_center.html")
+        if path == "/supply-chain":
+            return self._redirect("/supply-chain/", code=308)
+        if path.startswith("/supply-chain/"):
+            supply = ROOT / "domains/supply_chain_operations/dashboard"
+            suffix = path[len("/supply-chain/"):] or "index.html"
+            capture_config = getattr(self.server, "supply_chain_capture", None)
+            if capture_config is not None:
+                from domains.supply_chain_operations.captured_serving import serve_request
+                if serve_request(self, capture_config, ROOT, supply, suffix):
+                    return
+            asset = resolve_static_path(supply, suffix)
+            allowed = {"index.html", "inbound-batches.html", "app.js", "data.js", "styles.css",
+                       "inbound-batches.js", "inbound-plan.js", "inbound-timeline.js", "transport-history.js", "captured-bootstrap.js", "load-errors.js"}
+            if asset is None:
+                return self.send_error(404)
+            relative = asset.relative_to(supply.resolve()).as_posix()
+            if relative not in allowed and not (relative.startswith("assets/") and asset.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}):
+                return self.send_error(404)
+            return self._file(asset)
         if path.startswith("/static/"):
-            rel = path[len("/static/") :]
-            return self._file(WEB_DIR / "static" / rel)
+            asset = resolve_static_path(WEB_DIR / "static", path[len("/static/") :])
+            if asset is None:
+                return self.send_error(404)
+            return self._file(asset)
         if path == "/api/proxy-image":
             q = parse_qs(urlparse(self.path).query)
             url = unquote((q.get("url") or [""])[0]).strip()
@@ -13616,17 +16094,9 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, urllib.error.URLError, TimeoutError, OSError) as e:
                 return self._image_placeholder("image unavailable")
         if path in ("/costs", "/costs.html"):
-            return self._file(WEB_DIR / "costs.html")
-        if path in ("/titles", "/titles.html"):
-            return self._file(WEB_DIR / "titles.html")
-        if path in ("/promotions", "/promotions.html"):
-            return self._file(WEB_DIR / "promotions.html")
+            return self._redirect("/catalog", code=308)
         if path in ("/analytics", "/analytics.html"):
             return self._file(WEB_DIR / "analytics.html")
-        if path in ("/deactivate", "/deactivate.html"):
-            return self._file(WEB_DIR / "deactivate.html")
-        if path in ("/images", "/images.html"):
-            return self._file(WEB_DIR / "images.html")
         if path in ("/catalog", "/catalog.html"):
             return self._file(WEB_DIR / "catalog.html")
         if path in ("/settlement", "/settlement.html"):
@@ -13637,12 +16107,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(WEB_DIR / "th-dim-fix.html")
         if path in ("/sourcing/photoroom", "/sourcing/photoroom.html"):
             return self._file(WEB_DIR / "photoroom_showcase.html")
-        if path in ("/ozon", "/ozon.html"):
-            return self._file(WEB_DIR / "ozon.html")
-        if path in ("/mx", "/mx.html"):
-            return self._file(WEB_DIR / "mx.html")
-        if path in ("/uk", "/uk.html"):
-            return self._file(WEB_DIR / "uk.html")
         if path in ("/billing", "/billing.html"):
             return self._file(WEB_DIR / "billing.html")
         if path in ("/shopee-profit", "/shopee-profit.html"):
@@ -13708,45 +16172,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json(400, {"ok": False, "error": str(e)})
 
-        if path == "/api/mx/approvals":
-            from modules.miaoshou import mx_web_approval as mx_web
 
-            q = parse_qs(urlparse(self.path).query)
-            status = (q.get("status") or ["pending"])[0]
-            items = mx_web.list_cards(status=status or None)
-            return self._json(200, {"ok": True, "items": items, "count": len(items)})
-        if path.startswith("/api/mx/approvals/"):
-            from modules.miaoshou import mx_web_approval as mx_web
-
-            sub = path[len("/api/mx/approvals/") :].split("/")[0]
-            if sub == "publish" or not sub:
-                return self.send_error(404)
-            detail = mx_web.get_card_detail(sub)
-            if not detail:
-                return self._json(404, {"ok": False, "error": "not found"})
-            return self._json(200, {"ok": True, "card": detail})
-        if path == "/api/mx/publish/status":
-            return self._json(200, {"ok": True, **_mx_publish_status()})
-
-        if path == "/api/uk/approvals":
-            from modules.miaoshou import uk_web_approval as uk_web
-
-            q = parse_qs(urlparse(self.path).query)
-            status = (q.get("status") or ["pending"])[0]
-            items = uk_web.list_cards(status=status or None)
-            return self._json(200, {"ok": True, "items": items, "count": len(items)})
-        if path.startswith("/api/uk/approvals/"):
-            from modules.miaoshou import uk_web_approval as uk_web
-
-            sub = path[len("/api/uk/approvals/") :].split("/")[0]
-            if sub == "publish" or not sub:
-                return self.send_error(404)
-            detail = uk_web.get_card_detail(sub)
-            if not detail:
-                return self._json(404, {"ok": False, "error": "not found"})
-            return self._json(200, {"ok": True, "card": detail})
-        if path == "/api/uk/publish/status":
-            return self._json(200, {"ok": True, **_uk_publish_status()})
 
         if path == "/api/sourcing/list":
             from modules.sourcing import pipeline as sourcing_mod
@@ -13834,7 +16260,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/orbit/navigation":
             from shared_platform.orbit_registry import navigation_payload
 
-            return self._json(200, {"ok": True, **navigation_payload()})
+            return self._json(200, {"ok": True, **navigation_payload(root=ROOT)})
+        if path == "/api/orbit/skill-identity":
+            if not self._skill_identity_local_host():
+                return
+            from shared_platform.skill_identity import public_skill_identities
+
+            try:
+                return self._json(200, {"ok": True, **public_skill_identities(root=ROOT)})
+            except (OSError, ValueError, KeyError) as error:
+                return self._json(503, {"ok": False, "code": "SKILL_IDENTITY_UNAVAILABLE", "reason": type(error).__name__})
         if path in {
             "/api/product-workspace/collectbox-action/preview",
             "/api/product-workspace/collectbox-action/status",
@@ -13876,6 +16311,45 @@ class Handler(BaseHTTPRequestHandler):
                 else _collectbox_action_status(request)
             )
             return self._json(status, payload)
+        if path in {"/api/product-workspace/history", "/api/product-workspace/evidence", "/api/product-workspace/manual-intake-image"}:
+            from shared_platform.product_workspace_evidence import history, product_evidence
+            from modules.sourcing.manual_product_intake import resolve_manual_intake_image
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            allowed = {"limit"} if path.endswith("/history") else ({"offer_id", "image"} if path.endswith("-image") else {"offer_id"})
+            if set(q) - allowed or any(len(v) != 1 for v in q.values()):
+                return self._json(400, {"ok": False, "error": "ambiguous evidence identity"})
+            try:
+                if path.endswith("/history"):
+                    return self._json(200, history(root=ROOT, limit=int(q.get("limit", ["50"])[0])))
+                offer = q.get("offer_id", [""])[0]
+                if path.endswith("-image"):
+                    image = resolve_manual_intake_image(offer, q.get("image", [""])[0], root=ROOT)
+                    if image is None:
+                        return self._json(404, {"ok": False, "error": "recorded local image unavailable"})
+                    return self._file(image, cache_seconds=0)
+                return self._json(200, product_evidence(offer, root=ROOT))
+            except (ValueError, OSError) as error:
+                return self._json(409, {"ok": False, "error": str(error)})
+        if path == "/api/product-workspace/publication-stages":
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            if 'offer_id' not in q or set(q) - {'offer_id', 'plan_id'} or any(len(value) != 1 for value in q.values()):
+                return self._json(400, {'ok': False, 'error': 'exact offer_id and optional plan_id required'})
+            status, payload = _publication_stages_for_request({key: value[0] for key, value in q.items()})
+            from shared_platform.local_operator_http import PrivateLocalReviewHttp
+            installed = getattr(self.server, 'private_local_review', None)
+            if status == 200 and type(installed) is PrivateLocalReviewHttp:
+                from shared_platform.private_domain_final_review import project_registered_domain_stage
+                from shared_platform.common_offer_authority_store import CommonAuthorityBlocked
+                try:
+                    payload = project_registered_domain_stage(installed.store, payload)
+                    descriptor = (payload.get('marketplace') or {}).get('local_operator_review')
+                    if descriptor and installed.fake_successor is not None:
+                        descriptor['private_fake_successor_enabled'] = True
+                except (CommonAuthorityBlocked, ValueError, OSError, KeyError, TypeError) as error:
+                    payload = dict(payload)
+                    payload['marketplace'] = dict(payload.get('marketplace') or {})
+                    payload['marketplace']['local_operator_review'] = {'status': 'BLOCKED', 'error': str(error), 'execution_authority': False}
+            return self._json(status, publication_runtime_config.redact_http_documents(payload))
         if path == "/api/product-workspace/publish-preview":
             q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             status, payload = _preview_oneclick_release(
@@ -14020,7 +16494,20 @@ class Handler(BaseHTTPRequestHandler):
                         report_id=report_id,
                         offer_id=offer_id,
                     )
-                    report = public_publication_run_status(run) if run is not None else None
+                    progress = None
+                    if run is not None and run.get("platform_scope") == ["SHOPEE"]:
+                        from shared_platform.shopee_publication_checkpoint import (
+                            public_shopee_progress_for_run,
+                        )
+
+                        progress = public_shopee_progress_for_run(
+                            _product_publication_report_store().reports_root, run
+                        )
+                    report = (
+                        public_publication_run_status(run, progress=progress)
+                        if run is not None
+                        else None
+                    )
                 except (TypeError, ValueError) as error:
                     return self._json(400, {"ok": False, "error": str(error)})
                 except ProductPublicationRunIntegrityError:
@@ -14162,9 +16649,20 @@ class Handler(BaseHTTPRequestHandler):
                     kwargs["seller_sku"] = (
                         q.get("seller_sku") or ["0946"]
                     )[0]
-                payload = build_release_dashboard(**kwargs)
+                from shared_platform.publication_r2_review import has_registration, review_runtime_root
+                review_root = review_runtime_root(ROOT)
+                if has_registration(offer_id, runtime_root=review_root):
+                    from shared_platform.publication_review_projection import dashboard
+                    payload = dashboard(offer_id, runtime_root=review_root, publication_targets=publication_targets)
+                else:
+                    payload = build_release_dashboard(**kwargs)
                 if path == "/api/product-workspace/dashboard":
                     payload = _product_workspace_view(payload)
+                    runtime = getattr(self.server, 'operations_runtime', None)
+                    if runtime is not None and not payload.get('frozen_review_projection'):
+                        from shared_platform.operations_service import round1_review
+                        import sys
+                        payload['round1_prepared_review'] = round1_review(runtime, offer_id, sys.modules[__name__])
                 else:
                     payload = dict(payload)
                     payload.pop("_source_product_identity", None)
@@ -14208,7 +16706,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(404, {"ok": False, "error": str(error)})
             except Exception as error:
                 return self._json(500, {"ok": False, "error": str(error)})
-        if path in ("/api/orbit/report-runs", "/api/orbit/inbox"):
+        if path == "/api/orbit/report-runs":
             from shared_platform.report_store import default_report_store
 
             q = parse_qs(urlparse(self.path).query)
@@ -14217,33 +16715,19 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 return self._json(400, {"ok": False, "error": "limit must be an integer"})
             store = default_report_store()
-            if path == "/api/orbit/report-runs":
-                items = store.list_report_runs(limit=limit)
-            else:
-                status = (q.get("status") or [None])[0]
-                items = store.list_inbox(status=status, limit=limit)
+            items = store.list_report_runs(limit=limit)
             return self._json(200, {"ok": True, "items": items, "count": len(items)})
         if path == "/api/status":
             return self._json(200, _api_status())
         if path == "/api/health":
-            return self._json(
-                200,
-                {
-                    "ok": True,
-                    "service": "orbit-hive-local-console",
-                    "root": str(ROOT),
-                    "new_product": (WEB_DIR / "new_product.html").is_file(),
-                    "catalog": (WEB_DIR / "catalog.html").is_file(),
-                    "threaded": True,
-                },
-            )
-        if path == "/api/digest/preview":
-            from modules.hub import digest as digest_mod
-            snap = digest_mod.collect_snapshot()
-            return self._json(
-                200,
-                {"ok": True, "text": digest_mod.preview_text(), "snapshot": snap},
-            )
+            from shared_platform.runtime_identity import health_payload
+
+            return self._json(200, {**health_payload("orbit-hive-local-console", root=ROOT, web_root=WEB_DIR, startup=RUNTIME_IDENTITY),
+                                    "root": str(ROOT), "threaded": True})
+        if path == "/api/orbit/runtime":
+            from scripts.product_publication_runtime import runtime_status, service_specs
+
+            return self._json(200, runtime_status(specs=service_specs(root=ROOT, include_rus=True)))
         if path == "/api/titles":
             from modules.products import titles as title_mod
             items = title_mod.load_queue("pending")
@@ -14266,14 +16750,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "items": items, "count": len(items)})
         if path == "/api/analytics/sync/status":
             return self._json(200, {"ok": True, **_analytics_sync_status()})
-        if path == "/api/deactivate":
-            from modules.products import deactivate as deact_mod
-            items = deact_mod.load_queue("pending")
-            return self._json(200, {"ok": True, "items": items, "count": len(items)})
-        if path == "/api/deactivate/scan/status":
-            return self._json(200, {"ok": True, **_deact_scan_status()})
-        if path == "/api/deactivate/push/status":
-            return self._json(200, {"ok": True, **_deact_push_status()})
         if path == "/api/images/products":
             from modules.products import images as image_mod
             q = parse_qs(urlparse(self.path).query)
@@ -14333,41 +16809,8 @@ class Handler(BaseHTTPRequestHandler):
             if not zp or not zp.is_file():
                 return self.send_error(404)
             return self._file(zp)
-        if path == "/api/promotions":
-            from modules.products import promotions as promo_mod
-            q = parse_qs(urlparse(self.path).query)
-            act_filter = (q.get("action") or [None])[0]
-            region_filter = (q.get("region") or [None])[0]
-            items = promo_mod.load_queue(
-                "pending", action=act_filter, region=region_filter
-            )
-            return self._json(200, {"ok": True, "items": items, "count": len(items)})
-        if path == "/api/promotions/activities":
-            from modules.products import promotions as promo_mod
-            q = parse_qs(urlparse(self.path).query)
-            region_filter = (q.get("region") or [None])[0]
-            try:
-                acts = promo_mod.list_ongoing_by_shop(region=region_filter)
-                return self._json(200, {"ok": True, "activities": acts})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
-        if path == "/api/promotions/scan/status":
-            return self._json(200, {"ok": True, **_promo_scan_status()})
-        if path == "/api/promotions/push/status":
-            return self._json(200, {"ok": True, **_promo_push_status()})
-        if path == "/api/promotions/coupons":
-            from modules.products import promotions as promo_mod
-            q = parse_qs(urlparse(self.path).query)
-            region = (q.get("region") or [None])[0]
-            try:
-                coupons = promo_mod.list_coupons(region=region)
-                return self._json(200, {"ok": True, "coupons": coupons})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
-        if path == "/api/promotions/coupon-drafts":
-            from modules.products import promotions as promo_mod
-            drafts = promo_mod.load_coupon_drafts()
-            return self._json(200, {"ok": True, "drafts": drafts})
+        if path == "/api/catalog/publication-sync":
+            return self._json(200, {"ok": True, "receipts": _catalog_publication_sync().status()})
         if path == "/api/catalog/stores":
             from modules.catalog import listings as cat_mod
             try:
@@ -14388,7 +16831,7 @@ class Handler(BaseHTTPRequestHandler):
                     region, sku=sku, match_only=match_only, platform=platform,
                     limit=limit, offset=offset,
                 )
-                return self._json(200, {"ok": True, **data})
+                return self._json(200, {"ok": True, **data,"review_copy":getattr(self.server,'catalog_review_copy',None)})
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
 
@@ -14686,22 +17129,79 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_error(404)
 
-    def _handle_feishu_event(self) -> None:
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length) if length else b"{}"
+    def _skill_identity_local_host(self):
         try:
-            body = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError:
-            return self._json(400, {"error": "invalid json"})
-        from modules.hub import feishu_events as feishu_evt
-        code, resp = feishu_evt.handle_http_body(body)
-        self._json(code, resp)
+            peer_loopback = ipaddress.ip_address(self.client_address[0]).is_loopback
+        except ValueError:
+            peer_loopback = False
+        hosts = self.headers.get_all('Host') or []
+        port = int(self.server.server_address[1])
+        if not peer_loopback or len(hosts) != 1 or hosts[0] not in {
+            f'localhost:{port}', f'127.0.0.1:{port}', f'[::1]:{port}'
+        }:
+            self._json(403, {'ok': False, 'code': 'SKILL_IDENTITY_LOOPBACK_REQUIRED'})
+            return False
+        return True
+
+    def _closure_local_host(self):
+        hosts = self.headers.get_all('Host') or []
+        port = int(self.server.server_address[1])
+        if len(hosts)!=1 or hosts[0] not in {f'localhost:{port}',f'127.0.0.1:{port}',f'[::1]:{port}'}:
+            self._json(403, {'ok':False,'error':'closure endpoint requires the bound loopback Host'})
+            return False
+        return True
 
     def do_POST(self):
+        from shared_platform.native_sole_final_service import handle_native_final
+        if handle_native_final(self, method="POST"):
+            return
+        from shared_platform.local_operator_http import handle_private_local_review
+        if handle_private_local_review(self, method="POST"):
+            return
+        if self._operations("POST"):
+            return
         path = urlparse(self.path).path
-        if path == "/api/feishu/event":
-            return self._handle_feishu_event()
+        if path == "/api/profit-center/captured-review":
+            from domains.data_operations.profit_settlement.http_review import handle_captured_review
+
+            return handle_captured_review(self, method="POST", body_limit=PRODUCT_APPROVAL_BODY_LIMIT)
+        from shared_platform.publication_r2_review_http import handle as handle_r2_review
+        from shared_platform.publication_r2_review import review_runtime_root
+        if handle_r2_review(self, runtime_root=review_runtime_root(ROOT), method='POST'):
+            return
+        if path == "/api/profit-center/report-view":
+            from domains.data_operations.profit_settlement.http_report_view import handle_report_view
+            return handle_report_view(self)
+        if path.startswith(_ROUND1_CATEGORY_PREFIX):
+            if not ipaddress.ip_address(self.client_address[0]).is_loopback or not self._closure_local_host():
+                if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+                    self._json(403, {'ok': False, 'code': 'CATEGORY_LOOPBACK_REQUIRED'})
+                return
+            if path[len(_ROUND1_CATEGORY_PREFIX):] not in {'capture', 'resolve', 'options', 'prepare', 'freeze'}:
+                return self._json(404, {'ok': False, 'code': 'CATEGORY_ACTION_UNKNOWN'})
+            if (urlparse(self.path).query or self.headers.get('Transfer-Encoding')
+                    or len(self.headers.get_all('Content-Length') or []) != 1
+                    or len(self.headers.get_all('Content-Type') or []) != 1
+                    or len(self.headers.get_all('Origin') or []) > 1):
+                return self._json(400, {'ok': False, 'code': 'CATEGORY_REQUEST_FRAMING_INVALID'})
+        if path.startswith(_PUBLICATION_CLOSURE_PREFIX):
+            if not self._closure_local_host():
+                return
+            action = path[len(_PUBLICATION_CLOSURE_PREFIX):]
+            if action == 'latest':
+                return self._json(405, {'ok':False,'error':'closure latest requires GET'})
+            if action not in {'prepare','record'}:
+                return self._json(404, {'ok':False,'error':'unknown closure action'})
+            if (urlparse(self.path).query or self.headers.get('Transfer-Encoding')
+                    or len(self.headers.get_all('Content-Length') or []) > 1
+                    or len(self.headers.get_all('Origin') or []) > 1):
+                return self._json(400, {'ok':False,'error':'ambiguous closure request framing'})
+        if path in {"/api/feishu/event", "/api/digest/send", "/api/workbench/inbox/import"}:
+            return self._json(404, {"ok": False, "error": "endpoint retired"})
+        if path.startswith(("/api/mx/", "/api/uk/", "/api/promotions", "/api/deactivate")):
+            return self._json(404, {"ok": False, "error": "endpoint retired"})
         if path in {
+            "/api/product-workspace/manual-intake",
             "/api/product-workspace/collect",
             "/api/product-workspace/reset-test-offer",
             "/api/product-workspace/facts",
@@ -14709,14 +17209,29 @@ class Handler(BaseHTTPRequestHandler):
             "/api/product-workspace/title-adopt",
             "/api/product-workspace/approve",
             "/api/product-workspace/release-plan/approve",
+            "/api/product-workspace/r3-common/preview",
+            "/api/product-workspace/r3-marketplace/preview",
+            "/api/product-workspace/r3-marketplace/approve",
+            "/api/product-workspace/r3-marketplace/resume-binding",
+            _PUBLICATION_CLOSURE_PREFIX + 'prepare',
+            _PUBLICATION_CLOSURE_PREFIX + 'record',
             "/api/product-workspace/shopee-global-plan-approval",
             _CHANNEL_CATEGORY_APPROVAL_PATH,
+            _CHANNEL_CATEGORY_RESUME_PATH,
+            _ROUND1_CATEGORY_PREFIX + 'capture',
+            _ROUND1_CATEGORY_PREFIX + 'options',
+            _ROUND1_CATEGORY_PREFIX + 'prepare',
+            _ROUND1_CATEGORY_PREFIX + 'freeze',
+            _ROUND1_CATEGORY_PREFIX + 'resolve',
             "/api/product-workspace/miaoshou-draft/commit",
             "/api/product-workspace/collectbox-action/start",
             "/api/product-workspace/publish",
             "/api/product-workspace/publish-tiktok",
+            "/api/product-workspace/publish-tiktok-continuation",
+            "/api/product-workspace/publish-tiktok-approved-completion",
             "/api/product-workspace/publish-shopee-global",
             "/api/product-workspace/publish-ozon",
+            "/api/product-workspace/publication-report/readonly-reconcile",
             "/api/product-workspace/release-target/manual-verify",
             "/api/product-workspace/release-target/shopee-price-repair",
             (
@@ -14761,15 +17276,53 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": "invalid Content-Length"})
             if length < 0:
                 return self._json(400, {"ok": False, "error": "invalid Content-Length"})
-            if length > PRODUCT_APPROVAL_BODY_LIMIT:
+            body_limit = PRODUCT_APPROVAL_BODY_LIMIT
+            if path == "/api/product-workspace/manual-intake":
+                from modules.sourcing.manual_product_intake import MAX_BODY_BYTES
+                body_limit = MAX_BODY_BYTES
+            if length > body_limit:
                 return self._json(413, {"ok": False, "error": "request body is too large"})
             try:
-                data = self._read_json()
-            except (UnicodeDecodeError, json.JSONDecodeError):
+                if path.startswith((_PUBLICATION_CLOSURE_PREFIX, _ROUND1_CATEGORY_PREFIX)):
+                    raw = self.rfile.read(length)
+                    if len(raw) != length:
+                        raise ValueError('incomplete closure request body')
+                    data = json.loads(raw.decode('utf-8'),object_pairs_hook=_closure_json_object)
+                else:
+                    data = self._read_json()
+            except (UnicodeDecodeError, ValueError):
                 return self._json(400, {"ok": False, "error": "invalid json"})
             if not isinstance(data, dict):
                 return self._json(400, {"ok": False, "error": "json body must be an object"})
-            if path == "/api/product-workspace/collect":
+            if path in {
+                "/api/product-workspace/r3-marketplace/approve",
+                "/api/product-workspace/r3-marketplace/resume-binding",
+            }:
+                failure = _r3_marketplace_business_execution_gate()
+                if failure:
+                    return self._json(*failure)
+            from shared_platform.publication_r2_review import has_registration, review_runtime_root
+            frozen_offer = str(data.get('offer_id') or '')
+            if frozen_offer.isdigit() and has_registration(frozen_offer, runtime_root=review_runtime_root(ROOT)):
+                try:
+                    permitted = _registered_r3_post_allowed(path, data)
+                except (ValueError, OSError, KeyError, TypeError):
+                    permitted = False
+                if not permitted:
+                    return self._json(409, {'ok':False,'error':'当前登记未通过本操作的冻结图片与目标校验；请先完成本轮图片检查与发布准备。','external_writes_performed':[]})
+            if path == "/api/product-workspace/manual-intake":
+                from modules.sourcing.manual_product_intake import create_manual_intake
+                try:
+                    status, payload = 200, create_manual_intake(data, root=ROOT)
+                except ValueError as error:
+                    status, payload = 409, {"ok": False, "error": str(error), "external_writes_performed": []}
+                except OSError:
+                    status, payload = 503, {"ok": False, "error": "本地保存中断，请保留原录入内容并以同一请求重试。", "recovery_required": True, "external_writes_performed": []}
+            elif path.startswith(_PUBLICATION_CLOSURE_PREFIX):
+                status, payload = _publication_closure_request(path[len(_PUBLICATION_CLOSURE_PREFIX):],data)
+            elif path in {_ROUND1_CATEGORY_PREFIX + action for action in ('capture', 'resolve', 'options', 'prepare', 'freeze')}:
+                status, payload = _round1_category_request(path[len(_ROUND1_CATEGORY_PREFIX):], data)
+            elif path == "/api/product-workspace/collect":
                 status, payload = _collect_product_workspace_locally(data)
             elif path == "/api/product-workspace/reset-test-offer":
                 status, payload = _reset_product_workspace_test_offer(data)
@@ -14783,18 +17336,41 @@ class Handler(BaseHTTPRequestHandler):
                 status, payload = _approve_product_workspace_locally(data)
             elif path == "/api/product-workspace/release-plan/approve":
                 status, payload = _approve_release_plan_locally(data)
+            elif path == "/api/product-workspace/r3-common/preview":
+                status, payload = _preview_r3_common_stage(data)
+            elif path == "/api/product-workspace/r3-marketplace/preview":
+                status, payload = _preview_r3_marketplace_stage(data)
+            elif path == "/api/product-workspace/r3-marketplace/approve":
+                status, payload = _approve_r3_marketplace_stage(data)
+            elif path == "/api/product-workspace/r3-marketplace/resume-binding":
+                status, payload = _resume_r3_marketplace_stage(data)
             elif path == "/api/product-workspace/shopee-global-plan-approval":
                 status, payload = _approve_shopee_global_plan_locally(data)
             elif path == _CHANNEL_CATEGORY_APPROVAL_PATH:
                 status, payload = (
                     _approve_channel_category_decision_locally(data)
                 )
+            elif path == _CHANNEL_CATEGORY_RESUME_PATH:
+                status, payload = _resume_channel_category_decision_locally(data)
             elif path == "/api/product-workspace/miaoshou-draft/commit":
                 status, payload = _prepare_miaoshou_release(data)
             elif path == "/api/product-workspace/collectbox-action/start":
                 status, payload = _start_collectbox_action(data)
             elif path == "/api/product-workspace/publish":
-                status, payload = _start_tiktok_release(data)
+                status, payload = 410, {
+                    "ok": False, "code": "legacy_publication_write_retired",
+                    "error": "旧发布写入口已退役；请重新冻结并批准 v4 商品、版本和目标。历史发布状态仍可只读查询。",
+                    "external_write_count": 0,
+                    "migration": {
+                        "endpoint": "/api/product-workspace/publish-tiktok",
+                        "required_snapshot_schema": "approved-publication-snapshot/v4",
+                        "automatic_replay": False,
+                    },
+                }
+            elif path in {"/api/product-workspace/publish-tiktok-continuation",
+                          "/api/product-workspace/publish-tiktok-approved-completion"}:
+                status, payload = _preview_tiktok_continuation_admission(
+                    data, completion=path.endswith("approved-completion"))
             elif path == "/api/product-workspace/publish-tiktok":
                 status, payload = _start_product_publication(
                     data,
@@ -14805,11 +17381,15 @@ class Handler(BaseHTTPRequestHandler):
                     data,
                     platform="SHOPEE",
                 )
+            elif path == "/api/product-workspace/reconcile-shopee-recovery":
+                status, payload = _reconcile_shopee_recovery(data)
             elif path == "/api/product-workspace/publish-ozon":
                 status, payload = _start_product_publication(
                     data,
                     platform="OZON",
                 )
+            elif path == "/api/product-workspace/publication-report/readonly-reconcile":
+                status, payload = _reconcile_product_publication_readonly(data)
             elif path == "/api/product-workspace/release-target/manual-verify":
                 status, payload = _manually_verify_release_target(data)
             elif (
@@ -14842,6 +17422,8 @@ class Handler(BaseHTTPRequestHandler):
                     404,
                     {"ok": False, "error": "unknown product workflow write"},
                 )
+            if path.startswith('/api/product-workspace/r3-marketplace/'):
+                payload = publication_runtime_config.redact_http_documents(payload)
             return self._json(status, payload)
         if self._handle_product_flow_proxy("POST"):
             return
@@ -14866,18 +17448,6 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/workbench/deep-ops":
                     session = store.update_deep_ops_session(str(data.get("date") or date.today().isoformat()), data)
                     return self._json(200, {"ok": True, "session": session})
-                if path == "/api/workbench/inbox/import":
-                    message_id = str(data.get("message_id") or data.get("source_key") or "").strip()
-                    text = str(data.get("text") or data.get("title") or "").strip()
-                    if not message_id or not text:
-                        return self._json(400, {"ok": False, "error": "message_id and text are required"})
-                    task = store.create_task({
-                        "title": text[:500], "status": "inbox", "priority": data.get("priority") or "P2",
-                        "project": data.get("project") or "", "business_line": data.get("business_line") or "",
-                        "related_url": data.get("source_url") or "", "execution_notes": data.get("text") or text,
-                        "source_key": f"feishu:{message_id}",
-                    })
-                    return self._json(201, {"ok": True, "task": task, "deduplicated": task.get("source_key") == f"feishu:{message_id}"})
                 if path.startswith("/api/workbench/tasks/"):
                     parts = path.split("/")
                     if len(parts) < 5:
@@ -14885,16 +17455,8 @@ class Handler(BaseHTTPRequestHandler):
                     task_id = unquote(parts[4])
                     if len(parts) == 6 and parts[5] == "transition":
                         task = store.transition(task_id, str(data.get("status") or ""), str(data.get("note") or ""))
-                        if task["status"] in {"waiting_approval", "blocked", "done"}:
-                            from shared_platform.workbench_notify import notify_task_change
-
-                            notify_task_change(store, task, task["status"])
                     elif len(parts) == 5:
                         task = store.update_task(task_id, data)
-                        if "owner" in data and task.get("owner"):
-                            from shared_platform.workbench_notify import notify_task_change
-
-                            notify_task_change(store, task, "assigned")
                     else:
                         return self._json(404, {"ok": False, "error": "unknown workbench endpoint"})
                     return self._json(200, {"ok": True, "task": task})
@@ -14973,108 +17535,33 @@ class Handler(BaseHTTPRequestHandler):
             code = 200 if ok else 409
             return self._json(code, {"ok": ok, "message": msg})
 
-        if path == "/api/mx/approvals/clear":
-            from modules.miaoshou import mx_web_approval as mx_web
 
-            result = mx_web.clear_pending_inbox(reason=str(data.get("reason") or "manual_clear"))
-            return self._json(200, {"ok": True, **result})
 
-        if path.startswith("/api/mx/approvals/"):
-            from modules.miaoshou import mx_web_approval as mx_web
 
-            parts = path[len("/api/mx/approvals/") :].strip("/").split("/")
-            token = parts[0] if parts else ""
-            action = parts[1] if len(parts) > 1 else ""
-            if not token:
-                return self._json(400, {"ok": False, "error": "missing token"})
-            try:
-                if action == "approve":
-                    result = mx_web.approve_token(token)
-                    return self._json(200, result)
-                if action == "reject":
-                    result = mx_web.reject_token(token)
-                    return self._json(200, result)
-                if action == "publish":
-                    ok, msg = _start_mx_publish(token)
-                    if not ok:
-                        return self._json(409, {"ok": False, "error": msg})
-                    return self._json(200, {"ok": True, "message": msg})
-                if action == "override":
-                    l = int(data.get("length_cm") or data.get("l") or 0)
-                    w = int(data.get("width_cm") or data.get("w") or 0)
-                    h = int(data.get("height_cm") or data.get("h") or 0)
-                    if min(l, w, h) <= 0:
-                        return self._json(400, {"ok": False, "error": "尺寸须为正整数 cm"})
-                    result = mx_web.apply_override(
-                        token, length_cm=l, width_cm=w, height_cm=h, note=str(data.get("note") or "")
-                    )
-                    card = mx_web.get_card_detail(token)
-                    return self._json(200, {**result, "card": card})
-            except KeyError as e:
-                return self._json(404, {"ok": False, "error": str(e)})
-            except RuntimeError as e:
-                return self._json(400, {"ok": False, "error": str(e)})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
-            return self._json(404, {"ok": False, "error": "unknown action"})
-
-        if path == "/api/uk/approvals/clear":
-            from modules.miaoshou import uk_web_approval as uk_web
-
-            result = uk_web.clear_pending_inbox(reason=str(data.get("reason") or "manual_clear"))
-            return self._json(200, {"ok": True, **result})
-
-        if path.startswith("/api/uk/approvals/"):
-            from modules.miaoshou import uk_web_approval as uk_web
-
-            parts = path[len("/api/uk/approvals/") :].strip("/").split("/")
-            token = parts[0] if parts else ""
-            action = parts[1] if len(parts) > 1 else ""
-            if not token:
-                return self._json(400, {"ok": False, "error": "missing token"})
-            try:
-                if action == "approve":
-                    result = uk_web.approve_token(token)
-                    return self._json(200, result)
-                if action == "reject":
-                    result = uk_web.reject_token(token)
-                    return self._json(200, result)
-                if action == "publish":
-                    ok, msg = _start_uk_publish(token)
-                    if not ok:
-                        return self._json(409, {"ok": False, "error": msg})
-                    return self._json(200, {"ok": True, "message": msg})
-                if action == "override":
-                    l = int(data.get("length_cm") or data.get("l") or 0)
-                    w = int(data.get("width_cm") or data.get("w") or 0)
-                    h = int(data.get("height_cm") or data.get("h") or 0)
-                    if min(l, w, h) <= 0:
-                        return self._json(400, {"ok": False, "error": "尺寸须为正整数 cm"})
-                    result = uk_web.apply_override(
-                        token, length_cm=l, width_cm=w, height_cm=h, note=str(data.get("note") or "")
-                    )
-                    card = uk_web.get_card_detail(token)
-                    return self._json(200, {**result, "card": card})
-            except KeyError as e:
-                return self._json(404, {"ok": False, "error": str(e)})
-            except RuntimeError as e:
-                return self._json(400, {"ok": False, "error": str(e)})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
-            return self._json(404, {"ok": False, "error": "unknown action"})
 
         if path == "/api/catalog/cost":
             from modules.catalog import listings as cat_mod
             try:
-                mk = str(data.get("match_key") or "").strip()
-                cost = float(data.get("cost_cny", 0))
-                if not mk or cost <= 0:
-                    return self._json(400, {"ok": False, "error": "match_key 与 cost_cny 必填且 > 0"})
-                saved = cat_mod.save_cost_by_match_key(mk, cost, data.get("note") or "")
-                self._json(200, {"ok": True, "saved": saved, "match_key": mk, "cost_cny": cost})
+                if 'entity_key' in data:
+                    from shared_platform.catalog_sku_costs import save
+                    from core.db import db_path
+                    result=save(db_path(),data['entity_key'],data.get('cost_cny'),data.get('revision'))
+                else:
+                    result = cat_mod.save_identity_cost(data.get("identity"), data.get("cost_cny"), data.get("expected_version"))
+                self._json(200, {"ok": True, "saved": 1, **result})
             except (TypeError, ValueError) as e:
-                self._json(400, {"ok": False, "error": str(e)})
+                self._json(409, {"ok": False, "error": str(e)})
             return
+
+        if path in ("/api/catalog/publication-sync", "/api/catalog/publication-sync/official-readback"):
+            try:
+                if set(data) != {"receipt_id"}:
+                    raise ValueError("exact receipt_id required")
+                sync=_catalog_publication_sync()
+                result=sync.recover_official(data['receipt_id']) if path.endswith('/official-readback') else sync.recover(data['receipt_id'])
+                return self._json(200, {"ok": result['state']=='COMPLETE', **result})
+            except (ValueError, OSError) as error:
+                return self._json(409, {"ok": False, "error": str(error)})
 
         if path == "/api/catalog/seller-sku":
             from modules.catalog import sku_edit as sku_edit_mod
@@ -15193,15 +17680,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": str(e)})
 
         if path == "/api/new-product/miaoshou-draft/commit":
-            from modules.sourcing import new_product_workbench as np_mod
-            raw = str(data.get("offer_id") or data.get("url") or "").strip()
-            if not raw:
-                return self._json(400, {"ok": False, "error": "missing offer_id"})
-            try:
-                return self._json(200, np_mod.write_miaoshou_draft(raw))
-            except Exception as e:
-                return self._json(400, {"ok": False, "error": str(e)})
-
+            # This legacy route has no immutable native plan or shared ledger
+            # claim. Caller JSON/old prepared draft is not a write credential.
+            return self._json(409, {'ok': False, 'status': 'BLOCKED',
+                'error': 'COMMON_EDIT_PERSISTED_NATIVE_BASELINE_REQUIRED',
+                'external_writes_performed': []})
         if path == "/api/new-product/miaoshou-second-review/continue":
             from modules.sourcing import new_product_workbench as np_mod
             raw = str(data.get("offer_id") or data.get("url") or "").strip()
@@ -15223,15 +17706,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": str(e)})
 
         if path == "/api/new-product/sku-numbering/fix":
-            from modules.sourcing import new_product_workbench as np_mod
-            raw = str(data.get("offer_id") or data.get("url") or "").strip()
-            if not raw:
-                return self._json(400, {"ok": False, "error": "missing offer_id"})
-            try:
-                return self._json(200, np_mod.ensure_common_sequential_skus(raw))
-            except Exception as e:
-                return self._json(400, {"ok": False, "error": str(e)})
-
+            return self._json(409, {'ok': False, 'status': 'BLOCKED',
+                'error': 'COMMON_EDIT_PERSISTED_NATIVE_BASELINE_REQUIRED',
+                'external_writes_performed': []})
         if path == "/api/new-product/overseas-source":
             from modules.sourcing import new_product_workbench as np_mod
             raw = str(data.get("offer_id") or data.get("url") or "").strip()
@@ -15360,15 +17837,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": str(e)})
             return
 
-        if path == "/api/digest/send":
-            from modules.hub.service import send_digest
-            try:
-                send_digest(dry_run=bool(data.get("dry_run")))
-                self._json(200, {"ok": True, "message": "已发送飞书日报"})
-            except Exception as e:
-                self._json(500, {"ok": False, "error": str(e)})
-            return
-
         if path == "/api/titles/scan":
             ok, msg = _start_scan(
                 days=int(data.get("days") or 30),
@@ -15387,21 +17855,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(code, {"ok": ok, "message": msg})
             return
 
-        if path == "/api/deactivate/scan":
-            ok, msg = _start_deact_scan(
-                limit=int(data.get("limit") or 50),
-                region=data.get("region") or None,
-            )
-            code = 200 if ok else 409
-            self._json(code, {"ok": ok, "message": msg})
-            return
 
-        if path == "/api/deactivate/push":
-            items = data.get("items") or []
-            ok, msg = _start_deact_push(items)
-            code = 200 if ok else 409
-            self._json(code, {"ok": ok, "message": msg})
-            return
 
         if path == "/api/images/scan":
             mode = data.get("mode") or "b_class"
@@ -15465,45 +17919,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(code, {"ok": ok, "message": msg})
             return
 
-        if path == "/api/promotions/scan":
-            ok, msg = _start_promo_scan(
-                days=int(data.get("days") or 30),
-                max_units=int(data.get("max_units", 1)),
-                limit=int(data.get("limit") or 30),
-                region=data.get("region") or None,
-                scope=data.get("scope") or "adjust",
-                mode=data.get("mode") or "velocity",
-            )
-            code = 200 if ok else 409
-            self._json(code, {"ok": ok, "message": msg})
-            return
 
-        if path == "/api/promotions/coupons/scan":
-            from modules.products import promotions as promo_mod
-            try:
-                n = promo_mod.scan_coupon_suggestions(
-                    region=data.get("region") or None,
-                    limit=int(data.get("limit") or 4),
-                )
-                self._json(200, {"ok": True, "count": n})
-            except Exception as e:
-                self._json(500, {"ok": False, "error": str(e)})
-            return
 
-        if path == "/api/promotions/coupon-drafts/mark":
-            from modules.products import promotions as promo_mod
-            draft_id = int(data.get("id") or 0)
-            if draft_id:
-                promo_mod.mark_coupon_draft_used(draft_id)
-            self._json(200, {"ok": True})
-            return
 
-        if path == "/api/promotions/push":
-            items = data.get("items") or []
-            ok, msg = _start_promo_push(items)
-            code = 200 if ok else 409
-            self._json(code, {"ok": ok, "message": msg})
-            return
 
         if path == "/api/sourcing/build":
             offer_id = data.get("offer_id") or data.get("id") or ""
@@ -15684,6 +18102,7 @@ def serve(
     open_browser: bool = True,
     page: str = "index",
     startup_refresh: bool | None = None,
+    supply_chain_capture: dict | None = None,
 ):
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     (WEB_DIR / "static").mkdir(parents=True, exist_ok=True)
@@ -15701,13 +18120,10 @@ def serve(
         except Exception as e:
             print(f"  [WARN] Token 刷新跳过: {e}")
 
-    if not (WEB_DIR / "costs.html").is_file():
-        from modules.products.build_page import build_html
-        build_html()
-
     try:
         server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
         server.daemon_threads = True
+        server.supply_chain_capture = supply_chain_capture
     except OSError as e:
         if getattr(e, "errno", None) == 48:
             print(f"  [WARN] 端口 {port} 已被占用。请先停止旧进程（旧版可能没有 /images 路由会 404）：")
@@ -15721,16 +18137,10 @@ def serve(
         "profit": "/profit",
         "catalog": "/catalog",
         "settlement": "/settlement",
-        "costs": "/costs",
-        "titles": "/titles",
-        "promotions": "/promotions",
+        "costs": "/catalog",
         "analytics": "/analytics",
-        "deactivate": "/deactivate",
-        "images": "/images",
         "sourcing": "/sourcing",
         "ozon": "/ozon",
-        "mx": "/mx",
-        "uk": "/uk",
         "sku-profit": "/sku-profit",
     }
     url = f"http://127.0.0.1:{port}{routes.get(page, '/')}"
@@ -15740,17 +18150,11 @@ def serve(
     print(f"  结算利润: http://127.0.0.1:{port}/settlement")
     print(f"  SKU利润探针: http://127.0.0.1:{port}/sku-profit")
     print(f"  Ozon 运营: http://127.0.0.1:{port}/ozon")
-    print(f"  MX 上架审批: http://127.0.0.1:{port}/mx")
-    print(f"  UK 上架审批: http://127.0.0.1:{port}/uk")
     print("  Orbit Rus: http://127.0.0.1:8767/")
     print(f"  1688 选品: http://127.0.0.1:{port}/sourcing")
     print("  Orbit Treasury: http://127.0.0.1:8766/")
-    print(f"  Listing 优化: http://127.0.0.1:{port}/titles")
-    print(f"  主图优化: http://127.0.0.1:{port}/images")
     print(f"  Analytics: http://127.0.0.1:{port}/analytics")
-    print(f"  零销下架: http://127.0.0.1:{port}/deactivate")
-    print(f"  促销调价: http://127.0.0.1:{port}/promotions")
-    print(f"  成本维护: http://127.0.0.1:{port}/costs")
+    print(f"  商品与成本: http://127.0.0.1:{port}/catalog")
     print("  Ctrl+C 停止")
     if startup_refresh is None:
         startup_refresh = os.environ.get("ORBIT_STARTUP_REFRESH", "").lower() in ("1", "true", "yes")
@@ -15772,8 +18176,18 @@ def serve(
         import webbrowser
         threading.Timer(0.3, lambda: webbrowser.open(url)).start()
 
+    from shared_platform.operations_service import get_runtime
+    operations = get_runtime(server, ROOT)
+    os.environ['ORBIT_OPERATIONS_DATA_ROOT'] = str(operations.profile.data_root)
+    from shared_platform.native_service_lifecycle import installed_native_services
     try:
-        server.serve_forever()
+        import sys
+        with installed_native_services(sys.modules[__name__], server, operations):
+            server.serve_forever()
     except KeyboardInterrupt:
         print("\n  已停止")
-        server.server_close()
+    finally:
+        try:
+            operations.worker.close()
+        finally:
+            server.server_close()

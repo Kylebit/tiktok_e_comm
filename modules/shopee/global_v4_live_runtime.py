@@ -167,7 +167,53 @@ def _semantic_key(value: object) -> str:
     )
 
 
+_WALLPAPER_ALIASES = frozenset(
+    {
+        "墙纸",
+        "壁纸",
+        "墙纸壁纸",
+        "wallpaper",
+        "wallpapers",
+        "wallpaperswallstickers",
+        "wallpaperwallstickers",
+    }
+)
+
+
 _EXACT_CATEGORY_ALIASES = {
+    "地垫": frozenset(
+        {
+            "地垫",
+            "floormat",
+            "floormats",
+            "bathmat",
+            "bathmats",
+            "doormat",
+            "doormats",
+        }
+    ),
+    "floormat": frozenset(
+        {
+            "地垫",
+            "floormat",
+            "floormats",
+            "bathmat",
+            "bathmats",
+            "doormat",
+            "doormats",
+        }
+    ),
+    "floormats": frozenset(
+        {
+            "地垫",
+            "floormat",
+            "floormats",
+            "bathmat",
+            "bathmats",
+            "doormat",
+            "doormats",
+        }
+    ),
     "冰箱贴": frozenset(
         {
             "冰箱贴",
@@ -231,9 +277,11 @@ _EXACT_CATEGORY_ALIASES = {
     "placematscoasters": frozenset(
         {"餐垫杯垫", "placematscoasters", "placematcoaster", "placemat", "coaster"}
     ),
-    "墙纸壁纸": frozenset(
-        {"墙纸壁纸", "wallpaperswallstickers", "wallpaperwallstickers"}
-    ),
+    "墙纸": _WALLPAPER_ALIASES,
+    "壁纸": _WALLPAPER_ALIASES,
+    "墙纸壁纸": _WALLPAPER_ALIASES,
+    "wallpaper": _WALLPAPER_ALIASES,
+    "wallpapers": _WALLPAPER_ALIASES,
 }
 
 _WALLPAPER_CATEGORY_ID = "101157"
@@ -254,10 +302,23 @@ def _approved_semantic_aliases(main_category: Mapping[str, Any]) -> frozenset[st
 def select_exact_official_category(
     main_category: Mapping[str, Any],
     candidates: Sequence[Mapping[str, Any]],
+    *,
+    approved_category: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return one exact official leaf; never infer from title or description."""
 
-    aliases = _approved_semantic_aliases(main_category)
+    approved_id = ""
+    if approved_category is not None:
+        if not isinstance(approved_category, Mapping):
+            raise ShopeeGlobalV4LiveRuntimeError(
+                "approved Shopee category is invalid"
+            )
+        approved_id = str(approved_category.get("id") or "").strip()
+        if not approved_id.isdigit() or int(approved_id) <= 0:
+            raise ShopeeGlobalV4LiveRuntimeError(
+                "approved Shopee category is invalid"
+            )
+    aliases = frozenset() if approved_id else _approved_semantic_aliases(main_category)
     matches: list[dict[str, Any]] = []
     for candidate in candidates:
         if not isinstance(candidate, Mapping) or candidate.get("publishable") is not True:
@@ -272,7 +333,11 @@ def select_exact_official_category(
             or not isinstance(path, list)
             or not path
             or any(not isinstance(row, Mapping) for row in path)
-            or _semantic_key(name) not in aliases
+            or (
+                category_id != approved_id
+                if approved_id
+                else _semantic_key(name) not in aliases
+            )
         ):
             continue
         normalized_path = [
@@ -464,7 +529,11 @@ def _default_official_fact_reader(
                 "publishable": True,
             }
         )
-    selected = select_exact_official_category(command.get("main_category"), candidates)
+    selected = select_exact_official_category(
+        command.get("main_category"),
+        candidates,
+        approved_category=command.get("approved_category"),
+    )
     attributes = _read_attribute_tree(transport, int(selected["id"]))
     required, missing = _approved_required_attributes(
         command, attributes, selected_category_id=selected["id"]
@@ -503,36 +572,97 @@ def _default_official_fact_reader(
     }
 
 
-def _default_image_upload(url: str, position: int) -> str:
+def _default_image_upload(url: str, position: int, *, before_upload=None) -> str:
     from modules.shopee.client import upload_image
     from modules.shopee.oneclick_release import _download_public_https_image
 
-    prepared = _download_public_https_image(url)
-    with tempfile.TemporaryDirectory(prefix="shopee_global_v4_image_") as directory:
-        path = Path(directory) / f"image_{position}{prepared.suffix}"
-        path.write_bytes(prepared.content)
-        response = upload_image(path, scene="normal")
-    image_id = ""
-    if isinstance(response, Mapping):
-        image_id = str(response.get("image_id") or "").strip()
-        image_info = response.get("image_info")
-        if not image_id and isinstance(image_info, Mapping):
-            image_id = str(image_info.get("image_id") or "").strip()
-        image_info_list = response.get("image_info_list")
-        if not image_id and isinstance(image_info_list, list):
-            for row in image_info_list:
-                if not isinstance(row, Mapping):
-                    continue
-                nested = row.get("image_info")
-                if isinstance(nested, Mapping):
-                    image_id = str(nested.get("image_id") or "").strip()
-                else:
-                    image_id = str(row.get("image_id") or "").strip()
-                if image_id:
-                    break
-    if not image_id:
-        raise ShopeeGlobalV4LiveRuntimeError("Shopee uploaded image identity is unavailable")
-    return image_id
+    sent = False
+    try:
+        prepared = _download_public_https_image(url)
+        content, suffix = _compress_oversized_shopee_image(
+            prepared.content, prepared.suffix
+        )
+        with tempfile.TemporaryDirectory(prefix="shopee_global_v4_image_") as directory:
+            path = Path(directory) / f"image_{position}{suffix}"
+            path.write_bytes(content)
+            if before_upload is not None:
+                before_upload()
+            sent = True
+            response = upload_image(path, scene="normal")
+        image_id = ""
+        if isinstance(response, Mapping):
+            image_id = str(response.get("image_id") or "").strip()
+            image_info = response.get("image_info")
+            if not image_id and isinstance(image_info, Mapping):
+                image_id = str(image_info.get("image_id") or "").strip()
+            image_info_list = response.get("image_info_list")
+            if not image_id and isinstance(image_info_list, list):
+                for row in image_info_list:
+                    if not isinstance(row, Mapping):
+                        continue
+                    nested = row.get("image_info")
+                    if isinstance(nested, Mapping):
+                        image_id = str(nested.get("image_id") or "").strip()
+                    else:
+                        image_id = str(row.get("image_id") or "").strip()
+                    if image_id:
+                        break
+        if not image_id:
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee uploaded image identity is unavailable")
+        return image_id
+    except Exception as error:
+        error.image_upload_outcome_unknown = sent
+        raise
+
+
+def _compress_oversized_shopee_image(
+    content: bytes,
+    suffix: str,
+    *,
+    max_bytes: int = 10 * 1024 * 1024,
+) -> tuple[bytes, str]:
+    """Deterministically fit an approved image into Shopee's upload envelope."""
+
+    if type(content) is not bytes or not content:
+        raise ShopeeGlobalV4LiveRuntimeError("Shopee image payload is invalid")
+    if len(content) <= max_bytes:
+        return content, suffix
+    from io import BytesIO
+    from PIL import Image
+
+    try:
+        source = Image.open(BytesIO(content))
+        source.load()
+    except Exception as error:
+        raise ShopeeGlobalV4LiveRuntimeError(
+            "Shopee oversized image cannot be decoded"
+        ) from error
+    if source.mode in {"RGBA", "LA"}:
+        rgba = source.convert("RGBA")
+        canvas = Image.new("RGB", rgba.size, "white")
+        canvas.paste(rgba, mask=rgba.getchannel("A"))
+        source = canvas
+    else:
+        source = source.convert("RGB")
+    working = source
+    for scale in (1.0, 0.9, 0.8, 0.7):
+        if scale != 1.0:
+            working = source.resize(
+                (
+                    max(1, round(source.width * scale)),
+                    max(1, round(source.height * scale)),
+                ),
+                Image.Resampling.LANCZOS,
+            )
+        for quality in (92, 88, 84, 80, 76):
+            output = BytesIO()
+            working.save(output, format="JPEG", quality=quality, optimize=True)
+            compressed = output.getvalue()
+            if len(compressed) <= max_bytes:
+                return compressed, ".jpg"
+    raise ShopeeGlobalV4LiveRuntimeError(
+        "Shopee oversized image cannot fit the upload envelope"
+    )
 
 
 def build_official_shopee_global_v4_runtime(
@@ -636,7 +766,9 @@ class OfficialShopeeGlobalV4Runtime:
         ):
             raise ShopeeGlobalV4LiveRuntimeError("Shopee official facts are invalid")
         category = select_exact_official_category(
-            command.get("main_category"), facts["candidates"]
+            command.get("main_category"),
+            facts["candidates"],
+            approved_category=command.get("approved_category"),
         )
         policy = command.get("policy")
         brand = facts.get("brand")
@@ -853,15 +985,41 @@ class OfficialShopeeGlobalV4Runtime:
                 raise ShopeeGlobalV4LiveRuntimeError("Shopee image URL is invalid")
             if url in bindings:
                 continue
-            image_id = str(self._image_upload(url, position)).strip()
-            if not image_id or image_id in bindings.values():
+            ledger = getattr(request, "write_budget_ledger", None)
+            if ledger is None and getattr(request, "release_candidate", None) is not None:
                 raise ShopeeGlobalV4LiveRuntimeError(
-                    "Shopee uploaded image identity is invalid"
+                    "approved publication request is missing its write budget ledger"
                 )
-            bindings[url] = image_id
-            active["image_bindings"] = deepcopy(bindings)
-            self._checkpoint_update(request, {"image_bindings": deepcopy(bindings)})
-            uploaded += 1
+            def reserve_upload():
+                if ledger is not None:
+                    ledger.reserve_shared("upload_image")
+            started = False
+            try:
+                if self._image_upload is _default_image_upload:
+                    # The default transport downloads and prepares locally;
+                    # reserve only at its actual upload_image POST boundary.
+                    image_id = str(self._image_upload(url, position, before_upload=reserve_upload)).strip()
+                    started = True
+                else:
+                    # Injected transports are the single-mutation boundary.
+                    reserve_upload()
+                    started = True
+                    image_id = str(self._image_upload(url, position)).strip()
+                if not image_id or image_id in bindings.values():
+                    raise ShopeeGlobalV4LiveRuntimeError(
+                        "Shopee uploaded image identity is invalid"
+                    )
+                uploaded += 1
+                started = False  # Exact image receipt is known, even if local persistence fails.
+                bindings[url] = image_id
+                active["image_bindings"] = deepcopy(bindings)
+                self._checkpoint_update(request, {"image_bindings": deepcopy(bindings)})
+            except Exception as error:
+                error.completed_image_upload_count = uploaded
+                if not hasattr(error, "image_upload_outcome_unknown"):
+                    error.image_upload_outcome_unknown = started
+                error.image_upload_request_count = uploaded + int(error.image_upload_outcome_unknown)
+                raise
         return deepcopy(bindings), uploaded
 
     def _checkpoint_update(self, request: object, update: Mapping[str, object]) -> None:
@@ -1172,7 +1330,7 @@ class OfficialShopeeGlobalV4Runtime:
     def update_existing_global_tier_variation(
         self, global_item_id: str, payload: Mapping[str, Any]
     ) -> UpdateReceipt:
-        """Attempt one frozen tier update and reconcile only a lost response."""
+        """Attempt one frozen tier update and reconcile via bounded official readback."""
 
         if self._merchant_post is None or not isinstance(payload, Mapping):
             raise ShopeeGlobalV4LiveRuntimeError("Shopee tier update transport is unavailable")
@@ -1247,6 +1405,46 @@ class OfficialShopeeGlobalV4Runtime:
                 option_list.append(row)
             tiers.append({"name": name, "option_list": option_list})
         body = {"global_item_id": int(item_id), "tier_variation": tiers}
+        expected = {str(row["model_sku"]): row for row in models}
+
+        def readback_exact() -> bool:
+            try:
+                observed = self.read_global_models(item_id)
+            except Exception:
+                return False
+            observed_rows = observed.get("models") if isinstance(observed, Mapping) else None
+            by_sku: dict[str, Mapping[str, Any]] = {}
+            if isinstance(observed_rows, list):
+                for row in observed_rows:
+                    sku = (
+                        str(row.get("model_sku") or "").strip()
+                        if isinstance(row, Mapping)
+                        else ""
+                    )
+                    if not sku or sku in by_sku:
+                        return False
+                    by_sku[sku] = row
+            if (
+                not isinstance(observed, Mapping)
+                or observed.get("variation_names") != list(names)
+                or set(by_sku) != set(expected)
+                or len(by_sku) != len(models)
+            ):
+                return False
+            for model_sku, frozen in expected.items():
+                row = by_sku[model_sku]
+                global_model_id = str(row.get("global_model_id") or "").strip()
+                if (
+                    not global_model_id.isdigit()
+                    or int(global_model_id) <= 0
+                    or row.get("option_values") != frozen["option_values"]
+                    or str(row.get("variant_image_id") or "").strip()
+                    != frozen["variant_image_id"]
+                ):
+                    return False
+            return True
+
+        provider_error: Exception | None = None
         try:
             provider_value = self._merchant_post(
                 "/api/v2/global_product/update_tier_variation",
@@ -1254,45 +1452,26 @@ class OfficialShopeeGlobalV4Runtime:
                 str(context["merchant_token"]),
                 body,
             )
-        except Exception as transport_error:
-            try:
-                observed = self.read_global_models(item_id)
-            except Exception:
-                raise transport_error
-            observed_rows = observed.get("models") if isinstance(observed, Mapping) else None
-            by_sku: dict[str, Mapping[str, Any]] = {}
-            if isinstance(observed_rows, list):
-                for row in observed_rows:
-                    sku = str(row.get("model_sku") or "").strip() if isinstance(row, Mapping) else ""
-                    if not sku or sku in by_sku:
-                        by_sku = {}
-                        break
-                    by_sku[sku] = row
-            expected = {str(row["model_sku"]): row for row in models}
-            exact = (
-                isinstance(observed, Mapping)
-                and observed.get("variation_names") == list(names)
-                and set(by_sku) == set(expected)
-                and len(by_sku) == len(models)
-            )
-            if exact:
-                for model_sku, frozen in expected.items():
-                    row = by_sku[model_sku]
-                    global_model_id = str(row.get("global_model_id") or "").strip()
-                    if (
-                        not global_model_id.isdigit()
-                        or int(global_model_id) <= 0
-                        or row.get("option_values") != frozen["option_values"]
-                        or str(row.get("variant_image_id") or "").strip()
-                        != frozen["variant_image_id"]
-                    ):
-                        exact = False
-                        break
-            if exact:
-                return UpdateReceipt(attempted_count=1, reconciled_by_readback=True)
-            raise transport_error
-        self._provider_response(provider_value, "Shopee global tier image update")
-        return UpdateReceipt(attempted_count=1, reconciled_by_readback=False)
+            self._provider_response(provider_value, "Shopee global tier image update")
+        except Exception as error:
+            # Shopee can commit this mutation while returning an error or while
+            # the first official GET still exposes the previous tier images.
+            # Never repeat the POST: bounded GET-only reconciliation prevents a
+            # duplicate mutation and treats the official final state as truth.
+            provider_error = error
+        for attempt in range(_PRICE_READBACK_ATTEMPTS):
+            if attempt:
+                self._price_readback_wait(_PRICE_READBACK_DELAY_SECONDS)
+            if readback_exact():
+                return UpdateReceipt(
+                    attempted_count=1,
+                    reconciled_by_readback=provider_error is not None,
+                )
+        if provider_error is not None:
+            raise provider_error
+        raise ShopeeGlobalV4LiveRuntimeError(
+            "Shopee global tier image update was not verified by official readback"
+        )
 
     def persist_existing_global_tier_update_receipt(
         self, request: object, receipt: UpdateReceipt

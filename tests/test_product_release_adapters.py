@@ -78,12 +78,14 @@ def _context():
 def _with_governed_ozon_stock_action(context):
     context["payload"]["target_actions"] = {
         "ozon:RU": {
-            "schema_version": "ozon-existing-product-stock-command/v1",
+            "schema_version": "ozon-existing-product-stock-command/v2",
+            "product_id": "ozon-product-1",
             "expected_listing_digest": "sha256:fixture-listing",
             "desired_stock_quantity": 50,
             "inventory_snapshot_id": "snapshot:fixture",
             "inventory_snapshot_revision_or_digest": "revision:fixture",
-            "warehouse_policy": "single_active_non_kgt",
+            "warehouse_id": 1020005018928780,
+            "warehouse_policy": "exact_active_non_kgt",
         }
     }
     return context
@@ -1873,8 +1875,9 @@ def test_shopee_exact_seller_delete_allows_one_replacement_publish(monkeypatch):
 
 
 def test_new_shopee_publish_uses_immutable_local_and_global_prices(monkeypatch):
+    # PH consumes frozen English copy; MY/TH/VN now require the v4 frozen-copy contract.
     context = _context()
-    context["payload"]["targets"] = ["shopee:MY"]
+    context["payload"]["targets"] = ["shopee:PH"]
     context["payload"]["listing_copy"] = {
         "candidates": [
             {
@@ -1887,12 +1890,12 @@ def test_new_shopee_publish_uses_immutable_local_and_global_prices(monkeypatch):
         "shopee_description_en": "Verified product description. " * 30,
     }
     context["payload"]["pricing"]["selected_targets"] = {
-        "shopee:MY": {
-            "target_site": "MY",
-            "source": {"list_price": 45, "currency": "MYR"},
+        "shopee:PH": {
+            "target_site": "PH",
+            "source": {"list_price": 45, "currency": "PHP"},
             "derived_preview": {
                 "local_original_price": 45,
-                "source_currency": "MYR",
+                "source_currency": "PHP",
                 "global_original_price_cny": 78.75,
                 "exchange_rate_cny_per_local": 1.75,
             },
@@ -1935,7 +1938,7 @@ def test_new_shopee_publish_uses_immutable_local_and_global_prices(monkeypatch):
         "modules.shopee.publish.publish_match_key",
         lambda *args, **kwargs: published.append((args, kwargs))
         or {
-            "item_id": "my-item-0953",
+            "item_id": "ph-item-0953",
             "logistics": {"enabled_logistic_ids": [48002, 48003]},
         },
     )
@@ -1949,15 +1952,15 @@ def test_new_shopee_publish_uses_immutable_local_and_global_prices(monkeypatch):
         product_package_id="product:3828811808:0953",
         content_package_id="content:3828811808",
         channel="shopee",
-        site="MY",
-        target_label="shopee:MY",
-        idempotency_key="publish:shopee:MY:test",
+        site="PH",
+        target_label="shopee:PH",
+        idempotency_key="publish:shopee:PH:test",
     )
     result = release_adapters.execute_shopee_target(request)
 
     assert result.succeeded is True
     assert published[0][1]["local_original_price_override"] == 45
-    assert published[0][1]["local_price_currency_override"] == "MYR"
+    assert published[0][1]["local_price_currency_override"] == "PHP"
     assert published[0][1]["global_original_price_cny_override"] == 78.75
     assert readback_kwargs[0]["require_all_logistics"] is True
     assert readback_kwargs[0]["expected_enabled_logistic_ids"] == [
@@ -1985,8 +1988,9 @@ def test_new_shopee_publish_malformed_receipt_keeps_write_evidence(
     publish_receipt,
     reason,
 ):
+    # PH consumes frozen English copy; MY/TH/VN now require the v4 frozen-copy contract.
     context = _context()
-    context["payload"]["targets"] = ["shopee:MY"]
+    context["payload"]["targets"] = ["shopee:PH"]
     context["payload"]["listing_copy"] = {
         "candidates": [
             {
@@ -1999,12 +2003,12 @@ def test_new_shopee_publish_malformed_receipt_keeps_write_evidence(
         "shopee_description_en": "Verified product description. " * 30,
     }
     context["payload"]["pricing"]["selected_targets"] = {
-        "shopee:MY": {
-            "target_site": "MY",
-            "source": {"list_price": 45, "currency": "MYR"},
+        "shopee:PH": {
+            "target_site": "PH",
+            "source": {"list_price": 45, "currency": "PHP"},
             "derived_preview": {
                 "local_original_price": 45,
-                "source_currency": "MYR",
+                "source_currency": "PHP",
                 "global_original_price_cny": 78.75,
                 "exchange_rate_cny_per_local": 1.75,
             },
@@ -2048,9 +2052,9 @@ def test_new_shopee_publish_malformed_receipt_keeps_write_evidence(
             product_package_id="product:3828811808:0953",
             content_package_id="content:3828811808",
             channel="shopee",
-            site="MY",
-            target_label="shopee:MY",
-            idempotency_key="publish:shopee:MY:test",
+            site="PH",
+            target_label="shopee:PH",
+            idempotency_key="publish:shopee:PH:test",
         )
     )
 
@@ -2067,8 +2071,9 @@ def test_new_shopee_publish_malformed_receipt_keeps_write_evidence(
 def test_new_shopee_publish_rejects_stale_local_currency_before_publish(
     monkeypatch,
 ):
+    # PH consumes frozen English copy; MY/TH/VN now require the v4 frozen-copy contract.
     context = _context()
-    context["payload"]["targets"] = ["shopee:MY"]
+    context["payload"]["targets"] = ["shopee:PH"]
     context["payload"]["listing_copy"] = {
         "candidates": [
             {
@@ -2081,9 +2086,9 @@ def test_new_shopee_publish_rejects_stale_local_currency_before_publish(
         "shopee_description_en": "Verified product description. " * 30,
     }
     context["payload"]["pricing"]["selected_targets"] = {
-        "shopee:MY": {
-            "target_site": "MY",
-            "source": {"list_price": 45, "currency": "MYR"},
+        "shopee:PH": {
+            "target_site": "PH",
+            "source": {"list_price": 45, "currency": "PHP"},
             "derived_preview": {
                 "local_original_price": 45,
                 "source_currency": "CNY",
@@ -2122,9 +2127,9 @@ def test_new_shopee_publish_rejects_stale_local_currency_before_publish(
         product_package_id="product:3828811808:0953",
         content_package_id="content:3828811808",
         channel="shopee",
-        site="MY",
-        target_label="shopee:MY",
-        idempotency_key="publish:shopee:MY:test",
+        site="PH",
+        target_label="shopee:PH",
+        idempotency_key="publish:shopee:PH:test",
     )
 
     with pytest.raises(
@@ -2135,8 +2140,9 @@ def test_new_shopee_publish_rejects_stale_local_currency_before_publish(
 
 
 def test_existing_shopee_mismatch_is_never_republished_as_a_duplicate(monkeypatch):
+    # PH consumes frozen English copy; MY/TH/VN now require the v4 frozen-copy contract.
     context = _context()
-    context["payload"]["targets"] = ["shopee:TH"]
+    context["payload"]["targets"] = ["shopee:PH"]
     context["payload"]["listing_copy"]["candidates"] = [
         {
             "channel": "shopee",
@@ -2146,12 +2152,12 @@ def test_existing_shopee_mismatch_is_never_republished_as_a_duplicate(monkeypatc
         }
     ]
     context["payload"]["pricing"]["selected_targets"] = {
-        "shopee:TH": {
-            "target_site": "TH",
+        "shopee:PH": {
+            "target_site": "PH",
             "derived_preview": {
                 "global_original_price_cny": 42.59,
                 "local_original_price": 192,
-                "source_currency": "THB",
+                "source_currency": "PHP",
                 "exchange_rate_cny_per_local": 0.2218,
             },
         }
@@ -2197,9 +2203,9 @@ def test_existing_shopee_mismatch_is_never_republished_as_a_duplicate(monkeypatc
             product_package_id="product:3828811808:0953",
             content_package_id="content:3828811808",
             channel="shopee",
-            site="TH",
-            target_label="shopee:TH",
-            idempotency_key="publish:shopee:TH:test",
+            site="PH",
+            target_label="shopee:PH",
+            idempotency_key="publish:shopee:PH:test",
         )
     )
 
@@ -2208,7 +2214,7 @@ def test_existing_shopee_mismatch_is_never_republished_as_a_duplicate(monkeypatc
     assert "second publish was blocked" in result.detail
 
 
-def test_existing_shopee_copy_is_repaired_in_place_without_republishing(monkeypatch):
+def test_existing_shopee_copy_requires_frozen_v4_migration_without_republishing(monkeypatch):
     context = _context()
     context["payload"]["targets"] = ["shopee:TH"]
     context["payload"]["listing_copy"]["candidates"] = [
@@ -2321,14 +2327,17 @@ def test_existing_shopee_copy_is_repaired_in_place_without_republishing(monkeypa
         )
     )
 
-    assert result.succeeded is True
-    assert result.readback_verified is True
-    assert result.external_reference == "48964906224"
-    assert repaired[0]["item_id"] == 48964906224
-    assert "repaired in place" in result.detail
+    assert result.succeeded is False
+    assert result.readback_verified is False
+    assert result.external_reference is None
+    assert result.readback_evidence["reason"] == "FROZEN_REGIONAL_COPY_REQUIRED"
+    assert result.readback_evidence["external_write_count"] == 0
+    assert result.readback_evidence["paid_request_count"] == 0
+    assert repaired == []
+    assert "prepare-product-publication" in result.detail
 
 
-def test_ozon_release_uses_verified_tiktok_images_without_third_party_rehosting(
+def test_ozon_missing_existing_product_never_rehosts_or_imports_tiktok_images(
     monkeypatch,
 ):
     from modules.ozon import migrate_batch
@@ -2443,15 +2452,11 @@ def test_ozon_release_uses_verified_tiktok_images_without_third_party_rehosting(
 
     result = release_adapters.execute_ozon_target(request)
 
-    assert result.succeeded is True
-    assert result.readback_verified is True
-    assert calls[0][1]["image_urls_override"] == [
-        "https://tiktok.example/approved-1.jpg",
-        "https://tiktok.example/approved-2.jpg",
-    ]
-    assert calls[0][1]["process_images"] is False
-    assert calls[0][1]["skip_rich_content"] is True
-    assert calls[0][1]["skip_mapping_write"] is True
+    assert result.succeeded is False
+    assert result.readback_verified is False
+    assert result.readback_evidence["reconciliation_required"] is True
+    assert result.readback_evidence["external_writes_performed"] == []
+    assert calls == []
 
 
 def test_ozon_readback_requires_approved_moderation_stock_and_exact_image_count(
@@ -2661,6 +2666,68 @@ def _ozon_release_fixture():
     return context, request
 
 
+def test_ozon_existing_product_requires_exact_stock_readback(monkeypatch):
+    from modules.ozon import migrate_batch
+    from shared_platform.target_scoped_release_contracts import (
+        TargetScopedOperationResult,
+    )
+
+    context, request = _ozon_release_fixture()
+    context["payload"]["target_actions"]["ozon:RU"]["desired_stock_quantity"] = 200
+    monkeypatch.setattr(release_adapters, "_validated_context", lambda _r: context)
+    monkeypatch.setattr(
+        migrate_batch,
+        "migrate_one",
+        lambda *_args, **_kwargs: pytest.fail("v2 stock plan forbids product import"),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_set_release_stock",
+        lambda **_kwargs: pytest.fail("readback alone cannot authorize stock"),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_readback",
+        lambda **_kwargs: (
+            True,
+            {"verified": True, "product_id": "different-product", "is_created": True},
+        ),
+    )
+
+    mismatch = release_adapters.execute_ozon_target(request)
+
+    assert mismatch.succeeded is False
+    assert mismatch.readback_verified is False
+    assert mismatch.readback_evidence["external_writes_performed"] == []
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_readback",
+        lambda **_kwargs: (
+            True,
+            {
+                "verified": True,
+                "product_id": "ozon-product-1",
+                "is_created": True,
+                "has_stock": True,
+                "warehouse_id": "other-warehouse",
+                "stock_quantity": 2,
+            },
+        ),
+    )
+
+    matched = release_adapters.execute_ozon_target(request)
+
+    assert matched.succeeded is False
+    assert matched.readback_verified is False
+    assert matched.submission_accepted is False
+    assert matched.readback_evidence["phase"] == "exact_stock_readback_required"
+    assert matched.readback_evidence["external_writes_performed"] == []
+    assert (
+        TargetScopedOperationResult.from_value(matched).outcome
+        == "RECONCILIATION_REQUIRED"
+    )
+
+
 def test_ozon_creation_waits_for_task_and_exact_product_identity(monkeypatch):
     from modules.ozon import client
 
@@ -2763,7 +2830,7 @@ def test_ozon_creation_immediate_happy_path(monkeypatch):
     ]
 
 
-def test_ozon_create_then_creation_then_stock_then_readback(monkeypatch):
+def test_ozon_missing_existing_product_blocks_create_and_stock(monkeypatch):
     from modules.ozon import migrate_batch
 
     context, request = _ozon_release_fixture()
@@ -2840,22 +2907,14 @@ def test_ozon_create_then_creation_then_stock_then_readback(monkeypatch):
 
     result = release_adapters.execute_ozon_target(request)
 
-    assert result.succeeded is True
-    assert result.readback_verified is True
-    assert events == [
-        "initial_readback",
-        "create",
-        "creation_confirmed",
-        "stock",
-        "final_readback",
-    ]
-    assert result.readback_evidence["external_writes_performed"] == [
-        "ozon:product_import:create",
-        "ozon:stock:update",
-    ]
+    assert result.succeeded is False
+    assert result.readback_verified is False
+    assert events == ["initial_readback"]
+    assert result.readback_evidence["duplicate_import_blocked"] is True
+    assert result.readback_evidence["external_writes_performed"] == []
 
 
-def test_ozon_creation_timeout_never_updates_stock_and_requires_reconciliation(
+def test_ozon_missing_product_never_updates_stock_and_requires_reconciliation(
     monkeypatch,
 ):
     from modules.ozon import migrate_batch
@@ -2919,17 +2978,15 @@ def test_ozon_creation_timeout_never_updates_stock_and_requires_reconciliation(
 
     result = release_adapters.execute_ozon_target(request)
 
-    assert result.succeeded is True
-    assert result.submission_accepted is True
+    assert result.succeeded is False
+    assert result.submission_accepted is False
     assert result.readback_verified is False
     assert result.readback_evidence["reconciliation_required"] is True
-    assert result.readback_evidence["creation"]["state"] == "timeout"
-    assert result.readback_evidence["external_writes_performed"] == [
-        "ozon:product_import:create"
-    ]
+    assert result.readback_evidence["phase"] == "existing_product_readback"
+    assert result.readback_evidence["external_writes_performed"] == []
 
 
-def test_ozon_ambiguous_create_receipt_blocks_stock_and_second_create(monkeypatch):
+def test_ozon_missing_product_blocks_stock_and_create_dispatch(monkeypatch):
     from modules.ozon import migrate_batch
 
     context, request = _ozon_release_fixture()
@@ -2991,12 +3048,10 @@ def test_ozon_ambiguous_create_receipt_blocks_stock_and_second_create(monkeypatc
 
     result = release_adapters.execute_ozon_target(request)
 
-    assert len(create_calls) == 1
-    assert result.submission_accepted is True
-    assert result.readback_evidence["creation"] == {
-        "state": "ambiguous",
-        "reason": "missing_import_task_id",
-    }
+    assert len(create_calls) == 0
+    assert result.submission_accepted is False
+    assert result.readback_evidence["phase"] == "existing_product_readback"
+    assert result.readback_evidence["external_writes_performed"] == []
 
 
 def test_ozon_visible_pending_product_is_never_imported_twice(monkeypatch):
@@ -3054,8 +3109,8 @@ def test_ozon_visible_pending_product_is_never_imported_twice(monkeypatch):
 
     result = release_adapters.execute_ozon_target(request)
 
-    assert result.submission_accepted is True
-    assert result.readback_evidence["creation"]["state"] == "timeout"
+    assert result.submission_accepted is False
+    assert result.readback_evidence["phase"] == "existing_product_readback"
     assert result.readback_evidence["external_writes_performed"] == []
 
 
@@ -3094,7 +3149,7 @@ def test_ozon_retry_with_invisible_prior_import_never_creates_again(monkeypatch)
 
     result = release_adapters.execute_ozon_target(request)
 
-    assert result.submission_accepted is True
+    assert result.submission_accepted is False
     assert result.readback_evidence["duplicate_import_blocked"] is True
     assert result.readback_evidence["durable_attempts"] == 2
     assert result.readback_evidence["external_writes_performed"] == []

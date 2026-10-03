@@ -265,8 +265,7 @@ def test_red_no_mapping_creates_complete_multisku_master_and_verifies_readback()
     assert runtime.calls == [
         "lookup",
         "prepare",
-        "upload",
-        "persist_images",
+        "checkpointed_upload",
         "create",
         "persist_global",
         "initialize",
@@ -291,7 +290,7 @@ def test_red_no_mapping_creates_complete_multisku_master_and_verifies_readback()
         "0958",
         "0959",
     ]
-    assert runtime.persisted_images
+    assert runtime.checkpointed_uploads
     assert runtime.persisted_globals == [
         ("run-shopee-v4-1", "9001", ["0958", "0959"])
     ]
@@ -302,7 +301,8 @@ def test_red_no_mapping_creates_complete_multisku_master_and_verifies_readback()
             {"0958": "9101", "0959": "9102"},
         )
     ]
-    assert resolver.write_count(request) == 3
+    assert resolver.write_count(request) == 4  # two image POSTs + create + initialize
+    assert resolver.created_in_run(request, global_item_id) is True
 
 
 def test_existing_exact_normal_mapping_is_read_before_any_write():
@@ -313,6 +313,7 @@ def test_existing_exact_normal_mapping_is_read_before_any_write():
     assert resolver(request) == "8001"
     assert runtime.calls == ["lookup", "read_item", "read_models"]
     assert resolver.write_count(request) == 0
+    assert resolver.created_in_run(request, "8001") is False
 
 
 def test_localized_regional_images_do_not_change_the_english_global_master():
@@ -399,7 +400,7 @@ def test_deleted_exact_mapping_is_retired_before_safe_rebuild():
             "SHOPEE_OFFICIAL_DELETED",
         )
     ]
-    assert resolver.write_count(request) == 3
+    assert resolver.write_count(request) == 4  # two image POSTs + create + initialize
 
 
 def test_global_identity_survives_failure_after_provider_accepts_create():
@@ -437,7 +438,7 @@ def test_missing_model_in_official_readback_never_verifies():
     with pytest.raises(ShopeeGlobalV4Error, match="SKU coverage"):
         resolver(request)
 
-    assert resolver.write_count(request) == 3
+    assert resolver.write_count(request) == 4  # two image POSTs + create + initialize
 
 
 @pytest.mark.parametrize(
@@ -463,7 +464,7 @@ def test_any_official_master_fact_drift_prevents_verification(surface, mutate, e
     with pytest.raises(ShopeeGlobalV4Error, match=error):
         resolver(request)
 
-    assert resolver.write_count(request) == 3
+    assert resolver.write_count(request) == 4  # two image POSTs + create + initialize
 
 
 def test_partial_local_mapping_is_completed_only_after_full_official_readback():
@@ -932,4 +933,47 @@ def test_region_executor_adds_global_master_and_regional_write_counts():
     assert result["external_write_count"] == 4
     assert result["targets"] == [
         {"target_label": "shopee:PH", "status": "PUBLISHED"}
+    ]
+
+
+def test_v2_projection_keeps_distinct_external_variant_images_outside_common_gallery():
+    plan = _approved_plan()
+    master = plan["payload"]["shopee_global_master"]
+    master["schema_version"] = "shopee-global-master/v2"
+    master.pop("variant_image_positions")
+    master["variant_image_bindings"] = [
+        {
+            "model_sku": "0958",
+            "image_url": "https://img.example/variant-0958.jpg",
+            "image_digest": "sha256:" + "1" * 64,
+            "source": {
+                "kind": "MIAOSHOU_SOURCE_IMAGE",
+                "source_offer_id": plan["payload"]["product_id"],
+                "source_position": 1,
+            },
+        },
+        {
+            "model_sku": "0959",
+            "image_url": "https://img.example/variant-0959.jpg",
+            "image_digest": "sha256:" + "2" * 64,
+            "source": {
+                "kind": "MIAOSHOU_SOURCE_IMAGE",
+                "source_offer_id": plan["payload"]["product_id"],
+                "source_position": 2,
+            },
+        },
+    ]
+    _rebind(plan)
+
+    command = project_shopee_global_v4_command(
+        build_approved_publication_snapshot(plan).payload()
+    )
+
+    assert command["product"]["images"] == [
+        "https://img.example/main-1.jpg",
+        "https://img.example/main-2.jpg",
+    ]
+    assert [row["variant_image_url"] for row in command["models"]] == [
+        "https://img.example/variant-0958.jpg",
+        "https://img.example/variant-0959.jpg",
     ]

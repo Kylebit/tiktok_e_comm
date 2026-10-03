@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sqlite3
 
 import pytest
@@ -144,7 +145,8 @@ def test_catalog_quality_audit_reports_identity_cost_and_derived_orphans(tmp_pat
         CREATE TABLE sku_costs (sku_id TEXT PRIMARY KEY, cost_cny REAL);
         CREATE TABLE product_analytics (product_id TEXT, shop_cipher TEXT);
         CREATE TABLE sku_logistics_weights (seller_sku TEXT);
-        CREATE TABLE shopee_products (price REAL);
+        CREATE TABLE shopee_shops (shop_id INTEGER);
+        CREATE TABLE shopee_products (model_id TEXT, shop_id INTEGER, item_id TEXT, seller_sku TEXT, currency TEXT, price REAL);
         INSERT INTO shops VALUES ('TH');
         INSERT INTO products VALUES ('P1', 'TH', 'ITEM1', '990017', 'THB');
         INSERT INTO products VALUES ('P2', 'TH', 'ITEM2', '990017', 'THB');
@@ -158,7 +160,8 @@ def test_catalog_quality_audit_reports_identity_cost_and_derived_orphans(tmp_pat
         INSERT INTO product_analytics VALUES ('GONE', 'TH');
         INSERT INTO sku_logistics_weights VALUES ('660017');
         INSERT INTO sku_logistics_weights VALUES ('0099');
-        INSERT INTO shopee_products VALUES (0);
+        INSERT INTO shopee_shops VALUES (7);
+        INSERT INTO shopee_products VALUES ('model1', 7, 'item1', '0001', 'THB', 0);
         """
     )
     connection.commit()
@@ -167,13 +170,14 @@ def test_catalog_quality_audit_reports_identity_cost_and_derived_orphans(tmp_pat
     report = audit_catalog_database(path)
 
     assert report.product_count == 5
-    assert report.direct_missing_cost_rows == 2
-    assert report.fallback_resolved_cost_rows == 1
-    assert report.unresolved_cost_rows == 1
-    assert report.unresolved_cost_key_count == 1
-    assert report.cost_conflicts == (
-        {"seller_sku_key": "0018", "costs_cny": ("5.0", "5.5")},
-    )
+    # P3/P4 share internal SKU 0018 with conflicting legacy observations;
+    # neither legacy price is silently accepted as the current SKU cost.
+    assert report.direct_missing_cost_rows == 3
+    assert report.fallback_resolved_cost_rows == 0
+    assert report.unresolved_cost_rows == 3
+    assert report.unresolved_cost_key_count == 3
+    assert report.cost_conflicts == ()  # 18 and 0018 are candidate keys, not one proven variant.
+    assert any(row['matching']['suffix_candidates'] for row in report.records)
     assert len(report.same_shop_seller_sku_duplicates) == 1
     assert report.product_shop_orphans == 1
     assert report.analytics_orphans == 1
@@ -184,17 +188,20 @@ def test_catalog_quality_audit_reports_identity_cost_and_derived_orphans(tmp_pat
 
 
 def test_orbit_build_rejects_packaged_runtime_databases_and_credentials():
-    script = (
-        Path(__file__).resolve().parents[1]
-        / "scripts"
-        / "build_orbit_desktop.ps1"
-    ).read_text(encoding="utf-8")
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "scripts" / "build_orbit_desktop.ps1").read_text(encoding="utf-8")
+    builder = (root / "scripts" / "build_orbit_desktop.py").read_text(encoding="utf-8")
+    manifest = json.loads((root / "desktop" / "build_manifest.json").read_text(encoding="utf-8"))
 
-    assert 'Join-Path $BundleInternal "data"' in script
-    assert "Resolve-Path -LiteralPath $PackagedData" in script
-    assert "Remove-Item -LiteralPath $ResolvedData -Recurse -Force" in script
+    # The current build copies an explicit client allowlist into a new staging
+    # directory, then rejects undeclared project inputs found by PyInstaller.
+    assert "build_orbit_desktop.py" in script
+    assert "if output.exists():" in builder
+    assert "manifest['source_files']+manifest['identity_sources']" in builder
+    assert "Undeclared repository input:" in builder
+    bundled_inputs = [*manifest["source_files"], *manifest["identity_sources"], *manifest["documents"]]
     for forbidden_name in ("shop.db", "orbit_platform.db", "Cookies", "Login Data"):
-        assert forbidden_name in script
+        assert not any(forbidden_name in source for source in bundled_inputs)
 
 
 def test_quality_cli_can_fail_a_release_gate_on_review_items(tmp_path):
@@ -213,7 +220,8 @@ def test_quality_cli_can_fail_a_release_gate_on_review_items(tmp_path):
         CREATE TABLE sku_costs (sku_id TEXT PRIMARY KEY, cost_cny REAL);
         CREATE TABLE product_analytics (product_id TEXT, shop_cipher TEXT);
         CREATE TABLE sku_logistics_weights (seller_sku TEXT);
-        CREATE TABLE shopee_products (price REAL);
+        CREATE TABLE shopee_shops (shop_id INTEGER);
+        CREATE TABLE shopee_products (model_id TEXT, shop_id INTEGER, item_id TEXT, seller_sku TEXT, currency TEXT, price REAL);
         INSERT INTO shops VALUES ('TH');
         INSERT INTO products VALUES ('P1', 'TH', 'ITEM1', '0001', 'THB');
         """

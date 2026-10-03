@@ -716,6 +716,9 @@ def production_adapter_registry(
         }
     )
     factory = provider_factory or _production_provider_factory
+    from modules.tiktok.oneclick_promotion import promotion_adapter_policy_digest
+    from shared_platform.postpublish_promotions import all_promotion_action_targets
+
     registry = {
         "miaoshou-direct-store/v1": AdapterRegistration(
             adapter_name="miaoshou-direct-store/v1",
@@ -749,6 +752,17 @@ def production_adapter_registry(
                     "provider": "official-shopee-global",
                 }
             ),
+            prepare_is_read_only=True,
+            consumes_prepared_command=True,
+            preserves_idempotency_key=True,
+            reports_truthful_receipt=True,
+        ),
+        "postpublish_promotion": AdapterRegistration(
+            adapter_name="postpublish_promotion",
+            target_labels=all_promotion_action_targets(),
+            prepare=_prepare_postpublish_promotion,
+            dispatch=_dispatch_postpublish_promotion,
+            policy_digest=promotion_adapter_policy_digest(),
             prepare_is_read_only=True,
             consumes_prepared_command=True,
             preserves_idempotency_key=True,

@@ -1105,6 +1105,8 @@ def _dispatch_common(
 ) -> dict[str, object]:
     transport = _runtime_transport()
     post = _required_post(transport)
+    from shared_platform.native_common_edit_boundary import require_managed_transport
+    require_managed_transport(post)
     expected = _mapping(command.get("expected"), "COMMON expected payload")
     detail, oss_md5 = _read_common(post, str(command["common_detail_id"]))
     _verify_common_identity(

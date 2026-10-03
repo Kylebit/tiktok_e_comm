@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -82,8 +83,10 @@ _EVIDENCE_FIELDS = frozenset(
     }
 )
 _EXECUTION_IDENTITY_FIELDS = frozenset({"skill_digest", "git_commit", "code_digest"})
+_OZON_EXECUTION_IDENTITY_FIELDS = frozenset({"ozon_account_id", "ozon_credentials_sha256"})
 _TARGET_FIELDS = frozenset({"target_label", "status", "evidence"})
 _TARGET_EVIDENCE_FIELDS = frozenset({"target_label", "status", "stage", "provider_code", "provider_reason", "request_attempted", "outcome_unknown", "external_write_count"})
+_TARGET_EVIDENCE_OPTIONAL_FIELDS = frozenset({"provider_field_path", "provider_identity_bound"})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS product_publication_reports (
@@ -198,13 +201,25 @@ def _exact_fields(value: Mapping[str, Any], expected: frozenset[str], name: str)
 def _execution_identity(value: object) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise TypeError("execution_identity must be a mapping")
-    _exact_fields(value, _EXECUTION_IDENTITY_FIELDS, "execution_identity")
+    fields = set(value)
+    if fields != set(_EXECUTION_IDENTITY_FIELDS) and fields != set(
+        _EXECUTION_IDENTITY_FIELDS | _OZON_EXECUTION_IDENTITY_FIELDS
+    ):
+        raise ValueError("execution_identity fields are invalid")
     result = {name: _exact_text(value[name], name, max_length=64) for name in _EXECUTION_IDENTITY_FIELDS}
     if not re.fullmatch(r"[0-9a-f]{40}", result["git_commit"]):
         raise ValueError("git_commit is invalid")
     for name in ("skill_digest", "code_digest"):
         if not re.fullmatch(r"[0-9a-f]{64}", result[name]):
             raise ValueError(f"{name} is invalid")
+    if _OZON_EXECUTION_IDENTITY_FIELDS.issubset(fields):
+        account = _exact_text(value["ozon_account_id"], "ozon_account_id", max_length=64)
+        digest = _exact_text(value["ozon_credentials_sha256"], "ozon_credentials_sha256", max_length=64)
+        if not account.isdecimal() or int(account) <= 0:
+            raise ValueError("ozon_account_id is invalid")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("ozon_credentials_sha256 is invalid")
+        result.update(ozon_account_id=account, ozon_credentials_sha256=digest)
     return result
 
 
@@ -226,13 +241,23 @@ def _safe_targets(value: object) -> list[dict[str, Any]]:
         if evidence is not None:
             if not isinstance(evidence, Mapping):
                 raise TypeError("target evidence must be a mapping or null")
-            _exact_fields(evidence, _TARGET_EVIDENCE_FIELDS, "target evidence")
+            evidence_fields = set(evidence)
+            if not _TARGET_EVIDENCE_FIELDS.issubset(evidence_fields) or not evidence_fields.issubset(
+                _TARGET_EVIDENCE_FIELDS | _TARGET_EVIDENCE_OPTIONAL_FIELDS
+            ):
+                raise ValueError("target evidence fields are invalid")
             if evidence["target_label"] != label or evidence["status"] != status:
                 raise ValueError("target evidence identity conflicts")
             stage = _exact_text(evidence["stage"], "stage", max_length=32)
             code = _exact_text(evidence["provider_code"], "provider_code", max_length=80)
             reason = _exact_text(evidence["provider_reason"], "provider_reason", max_length=240)
-            if not code.isascii() or any(not (c.isalnum() or c in "_-") for c in code):
+            field_path = evidence.get("provider_field_path", "")
+            if type(field_path) is not str or len(field_path) > 160 or any(
+                not (character.isalnum() or character in "_-.[]")
+                for character in field_path
+            ):
+                raise ValueError("provider_field_path is unsafe")
+            if not code.isascii() or any(not (c.isalnum() or c in "_-.:") for c in code):
                 raise ValueError("provider_code is unsafe")
             if "http://" in reason.casefold() or "https://" in reason.casefold():
                 raise ValueError("provider_reason contains a URL")
@@ -249,6 +274,13 @@ def _safe_targets(value: object) -> list[dict[str, Any]]:
             if count is not None:
                 count = _exact_nonnegative_int(count, "target evidence write count")
             evidence = {"target_label": label, "status": status, "stage": stage, "provider_code": code, "provider_reason": reason, "request_attempted": attempted, "outcome_unknown": unknown, "external_write_count": count}
+            if "provider_identity_bound" in raw["evidence"]:
+                bound = raw["evidence"]["provider_identity_bound"]
+                if type(bound) is not bool:
+                    raise TypeError("provider_identity_bound must be boolean")
+                evidence["provider_identity_bound"] = bound
+            if field_path:
+                evidence["provider_field_path"] = field_path
         rows.append({"target_label": label, "status": status, "evidence": evidence})
     return rows
 
@@ -317,12 +349,257 @@ def _validated_summary(value: object, *, report_status: str) -> dict[str, Any]:
     }
 
 
+def _safe_mutation_budgets(value: object) -> list[dict[str, Any]]:
+    if type(value) is not list:
+        raise TypeError("mutation_budgets must be a list")
+    safe: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping) or set(raw) != {"schema_version", "platform", "limits", "attempts", "reservations"}:
+            raise ValueError("mutation budget shape is invalid")
+        platform = _exact_text(raw["platform"], "mutation platform", max_length=16)
+        if platform not in _PLATFORMS or platform in seen or raw["schema_version"] != "publication-mutation-budget/v1":
+            raise ValueError("mutation budget identity is invalid")
+        limits = raw["limits"]
+        attempts = raw["attempts"]
+        reservations = raw["reservations"]
+        if not isinstance(limits, Mapping) or set(limits) != {"shared_maximum", "per_target_maximum"}:
+            raise ValueError("mutation budget limits are invalid")
+        if not isinstance(attempts, Mapping) or set(attempts) != {"shared", "per_target", "total"}:
+            raise ValueError("mutation budget attempts are invalid")
+        shared_max = _exact_nonnegative_int(limits["shared_maximum"], "shared maximum")
+        per_target_max = _exact_nonnegative_int(limits["per_target_maximum"], "per-target maximum")
+        shared = _exact_nonnegative_int(attempts["shared"], "shared attempts")
+        total = _exact_nonnegative_int(attempts["total"], "total attempts")
+        per_target = attempts["per_target"]
+        if not isinstance(per_target, Mapping) or any(type(label) is not str for label in per_target):
+            raise ValueError("per-target attempts are invalid")
+        safe_per_target = {_exact_text(label, "budget target", max_length=80): _exact_nonnegative_int(count, "target attempts") for label, count in per_target.items()}
+        if shared > shared_max or any(count > per_target_max for count in safe_per_target.values()) or total != shared + sum(safe_per_target.values()):
+            raise ValueError("mutation attempts exceed or conflict with limits")
+        if type(reservations) is not list:
+            raise ValueError("mutation reservations are invalid")
+        safe_reservations = []
+        reserved_total = 0
+        reserved_shared = 0
+        reserved_per_target = {label: 0 for label in safe_per_target}
+        for index, row in enumerate(reservations, 1):
+            if not isinstance(row, Mapping) or set(row) != {"sequence", "scope", "target_label", "operation", "attempt_count"}:
+                raise ValueError("mutation reservation shape is invalid")
+            count = _exact_nonnegative_int(row["attempt_count"], "attempt_count")
+            operation = _exact_text(row["operation"], "operation", max_length=80)
+            if not re.fullmatch(r"[a-z0-9_]+", operation):
+                raise ValueError("mutation operation is unsafe")
+            scope = row["scope"]
+            target = row["target_label"]
+            if type(row["sequence"]) is not int or row["sequence"] != index or count == 0 or scope not in {"shared", "target"}:
+                raise ValueError("mutation reservation identity is invalid")
+            if scope == "shared" and target is not None:
+                raise ValueError("shared reservation cannot have a target")
+            if scope == "target" and target not in safe_per_target:
+                raise ValueError("target reservation is outside the budget")
+            safe_reservations.append({"sequence": index, "scope": scope, "target_label": target, "operation": operation, "attempt_count": count})
+            reserved_total += count
+            if scope == "shared":
+                reserved_shared += count
+            else:
+                reserved_per_target[target] += count
+        if reserved_total != total or reserved_shared != shared or reserved_per_target != safe_per_target:
+            raise ValueError("mutation reservations do not match attempts")
+        seen.add(platform)
+        safe.append({"schema_version": "publication-mutation-budget/v1", "platform": platform, "limits": {"shared_maximum": shared_max, "per_target_maximum": per_target_max}, "attempts": {"shared": shared, "per_target": safe_per_target, "total": total}, "reservations": safe_reservations})
+    return safe
+
+
+def _safe_recovery_retry_authorization(value: object) -> dict[str, Any]:
+    """Validate the private lineage from a zero-write recovery failure."""
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema_version", "retry_of_run_id", "receipt_digest",
+        "manifest_digest", "failed_run_identity", "successor_request_identity",
+    }:
+        raise ValueError("recovery retry authorization shape is invalid")
+    if value["schema_version"] != "shopee-recovery-retry-authorization/v1":
+        raise ValueError("recovery retry authorization schema is invalid")
+    retry_of = _run_id(value["retry_of_run_id"])
+    receipt_digest = _sha256(value["receipt_digest"], "recovery retry receipt digest")
+    manifest_digest = _sha256(value["manifest_digest"], "recovery retry manifest digest")
+    failed = value["failed_run_identity"]
+    failed_fields = {
+        "run_id", "report_id", "offer_id", "revision", "plan_id",
+        "snapshot_digest", "platform_scope", "target_count",
+        "execution_identity", "request_identity",
+    }
+    if not isinstance(failed, Mapping) or set(failed) != failed_fields:
+        raise ValueError("failed recovery run identity shape is invalid")
+    request = failed["request_identity"]
+    if (
+        failed["run_id"] != retry_of
+        or failed["report_id"] != publication_report_id(retry_of)
+        or failed["platform_scope"] != ["SHOPEE"]
+        or not isinstance(request, Mapping)
+        or request != {"kind": "SHOPEE_RECOVERY", "authority_digest": manifest_digest}
+    ):
+        raise ValueError("failed recovery run identity conflicts")
+    safe_failed = {
+        "run_id": retry_of,
+        "report_id": publication_report_id(retry_of),
+        "offer_id": _offer_id(failed["offer_id"]),
+        "revision": _revision(failed["revision"]),
+        "plan_id": _exact_text(failed["plan_id"], "failed recovery plan_id"),
+        "snapshot_digest": _sha256(
+            failed["snapshot_digest"], "failed recovery snapshot digest"
+        ),
+        "platform_scope": ["SHOPEE"],
+        "target_count": _exact_nonnegative_int(
+            failed["target_count"], "failed recovery target_count"
+        ),
+        "execution_identity": _execution_identity(failed["execution_identity"]),
+        "request_identity": dict(request),
+    }
+    successor = value["successor_request_identity"]
+    expected_successor = {
+        "kind": "SHOPEE_RECOVERY_RETRY",
+        "authority_digest": manifest_digest,
+        "reconciliation_receipt_digest": receipt_digest,
+        "retry_of_run_id": retry_of,
+    }
+    if not isinstance(successor, Mapping) or dict(successor) != expected_successor:
+        raise ValueError("successor recovery request identity conflicts")
+    return {
+        "schema_version": "shopee-recovery-retry-authorization/v1",
+        "retry_of_run_id": retry_of,
+        "receipt_digest": receipt_digest,
+        "manifest_digest": manifest_digest,
+        "failed_run_identity": safe_failed,
+        "successor_request_identity": expected_successor,
+    }
+
+
+def _safe_continuation_evidence(value: object) -> dict[str, Any]:
+    base_fields = {
+        "schema_version", "manifest_digest", "result_digest",
+        "lineage",
+        "confirmed_write_count", "unknown_write_count",
+        "remaining_target_labels", "reservations", "targets",
+        "automatic_retry_performed", "no_scope_expansion",
+    }
+    optional_fields = {"retry_source", "verification_summary"}
+    if (not isinstance(value, Mapping) or not base_fields.issubset(value)
+            or set(value) - base_fields - optional_fields):
+        raise ValueError("continuation evidence shape is invalid")
+    if value["schema_version"] != "tiktok-lineage-recovery-result/v2":
+        raise ValueError("continuation evidence schema is invalid")
+    result = deepcopy(dict(value))
+    result["manifest_digest"] = _sha256(result["manifest_digest"], "continuation manifest digest")
+    result["result_digest"] = _sha256(result["result_digest"], "continuation result digest")
+    result["confirmed_write_count"] = _exact_nonnegative_int(result["confirmed_write_count"], "continuation confirmed writes")
+    result["unknown_write_count"] = _exact_nonnegative_int(result["unknown_write_count"], "continuation unknown writes")
+    if not isinstance(result["lineage"], Mapping):
+        raise ValueError("continuation lineage is invalid")
+    result["lineage"] = deepcopy(dict(result["lineage"]))
+    if result["automatic_retry_performed"] is not False or result["no_scope_expansion"] is not True:
+        raise ValueError("continuation governance evidence is invalid")
+    if not isinstance(result["remaining_target_labels"], list) or any(type(label) is not str for label in result["remaining_target_labels"]):
+        raise ValueError("continuation remaining targets are invalid")
+    if not isinstance(result["reservations"], list):
+        raise ValueError("continuation reservations are invalid")
+    rows = result["targets"]
+    if not isinstance(rows, list) or len(rows) != 10:
+        raise ValueError("continuation target evidence is invalid")
+    safe_rows = []
+    for row in rows:
+        if not isinstance(row, Mapping) or set(row) != {
+            "target_label", "status", "stage", "attempts",
+            "confirmed_write_count", "unknown_write_count", "reason",
+        }:
+            raise ValueError("continuation target evidence shape is invalid")
+        attempts = row["attempts"]
+        if not isinstance(attempts, Mapping) or set(attempts) != {
+            "save_draft", "publish_target", "official_readback",
+        } or any(type(value) is not int or value not in {0, 1} for value in attempts.values()):
+            raise ValueError("continuation target attempts are invalid")
+        if row["status"] not in {"PUBLISHED", "PROCESSING", "FAILED", "UNKNOWN"}:
+            raise ValueError("continuation target status is invalid")
+        safe_rows.append({
+            "target_label": _exact_text(row["target_label"], "continuation target label"),
+            "status": row["status"],
+            "stage": _exact_text(row["stage"], "continuation target stage"),
+            "attempts": dict(attempts),
+            "confirmed_write_count": _exact_nonnegative_int(row["confirmed_write_count"], "continuation target confirmed writes"),
+            "unknown_write_count": _exact_nonnegative_int(row["unknown_write_count"], "continuation target unknown writes"),
+            "reason": _exact_text(row["reason"], "continuation target reason"),
+        })
+    result["targets"] = safe_rows
+    if "verification_summary" in result:
+        verification = result["verification_summary"]
+        fields = {"schema_version", "status", "target_count", "unique_asset_count", "failures", "verification_digest"}
+        if not isinstance(verification, Mapping) or set(verification) != fields:
+            raise ValueError("continuation verification summary shape is invalid")
+        safe_verification = deepcopy(dict(verification))
+        supplied_verification_digest = _sha256(
+            safe_verification.pop("verification_digest"),
+            "continuation verification digest",
+        )
+        failures = safe_verification.get("failures")
+        safe_codes = {"ASSET_DIGEST_CONFLICT", "ASSET_DIGEST_MISMATCH", "ASSET_READ_UNAVAILABLE", "TARGET_VERIFY_FAILED"}
+        if (safe_verification.get("schema_version") != "tiktok-scope-verification/v1"
+                or safe_verification.get("status") not in {"VERIFIED", "FAILED"}
+                or type(safe_verification.get("target_count")) is not int
+                or safe_verification["target_count"] < 0
+                or type(safe_verification.get("unique_asset_count")) is not int
+                or safe_verification["unique_asset_count"] < 0
+                or not isinstance(failures, list)
+                or (safe_verification["status"] == "VERIFIED") != (failures == [])):
+            raise ValueError("continuation verification summary is invalid")
+        for failure in failures:
+            if (not isinstance(failure, Mapping)
+                    or set(failure) != {"target_label", "stage", "code"}
+                    or type(failure.get("target_label")) is not str
+                    or failure.get("stage") != "VERIFY"
+                    or failure.get("code") not in safe_codes):
+                raise ValueError("continuation verification failure is invalid")
+        if "sha256:" + _digest(safe_verification) != supplied_verification_digest:
+            raise ValueError("continuation verification digest conflicts")
+        result["verification_summary"] = {
+            **safe_verification, "verification_digest": supplied_verification_digest,
+        }
+    digest_body = {key: result[key] for key in (
+        "schema_version", "manifest_digest", "lineage", "targets", "reservations",
+        "confirmed_write_count", "unknown_write_count", "remaining_target_labels",
+        "automatic_retry_performed", "no_scope_expansion",
+    )}
+    if "verification_summary" in result:
+        digest_body["verification_summary"] = result["verification_summary"]
+    if "sha256:" + _digest(digest_body) != result["result_digest"]:
+        raise ValueError("continuation result digest conflicts")
+    if "retry_source" in result:
+        retry = result["retry_source"]
+        fields = {
+            "kind", "authority_digest", "manifest_digest", "retry_of_run_id",
+            "source_report_digest", "source_result_digest", "source_manifest_digest",
+            "binding_digest",
+        }
+        if not isinstance(retry, Mapping) or set(retry) != fields or retry.get("kind") != "TIKTOK_FIRST_COMPLETION_ZERO_WRITE_RETRY":
+            raise ValueError("continuation retry source shape is invalid")
+        safe_retry = {"kind": retry["kind"], "retry_of_run_id": _run_id(retry["retry_of_run_id"])}
+        for field in fields - {"kind", "retry_of_run_id", "binding_digest"}:
+            safe_retry[field] = _sha256(retry[field], "continuation retry " + field)
+        expected_binding = _sha256(retry["binding_digest"], "continuation retry binding digest")
+        if ("sha256:" + _digest(safe_retry) != expected_binding
+                or safe_retry["manifest_digest"] != result["manifest_digest"]):
+            raise ValueError("continuation retry source digest conflicts")
+        result["retry_source"] = {**safe_retry, "binding_digest": expected_binding}
+    return result
+
+
 def validate_publication_report(value: object) -> dict[str, Any]:
     """Validate the version+digest envelope without interpreting product facts."""
     if not isinstance(value, Mapping):
         raise TypeError("publication report must be a mapping")
     schema_version = value.get("schema_version")
     fields = _REPORT_FIELDS if schema_version == INTERNAL_REPORT_SCHEMA_VERSION else _LEGACY_REPORT_FIELDS
+    if schema_version == INTERNAL_REPORT_SCHEMA_VERSION:
+        fields = fields | (set(value) & {"mutation_budgets", "release_authorization", "recovery_authorization", "recovery_retry_authorization", "continuation_evidence", "target_observations"})
     _exact_fields(value, fields, "publication report")
     if schema_version not in {REPORT_SCHEMA_VERSION, INTERNAL_REPORT_SCHEMA_VERSION}:
         raise ValueError("unsupported publication report schema")
@@ -346,7 +623,60 @@ def validate_publication_report(value: object) -> dict[str, Any]:
     summary = _validated_summary(value["summary"], report_status=status)
     execution_identity = _execution_identity(value["execution_identity"]) if schema_version == INTERNAL_REPORT_SCHEMA_VERSION else None
     targets = _safe_targets(value["targets"]) if schema_version == INTERNAL_REPORT_SCHEMA_VERSION else None
+    extensions = {}
+    if "mutation_budgets" in value:
+        budgets = _safe_mutation_budgets(value["mutation_budgets"])
+        labels_by_platform = {row["platform"]: set() for row in summary["platforms"]}
+        for target in targets:
+            platform = target["target_label"].split(":", 1)[0].upper()
+            if platform in labels_by_platform:
+                labels_by_platform[platform].add(target["target_label"])
+        if {row["platform"] for row in budgets} != set(labels_by_platform):
+            raise ValueError("mutation budget platform scope conflicts with report")
+        for row in budgets:
+            if set(row["attempts"]["per_target"]) != labels_by_platform[row["platform"]]:
+                raise ValueError("mutation budget targets conflict with report")
+        extensions["mutation_budgets"] = budgets
+    if "release_authorization" in value:
+        authority = value["release_authorization"]
+        if not isinstance(authority, Mapping):
+            raise ValueError("release authorization must be a mapping")
+        _exact_fields(authority, {"candidate_digest", "approval_digest"}, "release authorization")
+        extensions["release_authorization"] = {key:_sha256(authority[key], key).removeprefix("sha256:") for key in authority}
+    if "continuation_evidence" in value:
+        extensions["continuation_evidence"] = _safe_continuation_evidence(value["continuation_evidence"])
+    if "target_observations" in value:
+        from shared_platform.publication_target_observations import validate_references
+        extensions["target_observations"] = validate_references(value["target_observations"], value)
+    if "recovery_authorization" in value:
+        recovery = value["recovery_authorization"]
+        if not isinstance(recovery, Mapping):
+            raise ValueError("recovery authorization must be a mapping")
+        from shared_platform.shopee_regional_recovery import _digest as recovery_digest
+        safe_recovery = deepcopy(dict(recovery))
+        supplied = safe_recovery.pop("manifest_digest", None)
+        if supplied != recovery_digest(safe_recovery):
+            raise ValueError("recovery authorization digest conflicts")
+        safe_recovery["manifest_digest"] = supplied
+        extensions["recovery_authorization"] = safe_recovery
+    if "recovery_retry_authorization" in value:
+        retry_authority = _safe_recovery_retry_authorization(
+            value["recovery_retry_authorization"]
+        )
+        if (
+            "recovery_authorization" not in extensions
+            or retry_authority["manifest_digest"]
+            != extensions["recovery_authorization"]["manifest_digest"]
+            or retry_authority["failed_run_identity"]["offer_id"] != offer_id
+            or retry_authority["failed_run_identity"]["revision"] != revision
+            or retry_authority["failed_run_identity"]["plan_id"] != plan_id
+            or retry_authority["failed_run_identity"]["snapshot_digest"]
+            != snapshot_digest
+        ):
+            raise ValueError("recovery retry authorization conflicts with report")
+        extensions["recovery_retry_authorization"] = retry_authority
     return {
+        **extensions,
         "schema_version": schema_version,
         "report_id": report_id,
         "run_id": run_id,
@@ -371,9 +701,11 @@ class ProductPublicationReportStore:
         path: str | Path = DEFAULT_PRODUCT_PUBLICATION_REPORT_DB,
         *,
         reports_root: str | Path = DEFAULT_PRODUCT_PUBLICATION_REPORT_ROOT,
+        target_observation_reader: object | None = None,
     ) -> None:
         self.path = Path(path)
         self.reports_root = Path(reports_root)
+        self.target_observation_reader = target_observation_reader
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30)
@@ -400,12 +732,16 @@ class ProductPublicationReportStore:
         ).as_posix()
 
     def _resolved_report_file(self, report_path: str) -> Path:
+        from shared_platform.immutable_approval_files import require_local_path
         pure = PurePosixPath(report_path)
         if pure.is_absolute() or not pure.parts or any(part in {"", ".", ".."} for part in pure.parts):
             raise ValueError("report_path is invalid")
+        require_local_path(self.reports_root.joinpath(*pure.parts), root=self.reports_root)
         root = self.reports_root.resolve()
         candidate = root.joinpath(*pure.parts).resolve()
-        if not candidate.is_relative_to(root):
+        try:
+            candidate.relative_to(root)
+        except ValueError:
             raise ValueError("report_path escapes the publication report root")
         return candidate
 
@@ -539,7 +875,7 @@ class ProductPublicationReportStore:
                 "schema_version": row["snapshot_schema_version"],
                 "digest": row["snapshot_digest"],
             },
-            **({"execution_identity": file_payload.get("execution_identity"), "targets": file_payload.get("targets")} if file_payload.get("schema_version") == INTERNAL_REPORT_SCHEMA_VERSION else {}),
+            **({"execution_identity": file_payload.get("execution_identity"), "targets": file_payload.get("targets"), **{name:file_payload[name] for name in ("mutation_budgets", "release_authorization", "recovery_authorization", "recovery_retry_authorization", "continuation_evidence", "target_observations") if name in file_payload}} if file_payload.get("schema_version") == INTERNAL_REPORT_SCHEMA_VERSION else {}),
             "status": row["status"],
             "summary": summary,
             "report_path": row["report_path"],
@@ -557,6 +893,8 @@ class ProductPublicationReportStore:
                 "server-owned publication report schema does not match"
             )
         envelope_fields = _REPORT_FIELDS if file_payload["schema_version"] == INTERNAL_REPORT_SCHEMA_VERSION else _LEGACY_REPORT_FIELDS
+        if file_payload["schema_version"] == INTERNAL_REPORT_SCHEMA_VERSION:
+            envelope_fields = envelope_fields | (set(file_payload) & {"mutation_budgets", "release_authorization", "recovery_authorization", "recovery_retry_authorization", "continuation_evidence", "target_observations"})
         if _digest({name: file_payload[name] for name in envelope_fields}) != row["envelope_digest"]:
             raise ProductPublicationReportIntegrityError(
                 "server-owned publication report envelope does not match"
@@ -644,6 +982,26 @@ class ProductPublicationReportStore:
             except sqlite3.OperationalError:
                 return []
         return [self._row_to_report(row) for row in rows]
+
+    def list_report_refs_for_plan(self, *, offer_id: str, plan_id: str) -> list[dict[str, str]]:
+        """Enumerate an exact plan without an offer-wide limit hiding orphan reports.
+
+        References are not result evidence; consumers still use get_report_by_run.
+        """
+        offer = _offer_id(offer_id)
+        plan = _exact_text(plan_id, 'plan_id')
+        if not self.path.is_file():
+            return []
+        with self._connect_readonly() as conn:
+            table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'product_publication_reports'"
+            ).fetchone()
+            if table_exists is None:
+                return []
+            rows = conn.execute('SELECT run_id, report_id FROM product_publication_reports WHERE offer_id = ? AND plan_id = ?',
+                                (offer, plan)).fetchall()
+        return [dict(row) for row in rows]
 
     def latest_report(
         self, *, offer_id: str, revision: int | None = None

@@ -1,0 +1,15 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>知识工具 · Orbit</title><link rel="stylesheet" href="/static/orbit_product.css"><link rel="stylesheet" href="/static/operations.css"><link rel="stylesheet" href="/static/operations_shell.css"><link rel="stylesheet" href="/static/knowledge_guides.css"><script defer src="/static/operations_shell.js"></script><script defer src="/static/knowledge_directory.js"></script></head><body data-core="knowledge"><main id="workspaceView" class="knowledge-workspace"><h1>知识工具</h1><label class="entry-search">查找工具与使用方法<input id="entrySearch" type="search" placeholder="名称、用途或 Skill"></label>      <section id="knowledgeDirectory"  aria-label="知识与工具目录">
+        <p id="knowledgeNotice" class="knowledge-notice" role="status"></p>
+        <p id="knowledgeGuideNotice" role="status" hidden></p>
+        <div class="knowledge-toolbar">
+          <div id="knowledgeGroups" class="knowledge-groups" aria-label="工具分类"></div>
+          <label>使用条件 <select id="knowledgeStatus"><option value="">全部状态</option></select></label>
+          <span id="knowledgeCount" role="status" aria-live="polite"></span>
+        </div>
+        <div class="knowledge-layout">
+          <div id="knowledgeListPanel"><div class="knowledge-list-heading"><span>名称与用途</span><span>当前条件</span><span>下一步</span></div><div id="knowledgeList" aria-label="工具列表"></div></div>
+          <aside id="knowledgeDetail" class="knowledge-detail" aria-label="选中工具详情"></aside>
+        </div>
+      </section>
+<section id="knowledgeIteration" class="knowledge-iteration" aria-label="知识迭代"><h2>知识迭代</h2><p role="status">正在读取知识索引摘要…</p></section>
+<p id="entryError" role="alert" hidden></p><span id="pageAlert" class="sr-only" role="status"></span></main></body></html>

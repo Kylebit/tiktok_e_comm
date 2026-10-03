@@ -1,4 +1,4 @@
 interface:
   display_name: "准备商品发布"
-  short_description: "根据OfferID和目标店铺零写入准备第一轮审核包"
-  default_prompt: "Use $prepare-product-publication to prepare one Offer ID for the selected stores with zero external writes and return the durable first-review decision packet; defer Miaoshou synchronization to the second round."
+  short_description: "根据OfferID和目标店铺零写入准备可审计商品候选"
+  default_prompt: "Use $prepare-product-publication to prepare one Offer ID for the selected stores with zero external writes and return the durable round-1 candidate; do not request intermediate human approval, and defer Miaoshou synchronization to round 3."

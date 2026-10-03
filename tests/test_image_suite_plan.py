@@ -137,7 +137,7 @@ class ImageSuitePlanHelpersTest(unittest.TestCase):
         self.assertIn('"selling_point": 1', prompt)
         self.assertIn("Return exactly", prompt)
 
-    def test_chat_timeout_is_actionable_and_does_not_retry(self):
+    def test_unwired_planning_blocks_before_retired_transport_or_retry(self):
         class TimeoutOpener:
             calls = 0
 
@@ -153,13 +153,13 @@ class ImageSuitePlanHelpersTest(unittest.TestCase):
             "modules.sourcing.image_suite_plan.urllib.request.build_opener",
             return_value=opener,
         ):
-            with self.assertRaisesRegex(RuntimeError, "没有自动重试"):
+            with self.assertRaisesRegex(ValueError, "PAID_CONTEXT_REQUIRED"):
                 chat_completions(
                     [{"role": "user", "content": "test"}],
                     timeout=1,
                     proxy=None,
                 )
-        self.assertEqual(opener.calls, 1)
+        self.assertEqual(opener.calls, 0)
 
 
 if __name__ == "__main__":

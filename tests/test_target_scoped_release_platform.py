@@ -108,13 +108,15 @@ def _plan(target_label: str = "shopee:MY") -> dict:
         plan["target_actions"] = {
             "ozon:RU": {
                 "schema_version": (
-                    "ozon-existing-product-stock-command/v1"
+                    "ozon-existing-product-stock-command/v2"
                 ),
+                "product_id": "7654321098",
                 "expected_listing_digest": "listing-digest-0954",
                 "desired_stock_quantity": 50,
+                "warehouse_id": 7654321,
                 "inventory_snapshot_id": "inventory:0954:r1",
                 "inventory_snapshot_revision_or_digest": "inventory-digest",
-                "warehouse_policy": "single_active_non_kgt",
+                "warehouse_policy": "exact_active_non_kgt",
             }
         }
     return plan
@@ -1126,8 +1128,10 @@ def test_ozon_requires_successor_stock_decision_but_future_schema_is_supported()
 
     assert raised.value.code == "successor_plan_stock_decision_required"
     assert successor_command["desired_stock_quantity"] == 50
+    assert successor_command["product_id"] == "7654321098"
+    assert successor_command["warehouse_id"] == 7654321
     assert successor_command["inventory_snapshot_id"] == "inventory:0954:r1"
-    assert successor_command["warehouse_policy"] == "single_active_non_kgt"
+    assert successor_command["warehouse_policy"] == "exact_active_non_kgt"
     assert successor_command["forbid_import"] is True
     assert successor_command["forbid_create"] is True
     assert successor_digest == canonical_digest(successor_command)

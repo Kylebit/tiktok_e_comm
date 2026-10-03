@@ -299,6 +299,103 @@ def observe_official_new_global_candidate(
     )
 
 
+def capture_round1_category(review, *, source_region, category_id, selected_attributes, account_identity_digest, progress=None):
+    """Capture one explicit leaf with no-refresh credentials; never approve selections."""
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    from shared_platform.round1_category_evidence import digest, input_digest, shopee_targets, SCOPE, REGIONS
+    from shared_platform.round1_category_observations import OBSERVATION_SCHEMA, review_input, validate_record
+    from modules.shopee.oneclick_release import _prepare_transport, ShopeeOneClickPreDispatchError
+
+    context = review_input(review)
+    if source_region not in REGIONS or context['category_review_context']['source_region'] != source_region:
+        raise _error('shopee_category_source_region_invalid', 'CONTENT')
+    category_id = _positive_int(category_id, 'shopee_category_path_invalid')
+    # No scan/fallback: capture the actual explicitly selected transport identity.
+    try:
+        transport = _prepare_transport(source_region)
+    except ShopeeOneClickPreDispatchError:
+        raise _error('shopee_category_prepared_credentials_required', 'AUTH') from None
+    credentials = transport.credentials
+    if credentials.region != source_region:
+        raise _error('shopee_category_source_region_invalid', 'AUTH')
+    account = digest({'region': credentials.region,
+                      'shop_id': _positive_int(credentials.shop_id, 'shopee_category_account_invalid'),
+                      'merchant_id': _positive_int(credentials.merchant_id, 'shopee_category_account_invalid')})
+    if account != account_identity_digest:
+        raise _error('shopee_category_account_mismatch', 'AUTH')
+    trace = []
+    def get(path, params):
+        from shared_platform.round1_category_observations import bounded_official_response
+        if progress: progress('STARTED',path)
+        raw = transport.merchant_get(path, params)
+        if progress: progress('RECEIVED',path)
+        bounded_official_response(raw)
+        trace.append({'endpoint': path, 'response_digest': digest(raw)})
+        return raw
+    scoped = ShopeePrepareTransport(credentials=credentials, merchant_get=get,
+                                   shop_get=lambda *args: (_ for _ in ()).throw(_error('shopee_category_unexpected_read')))
+    path = _read_category_path(scoped, category_id)
+    tree = _read_attribute_tree(scoped, category_id)
+    selected = ([] if selected_attributes == [] and not any(row['is_mandatory'] for row in tree)
+                else _revalidate_attribute_rows(selected_attributes, attribute_tree=tree))
+    category = {'id': category_id, 'name': path[-1]['name'],
+                'path': [{'id': row['category_id'], 'name': row['name']} for row in path],
+                'path_complete': True, 'is_leaf': True, 'publishable': True}
+    observed = dict(schema_version=OBSERVATION_SCHEMA, offer_id=context['offer_id'],
+                    product_center_revision=context['product_center_revision'], requested_targets=shopee_targets(context),
+                    source_region=credentials.region, observation_scope=SCOPE, category_input_digest=input_digest(context),
+                    observer_reference='category-observation:' + uuid4().hex,
+                    observed_at=datetime.now(timezone.utc).isoformat(), authority='shopee_official_category_get',
+                    category=category, attribute_tree=[dict(row) for row in tree], selected_attributes=selected,
+                    attributes_complete=True, required_attribute_count=sum(row['is_mandatory'] for row in tree),
+                    missing_required_attributes=[], regional_publishability='NOT_VERIFIED', business_write_count=0,
+                    auth_writes=0, official_read_count=len(trace), account_identity_digest=account,
+                    request_trace=trace, review_input=context)
+    return validate_record(observed)
+
+
+def capture_round1_options(review, *, source_region, account_identity_digest, progress):
+    from datetime import datetime,timezone
+    from uuid import uuid4
+    from modules.shopee.oneclick_release import _prepare_transport
+    from shared_platform.round1_category_evidence import digest,input_digest,CategoryEvidenceError
+    from shared_platform.round1_category_observations import bounded_official_response,OPTIONS_SCHEMA,review_input,validate_options
+    context=review_input(review);transport=_prepare_transport(source_region);credentials=transport.credentials
+    if credentials.region!=source_region or context['category_review_context']['source_region']!=source_region:
+        raise CategoryEvidenceError('CATEGORY_SOURCE_REGION_MISMATCH')
+    if digest(dict(region=credentials.region,shop_id=credentials.shop_id,merchant_id=credentials.merchant_id))!=account_identity_digest:
+        raise CategoryEvidenceError('CATEGORY_ACCOUNT_MISMATCH')
+    reads=0
+    def get(path,params):
+        nonlocal reads
+        progress('STARTED',path)
+        raw=transport.merchant_get(path,params)
+        reads+=1;progress('RECEIVED',path)
+        return bounded_official_response(raw)
+    scoped=ShopeePrepareTransport(credentials=credentials,merchant_get=get,shop_get=transport.shop_get)
+    response=_response_mapping(_official_get(scoped,CATEGORY_RECOMMEND_PATH,{'global_item_name':context['product_facts']['title']}),'shopee_category_recommendation_invalid')
+    fields=[k for k in ('category_id','category_id_list') if k in response]
+    if len(fields)!=1:raise CategoryEvidenceError('CATEGORY_RECOMMENDATION_INVALID')
+    recommended=list(_positive_unique_ids(response[fields[0]],'shopee_category_recommendation_invalid',allow_empty=False))
+    if len(recommended)>10:raise CategoryEvidenceError('CATEGORY_CANDIDATE_TECHNICAL_LIMIT')
+    options=[]
+    for category_id in recommended:
+        try:path=_read_category_path(scoped,category_id)
+        except ShopeeGlobalPlanCandidateError as error:
+            if error.reason_code=='shopee_category_not_publishable':continue
+            raise
+        tree=_read_attribute_tree(scoped,category_id)
+        option=dict(category_id=category_id,name=path[-1]['name'],path=[dict(x) for x in path],attribute_tree=[dict(x) for x in tree])
+        option['category_identity_digest']=digest(option);options.append(option)
+    if not options:raise CategoryEvidenceError('CATEGORY_OPTIONS_EMPTY')
+    record=dict(schema_version=OPTIONS_SCHEMA,options_reference='category-options:'+uuid4().hex,review_input=context,
+                input_digest=input_digest(context),source_region=credentials.region,account_identity_digest=account_identity_digest,
+                observed_at=datetime.now(timezone.utc).isoformat(),options=options,recommended_category_ids=recommended,official_read_count=reads)
+    record['options_digest']=digest(record)
+    return validate_options(record)
+
+
 def observe_channel_category_options(
     request: Mapping[str, object],
 ) -> dict[str, object]:
@@ -1925,8 +2022,23 @@ def _positive_unique_ids(
 ) -> tuple[int, ...]:
     if not isinstance(value, list):
         raise _error(code)
-    result = tuple(_positive_int(item, code) for item in value)
-    if (not allow_empty and not result) or len(result) != len(set(result)):
+    if all(type(item) is int for item in value):
+        result = tuple(_positive_int(item, code) for item in value)
+        if len(result) != len(set(result)):
+            raise _error(code)
+    elif all(
+        isinstance(item, list)
+        and item
+        and all(type(category_id) is int for category_id in item)
+        for item in value
+    ):
+        # The live endpoint may return one root-to-leaf ID path per
+        # recommendation.  The publishable candidate is the path leaf.
+        result = tuple(_positive_int(item[-1], code) for item in value)
+        result = tuple(dict.fromkeys(result))
+    else:
+        raise _error(code)
+    if not allow_empty and not result:
         raise _error(code)
     return result
 

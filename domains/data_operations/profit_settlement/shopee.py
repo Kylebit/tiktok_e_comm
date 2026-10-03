@@ -34,7 +34,7 @@ class ShopeeProfitReport:
     period_kind: str
     period: Mapping[str, str]
     status: str
-    totals: Mapping[str, Decimal]
+    totals: Mapping[str, Decimal | None]
     order_lines: tuple[Mapping[str, Any], ...]
     quality_issues: tuple[ShopeeQualityIssue, ...]
     source: Mapping[str, Any]
@@ -52,6 +52,7 @@ class ShopeeProfitReport:
             "period_kind": self.period_kind,
             "period": self.period,
             "status": self.status,
+                "result_scope": "no_calculated_facts" if not self.order_lines else ("partial_diagnostic" if self.quality_issues else "calculated"),
             "totals": self.totals,
             "order_lines": self.order_lines,
             "quality_issues": self.quality_issues,
@@ -137,8 +138,8 @@ def build_weekly_report(
     rate_source = _text(ad_rate_source) or ("default_22" if rate_value == Decimal("0.22") else "operator_global_override")
     source_checksum = _checksum(sorted((_ready(row) for row in source_rows), key=_canonical))
     fulfillment_policy = {"local_fulfillment_fee_cny_per_order": local_fulfillment, "cost_components": ["local_shipping", "local_warehouse"], "classification_rule": "import_vat_and_duty_presence/v2"}
-    fingerprint = _checksum({"schema":SCHEMA_VERSION,"period_kind":_period_kind,"period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"ad_rate_source":rate_source,"fulfillment_policy":fulfillment_policy,"code_version":code_version})
-    return ShopeeProfitReport(report_id=f"shopee-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind=_period_kind,period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"fulfillment_order_counts":_fulfillment_order_counts(lines),"affiliate_marketing":_affiliate_marketing_summary(lines),"fulfillment_policy":fulfillment_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"policy_version":"operator-adjustable-ad-rate/v1","basis":"buyer_cash_paid_product_amount"},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
+    fingerprint = _checksum({"schema":SCHEMA_VERSION,"period_kind":_period_kind,"period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.payload(),"fx":fx.payload(),"ad_rate":str(rate_value),"ad_rate_source":rate_source,"fulfillment_policy":fulfillment_policy,"code_version":code_version})
+    return ShopeeProfitReport(report_id=f"shopee-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind=_period_kind,period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="needs_review" if issues else ("ready" if lines else "no_data"),totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"fulfillment_order_counts":_fulfillment_order_counts(lines),"affiliate_marketing":_affiliate_marketing_summary(lines),"fulfillment_policy":fulfillment_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"policy_version":"operator-adjustable-ad-rate/v1","basis":"buyer_cash_paid_product_amount"},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
 
 
 def build_monthly_estimated_report(
@@ -185,13 +186,27 @@ def build_monthly_report(
     costs: CostSnapshot,
     fx: FxSnapshot,
     actual_advertising: Mapping[str, object] | None,
+    period_basis: str = "settled_at",
     local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     generated_at: datetime | None = None,
     code_version: str = "unknown",
+    period_site: str | None = None,
+    period_timezone: str | None = None,
 ) -> ShopeeProfitReport:
+    if period_basis not in {"settled_at", "order_created_at"}:
+        raise ValueError("period_basis must be settled_at or order_created_at")
     local_fulfillment = _nonnegative_money(local_fulfillment_fee_cny, "local_fulfillment_fee_cny")
     start, end = _period(period_start, period_end)
     source_rows = [dict(row) for row in rows]
+    if (period_site is None) != (period_timezone is None):
+        raise ValueError('site-local monthly period requires both site and timezone')
+    period_zone = None
+    if period_site is not None:
+        from .monthly_missing_cost_scope import monthly_cost_period
+        _, local_end = monthly_cost_period(period_site, start, end, period_timezone)
+        period_zone = local_end.tzinfo
+        if any(_text(row.get('region')).upper() != period_site for row in source_rows):
+            raise ValueError('site-local monthly rows target a different site')
     issues: list[ShopeeQualityIssue] = []
     _audit_metadata(issues, fx, code_version)
     rejected = out_of_period = unsettled = 0
@@ -204,7 +219,13 @@ def build_monthly_report(
         settled_at = _datetime(row.get("settled_at"))
         if settled_at is None:
             issues.append(_issue("missing_settled_at", record_id, "settled_at")); rejected += 1; continue
-        if not start <= settled_at.date() <= end:
+        period_at = settled_at if period_basis == "settled_at" else _datetime(row.get("occurred_at"))
+        if period_at is None:
+            issues.append(_issue("missing_order_created_at", record_id, "occurred_at")); rejected += 1; continue
+        if period_zone is not None and period_at.tzinfo is None:
+            raise ValueError('site-local monthly row timestamp requires timezone')
+        period_day = period_at.astimezone(period_zone).date() if period_zone is not None else period_at.date()
+        if not start <= period_day <= end:
             out_of_period += 1; continue
         sku = _text(row.get("canonical_sku")); cost = costs.get(sku)
         currency = _text(row.get("currency")).upper(); fx_rate = fx.get(currency)
@@ -238,14 +259,15 @@ def build_monthly_report(
     totals = _totals(calculated)
     source_checksum = _checksum(sorted((_ready(row) for row in source_rows), key=_canonical))
     fulfillment_policy = {"local_fulfillment_fee_cny_per_order": local_fulfillment, "cost_components": ["local_shipping", "local_warehouse"], "classification_rule": "import_vat_and_duty_presence/v2"}
-    fingerprint = _checksum({"schema": SCHEMA_VERSION, "period_kind": "monthly", "period": [start.isoformat(), end.isoformat()], "source": source_checksum, "costs": costs.snapshot_id, "fx": fx.snapshot_id, "advertising": advertising or {}, "fulfillment_policy": fulfillment_policy, "code_version": code_version})
+    basis = {"period_basis": period_basis} if period_basis == "order_created_at" else {}
+    fingerprint = _checksum({"schema": SCHEMA_VERSION, "period_kind": "monthly", "period": [start.isoformat(), end.isoformat()], "source": source_checksum, "costs": costs.payload(), "fx": fx.payload(), "advertising": advertising or {}, "fulfillment_policy": fulfillment_policy, "code_version": code_version, **basis, **({'period_site': period_site, 'period_timezone': period_timezone} if period_zone is not None else {})})
     return ShopeeProfitReport(
         report_id=f"shopee-profit-{fingerprint[:16]}",
         idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",
         calculation_kind="realized_settlement_with_actual_ads",
         period_kind="monthly",
-        period={"start": start.isoformat(), "end": end.isoformat(), "timezone": "source_local_date"},
-        status="ready" if not issues else "needs_review",
+        period={"start": start.isoformat(), "end": end.isoformat(), "timezone": period_timezone or "source_local_date", **({"basis": period_basis} if basis else {})},
+        status="needs_review" if issues else ("ready" if calculated else "no_data"),
         totals=totals,
         order_lines=tuple(calculated),
         quality_issues=tuple(issues),
@@ -427,7 +449,7 @@ def _fees(raw: object, default_currency: str, fx: FxSnapshot, issues: list[Shope
     return tuple(output),external
 
 
-def _totals(lines):
+def _calculated_totals(lines):
     return {
         "settlement_cny": sum((x["settlement"]["net_amount_cny"] for x in lines), Decimal("0")),
         "product_cost_cny": sum((x["cost"]["total_cny"] for x in lines), Decimal("0")),
@@ -469,9 +491,13 @@ def _line_settlement_sort_key(item):
 
 
 def _decimal(value):
-    if value is None or isinstance(value,bool) or str(value).strip()=="":return None
-    try:return Decimal(str(value))
-    except (InvalidOperation,ValueError):return None
+    if value is None or isinstance(value, bool) or str(value).strip() == "":
+        return None
+    try:
+        amount = Decimal(str(value))
+        return amount if amount.is_finite() else None
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def _text(value):return str(value).strip() if value is not None else ""
@@ -489,3 +515,9 @@ def _ready(value):
     return value
 def _canonical(value):return json.dumps(_ready(value),ensure_ascii=False,sort_keys=True,separators=(",",":"))
 def _checksum(value):return sha256(_canonical(value).encode()).hexdigest()
+
+
+def _totals(lines):
+    """An empty calculated set provides no monetary fact."""
+    totals = _calculated_totals(lines)
+    return totals if lines else {field: None for field in totals}

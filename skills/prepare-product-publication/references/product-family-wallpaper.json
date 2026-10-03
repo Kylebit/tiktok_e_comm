@@ -1,0 +1,91 @@
+{
+  "schema_version": "product-family-rule-pack/v1",
+  "rule_pack_version": "wallpaper/2026-08-21.1",
+  "language": "zh-CN",
+  "product_family": "wallpaper",
+  "name_zh": "墙纸与墙贴",
+  "match": {
+    "main_category_ids": ["wallpaper"],
+    "category_ids": ["600338", "101157", "17028954"],
+    "semantic_terms": ["wallpaper roll", "wallpaper rolls", "墙纸卷", "卷装墙纸"]
+  },
+  "platforms": {
+    "TIKTOK": {
+      "category_ids": ["600338"],
+      "category_name_zh": "家居用品 > 家居装饰 > 装饰贴纸"
+    },
+    "SHOPEE": {
+      "category_ids": ["101157"],
+      "category_name_zh": "墙纸与墙贴"
+    },
+    "OZON": {
+      "category_ids": ["17028954"],
+      "category_name_zh": "建筑与装修 > 墙纸与墙面涂料 > 墙纸",
+      "type_id": "95819"
+    }
+  },
+  "target_locales": {
+    "PH": "en",
+    "MY": "ms",
+    "TH": "th",
+    "VN": "vi",
+    "MX": "es",
+    "GB": "en",
+    "RU": "ru"
+  },
+  "image_policy": {
+    "minimum_images_per_brand": 7,
+    "dual_brand_total_minimum": 14,
+    "required_roles": [
+      "cover",
+      "pattern_detail",
+      "scene_1",
+      "scene_2",
+      "scene_3",
+      "size_comparison",
+      "installation"
+    ],
+    "main_image_must_be_new": true,
+    "dimension_only_translation_required": false,
+    "translation_after_brand_generation": true
+  },
+  "brand_role_sets": {
+    "livelyhive-sea": [
+      "cover",
+      "pattern_detail",
+      "wall_scene",
+      "cabinet_scene",
+      "door_scene",
+      "size_comparison",
+      "installation"
+    ],
+    "homebloom-sea": [
+      "cover",
+      "pattern_detail",
+      "bedroom_scene",
+      "living_room_scene",
+      "cabinet_scene",
+      "size_comparison",
+      "installation"
+    ]
+  },
+  "claim_policy": {
+    "terms": {
+      "self_adhesive": ["self-adhesive", "self adhesive", "peel and stick"],
+      "waterproof": ["waterproof"],
+      "removable": ["removable"],
+      "washable": ["washable"],
+      "easy_installation": ["easy installation", "easy to install"]
+    },
+    "verified_claim_keys": ["self_adhesive"]
+  },
+  "pricing_policy": {
+    "higher_cost_variant_must_not_have_lower_price": true,
+    "exact_formula_requires_frozen_pricing_digest": true
+  },
+  "sources": {
+    "business_knowledge": "publication-review-knowledge-base.md",
+    "category_confirmation": "用户审核与既有正式发布读回",
+    "maintenance_rule": "只有经过回归保护和官方读回确认的规则才可升级为 CONFIRMED"
+  }
+}

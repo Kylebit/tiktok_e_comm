@@ -1,145 +1,47 @@
-# Agent 指南 — TikTok + Ozon 电商控制台
+# OrbitHive Agent 入口
 
-供 Cursor / 其他 AI 在新会话中快速理解本项目。
+本文件是项目接手索引；规则各有唯一出处，按任务读取，不把历史副本当当前指令。
 
-## 仓库与目录
+## 接管
 
-- **本仓库**：`tiktok_e_comm`（主控制台，端口 8765）
-- **兄弟目录**：`../ozon/webapp/`（Flask Ozon 逻辑，由 `webapp_bridge` 内嵌加载，不单独起端口）
-- **配置**：`config/settings.json`（勿提交）；模板 `config/settings.example.json`
-- **数据库**：`data/shop.db`（商品目录、SKU 成本、物流重量等）
+- 核验当前工单指定的 Git top-level、branch、HEAD、`status --porcelain=v1 -uall`、负责人和允许写入范围；历史盘符、任务标题及端口只能用于查找。
+- 路径均相对已核验的仓库根。保护已有 WIP 与唯一产物，核验无竞争 writer 后再编辑；职责、授权和 Git 规则以[线程治理](docs/THREAD_OPERATING_MODEL.md)为准。
+- 中断或上下文压缩后执行[派单恢复段](docs/pm/DISPATCH_CONVENTION.md#resume)，不要把旧问题或摘要中的待办当成当前工单。
 
-## 入口
+## 长期产品决定
 
-```bash
-python3 main.py serve --port 8765
-```
+- 当前任务首页统一组织并行工作，五个业务区域继续保留。任务版本、审核接续、执行器和预览隔离的唯一说明见[任务运行方式](docs/OPERATIONS_TASK_RUNTIME.md)。
 
-Web 页面：`/`、`/catalog`、`/ozon`、`/settlement`、`/titles`、`/images`、`/sourcing`
+- 用户当前认可的一级业务入口是：商品目录、商品上架、供应链、利润、知识工具。它们是产品信息架构，不等同于侧栏任务名、固定线程或所有后台模块；新增或恢复一级入口必须有新的明确需求决定。
+- 商品目录以内部 SKU 为业务主键：同一内部 SKU 跨国家、平台只保留一条目录记录和一个当前成本。平台商品身份、国家仓库存量、逐笔订单/结算及历史成本版本仍分别保留来源，不合成无来源总数，也不把当前成本倒写成历史实际成本。
+- 接手前先读本次工单引用的最新计划、验收回执和 handoff，列出“已完成、不重复”“继续”“待决定”。已由后续提交或验收关闭的旧工单只保留来源，不因旧状态、标题或历史摘要重新开工。
 
-商品发布流程依赖 8765 主控制台和 8766 新品工作台。新 Agent 接管时先做
-只读检查；只有缺失服务才安全启动，端口身份不符时工具会拒绝抢占：
+## 按需入口
 
-```bash
-python scripts/product_publication_runtime.py --takeover-check
-python scripts/product_publication_runtime.py --status
-python scripts/product_publication_runtime.py --start
-```
+- 需要服务时，按本次工单区分正式、私有预览与独立商品服务，依[活状态接管入口](docs/pm/ACTIVE_STATE_HANDOFF.md)只读核验实际入口、部署配置、Task、PID 和 health。正式 web-only 的 [operations_web_entry](scripts/operations_web_entry.py) 是启动入口，只有 `--deployment` / `--log`，没有 `--status`；不要为核查而运行它。[product_publication_runtime](scripts/product_publication_runtime.py) 的 `--takeover-check` / `--status` 仅用于工单明确指定的独立商品 runtime，不证明正式工作台或私有预览的身份。启动、端口和页面身份按本次工单核验，不默认已有服务属于此 HEAD，也不自动抢占或重启。
+- 商品发布按当前已实现的 workflow mode、冻结快照和回执选择对应 Skill：[事实准备](skills/prepare-product-publication/SKILL.md)、[图片准备](skills/prepare-product-images/SKILL.md)、[已批准发布](skills/publish-approved-product/SKILL.md)。执行该 Skill 前读英文 `SKILL.md` 原文；中文译文和双语汇编是只读镜像，只有其 `source_sha256` 与当前英文源一致时才可辅助阅读，绝不替代执行权威。历史批准不能跨商品、阶段或目标套用。
+- 仅当工单属于关闭客户端、portable 新项目或 Skill 同步时，才选[接手指南](docs/AGENT_HANDOFF.md)中的对应只读场景；普通新 agent 或领域任务直接按当前 Work Order 和派单恢复段接管。命令与依赖只见[工具入口](docs/tools/README.md)和接手指南中的关闭场景；不使用个人安装版旧 HTTP closure 文档，不默认个人安装目录。
+- 其他业务按当前任务选择领域文档/Skill；不为一次接管启动全部服务、安装全部工具或读取私有配置。模板为 [settings.example.json](config/settings.example.json)，实际凭据和运行数据库不进源码或报告。
 
-仓库内三项商品发布 Skill 是权威版本。安装前后使用统一清单检查；安装会
-拒绝包含未管理文件的目标目录，不会自动删除漂移文件：
+## 推进与验收
 
-```bash
-python scripts/sync_product_publication_skills.py --check
-python scripts/sync_product_publication_skills.py --install
-```
+- 在系统/开发者边界内，当前用户明确要求优先于仓库默认。已授权的本地可恢复实施持续推进；批准复用、缺失证据与宿主权限依[授权规则](docs/THREAD_OPERATING_MODEL.md#authority)，不从旧 Skill 例子增加批准轮次。
+- 本任务职责内的实现缺口继续修复；上游未交付则完成独立部分并报告精确缺口。外部结果未知时按[恢复规则](docs/THREAD_OPERATING_MODEL.md#recovery)对账，不重发可能已执行的请求。
+- 修改保持必要范围与模块边界。按[测试治理](docs/TESTING_GOVERNANCE.md)验证：真实缺陷先失败后修复，UI 使用真实浏览器，文档核对内容/链接。未运行、skip、环境失败和线上未验证分开报告。
+- 用精确文件交付；不要为工作区洁净清理唯一报告或临时测试目录。持续交付和 push 权限见[Git 规则](docs/THREAD_OPERATING_MODEL.md#git)。
+- 端口、HEAD、数据库连接、凭据有效期、任务 active 图标和外部平台状态都是时点观测；引用时带 `as_of` 与证据路径，执行前现场复核。不要把旧观察写成长期现状。
 
-## 核心模块
+## 权威索引
 
-| 路径 | 职责 |
-|------|------|
-| `modules/products/server.py` | HTTP 服务；`/api/ozon/*` 代理与 catalog 草稿 |
-| `modules/catalog/` | 商品目录同步、SKU 编辑、物流实测重量 |
-| `modules/ozon/` | Ozon 草稿、类目匹配、搬运属性、webapp 桥接 |
-| `modules/finance/` | 结算拉取、利润 |
-| `modules/shopee/` | Shopee 发布（可选） |
-| `modules/sourcing/` | 1688 选品（可选） |
-| `../ozon/webapp/` | Ozon API：migrate、改价、促销、图片 3:4 |
+| 事项 | 入口 |
+| --- | --- |
+| 逻辑职责、负责人确定方法、授权、状态和 Git | [THREAD_OPERATING_MODEL](docs/THREAD_OPERATING_MODEL.md) |
+| 本次任务的活状态、证据和接管顺序 | [ACTIVE_STATE_HANDOFF](docs/pm/ACTIVE_STATE_HANDOFF.md)（先核当前 Work Order 与现场身份） |
+| 2026-09-08 的五核心与旧任务决定 | [CURRENT_WORK_INDEX](docs/pm/CURRENT_WORK_INDEX.md)（仅历史快照，不是执行队列） |
+| 领域 producer/consumer 与模块边界 | [DOMAIN_OWNERSHIP](docs/DOMAIN_OWNERSHIP.md) |
+| 工单、恢复 ACK 与回执字段 | [DISPATCH_CONVENTION](docs/pm/DISPATCH_CONVENTION.md) |
+| 验证层级、离线预算与最终发布门禁 | [TESTING_GOVERNANCE](docs/TESTING_GOVERNANCE.md) |
+| 数据库保护与目录变更原则 | [DATABASE_GOVERNANCE](docs/DATABASE_GOVERNANCE.md)、[CATALOG_UPDATE_GOVERNANCE](docs/CATALOG_UPDATE_GOVERNANCE.md) |
+| 旧平台参数、历史基线与来源 | [LEGACY_PLATFORM_REFERENCE](docs/LEGACY_PLATFORM_REFERENCE.md)（不授予当前执行权） |
 
-## Ozon 上品流程
-
-1. `GET /api/ozon/unmigrated` — 商品目录中未在 Ozon 正式上架的 SKU
-2. `GET /api/ozon/draft/{seller_sku}` — **6 位 seller_sku**；DeepSeek 俄语文案 + 类目匹配
-3. 草稿页可**手动改 Ozon 类目 / profile / 标题价格**（`web/static/ozon-migrate.js`）
-4. `POST /api/ozon/process_images/{seller_sku}` — 3:4 裁剪
-5. `POST /api/ozon/migrate` — **4 位 offer_id** 提交 Ozon
-
-类目匹配链：`tk_category_map` → 规则打分 → DeepSeek 窄选；桌布标题特例 type_id=92692。
-
-## 重量
-
-- 不用卖家填的 `package_weight`
-- 用 TikTok Fulfillment API 包裹实测重量，四国 MY/PH/TH/VN，近 365 天，**中位数**聚合
-- 表 `sku_logistics_weights`；目录 API 字段 `logistics_weight_g`
-
-## 文案（DeepSeek）
-
-- 以 TikTok **原标题**为主，不强制写入样式编号
-- Ozon 标题 ≥60 字符；`../ozon/webapp/deepseek_draft.py` + `translate.py`
-
-## 配置要点
-
-- `ozon.data_dir`：指向 `../ozon/webapp/data`
-- `ozon.client_id` / `api_key`：优先于 webapp/app.py 内凭据
-- `ai.api_key`：DeepSeek
-
-## 部署
-
-见 [docs/DEPLOY.md](docs/DEPLOY.md)。
-
-## 代码原则
-
-- 最小 diff；匹配现有命名与模块边界
-- 勿提交 token、settings.json、*.db
-- Ozon 集成优先走 `modules/ozon/`，避免在 webapp 写死本机绝对路径
-- 所有 Bug 修复必须遵守
-  [docs/TESTING_GOVERNANCE.md](docs/TESTING_GOVERNANCE.md) 的
-  “先失败、后修复”门禁：先稳定复现并运行新增失败测试，再修改生产代码；
-  无法稳定复现时禁止猜测性修改。
-
-## Codex 线程与交付治理
-
-- 线程职责、Work Order 状态和 Git 隔离规则见
-  [docs/THREAD_OPERATING_MODEL.md](docs/THREAD_OPERATING_MODEL.md)。
-- CEO 默认负责拆分、审查、集成和发布；业务实现交给固定的
-  `01`–`05` 领域线程，共享平台实现交给固定 `00` 线程。
-- 涉及两个以上业务域的任务必须分派到对应固定线程。临时子 Agent
-  只能做有界辅助，不能取代领域责任人。
-- 正式 UI 改动由所属域实现，`00` 使用真实浏览器独立验收。
-- 任何外部平台写入只允许 `03 渠道运营` 单线执行，并由 CEO 监督；
-  未明确授权时一律只读或 dry-run。
-- 长期代码或文档交付必须 commit；push 只有在 Kyle 或正式发布流程
-  明确授权时才允许。派发字段与回执格式见
-  [docs/pm/DISPATCH_CONVENTION.md](docs/pm/DISPATCH_CONVENTION.md)。
-- 业务授权与系统/宿主工具审批是两个独立维度。固定 `00`–`05` 线程执行
-  本地工程、测试和只读验收时默认 `host_approval_policy=never`、
-  `no_escalation=true`：不得请求宿主 escalation；可能触发审批的命令必须
-  改用非升级、非破坏的等价路径。
-- 测试使用当前独立 worktree 内的专用 `basetemp`。临时测试目录不需要为
-  提交而删除；精确暂存交付文件并忽略或保留临时目录，禁止为了“干净”
-  递归删除。`waitingOnApproval` 不是业务 `BLOCKED`，应取消或放弃该命令，
-  继续所有可安全完成的步骤。
-
-## TikTok MX（妙手 / LivelyHiveMX）
-
-- 店 `shopId=16265910`；货号 = seller_sku **后四位**（如 770005 → 0005）
-- POP 定价：`scripts/mx_pop_pricing.py`；妙手只写 **ceil(折前原价)** 到 `price`/`priceIncludeVat`；折扣在 TikTok 后台自设；POP 折后价仅测算/确认用
-- 重量用四国物流实测 **中位数**；**包裹尺寸用 TikTok 原链接 `package_dimensions`**（不用物流外箱实测）；手动覆盖见 `KNOWN_BY_MATCH_KEY`
-- **已上架 SKU 勿 re-publish 改价**；改价走妙手 save 草稿 + 手动同步
-- **每次 publish 前必须用户确认**（对话框展示卡片；通知集成可选，
-  不构成审批前置条件或事实来源）
-- 确认逻辑：`modules/miaoshou/mx_confirm.py`；继续上架 `--confirm-token TOKEN --user-approved`
-- 批量搬运：`scripts/migrate_mx_batch.py`（`--dry-run` 仅测算；默认逐个出卡片后退出等待确认）
-- **同链接多 SKU（单 product_id 多规格）**：必须 **一张审批卡 + 一次 publish**，禁止拆成多个链接。索引见 `modules/catalog/tk_sku_groups.py`；派单自动合并见 `modules/miaoshou/migrate_dispatch.py`；MX 整组脚本 `scripts/migrate_mx_group.py`
-
-## TikTok UK（妙手 / GB 4PL 直邮）
-
-- 店 `shopId=10204699`（probe 脚本确认）；货号 = seller_sku **后四位**
-- POP 定价：`scripts/uk_pop_pricing.py` + `config/uk_4pl_pricing.json`；默认 **卖家包邮**（全额 4PL）；店铺 **25%** 卖家折扣；目标利润 **17%**；低于 £10 包邮线自动抬价
-- Web 审批：`http://127.0.0.1:8765/uk`；模块 `modules/miaoshou/uk_*`
-- 兼容派单脚本：`scripts/feishu_uk_dispatch.py` /
-  `scripts/orbit_send_uk_approval.py` / `scripts/uk_redispatch_fast.py`
-  （保留兼容，不是 Codex 线程治理的必需依赖）
-- dry-run：`scripts/orbit_uk_migrate_prep.py`
-- 妙手只写 **ceil(折前原价 GBP)**；无西语翻译，保留 PH 母版英文标题
-- **每次 publish 前必须 Web 批准**（同 MX 流程）
-- **同链接多 SKU**：与 MX 相同，整组审批 + 整组 publish（`group_*.json` 确认单；`publish_uk_multi_listing`）
-
-## Git 同步（MX / UK → GitHub）
-
-- 业务代码仓库：`Kylebit/tiktok_e_comm`，分支 **`master`**
-- 详细步骤（Codex / Cursor 通用）：[docs/GIT_SYNC_MX_UK.md](docs/GIT_SYNC_MX_UK.md)
-- 本仓库协作规则以 [docs/THREAD_OPERATING_MODEL.md](docs/THREAD_OPERATING_MODEL.md)
-  和 [docs/pm/DISPATCH_CONVENTION.md](docs/pm/DISPATCH_CONVENTION.md) 为准；
-  外部通知或广播系统均为可选集成
-- **勿提交**：token、`config/settings.json`、`config/*.local.json`、`*.db`（除文档允许的 `data/weight_overrides.json`）
+核心源码入口包括 [HTTP 服务](modules/products/server.py)、[共享平台](shared_platform/)、[业务领域](domains/)。存在性不等于功能就绪；实际入口与部署按当前候选检查。[部署说明](docs/DEPLOY.md)同样需要核对本次配置。

@@ -87,10 +87,11 @@ def audit_profit_report(report: Mapping[str, Any]) -> ProfitReportAudit:
     return ProfitReportAudit("PASSED" if not findings else "FAILED", str(report.get("report_id") or ""), f"sha256:{digest}", len(lines), tuple(findings))
 
 
-def _money(value: object) -> Decimal | None:
+def _money(value):
     if value is None or isinstance(value, bool) or str(value).strip() == "":
         return None
     try:
-        return Decimal(str(value))
+        amount = Decimal(str(value))
+        return amount if amount.is_finite() else None
     except (InvalidOperation, ValueError):
         return None

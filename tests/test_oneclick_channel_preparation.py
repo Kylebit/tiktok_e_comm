@@ -291,6 +291,7 @@ def test_final_typed_registry_is_owned_by_channel_operations():
     assert set(registry) == {
         "miaoshou-direct-store/v1",
         "shopee_cnsc_publish",
+        "postpublish_promotion",
     }
     direct = registry["miaoshou-direct-store/v1"]
     assert direct.preparation_available is True

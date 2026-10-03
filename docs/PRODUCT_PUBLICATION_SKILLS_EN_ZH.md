@@ -1,33 +1,42 @@
 # 商品发布 Skills 中英对照版
 
-> **非执行权威。** 本文件仅供 Kyle 阅读。真实执行只使用仓库中的三份英文 `SKILL.md`；英文 `SKILL.md` 是唯一执行权威。本文件由构建脚本机械嵌入英文原文并附上人工维护的完整中文翻译，不包含 Skill frontmatter，也不会被 Skill 系统加载。
+> **非执行权威。** 本文件仅供 Kyle 阅读。真实执行只使用仓库中的三份英文 `SKILL.md`；英文 `SKILL.md` 是唯一执行权威。本文件由构建脚本机械嵌入当前英文原文和人工维护的中文参考译文，不包含 Skill frontmatter，也不会被 Skill 系统加载。过期译文仅供追溯，不能指导当前执行。
 
-同步契约：`product-publication-skills-bilingual/v1`。任一英文源文件变化后，如果对应中文翻译未更新源 SHA-256，构建与测试都会失败。
+同步契约：`product-publication-skills-bilingual/v1`。任一英文源文件变化后，对应中文译文必须更新并绑定当前源 SHA-256，或明确标记为历史译本；未标记的过期译文会使构建与测试失败。
 
-| Skill | 英文执行权威 | 中文翻译源 | SHA-256 |
-|---|---|---|---|
-| `prepare-product-publication` | `skills/prepare-product-publication/SKILL.md` | `skill-translations/prepare-product-publication.zh-CN.md` | `5a95ab0d4aa70088882f0b590b9f9941a2e6b4b7614dc92fbaae150a6f6294ff` |
-| `prepare-product-images` | `skills/prepare-product-images/SKILL.md` | `skill-translations/prepare-product-images.zh-CN.md` | `6266a2b4ce72886935f4a715b2c01f59996336ff12db0d01cfd5ff16202f7e22` |
-| `publish-approved-product` | `skills/publish-approved-product/SKILL.md` | `skill-translations/publish-approved-product.zh-CN.md` | `f5845610f65792aa4bc1abc4723cc23eb6f9672a32aaaf2136c0c9cc80c22d5e` |
+| Skill | 英文执行权威 | 中文翻译源 | 英文 SHA-256 | 译文状态 |
+|---|---|---|---|---|
+| `prepare-product-publication` | `skills/prepare-product-publication/SKILL.md` | `skill-translations/prepare-product-publication.zh-CN.md` | `c8e6c658ad91a46fcede506ab3b63946770221f74a72ac056b355e12e63754b5` | 历史译本，勿用于执行 |
+| `prepare-product-images` | `skills/prepare-product-images/SKILL.md` | `skill-translations/prepare-product-images.zh-CN.md` | `99bb0fadf37fc9cda1f2e1e241578854afa84aead4829ee4cf47bc4766a27ab6` | 历史译本，勿用于执行 |
+| `publish-approved-product` | `skills/publish-approved-product/SKILL.md` | `skill-translations/publish-approved-product.zh-CN.md` | `d2b7abac43c4c04fe248a62c1c9159d8c25b12aaa9827d706a1b891cf3990b42` | 历史译本，勿用于执行 |
 
 ---
 
 # 1. `prepare-product-publication`
 
-源 SHA-256：`5a95ab0d4aa70088882f0b590b9f9941a2e6b4b7614dc92fbaae150a6f6294ff`
+源 SHA-256：`c8e6c658ad91a46fcede506ab3b63946770221f74a72ac056b355e12e63754b5`
 
 ## English source (verbatim)
 
 ````markdown
 ---
 name: prepare-product-publication
-description: "Prepare the first human review for one Product Center Offer ID and exact target stores with zero external writes: collect authoritative SKU and parcel facts, resolve category and pricing candidates, generate title and variant-display candidates, and propose explicit image translation/generation decisions. Use when the user asks to start, prepare, inspect, resume, or redo the first round before paid image generation, Miaoshou synchronization, and publication."
+description: "Prepare an auditable round-1 candidate for one Product Center Offer ID and exact target stores with zero external writes: collect authoritative SKU and parcel facts, resolve category and pricing candidates, generate title and variant-display candidates, and propose explicit image translation/generation decisions. Use when the user asks to start, prepare, inspect, resume, or redo product preparation before image work and the sole final marketplace review."
 ---
 
 # Prepare Product Publication
 
-Turn one exact Offer ID and exact target stores into a durable first-review
-packet. Reuse Product Center deterministic code for facts. Use agent judgment
+## Existing-product takeover
+
+For inspect/resume, first use the commit-bound, read-only
+`scripts/publication_takeover.py` in the explicitly selected project, following
+`docs/PUBLICATION_SOURCE_CONTRACT.md`. Do not bootstrap or approve an existing
+product merely to inspect it. That contract governs source selection and legacy
+stage labels; it does not claim newer personal workflow modes are integrated.
+
+Turn one exact Offer ID and exact target stores into a durable round-1 candidate
+packet. `first-review` remains the persisted schema name for compatibility; it
+is not a human approval gate. Reuse Product Center deterministic code for facts. Use agent judgment
 only for documented category research, copy candidates, and recommendations.
 Never guess a missing commercial or provider fact.
 
@@ -35,12 +44,18 @@ Never guess a missing commercial or provider fact.
 
 The first round always has **zero external writes**. It never writes Miaoshou,
 calls a paid image service, claims or creates a shop draft, or publishes.
-Miaoshou synchronization belongs only to the second round in
-`prepare-product-images`.
+The second round, `prepare-product-images`, generates and reviews images only;
+it does not write Miaoshou. Third-round COMMON synchronization and official
+readback belong to `publish-approved-product`. See
+[round ownership](references/miaoshou-baseline-sync.md) when resuming legacy packets.
 
-Kyle's explicit approval in the conversation is the only human approval entry.
-Record it independently of page buttons and technical readiness. Product pages
-are editing and observation surfaces, not approval authorities.
+R1 must not ask Kyle to approve facts, copy, category, price, stock, or the image
+plan as a normal stage transition. When the active autopilot policy resolves all
+checks, write the existing digest-bound auto-decision and technical snapshot with
+`human_approval=false`; these artifacts authorize only later preparation. Product
+pages are editing and observation surfaces, not approval authorities. The sole
+normal human gate is `FINAL_MARKETPLACE_PUBLISH` after the complete frozen
+marketplace candidate exists.
 
 ## Required input
 
@@ -70,14 +85,39 @@ lists each chosen source position as KEEP, TRANSLATE, REMOVE, or REFERENCE,
 exact target languages, and proposed net-new assets. Do not use OCR to select
 images. Do not call a paid API in this round.
 
+The client accepts `--candidate-plan <PATH>` for proposed category and copy
+sidecars. When either plan argument is omitted, it reuses the corresponding
+`first-review-image-plan.json` or `first-review-candidate-plan.json` from
+`reports/product-preparation/<OFFER_ID>/` if present. Refreshing the report
+preserves those input files. Offer IDs must contain ASCII digits only.
+Candidate categories do not replace bound official category evidence, and
+candidate copy remains PROPOSED. If the selected SEA stores include both
+LivelyHive and HomeBloom, retain separate brand content and image plans;
+single-brand targets do not imply an additional brand. These compatibility
+rules do not install or enable personal manual-intake or autopilot workflows.
+
+R1 retains per-SKU parcel facts and price calculations from the supplied
+Product Center preview. Positive finite cost, weight, dimensions and prices
+are required for material completeness. Partial per-SKU parcel facts cannot
+be replaced silently by shared defaults. Variant price rows must cover the
+known SKU identities; COMMON drafts have no market-price requirement.
+These calculations remain candidates and do not prove provider readback.
+
+The round-1 candidate must display the complete governed
+`publication_stock_policy`: `publication-default-stock/v1`, 200 per selected SKU,
+`EACH_SELECTED_SKU`, `SYSTEM_GOVERNED_DEFAULT`, `ROUND1`. Candidate validation
+rejects a missing or changed policy. Never map the legacy
+`stock_per_model_sku` field to this policy or silently rewrite an approved
+snapshot; a different quantity needs a separately reviewed contract.
+
 If no local workbench exists, the client may perform the existing upstream
 read and a local workbench-state write once. These are not provider mutations.
 If requested targets are missing, return `DECISION_REQUIRED`; never silently
 restore defaults.
 
 Legacy `--execute-miaoshou` or `--confirm-miaoshou-write` arguments must fail
-with a clear second-round boundary error. `--skip-miaoshou` is a compatibility
-no-op because Miaoshou is always deferred.
+without writing. Their historical error wording is not a stage-routing authority.
+`--skip-miaoshou` is a compatibility no-op; synchronization belongs to third-round COMMON.
 
 ### 2. Resolve first-review facts
 
@@ -93,12 +133,13 @@ For each selected target retain evidence and provenance for:
 
 Read `references/knowledge-base-schema.md` before category or content work.
 Prefer confirmed product-family facts, then official read-only provider trees
-and metadata. Zero or multiple safe category candidates require user review.
+and metadata. Zero or multiple safe category candidates are blockers; preserve
+the evidence and smallest unresolved decision without inventing a category.
 
-Do not automatically choose translation positions or dual content groups.
-Propose the image plan before first approval unless Kyle explicitly approves
-the frozen scope earlier; then persist approval intent and reconcile the plan
-later without asking again.
+Derive translation positions and brand content groups from exact task scope,
+source evidence and governed defaults. If a high-risk ambiguity cannot be
+resolved, keep it as a blocker rather than turning R1 into an approval prompt.
+Any explicit choice already supplied by Kyle remains binding within that scope.
 
 ### 3. Persist the first-review packet
 
@@ -117,6 +158,11 @@ image plan, blockers, and:
 }
 ```
 
+`DEFERRED_TO_SECOND_ROUND` is the existing client's compatibility label, not
+permission for R2 to synchronize Miaoshou. Preserve it in existing packets;
+resolve the current stage through the Product Center contract described in
+[round ownership](references/miaoshou-baseline-sync.md).
+
 Missing or contradictory facts yield `DECISION_REQUIRED` with the smallest
 actionable decision. Never persist raw provider payloads, credentials, URLs,
 or provider item identities.
@@ -130,26 +176,32 @@ Return a compact summary with:
 - shared facts and per-target decisions;
 - source image actions, locale routes, and proposed generated images;
 - unresolved decisions;
-- explicit statement: first-round Miaoshou writes `0`, deferred to second round;
-- next phrase: `第一轮通过，开始第二轮`.
+- explicit statement: first-round Miaoshou writes `0`; R2 handles images and R3 COMMON handles synchronization/readback;
+- whether existing paid authority covers R2, or the exact missing authority if it does not.
 
-Do not start paid generation, Miaoshou synchronization, or publication without
-the corresponding user instruction. A new agent resumes from the durable
-packet and current Product Center state, not conversation memory.
+Continue into R2 without asking for an intermediate approval when the active
+policy already covers its paid purpose and budget. A new or expanded paid
+purpose still needs explicit authority. R1 never authorizes Miaoshou or
+marketplace writes. A new agent resumes from the durable packet and current
+Product Center state, not conversation memory.
 
 ## Safety and evidence
 
 - Keep first-round provider write count exactly zero.
 - Never expose credentials, raw responses, provider URLs, or exception args.
 - Keep confirmed write counts separate from attempted requests.
-- Do not let stale technical state erase a recorded conversation approval.
+- Do not let stale technical state erase a valid final marketplace approval receipt.
 - Update knowledge only when official facts, regression evidence, and readback
   agree; never promote a one-off hypothesis into a product-family rule.
 ````
 
-## 中文完整翻译
+## 中文参考译文
 
-<!-- source_sha256: 5a95ab0d4aa70088882f0b590b9f9941a2e6b4b7614dc92fbaae150a6f6294ff -->
+**`prepare-product-publication` 中文译文已过期：以下为历史译本，不得据此执行；请以本节当前英文 `SKILL.md` 原文为准。**
+
+<!-- source_sha256: b57fed3712b24fd324b16f05711c49a4f46034f6afe2e84ef3e32ad5b9720542 -->
+
+> 历史译本（2026-09-23 标注）：此 source_sha256 与当前英文 Skill 不一致；请读当前英文 `SKILL.md`，它是唯一执行权威。
 
 ### 元数据
 
@@ -158,11 +210,15 @@ packet and current Product Center state, not conversation memory.
 
 ### 准备商品发布
 
+#### 已有商品接管
+
+检查或恢复已有商品时，先在明确选定的项目中，按仓库根 `docs/PUBLICATION_SOURCE_CONTRACT.md` 使用绑定提交的只读 `scripts/publication_takeover.py`。不能仅为检查已有商品而重新初始化或批准。该合同规定来源选择和旧阶段标签的解释；它不证明个人安装副本中较新的工作流模式已经集成。
+
 把一个精确 Offer ID 和精确目标店铺清单转成持久化第一轮审核包。商品事实必须复用商品发布中心的确定性代码；Agent 判断只用于有文档依据的类目研究、文案候选和建议。缺失的商业或平台事实绝不能猜。
 
 ### 不可违反的轮次边界
 
-第一轮外部写入始终为零：不写妙手、不调用付费图片服务、不认领或创建店铺草稿、不发布。妙手同步只属于第二轮 `prepare-product-images`。
+第一轮外部写入始终为零：不写妙手、不调用付费图片服务、不认领或创建店铺草稿、不发布。第二轮 `prepare-product-images` 只生成图片并做 QA，不写妙手。第三轮 `publish-approved-product` 负责 COMMON 同步和正式回读；恢复旧审核包时参见 canonical Skill 的 `references/miaoshou-baseline-sync.md`。
 
 Kyle 在会话中的明确批准是唯一人工批准入口。批准独立于页面按钮和技术状态记录；商品页面只是编辑和观察界面。
 
@@ -180,9 +236,13 @@ Kyle 在会话中的明确批准是唯一人工批准入口。批准独立于页
 
 需要图片工作时，建立一个 `first-review-image-plan/v1` JSON 并增加 `--image-plan <PATH>`。计划必须列出每个来源位置的 `KEEP`、`TRANSLATE`、`REMOVE` 或 `REFERENCE`、精确目标语言和拟新增资产。本轮不得用 OCR 选择图片，也不得调用付费 API。
 
+客户端接受 `--candidate-plan <PATH>`，用于提出类目和文案候选附属文件。省略任一计划参数时，如果 `reports/product-preparation/<OFFER_ID>/` 中存在对应的 `first-review-image-plan.json` 或 `first-review-candidate-plan.json`，则复用它；刷新报告保留这些输入文件。Offer ID 只能包含 ASCII 数字。候选类目不能替代绑定的官方类目证据，候选文案仍是 `PROPOSED`。若所选 SEA 店铺同时包含 LivelyHive 和 HomeBloom，则保留独立品牌内容与图片计划；单品牌目标不隐含另一个品牌。这些兼容规则不会安装或启用个人副本的 manual-intake 或 autopilot 工作流。
+
+R1 保留输入商品发布中心预览中的逐 SKU 包裹事实和价格计算。资料完整性要求成本、重量、尺寸和价格为正且有限的数值。逐 SKU 包裹事实只提供一部分时，不得静默用共享默认值替代。变体价格行必须覆盖已知 SKU 身份；COMMON 草稿没有市场价格要求。这些计算仍是候选，不能证明平台回读。
+
 本地工作台不存在时，客户端可以执行现有上游读取和一次本地状态写入；这不是平台写入。请求目标缺失时返回 `DECISION_REQUIRED`，不能恢复默认选择。
 
-旧参数 `--execute-miaoshou` 或 `--confirm-miaoshou-write` 必须明确报错；`--skip-miaoshou` 仅为兼容空操作，因为妙手始终延后到第二轮。
+旧参数 `--execute-miaoshou` 或 `--confirm-miaoshou-write` 必须拒绝写入；旧报错文字不是阶段路由依据。`--skip-miaoshou` 仅为兼容空操作，妙手同步属于第三轮 COMMON。
 
 #### 2. 解析第一轮事实
 
@@ -210,7 +270,9 @@ Kyle 在会话中的明确批准是唯一人工批准入口。批准独立于页
 
 #### 4. 交接
 
-返回 Offer ID、revision、请求与观察到的店铺、公共事实、逐目标决定、来源图动作/语言路由/拟生成图片、未解决决定，并明确“第一轮妙手写入 0，延后到第二轮”。下一句提示为：`第一轮通过，开始第二轮`。
+`DEFERRED_TO_SECOND_ROUND` 是现有客户端兼容标签，不授权 R2 同步妙手。保留已有包中的值，按 Product Center 当前阶段合同恢复。
+
+返回 Offer ID、revision、请求与观察到的店铺、公共事实、逐目标决定、来源图动作/语言路由/拟生成图片、未解决决定，并明确“第一轮妙手写入 0；R2 处理图片，R3 COMMON 负责同步及回读”。下一句提示为：`第一轮通过，开始第二轮`。
 
 没有对应用户指令时，不得开始付费生成、妙手同步或发布。新 Agent 必须从持久化审核包和当前商品发布中心状态恢复，而不是依赖聊天上下文。
 
@@ -226,188 +288,291 @@ Kyle 在会话中的明确批准是唯一人工批准入口。批准独立于页
 
 # 2. `prepare-product-images`
 
-源 SHA-256：`6266a2b4ce72886935f4a715b2c01f59996336ff12db0d01cfd5ff16202f7e22`
+源 SHA-256：`99bb0fadf37fc9cda1f2e1e241578854afa84aead4829ee4cf47bc4766a27ab6`
 
 ## English source (verbatim)
 
 ````markdown
 ---
 name: prepare-product-images
-description: Lock a conversation-approved first-round Product Center scope, optionally generate only the user-selected localized product images through ToAPIs, synchronize and verify the common Miaoshou baseline exactly once, record conversation approval, and atomically freeze the approved ReleasePlan handoff without publishing. Use after the user finishes the first-round review and asks to start, resume, approve, or finish the second round.
+description: Consume an immutable round-1 technical snapshot and prepare auditable dual-brand master and localized image candidates through Lingshi AI, with a shared product budget, durable recovery, rework and automated QA. Use for round-2 product image preparation; do not create an intermediate human approval gate, write Miaoshou or publish.
 ---
 
 # Prepare Product Images
 
-Use the deterministic script in `scripts/prepare_product_images.py`. Do not reconstruct this workflow with ad hoc API calls.
+Before resuming an existing product, use the selected project's commit-bound
+`scripts/publication_takeover.py` as described in
+`docs/PUBLICATION_SOURCE_CONTRACT.md`. Preserve prior paid receipts and QA;
+the read-only result never starts a new task or converts generated assets to keep.
 
-## Workflow
+Use `scripts/prepare_product_images.py` for R2 and `scripts/run_automated_image_qa.py` for visual QA. Keep the frozen R1 product, brand, target and source identities intact. Read [the local budget and recovery contract](references/paid-recovery.md) before handling unknown results, legacy records or technical drift.
 
-1. Require the exact Offer ID and current Kyle-approved first-round Product Center revision.
-2. Require `reports/product-preparation/<offer_id>/first-review.json` to be `FIRST_REVIEW_READY` and to match the current revision.
-3. Treat the first-review image plan as authoritative. Do not use OCR or model judgment to add translation positions.
-4. Exclude source images marked `REMOVE`. Remap retained source positions deterministically.
-5. Run the script without paid flags first. Report the frozen input digest, selected positions, locale routes, and paid task count.
-6. If no positions were selected for translation, continue with zero paid tasks. Do not invent image work. Otherwise start paid generation only after explicit user authorization by supplying both `--execute-paid` and `--confirm-paid-generation`.
-7. Require one completed ToAPIs receipt per task and an exact output count. Do not retry blindly after an unknown outcome; inspect the durable generation checkpoints first.
-8. Write the English master image set to the common Miaoshou collect box exactly once and require official readback before publication execution. Use both `--execute-miaoshou` and `--confirm-miaoshou-write`. This technical condition must not block or erase conversation approval.
-9. Keep localized artifacts frozen by target route. Do not place several country image sets in the common collect box; the publication workflow projects them into their matching site drafts later. Persist the public HTTPS result URL returned by ToAPIs. For a legacy artifact without that fact, require an explicit uploaded-assets manifest; never fabricate or silently re-upload it.
-10. Product Center `/new-product?offer_id=<offer_id>#localizedImageResults` is the only human review surface. The page `/localized-image-review?offer_id=<offer_id>` is a technical result view with one action: refresh. It must not contain generation, per-image PASS, retry, paid-confirmation, or final-approval buttons.
-11. Treat Kyle's explicit approval in the conversation as the only human approval entry. Record it immediately even when generation, Miaoshou sync, or another technical check is incomplete.
-12. The approval intent automatically accepts ready artifacts and reconciles later artifacts under the same frozen input. Technical blockers prevent execution only; they never invalidate the approval intent or require Kyle to approve again.
-13. After one verified Miaoshou sync and conversation approval, run the final handoff. Reuse an exact active approved base plan or locally freeze the current exact plan. If localized tasks exist, atomically create and approve an image-routing-only successor. If no localized tasks exist, retain the exact base plan. Persist `workflow-handoff.json` only after the frozen v4 snapshot and route coverage read back exactly.
+## Authority and inputs
 
-## Safety boundaries
+Require a valid `round1-approved-snapshot/v1` and matching current Product Center technical freeze. The schema's `approved` wording is historical: an autopilot snapshot with `human_approval=false` is the normal input and grants no marketplace execution authority. Fact or target changes rebuild the candidate lineage and invalidate any later final marketplace approval bound to the old candidate.
 
-- ReleasePlan changes are local only: freeze the exact base plan and, when needed, atomically create one image-routing-only approved successor. Never leave the predecessor superseded without a usable approved successor.
-- Do not write Miaoshou during paid generation. Run the separate common-baseline sync only after generation receipts are complete and the conversation has authorized that write.
-- Do not publish, claim, create drafts, or update listing images.
-- Do not generate for an unapproved or stale revision.
-- Do not generate a locale that is absent from the approved first-review plan and selected targets.
-- Treat paid image calls as external writes and report their exact confirmed count.
-- OCR is allowed only to extract text inside a user-selected image; it must never choose which images are translated.
-- Do not publish from this Skill. A `READY_TO_PUBLISH` handoff is consumed only by `publish-approved-product`.
+Paid execution requires the existing applicable policy loaded by `shared_platform.publication_autopilot`. Its attributed authority, allowed purposes and product cap must cover this action. Record the selected model, current price, purpose and QA plan in the candidate evidence. Continue without an approval prompt when existing authority covers the exact paid purpose and budget. A new paid purpose, provider, or scope outside that authority requires explicit authorization before the request.
 
-## Commands
+The bundled `historical-autopilot-policy.example.json` is inactive source evidence. Its original names, date and ACTIVE state are not current authority. Do not activate it as default configuration. Offline fixtures and green tests never establish live generation authority.
 
-Preflight:
+## Execute one phase
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id>
-```
+1. Run with only `--offer-id` to inspect local status. Help/status do not call paid providers. Legacy UI consumers without the existing R1/budget bridge return `PAID_CONTEXT_REQUIRED` or `LEGACY_R2_BRIDGE_REQUIRED` before a provider call.
+2. Validate the frozen brand roles and reuse plan. With applicable paid authority, run `--execute-brand-generation --paid-policy <existing-policy>`. Complete source bytes and frozen facts bind the technical plan and each checkpoint. Continue through automated master-image QA; a rendered review is an audit artifact, not a human gate.
+3. Run `run_automated_image_qa.py --offer-id <id> --model <approved-model> --paid-policy <existing-policy>` for master QA. Retain raw replies, exact artifact digests and the QA receipt. Passed QA belongs only to those artifacts and that R1 snapshot.
+4. Freeze the policy-selected numbered-image scope with `--approve-translation-images <numbers> --dimension-only-images <numbers-or-none>`. The CLI defaults to the governed technical actor `orbit-product-publication-default-v1`; an explicit `--approved-by Kyle` is blocked because this command has no independent conversation-receipt binding. Existing Kyle plans retain their original bytes and digest as historical evidence, but cannot authorize new R2 paid execution without independently verifiable provenance. This runtime currently has no trusted historical approval registry or automatic successor migration, so affected products remain blocked for new paid translation work. These plans do not grant final marketplace approval. An existing plan with different scope or authority is preserved and requires an explicit successor rather than an in-place rewrite. Route locales within frozen R1 targets; dimension-only images create no translation tasks.
+5. With matching paid authority, run `--execute-paid --paid-policy <existing-policy>`. OCR, text translation and localized image generation share the product ledger with masters and QA. Empty OCR regions are reused without a paid model request.
+6. Run localized QA using the exact passed master QA receipt and current localized artifacts. Preserve failures in factual alignment, OCR language or duplication as blockers or bounded rework evidence. Passed artifacts flow to R3 candidate compilation without an intermediate approval prompt.
 
-Paid generation after explicit approval:
+For wallpaper and wall stickers consume the existing product-family rule packs under `prepare-product-publication/references`. Do not invent missing facts in prompts.
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --execute-paid --confirm-paid-generation
-```
+## Budget and recovery
 
-Synchronize and verify the common Miaoshou baseline before review:
+`reports/product-preparation/<id>/paid-requests/events.jsonl` is the accounting authority. Brand, locale, QA, retries, new processes and changed approval digests share it. A durable reservation occupies a slot before POST. Attempted, unknown, failed, superseded and completed work remains counted. The ledger lock is released before provider waits.
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --execute-miaoshou --confirm-miaoshou-write
-```
+For a new product, code inventories complete known R1/R2 report and localized review/pack metadata roots. Ordinary review HTML/Markdown and local plans are evidence, not paid calls. Positive old receipts are imported with source hashes and same-provider task duplicates count once. Missing metadata, redirected roots, ambiguous ownership and unknown prior work cannot become zero.
 
-Persist Kyle's explicit conversation approval at any point in the frozen round:
+Reports separate planned requests for the current phase, occupied, attempted, unknown, confirmed and new requests in this invocation. Asset counts and old receipt generation counts are lifetime artifact facts. Raw usage/cost is separate from price estimates. Prior R1 title/copy calls count only when the applicable product policy includes that purpose and a bound actual request receipt exists.
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --approve-all --approved-by Kyle
-```
+For SUBMITTING, UNKNOWN or post-submit timeout, inspect local request/checkpoint state. Existing task IDs resume by querying, never by creating again. Raw chat replies are durable before parsing and can be parsed again locally. Timeout without raw reply requires upstream reconciliation; changing prompt or retry number is not authorization to resend.
 
-Freeze the exact approved handoff after Miaoshou verification and conversation approval:
+Use the local recovery CLI in `references/paid-recovery.md`. It checks exact product/request/attempt/revision, source hashes, verifier, timestamp and evidence reference. It does not discover or prove external billing facts. Preserve bad and legacy bytes; never manufacture a no-charge conclusion.
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --finalize-release-handoff
-```
+## Rework and technical rebuild
 
-For legacy generated artifacts whose ToAPIs receipt predates persisted public
-result URLs, add `--uploaded-assets <PATH>`. The JSON file must contain an
-exact `uploaded_assets` map of approved artifact ID to its matching digest and
-public HTTPS URL. Extra, missing, or drifted entries fail closed.
+A completed paid artifact rejected by exact QA or explicitly selected for redo may create a new attempt under existing rework policy and remaining product budget. Use `--prepare-brand-rework` for the bounded brand request, or `--retry-localized-review-number <n> --retry-locale <locale> --retry-failure-code <code> --retry-authorized-by <existing-actor>` for one localized artifact. Bind old task/artifact, QA or user intent, current input and next attempt. A known failed exact artifact may be retried within the existing policy without another prompt; a new paid purpose or expanded scope may not. Maximum three retries applies; old successful work remains counted and needs no false no-charge proof.
 
-The command emits one JSON summary. Approval and execution readiness are separate fields: approval may be recorded while the result still reports `MIAOSHOU_SYNC_REQUIRED` or another technical blocker. A verified baseline sync reports `miaoshou_external_write_count: 1`, `platform_writes: 0`. Finalization reports `READY_TO_PUBLISH`, the exact plan and snapshot identities, and never asks for another page approval.
+TECHNICAL_PLAN_DRIFT writes a digest-bound proposal and preserves the active plan. Once existing approval provides valid current inputs, explicitly activate that proposal through the local CLI. Activation archives the old plan and affected R2 projections, emits R3 invalidation evidence and retains all paid events. Unknown product requests block activation. Never delete ledger/checkpoint files to make a new plan run.
+
+R2 does not write Miaoshou, ReleaseStore, ReleasePlan, marketplace drafts or publication. R3 consumes the technically adopted image evidence and `round2-technical-invalidation.json` through its own authority. Offline tests, image QA and compatibility fields named `approved` do not authorize publication. Only the later digest-bound `FINAL_MARKETPLACE_PUBLISH` receipt does.
 ````
 
-## 中文完整翻译
+## 中文参考译文
 
-<!-- source_sha256: 6266a2b4ce72886935f4a715b2c01f59996336ff12db0d01cfd5ff16202f7e22 -->
+**`prepare-product-images` 中文译文已过期：以下为历史译本，不得据此执行；请以本节当前英文 `SKILL.md` 原文为准。**
+
+<!-- source_sha256: 5054f5f4145c46e623a31f93ca2c4898c7ff87e8c03e721640f5ce97a00556d2 -->
+
+> 历史译本（2026-09-23 标注）：此 source_sha256 与当前英文 Skill 不一致；请读当前英文 `SKILL.md`，它是唯一执行权威。旧译文中的 R1 和图片审核步骤不代表当前一轮最终审核流程。
 
 ### 元数据
 
 - `name`：`prepare-product-images`
-- `description`：冻结会话已批准的第一轮范围；可选地只对用户选中的图片执行 ToAPIs 本地化；精确同步并验证一次妙手公共基线；记录会话批准；在不发布的前提下原子冻结已批准 ReleasePlan 交接。用于第二轮的开始、恢复、批准或完成。
+- `description`：消费不可变第一轮快照，通过灵识 AI 准备双品牌母版与本地化图片，使用共享产品预算、持久化恢复、返工和自动 QA。用于第二轮商品图片准备；不重新批准事实、不写妙手、不发布。
 
 ### 准备商品图片
 
-必须使用 `scripts/prepare_product_images.py`，不得用临时 API 调用重建流程。
+恢复已有商品前，按仓库根 `docs/PUBLICATION_SOURCE_CONTRACT.md` 使用所选项目中绑定提交的 `scripts/publication_takeover.py`。保留已有付费回执与 QA；只读结果不会启动新任务，也不会把已生成资产转为 `keep`。
 
-### 工作流
+R2 使用 `scripts/prepare_product_images.py`，视觉 QA 使用 `scripts/run_automated_image_qa.py`。保持冻结 R1 的商品、品牌、目标与来源身份。处理未知结果、旧记录或技术漂移前，读取 `references/paid-recovery.md` 中本地预算与恢复合同。此处 `scripts/`、`references/` 相对 canonical Skill 目录；`shared_platform` 和 `reports` 路径相对仓库根。
 
-1. 要求精确 Offer ID 和 Kyle 已批准的第一轮商品发布中心 revision。
-2. 要求 `reports/product-preparation/<offer_id>/first-review.json` 为 `FIRST_REVIEW_READY` 且 revision 一致。
-3. 第一轮图片计划是权威；OCR 和模型不能额外选择翻译位置。
-4. 排除 `REMOVE` 来源图，并确定性重排保留位置。
-5. 先不带付费参数运行，报告冻结输入 digest、位置、语言路由和付费任务数。
-6. 若没有翻译位置，允许零付费任务继续，不能虚构图片工作。否则必须同时使用 `--execute-paid` 和 `--confirm-paid-generation` 才能开始付费生成。
-7. 每个任务必须有完整 ToAPIs 回执和精确输出数量；未知结果不能盲目重试，应先检查持久化 checkpoint。
-8. 妙手公共采集箱只写入英语母版一次，并执行官方回读。必须同时使用 `--execute-miaoshou` 和 `--confirm-miaoshou-write`。该技术条件不能阻止或删除会话批准。
-9. 本地化图片按目标路由冻结，不能把多国语言图片同时写入公共采集箱。必须保留 ToAPIs 返回的公开 HTTPS 地址；旧资产缺失该事实时，需要明确 uploaded-assets manifest，不能伪造或静默重复上传。
-10. 商品发布中心的 `#localizedImageResults` 是唯一人工审核面；独立结果页只是技术查看页，只保留刷新动作。
-11. Kyle 会话批准是唯一批准入口，即使技术检查未完成也应立即记录。
-12. 批准意图自动接受同一冻结输入下已经就绪或稍后就绪的资产；技术阻断不要求重复批准。
-13. 一次妙手验证和会话批准完成后，执行最终交接：复用精确已批准基础 plan，或本地冻结当前精确 plan。有本地化任务时，原子创建并批准只改变图片路由的 successor；无任务时保留基础 plan。只有 v4 快照和目标路由回读精确后才写 `workflow-handoff.json`。
+### 权威与输入
 
-### 安全边界
+要求有效的 `round1-approved-snapshot/v1` 和匹配的当前商品发布中心批准。在原范围内复用批准。事实和目标变更仍走既有 R1 批准流程。
 
-- ReleasePlan 只能发生本地变更：冻结基础 plan，并在需要时原子创建一个已批准的图片路由 successor。不能让 predecessor 已被 supersede 却没有可用 successor。
-- 付费生成期间不写妙手；生成回执完整且会话授权后才执行独立公共基线同步。
-- 不发布、不认领、不创建店铺草稿、不直接更新平台图片。
-- 不为未批准或过期 revision 生成图片。
-- 不生成第一轮计划和目标店铺之外的语言。
-- 付费调用按外部写入计数并报告确认数量。
-- OCR 只提取用户已选图片中的文字，绝不能决定选图。
-- 本 Skill 不发布；`READY_TO_PUBLISH` 只由 `publish-approved-product` 消费。
+付费执行要求由 `shared_platform.publication_autopilot` 加载既有适用政策，其归属权威、允许用途和产品上限必须覆盖本动作。开始新授权的真实生成前，展示所选模型、当前价格、用途与 QA 计划，取得所需付费授权。已有匹配授权无需再次索取。
 
-### 命令
+随包的 `historical-autopilot-policy.example.json` 是非活动的历史来源证据。其原名称、日期和 ACTIVE 状态不是当前权威，不能将其激活为默认配置。离线 fixture 和绿色测试不构成真实生成权限。
 
-预检：
+### 执行一个阶段
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id>
-```
+1. 仅带 `--offer-id` 运行以检查本地状态。help/status 不调用付费服务。缺少既有 R1/预算桥接的旧 UI 消费者在调用服务前返回 `PAID_CONTEXT_REQUIRED` 或 `LEGACY_R2_BRIDGE_REQUIRED`。
+2. 校验已批准的品牌角色与复用计划。在适用付费授权下运行 `--execute-brand-generation --paid-policy <existing-policy>`。完整来源字节与冻结事实绑定技术计划及每个 checkpoint。完成整套母版图片审核后停止本阶段。
+3. 使用 `run_automated_image_qa.py --offer-id <id> --model <approved-model> --paid-policy <existing-policy>` 执行母版 QA。保留原始回复、精确产物摘要和 QA 回执。通过结果只属于这些产物及该 R1 快照。
+4. 用 `--approve-translation-images <numbers> --dimension-only-images <numbers-or-none> --approved-by <existing-actor>` 冻结已经批准的编号图片范围。在冻结 R1 目标内路由语言；仅尺寸图不创建翻译任务。
+5. 在匹配的付费授权下运行 `--execute-paid --paid-policy <existing-policy>`。OCR、文字翻译、本地化图片生成与母版及 QA 共用产品账本。OCR 区域为空时直接复用，不发送付费模型请求。
+6. 使用精确已通过的母版 QA 回执和当前本地化产物执行本地化 QA。保留事实对齐、OCR 语言或重复性失败供复核。
 
-明确授权后的付费生成：
+壁纸和墙贴消费 `prepare-product-publication/references` 下既有产品家族规则包；不能在提示词中编造缺失事实。
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --execute-paid --confirm-paid-generation
-```
+### 预算与恢复
 
-第二轮唯一妙手同步和验证：
+`reports/product-preparation/<id>/paid-requests/events.jsonl` 是计数权威。品牌、语言、QA、重试、新进程及改变后的批准摘要共用该账本。POST 前先持久化预留并占用名额。已尝试、未知、失败、被替代与完成的工作仍计数；等待服务返回前释放账本锁。
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --execute-miaoshou --confirm-miaoshou-write
-```
+对新商品，代码完整盘点已知 R1/R2 报告与本地化审核/包元数据根。普通审核 HTML/Markdown 和本地计划属于证据，不是付费调用。有效旧回执带来源 SHA 导入，同一服务商的重复任务仅计一次。缺元数据、重定向根、归属不明确或旧工作未知，均不能当作零。
 
-记录 Kyle 会话批准：
+报告分别显示本阶段计划请求数、已占用、已尝试、未知、已确认，以及本次调用新增请求数。资产数量和旧回执生成数量是全生命周期产物事实。原始 usage/成本与价格估算分开。只有适用产品政策包含该用途，且存在绑定的实际请求回执时，才计入先前 R1 标题/文案调用。
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --approve-all --approved-by Kyle
-```
+遇到 SUBMITTING、UNKNOWN 或提交后超时，检查本地请求/checkpoint 状态。已有 task ID 通过查询恢复，不能重新创建。原始聊天回复先持久化再解析，可在本地重新解析。超时且没有原始回复时需上游对账；修改提示词或重试编号不授予重发权限。
 
-冻结发布交接：
+使用 `references/paid-recovery.md` 中的本地恢复 CLI。它检查精确商品/请求/attempt/revision、来源 SHA、核验者、时间戳和证据引用，但不会发现或证明外部计费事实。保留损坏及旧版本字节，绝不编造未计费结论。
 
-```powershell
-.venv\Scripts\python.exe skills\prepare-product-images\scripts\prepare_product_images.py --offer-id <offer_id> --finalize-release-handoff
-```
+### 返工与技术重建
 
-旧资产没有 ToAPIs 公开结果地址时增加 `--uploaded-assets <PATH>`。文件必须给出精确 `uploaded_assets` 映射：已批准 artifact ID、匹配 digest 和公开 HTTPS URL。缺失、额外或漂移均失败关闭。
+已完成付费产物若被精确 QA 拒绝或被明确选中重做，可在既有返工政策与剩余产品预算内创建新 attempt。品牌请求用 `--prepare-brand-rework`；单个本地化产物用 `--retry-localized-review-number <n> --retry-locale <locale> --retry-failure-code <code> --retry-authorized-by <existing-actor>`。绑定旧任务/产物、QA 或用户意图、当前输入与下一 attempt。最多重试三次；旧成功工作仍计数，无需虚假的未计费证明。
 
-命令只输出一个 JSON 摘要。批准和技术就绪分离；批准后仍可显示 `MIAOSHOU_SYNC_REQUIRED`。最终成功显示 `READY_TO_PUBLISH`、精确 plan/snapshot 身份，不要求另一次页面批准。
+TECHNICAL_PLAN_DRIFT 写出绑定摘要的提案，并保留活动计划。既有批准提供有效当前输入后，通过本地 CLI 显式激活提案。激活归档旧计划和受影响 R2 投影，输出 R3 失效证据并保留全部付费事件。商品请求仍未知时禁止激活。不能删除账本/checkpoint 让新计划运行。
+
+R2 不写妙手、ReleaseStore、ReleasePlan、平台草稿或发布。R3 通过自己的权威消费已批准图片证据和 `round2-technical-invalidation.json`。离线测试和图片 QA 不授予发布权限。
 
 ---
 
 # 3. `publish-approved-product`
 
-源 SHA-256：`f5845610f65792aa4bc1abc4723cc23eb6f9672a32aaaf2136c0c9cc80c22d5e`
+源 SHA-256：`d2b7abac43c4c04fe248a62c1c9159d8c25b12aaa9827d706a1b891cf3990b42`
 
 ## English source (verbatim)
 
 ````markdown
 ---
 name: publish-approved-product
-description: "Execute stages 05-07 for an approved Product Center offer through three independent workflows: inspect the approved per-SKU snapshot, dispatch TikTok through Miaoshou, create a Shopee global product, publish Ozon through the official API, perform platform-specific readback, classify truthful results, and retain only confirmed incident lessons. Use when the user asks to publish, retry, inspect, or diagnose an already-approved Offer ID after stages 01-04."
+description: "Execute round 3 for a product with immutable round-1 facts and round-2 images: bind or update Miaoshou with official readback, freeze the release snapshot, present one final marketplace review, publish TikTok, Shopee and Ozon independently, and retain target-specific readback and confirmed incident lessons."
 ---
 
 # Publish Approved Product
+
+This Skill owns the entire third round. It may not re-open first-round fact,
+category, price, copy, target or image-plan approval, and it may not regenerate
+second-round images. It validates immutable snapshot identity and performs
+technical preflight, Miaoshou write/readback, release compilation, the one
+final marketplace approval, independent platform execution and readback.
 
 Use the approved Product Center snapshot as the only shared input. TikTok,
 Shopee and Ozon are independent tasks. Never let one platform's previous state,
 failure, warning, or readback block another platform.
 
-Kyle's explicit approval in the conversation is the only human approval
-authority. Page buttons are never approval authorities. The agent must persist
-the exact approved revision and plan through the deterministic Product Center
-boundary before publication; a missing or stale technical fact may block
-execution, but it must not ask Kyle to repeat the same approval on another page.
+Target-scoped recovery is permitted only for one explicitly selected platform.
+Every requested label must be unique, belong to that platform, and remain inside
+the immutable approved target list. A successful scoped recovery never replaces
+the full-product truth: the final UI and handoff must merge the newest result per
+approved target and continue to show every unresolved target.
+
+After the Miaoshou COMMON write and official readback, Kyle reviews the complete
+frozen candidate for every selected target on the Product Publication frontend
+and makes one final marketplace decision there. Once implemented and verified,
+a trusted local bridge may carry that frontend decision in a server-verified
+approval envelope; its durable receipt is the sole human approval. No separate
+conversation confirmation is required. Bind the receipt to the candidate,
+snapshot, ordered targets, and approved companion actions. The server must
+verify the submitting Windows user and exact review identity through a
+protected local channel. The local trust policy accepts programs running as
+that verified Windows user without separate approval for each program. A bare
+browser click or caller-supplied `user_approved`, `approved_by`, token, or digest
+does not prove that identity or create authority. R1 auto-decisions, image
+adoption, QA, and Miaoshou sync do not authorize marketplace publication. The
+agent must persist the exact frozen revision and plan through the deterministic
+Product Center boundary before publication; a missing or stale technical fact
+may block execution, but the same unchanged decision must not be requested
+again on another page, in a conversation, or for another platform.
+
+At canonical `248a0403`, the legacy marketplace approval POST still accepts
+caller-declared approval fields and does not verify a Windows user or a trusted
+envelope. Treat business execution as HOLD under the current `identity_only`
+runtime gate. Do not submit approval through that POST or turn on business
+execution based on this Skill change. A future implementation must prove the
+protected channel, server-side user verification, fresh exact review binding,
+durable receipt, and fail-closed rejection of ordinary browser POSTs before
+the gate can be reconsidered. Recheck the live service identity and gate just
+before any business action; a source commit or a local test is not deployment.
+
+## One final-review gate
+
+Load `config/product_publication_autopilot_policy.json` and the confirmed
+`references/incident-registry.json` through
+`shared_platform.publication_autopilot`. Before requesting marketplace
+publication approval, run `scripts/compile_release_candidate.py` for the exact
+approved `offer_id + plan_id`. The immutable
+`publication-release-candidate/v1` must be `READY_FOR_FINAL_REVIEW`, bind the
+exact snapshot, targets, variants, image routes, zero-write simulation, platform
+write budgets, the machine-readable product-family quality gate, durable
+image/translation/OCR/pricing evidence and confirmed
+incident safeguards, and be visible on the Product
+Publication frontend. This is the only normal human approval gate. A policy,
+bare page button without a verified receipt, prior product approval, image
+approval, or Miaoshou sync does not authorize marketplace publication.
+
+The candidate must also contain one digest-bound `companion_actions` review.
+It lists every known action needed to finish the approved publication, including
+Ozon stock quantity per Model SKU and the warehouse-selection rule, selected
+post-publication discount actions and their immutable pricing/selection policy,
+and the readback that proves completion. The final approval covers those exact
+actions plus bounded technical retries, read-only reconciliation and provider
+asynchronous convergence. Do not split them into later approval prompts.
+Resolve mutable provider IDs, such as the one current eligible warehouse or
+ongoing discount activity, by official read-only lookup under the frozen rule;
+that lookup does not create a new business decision.
+
+The zero-write simulation must use `platform-preflight-report/v2`. A top-level
+field-presence check is insufficient. Before any provider mutation it must
+also prove: the exact per-target TikTok mainland-pickup warehouse semantic is
+frozen for every selected TikTok store; the selected Shopee official category
+and all required attribute selections are frozen rather than deferred; and
+every Model SKU has one valid, unique HTTPS variation-image binding. Any
+missing, duplicate or deferred value is a zero-write blocker. Warehouse names
+are semantic facts only: runtime still reads the current official warehouse ID
+for that exact store and sets every other active local warehouse to zero.
+
+Counts and digests alone are never a complete final review. The exact
+digest-bound candidate must contain and the primary frontend panel must show:
+every frozen shopper-facing title and description grouped by the targets that
+reuse it; every seller SKU, model SKU, specification, cost, parcel weight and
+package size; every target's platform, store, locale, category and per-SKU
+price (including the complete collapsible calculation evidence when present);
+and every exact ordered target image route grouped only when the full route is
+identical. The approval control must remain unavailable when this review
+manifest is missing. Any change to these fields changes the candidate digest
+and immediately invalidates the prior approval. Keep provider identities,
+credentials, raw responses and hidden reasoning out of this projection.
+
+When the plan identity contains `:shadow-`, require a frozen
+`shadow-formal-conformance/v1` receipt before the candidate can become ready.
+It must cover the complete ordered target list and bind per-target copy,
+category, price, gallery, description-image and formal-route digests. Gallery
+and description images are independent projections but must contain the same
+complete ordered set. Also require the first-round
+`publication-default-stock/v1` policy and show its per-SKU quantity in the
+final review. Missing or drifted conformance is a zero-write blocker; the
+formal publication center must never reconstruct these values from a shared
+master or an agent conversation.
+
+Keep SKU terminology exact in that review. Miaoshou `itemNum` is the one
+product-level Seller SKU and must be shown once. Each sellable variant is
+identified by its distinct Model SKU; label that value `SKU ID (Model SKU)` in
+the frontend. Never repeat the product-level Seller SKU inside every variant
+card or relabel a Model SKU as a second Miaoshou item identity. The variant SKU
+IDs must remain unique and cover every frozen variant.
+
+Before compiling that candidate, run the third-round preparation boundary. It
+freezes `round2-image-snapshot/v1`, creates or binds a manual-intake Miaoshou
+identity when needed, writes the approved common baseline exactly once, reads
+it back, and freezes the release handoff. This is technical execution under the
+standing policy, not another content approval:
+
+```powershell
+.venv\Scripts\python.exe skills\publish-approved-product\scripts\prepare_publication_execution.py --offer-id <OFFER_ID> --execute-miaoshou --finalize-release-handoff
+```
+
+For wallpaper or decorative wall stickers, `shared_platform.publication_quality`
+must deterministically select the matching Chinese machine-readable product
+family pack and fail closed on category drift, fewer than
+seven unique target images, wrong localized-image locale, unsupported marketing
+claims, or a higher-cost variant priced below a lower-cost variant. These are
+deterministic validation errors, not new business-approval prompts.
+
+For an exact `dual-brand:<offer_id>:<identity>` handoff, load and bind all four
+durable sidecars before the candidate can become ready:
+`workflow-handoff.json`, `dual-brand-publication-handoff.json`,
+`brand-image-translation-plan.json`, and `brand-image-translation.json`.
+Verify the same Offer, plan and snapshot digest; the exact approved ordered roles
+and artifact digests for every target; approved translation tasks, completed
+localized assets and source OCR evidence; and every frozen SKU price against
+the handoff calculation result. New `publication-price-calculation/v2` rows
+must also pass the independent Decimal recomputation boundary: SEA, MX and GB
+use distinct formula kinds and retain every cost, logistics, fee/tax rate,
+target margin and discount-reserve input. A same-source result comparison is
+not formula evidence. Missing evidence or any drift is a zero-write
+blocker. `NOT_AVAILABLE` remains visible only for legacy non-exact handoffs and
+must never silently qualify a new dual-brand handoff.
+
+The Runner passes the same candidate and platform budget to every executor.
+Target-scope drift or a confirmed write count above budget is a contract
+failure. Every platform transport must reserve the supplied shared or
+target-scoped attempt budget immediately before each provider mutation. Budget
+exhaustion stops before the network call. Timeout and unknown outcome consume
+the reservation permanently because the provider may already have written.
+The ordered reservations, limits and attempt totals must be stored in immutable
+`product-publication-report/v3` and projected on the frontend; a post-result
+confirmed-write check remains defense in depth.
 
 ## Required architecture
 
@@ -415,11 +580,32 @@ execution, but it must not ask Kyle to repeat the same approval on another page.
    from the mutable dashboard.
 2. Use `skills/publish-approved-product/scripts/product_center_publication.py`
    as the only production command.
+   When more than one local Product Center service exists, verify the exact
+   healthy service that loaded the current committed code and pass its URL
+   explicitly with `--base-url`. Never rely on the script default while an
+   older service is still reachable; compare the report execution identity
+   with the intended commit before diagnosing or retrying a result.
 3. Let Product Center resolve the frozen v4 snapshot and run each authorized
    platform through its server-owned async Runner and immutable report.
 4. Continue to the next platform after any platform failure.
 5. Expose only the four-state sanitized summary. Product Center retains the
    detailed redacted evidence and platform readback in its durable report.
+6. Allow several exact `offer_id + plan_id` pairs to execute at the same
+   time. Allocate a separate durable run and immutable report for every
+   product-platform pair. A different product must never wait on a process-wide
+   product lock; the same product/platform snapshot remains single-flight.
+7. Source mode is provenance, not a publication shortcut. A frozen
+   `manual-intake` snapshot may run only the platforms whose preflight is
+   complete. Before TikTok, reconcile the exact manual source identity in the
+   Miaoshou common collect box and create, populate and read it back when
+   absent; never send the Product Center id as though it were a Miaoshou detail
+   id. A still-unresolved identity blocks only TikTok and must not block an
+   independently ready Shopee or Ozon run.
+   When manual intake has no Miaoshou link, the required order is: create one
+   Miaoshou common item, populate the approved variants/copy/gallery/description
+   media, read the same identity back, persist the binding, and only then enter
+   TikTok preparation. Never dispatch TikTok directly from a Product Center-only
+   identity.
 
 ## Frozen v4 execution boundary
 
@@ -472,6 +658,14 @@ category. Stop only for a missing or contradictory fact that the requested
 provider truly requires. Category-ID absence is a warning when an approved
 platform candidate can supply it.
 
+Treat each publication option name as shopper-facing content, never as a raw
+supplier key. Before a candidate can become `READY_FOR_FINAL_REVIEW`, reject
+names containing Seller/Model SKU IDs, structural supplier delimiters such as
+`;` or `【】`, untranslated slash-packed supplier labels, empty values, or
+more than 80 characters. Keep the raw variant key separately for lineage.
+Corrections after a frozen snapshot must create and approve an immutable
+SKU-display-name-only successor; never overwrite the predecessor snapshot.
+
 For every selected Shopee regional target, preserve both the CNSC
 `global_original_price_cny` and the regional `local_original_price` with its
 currency. Losing either price identity is a pre-dispatch contract failure.
@@ -495,6 +689,21 @@ platform/run/report identity, then polls `/api/product-workspace/publication-rep
 until `PUBLISHED`, `PROCESSING`, `PARTIAL`, or `FAILED`. A platform failure does
 not stop the other platform starts. A lost POST response is never blindly
 reposted.
+
+Those four states are provider/business outcomes, not proof that a local
+worker is still alive. `PROCESSING` with `readback_completed=true` is a stable
+`READBACK_ONLY` result: the command has returned, the current official
+readback budget is exhausted, and no local mutation remains. Persist it,
+display it as stable provider processing, and allow only a later read-only
+reconciliation. Never wait indefinitely for a worker and never repeat the
+start/POST merely because the provider has not reached its final state.
+
+After final approval or execution, the frontend must not continue to say
+"等待最终审核" or use an empty legacy ReleaseRun as proof that nothing ran.
+The digest-bound candidate distinguishes pending, approved and executed. Once
+any platform run exists, immutable per-platform publication reports are the
+primary execution ledger; compatibility ledgers may remain visible only with
+an explicit statement that they do not authorize a retry.
 
 The following scripts are deprecated compatibility and diagnostics only:
 
@@ -524,8 +733,10 @@ failure and never triggers an implicit Skill install.
 The immutable internal report may retain only the fixed sanitized target
 evidence fields: target label, status, stage, safe provider code, redacted
 reason, request-attempted flag, unknown-outcome flag, and confirmed write
-count. Public reports remain four-state counts and strip target evidence and
-execution identity. Raw responses, headers, URLs, tokens, exception arguments,
+count, plus the redacted mutation-budget ledger (platform, limits, attempt
+counts and safe operation identifiers). Public reports remain four-state
+results, may show that ledger, and strip target evidence and execution identity.
+Raw responses, headers, URLs, tokens, exception arguments,
 and external item identities are forbidden.
 
 HomeBloom SEA stores are TikTok targets owned by the Miaoshou Open API path,
@@ -544,16 +755,88 @@ A global-only run has zero regional targets. Only exact official shop-item,
 model, price and global-linkage readback may record that a region is published.
 Keep the approved English copy on the verified Global master. Regional create
 requests must omit `item_name` and `description` so Shopee can derive the
-destination copy. Official readback accepts English for PH/MY, requires Thai
-for TH and Vietnamese for VN, and repairs only the exact existing wrong-language
-TH/VN item before reading it again. Never create a duplicate for copy repair.
+destination copy. Official readback accepts English only for PH, requires Malay
+for MY, Thai for TH and Vietnamese for VN, and repairs only the exact existing
+wrong-language MY/TH/VN item before reading it again. Never create a duplicate
+for copy repair. Provider-derived MY/TH/VN copy is not trusted merely because
+it contains one target-language token. Require every semantic description line to be
+localized (dimension-only lines may remain invariant), reject residual English
+phrases in the title except approved Latin material/unit tokens, and preserve
+every approved material and every approved finished-size option. Route an
+authorized repair through Lingshi text only, update the already identified
+regional item in place, and read it back again. Do not invoke any unapproved
+fallback provider for repair text.
+
+An authorized regional-copy repair gets exactly one paid Lingshi request. Do
+not retry automatically and do not split a failed result into extra paid
+line-by-line calls. When the regional item already uses Shopee extended
+description media, repair copy atomically: send the localized title, localized
+text block, and the exact existing ordered description image IDs in the same
+official update. A plain-text update that drops description images is forbidden.
+
+For TikTok and Shopee alike, a populated product gallery does not satisfy the
+description-media requirement. Project the complete ordered target image route
+into the product description as well, using TikTok/Miaoshou rich `notes` or
+Shopee regional `description_info.extended_description`. Final readback must
+prove that every description image belongs to that exact target and matches
+the target gallery count and order. Plain-text-only descriptions, missing
+images, reordered images, and cross-country or cross-brand routes fail closed
+and must be shown as a failed target step on the Product Publication frontend.
+
+Before either TikTok or Shopee crosses its first provider-write boundary, run
+the deterministic description-media preflight. It must prove non-empty approved
+copy and one complete, unique, ordered HTTPS image route for every exact target,
+with equal gallery and description counts. A failure is a zero-write target
+failure with code `description_media_preflight_failed`; do not continue to a
+provider to repair an invalid route later.
+
+For Ozon, the first-round `publication-default-stock/v1` quantity is a frozen
+publication fact, not a frontend-only suggestion. After every approved Model
+SKU has an authoritative created-listing readback, resolve exactly one active
+non-KGT seller warehouse, read the exact FBS stock for every approved offer,
+and write all mismatches in one bounded `/v2/products/stocks` batch. A
+`PUBLISHED` result requires a second exact warehouse-scoped readback proving
+the frozen quantity for every Model SKU. Reserve one shared mutation attempt
+for that batch in addition to one import attempt per Model SKU. If the stock
+write outcome is unknown, never retry it blindly: read back first, keep the
+confirmed write count unknown, and surface reconciliation even when the
+desired stock is now visible. Missing or ambiguous warehouse facts, duplicate
+stock rows, incomplete SKU coverage, or readback failure cannot be classified
+as published.
+
+Provider identities are operational evidence, not public report fields. Persist
+TikTok detail/shop identities and Shopee global/region/image identities in the
+server-owned run checkpoint before any later fallible action. The frontend may
+show only whether the identity is bound; it must not expose the raw external ID.
+
+## Business closure without rewriting platform truth
+
+When the user explicitly ends a product after reviewing the target results,
+use the server-owned closure through the loopback-only standard-library client
+`scripts/close_product_publication.py`. Supply an explicit base URL and expected
+runtime root; `doctor` identifies the service but does not establish business
+authority. Follow [the closure reference](references/closure.md) for the
+prepare, record and latest commands. Never retry an ambiguous record; reconcile
+the expected closure ID and digest against the exact plan's latest result.
+The closure references the exact source
+reports and keeps their `PUBLISHED`, `PROCESSING`, `FAILED`, or capability block
+facts unchanged. A user-accepted manual handoff is a separate resolution, never
+a platform success. A closure with processing or failed targets is
+`CLOSED_WITH_OPEN_ITEMS` even though the business workflow is complete.
+
+The Product Publication frontend must prefer the latest valid closure as its
+completion view: show the target matrix, verified/manual/processing/failed
+counts, identity-bound flag, source run identities and manual handoff evidence.
+Keep original execution history available behind a collapsed audit disclosure
+and hide mutation controls for a closed product. Never overwrite the original
+publication or repair reports.
 
 ## Production command
 
 After the user authorizes the exact offer, plan and platforms, execute:
 
 ```powershell
-.venv\Scripts\python.exe skills\publish-approved-product\scripts\product_center_publication.py --offer-id <OFFER_ID> --plan-id <EXACT_PLAN_ID> --platform all --execute
+.venv\Scripts\python.exe skills\publish-approved-product\scripts\product_center_publication.py --offer-id <OFFER_ID> --plan-id <EXACT_PLAN_ID> --platform all --base-url <VERIFIED_PRODUCT_CENTER_BASE_URL> --execute
 ```
 
 Use `--platform tiktok`, `shopee`, or `ozon` for an isolated retry. Authorization
@@ -579,6 +862,10 @@ Read only the relevant reference before that platform:
 
 Read `references/incident-patterns.md` before adding a permanent lesson. Never
 record an unconfirmed hypothesis as policy.
+After that gate is satisfied, also add one bounded CONFIRMED row to
+`references/incident-registry.json` with its invariant, regression tests, fix
+commit and readback requirement. The registry is the machine-readable index;
+platform references retain the detailed evidence.
 
 ## Canonical Skill parity
 
@@ -630,6 +917,17 @@ draft category as an untrusted candidate. Before TikTok dispatch:
 7. Use deterministic code to write the confirmed site category and required
    attributes, then read back the exact draft before dispatch.
 
+For wallpaper, an enabled decorative-sticker fallback may be used only when
+the frozen snapshot contains a durable `self_adhesive=true` product claim with
+Kyle's conversation-approval evidence. Once that fact is recorded, inherit it
+without asking Kyle to approve it again; shopper-facing title or description
+wording is not the fact authority. Words proposed by title generation,
+selected pending claims, or a visual guess are not verified facts. If the
+ordinary wallpaper leaf is disabled and the durable claim is absent, fail
+before provider dispatch with zero writes and show the exact missing fact on
+the frontend. Always re-read the exact site's current category tree and exact
+shop metadata; that technical verification is not a new human approval gate.
+
 Never preserve a Miaoshou-prefilled category merely because metadata recognizes
 it. A fallback is valid only because the user explicitly approved that product
 family fallback and the official site tree currently permits it.
@@ -639,22 +937,90 @@ family fallback and the official site tree currently permits it.
 Expose only: **发布成功**, **平台处理中**, **部分成功**, or **发布失败**.
 Retain dispatch/readback evidence in the report without credentials or raw
 provider responses.
+
+## Frontend audit projection is part of completion
+
+Every platform start, preparation outcome, dispatch, readback and final
+classification must first be durable in the exact immutable publication report,
+then be projected on the Product Publication frontend. The projection must show
+the snapshot check, whether a platform request was attempted, readback state,
+final classification, per-target status, confirmed external-write count, and
+the pre-mutation budget limits, attempts and ordered safe operation names.
+Show only sanitized evidence and concise decision results; never expose raw
+provider responses, credentials, external item identities or hidden reasoning.
+
+Do not claim the publication workflow is complete unless the frontend resolves
+the same `offer_id + revision + plan_id + snapshot_digest` report and displays
+its current platform state. A missing or stale frontend projection is a workflow
+defect to fix before handoff, not a reason to repeat a platform write.
+
+## One final approval and governed recovery
+
+After exact Miaoshou write/readback, run the zero-write platform preflight and
+persist `platform-preflight.json`. Only then compile the final candidate. The
+sole human approval must bind `candidate_digest + snapshot_digest + complete
+ordered target list`; any digest drift blocks execution pending reconciliation.
+A material change to frozen facts, target scope, or companion actions requires
+a new complete review; a read-only freshness check does not. No platform
+executor may start without the current `final-publication-approval/v1` receipt
+and a fresh execution-time validation of its identity and scope.
+
+After that receipt exists, never ask for the same approval again because the
+session or agent changed, a provider is still processing, a readback must be
+refreshed, a bounded technical retry remains inside the frozen candidate and
+budget, or a known companion action still has to converge. Revalidate and reuse
+the receipt for those operations.
+
+Require new explicit authority only when the frozen candidate changes, target
+scope expands, a paid action falls outside existing paid authority, a new external
+write class is introduced, or another commercial fact outside the candidate is
+proposed. Changes to SKU, shopper-facing content, price or discount, stock
+quantity, or warehouse-selection policy are candidate changes. Do not describe a
+technical retry or read-only provider lookup as a new paid or external action.
+
+If a required fact was present in immutable approved lineage but a projection
+bug dropped it from a later snapshot, classify that as a system defect. Repair
+the projection permanently and create a controlled continuation receipt that
+binds the original candidate and approval digests, source evidence digest,
+restored fact digest, exact target, operation kind, mutation budget and
+`no_scope_expansion=true`. The continuation may resume under the same approval
+only when the restored value is exactly reproducible from that lineage and adds
+no new commercial choice. Missing, conflicting or newly chosen facts fail
+closed and require a new review. Never overwrite the original candidate,
+approval, snapshot or final report; persist successor/reconciliation lineage.
+
+Every non-success result must be classified with
+`config/publication_error_policy.json`. An unknown write has zero automatic
+retries and requires readback reconciliation before any new mutation. A
+transient failure may retry only when confirmed writes are zero and only within
+the configured budget. Persist the classification and recovery budget in the
+target report, then project the same evidence to the frontend.
 ````
 
-## 中文完整翻译
+## 中文参考译文
 
-<!-- source_sha256: f5845610f65792aa4bc1abc4723cc23eb6f9672a32aaaf2136c0c9cc80c22d5e -->
+**`publish-approved-product` 中文译文已过期：以下为历史译本，不得据此执行；请以本节当前英文 `SKILL.md` 原文为准。**
+
+<!-- source_sha256: b91bb9cccdd45eefb7e6b726bd4690e07c66b94139072baed90b8d389a9af7dc -->
+
+> 历史译本（2026-09-22 标注）：此 source_sha256 与当前英文 Skill 不一致。旧 closure HTTP 命令不可执行；请读当前英文 `SKILL.md` 和 `docs/AGENT_HANDOFF.md`。
+
+> 2026-09-29 合同提示（以下仍是历史译文，不是执行权威）：妙手 COMMON 技术写入及官方回读后，Kyle 在商品发布前端审阅完整冻结全目标候选并只批准一次。未来经服务端验证的本机前端回执可独立构成唯一终审，无需在会话中再次确认；裸页面按钮和客户端自报字段不构成授权。当前正式业务仍为 HOLD，具体条件以当前英文 `SKILL.md`、有效工单和现场门禁为准。
 
 ### 元数据
 
 - `name`: `publish-approved-product`
-- `description`: 对已经批准的商品发布中心 Offer 执行第 05–07 阶段，使用三个独立工作流检查已批准的逐 SKU 快照、通过妙手发布 TikTok、创建 Shopee 全球商品、通过官方 API 发布 Ozon、执行平台专属回读、如实分类结果，并只保留已经确认的事故经验。当用户要求发布、重试、检查或诊断已完成 01–04 阶段的 Offer ID 时使用。
+- `description`: 对已经批准的商品发布中心 Offer，通过独立的 TikTok、Shopee 和 Ozon 工作流执行第 05–07 阶段；检查冻结事实，执行平台专属发布/回读，或准备并记录绑定精确计划的本地业务关闭。用于发布、重试、检查或关闭已完成 01–04 阶段的已批准 Offer ID。
 
 ### 发布已批准商品
 
+接管时，按仓库根 `docs/PUBLICATION_SOURCE_CONTRACT.md` 使用所选项目中绑定提交的 `scripts/publication_takeover.py`。它只读取已有证据，不恢复发布 run，也不授予商城操作权限。其来源绑定须与历史数据分别保存。
+
+本译文的脚本简称与 `references/` 相对 canonical `skills/publish-approved-product` 目录；显式 `skills/`、`scripts/sync_product_publication_skills.py` 和 `reports/` 路径相对仓库根。
+
 只使用已批准的商品发布中心快照作为公共输入。TikTok、Shopee 和 Ozon 是独立任务。一个平台的历史状态、失败、警告或回读绝不能阻止另一个平台。
 
-Kyle 在会话中的明确批准是唯一人工批准权威。页面按钮绝不是批准权威。发布前，Agent 必须通过确定性商品发布中心边界持久化精确批准 revision 与 plan；缺失或过期技术事实可以阻止执行，但不得要求 Kyle 在另一个页面重复同一批准。
+此历史段落的“会话是唯一批准权威”表述已失效；以开头的 2026-09-29 合同提示及当前英文 `SKILL.md` 为准。
 
 ### 必需架构
 
@@ -778,6 +1144,12 @@ Shopee 必须先完成并验证全球商品。只有已批准快照明确选择 
 7. 使用确定性代码写入已确认站点类目和必填属性，然后在 dispatch 前回读精确草稿。
 
 不能仅因为元数据识别妙手预填类目就保留它。fallback 有效的原因只能是：用户已明确批准该产品家族 fallback，且官方站点树当前允许。
+
+### 本地业务关闭
+
+使用 `scripts/close_product_publication.py` 执行只读 doctor/prepare/latest，以及显式本地 record 动作。它调用现有商品发布中心关闭服务，不执行发布。读取 canonical 的 `references/closure.md`，了解可移植命令、精确 prepared-input 交接与响应丢失恢复。
+
+保留返回的完整目标阻断项与来源身份；下方发布四态摘要不能代替关闭证据。
 
 ### 用户可见结果
 

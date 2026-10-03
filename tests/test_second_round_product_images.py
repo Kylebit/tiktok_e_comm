@@ -224,3 +224,10 @@ def test_pre_review_sync_writes_common_baseline_once_and_records_readback(monkey
         "published": False,
     }
     assert summary["review"]["miaoshou_pre_review_sync"]["verified"] is True
+
+
+@pytest.fixture(autouse=True)
+def local_offer_identity_fixture(monkeypatch):
+    # The tests already supply exact local approval/state fixtures. Do not let
+    # the independent precollect resolver try to read a real Miaoshou config.
+    monkeypatch.setattr(workbench,'resolve_offer_key',lambda value:str(value))

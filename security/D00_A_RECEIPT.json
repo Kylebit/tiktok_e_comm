@@ -1,0 +1,1036 @@
+{
+  "package": "D00-A",
+  "status": "IMPLEMENTED_FOR_ROOT_ACCEPTANCE",
+  "base": "58a81e9ded5264fc16d897ef6a023ddbbfb2b2e9",
+  "implementation_head": "5868a8d7516b32da467e6e27b8beb700c54e19ba",
+  "implementation_commits": [
+    "db1d4ecbbdb55910a4beeb698bc7c7f45258e2c6",
+    "1444f107ccae6f1c827da607bc0ce88494c79cfa",
+    "5868a8d7516b32da467e6e27b8beb700c54e19ba"
+  ],
+  "worktree": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-d00-app-20260905",
+  "branch": "codex/orbithive-d00-app-20260905",
+  "pre_receipt_tracked_clean": true,
+  "final_commit_binding": "architecture/d00-evidence/finalization.json (generated after receipt-only commit)",
+  "work_order": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\work-orders\\WO-20260905-ORBIT-D00-A.md",
+  "sources": [
+    {
+      "path": "desktop/build_manifest.json",
+      "base_blob": null,
+      "current_blob": "071ebd9805a387dd57708ac52d84b96c88cb21b5",
+      "physical_sha256": "e9152c3e225d293cfef19443a20f3f47849819467d668ed44b69db5bb5420ff8",
+      "bytes": 1097
+    },
+    {
+      "path": "desktop/diagnostic_boundary.py",
+      "base_blob": null,
+      "current_blob": "52ce65a72a60c494613e2536188874ab6dcf5b11",
+      "physical_sha256": "1bf19ee5bac3fc6180647a18bd43d2943cb0db3caa0529b2594ba1f415b20849",
+      "bytes": 2911
+    },
+    {
+      "path": "desktop/orbit_desktop_app.py",
+      "base_blob": "1c17952eb20d87c88aa722f827a528d598cbbe75",
+      "current_blob": "43dc239ba40890b5b5411fee9c3fb8878d4c7edb",
+      "physical_sha256": "f5df9c189d177107737f50528fef8081a4bfd4b30915adf379a7f27c6ae9f6aa",
+      "bytes": 177
+    },
+    {
+      "path": "desktop/orbit_desktop_webview.py",
+      "base_blob": "3e014bbbcb716d1264cb2e8d84942b4a0f93dc1f",
+      "current_blob": "be019675a73ab718b1327401b25509652ca4dcb7",
+      "physical_sha256": "aa7f71a1e9b07ba40d57cde49d97329ab18a3cf898e60f1b853663288e1c8d73",
+      "bytes": 10868
+    },
+    {
+      "path": "desktop/renderer_diagnostics.py",
+      "base_blob": null,
+      "current_blob": "69a6f2486d0670e675be418b19ab088e0d3e19ff",
+      "physical_sha256": "1d89ce7419af3e7256e4305e03af6f24a8641ade16468a59352df5260bef0405",
+      "bytes": 6960
+    },
+    {
+      "path": "desktop/requirements-build.lock.txt",
+      "base_blob": null,
+      "current_blob": "28ad5d0b0cdcf86a5196e4b2e88534b8dd5d9bd0",
+      "physical_sha256": "178f062bfb410cd982ff95dfe4dbc04748d9d1ed4b7622d5bac73e10820b98e8",
+      "bytes": 1485
+    },
+    {
+      "path": "desktop/session.py",
+      "base_blob": null,
+      "current_blob": "3fa9000223aa68570d91b10e6e756127ab54fbbf",
+      "physical_sha256": "0865746e062e05ba1970d46e1fc2f187acb65826d55d8f937faa8167dc844e53",
+      "bytes": 8178
+    },
+    {
+      "path": "desktop/startup.py",
+      "base_blob": null,
+      "current_blob": "7a4ef920564c3583d2e0e78d7e03ca37b1aefbd1",
+      "physical_sha256": "c6dae88a98f38e3a17e7e81fbdd71aa860f252fec9a44dc9e02cf026b3163329",
+      "bytes": 6976
+    },
+    {
+      "path": "docs/desktop-client.md",
+      "base_blob": null,
+      "current_blob": "d6647eebedc3f8938ffd86defc5ac5786ccee98f",
+      "physical_sha256": "eeec21d5e2074d7de7ee949d72889bb783a7881cf6624256922c577cc423b98f",
+      "bytes": 6265
+    },
+    {
+      "path": "scripts/build_orbit_desktop.ps1",
+      "base_blob": "9a054369625fb2a2c91facc9cb6db11ed5ed2368",
+      "current_blob": "fb6b9bbe1fe76663b12c4c3262e153e281415d47",
+      "physical_sha256": "039cb967ad5b7f3d78f644e5bc05dbc3ca5a5a4293c45c7846f5a36a69200fe8",
+      "bytes": 539
+    },
+    {
+      "path": "scripts/build_orbit_desktop.py",
+      "base_blob": "e028eccf8e1ad81f69567e461889879ee77bf299",
+      "current_blob": "7b1c632715f13ed9e2c2d8508b85c4341650a7dd",
+      "physical_sha256": "4bbc40fb7bb9155819c667cab3ce2b0fc9e8860c908a6fe573915fb0aefc283b",
+      "bytes": 7232
+    },
+    {
+      "path": "scripts/product_publication_runtime.py",
+      "base_blob": "2da0bd1a568cb7306d92f8d99d5990fe4ea6e00a",
+      "current_blob": "0a44c0a9693c70d1bca4ec3608d0c15140f029c6",
+      "physical_sha256": "70529bdf6eef76daf654a1368a835f7405ade89e60065571fc3c2d5016c18bf4",
+      "bytes": 14815
+    },
+    {
+      "path": "scripts/start_orbit_desktop.py",
+      "base_blob": "77c41fc0777ae45ecb13546e458e8b006f711d77",
+      "current_blob": "a372e61f66539fa844b6c68dbd90b6aad4bab16a",
+      "physical_sha256": "71d68c77e13832a95e2eafc792fe38783a73c2d6d0dd4ebe1e652b7cbb968dbf",
+      "bytes": 432
+    },
+    {
+      "path": "tests/test_desktop_session.py",
+      "base_blob": null,
+      "current_blob": "93a1bf78c160c8484f5da935f428bc756a7148be",
+      "physical_sha256": "39ccf8ddcb9befe91a03682a46cd8340c8bd21232bc7aa8d592947f8dca0f3a6",
+      "bytes": 6772
+    }
+  ],
+  "build": {
+    "build": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\d00b8",
+    "bundle": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\d00b8\\dist\\OrbitDesktop",
+    "exe_sha256": "356137040e34c82c1031280a43de864ac829d1f2fee185a2f007e6c946736e3e",
+    "input_count": 13,
+    "bundle_files": 91,
+    "bundle_bytes": 25485084,
+    "source_inputs": [
+      {
+        "path": "desktop/__init__.py",
+        "sha256": "17b714296a13c7e5364802db4500f7ad9bf964da3456eb370d4dc63cf70b680b",
+        "bytes": 32
+      },
+      {
+        "path": "desktop/session.py",
+        "sha256": "0865746e062e05ba1970d46e1fc2f187acb65826d55d8f937faa8167dc844e53",
+        "bytes": 8178
+      },
+      {
+        "path": "desktop/startup.py",
+        "sha256": "c6dae88a98f38e3a17e7e81fbdd71aa860f252fec9a44dc9e02cf026b3163329",
+        "bytes": 6976
+      },
+      {
+        "path": "desktop/orbit_desktop_webview.py",
+        "sha256": "aa7f71a1e9b07ba40d57cde49d97329ab18a3cf898e60f1b853663288e1c8d73",
+        "bytes": 10868
+      },
+      {
+        "path": "desktop/renderer_diagnostics.py",
+        "sha256": "1d89ce7419af3e7256e4305e03af6f24a8641ade16468a59352df5260bef0405",
+        "bytes": 6960
+      },
+      {
+        "path": "desktop/diagnostic_boundary.py",
+        "sha256": "1bf19ee5bac3fc6180647a18bd43d2943cb0db3caa0529b2594ba1f415b20849",
+        "bytes": 2911
+      },
+      {
+        "path": "scripts/start_orbit_desktop.py",
+        "sha256": "71d68c77e13832a95e2eafc792fe38783a73c2d6d0dd4ebe1e652b7cbb968dbf",
+        "bytes": 432
+      },
+      {
+        "path": "core/__init__.py",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      {
+        "path": "core/static_files.py",
+        "sha256": "6c8eea90419ea95f1caebb7f0343fb44c580e4e218f7b3f0c3b179727dbbc7c2",
+        "bytes": 1548
+      },
+      {
+        "path": "shared_platform/__init__.py",
+        "sha256": "368337062fc1c7ab370b7a5ab91b3fe7e79a65d847e880698c5e575ab6623dac",
+        "bytes": 215
+      },
+      {
+        "path": "shared_platform/runtime_identity.py",
+        "sha256": "9a53a979dac4fa465bb8e86bb30bf8b0a5e517e36ff6ae39d000e1f8a3e9af04",
+        "bytes": 12624
+      },
+      {
+        "path": "scripts/product_publication_runtime.py",
+        "sha256": "70529bdf6eef76daf654a1368a835f7405ade89e60065571fc3c2d5016c18bf4",
+        "bytes": 14815
+      },
+      {
+        "path": "docs/desktop-client.md",
+        "sha256": "eeec21d5e2074d7de7ee949d72889bb783a7881cf6624256922c577cc423b98f",
+        "bytes": 6265
+      }
+    ],
+    "dependency_lock_sha256": "178f062bfb410cd982ff95dfe4dbc04748d9d1ed4b7622d5bac73e10820b98e8",
+    "dependency_analysis_site_packages": []
+  },
+  "assets": {
+    "preserved_from_base": "58a81e9ded5264fc16d897ef6a023ddbbfb2b2e9",
+    "count": 247,
+    "media_count": 224,
+    "all_base_equal": true,
+    "full_path_and_SHA_manifest": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\bundle-validation-d00b8.json"
+  },
+  "dependencies": [
+    {
+      "name": "pywebview",
+      "version": "6.2.1",
+      "official_url": "https://files.pythonhosted.org/packages/3d/25/9491695c22c4842c5b3903b4dc172e0eecf67a27c0af34a71512c9b76a0a/pywebview-6.2.1-py3-none-any.whl",
+      "archive_sha256": "9d07275f53894ab4d5e2e0e996227193e7187dec276d9b624dccbce029216b46"
+    },
+    {
+      "name": "pythonnet",
+      "version": "3.0.5",
+      "official_url": "https://files.pythonhosted.org/packages/cd/f1/bfb6811df4745f92f14c47a29e50e89a36b1533130fcc56452d4660bd2d6/pythonnet-3.0.5-py3-none-any.whl",
+      "archive_sha256": "f6702d694d5d5b163c9f3f5cc34e0bed8d6857150237fae411fefb883a656d20"
+    },
+    {
+      "name": "pyinstaller",
+      "version": "6.16.0",
+      "official_url": "https://files.pythonhosted.org/packages/aa/99/2005efbc297e7813c1d6f18484aa94a1a81ce87b6a5b497c563681f4c4ea/pyinstaller-6.16.0-py3-none-win_amd64.whl",
+      "archive_sha256": "bc10eb1a787f99fea613509f55b902fbd2d8b73ff5f51ff245ea29a481d97d41"
+    },
+    {
+      "name": "clr_loader",
+      "version": "0.2.10",
+      "official_url": "https://files.pythonhosted.org/packages/c8/61/cf819f8e8bb4d4c74661acf2498ba8d4a296714be3478d21eaabf64f5b9b/clr_loader-0.2.10-py3-none-any.whl",
+      "archive_sha256": "ebbbf9d511a7fe95fa28a95a4e04cd195b097881dfe66158dc2c281d3536f282"
+    },
+    {
+      "name": "cffi",
+      "version": "2.1.1",
+      "official_url": "https://files.pythonhosted.org/packages/d9/79/615cc094e2fb508cade7de88d3b4f6c4ec2bab695c97bce9153dc65aadf5/cffi-2.1.1-cp312-cp312-win_amd64.whl",
+      "archive_sha256": "f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a"
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "official_url": "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl",
+      "archive_sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c"
+    },
+    {
+      "name": "pefile",
+      "version": "2023.2.7",
+      "official_url": "https://files.pythonhosted.org/packages/55/26/d0ad8b448476d0a1e8d3ea5622dc77b916db84c6aa3cb1e1c0965af948fc/pefile-2023.2.7-py3-none-any.whl",
+      "archive_sha256": "da185cd2af68c08a6cd4481f7325ed600a88f6a813bad9dea07ab3ef73d8d8d6"
+    },
+    {
+      "name": "pyinstaller-hooks-contrib",
+      "version": "2026.7",
+      "official_url": "https://files.pythonhosted.org/packages/0a/67/350377af7b50416344ab8792756d414eef7629c618a73e9a0b13bb1552d9/pyinstaller_hooks_contrib-2026.7-py3-none-any.whl",
+      "archive_sha256": "24257a04c7a5a7a034cf28e39dcee20fbeeb9f043076729480f2e1b69904408a"
+    },
+    {
+      "name": "pywin32-ctypes",
+      "version": "0.2.3",
+      "official_url": "https://files.pythonhosted.org/packages/de/3d/8161f7711c017e01ac9f008dfddd9410dff3674334c233bde66e7ba65bbf/pywin32_ctypes-0.2.3-py3-none-any.whl",
+      "archive_sha256": "8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8"
+    },
+    {
+      "name": "setuptools",
+      "version": "84.0.0",
+      "official_url": "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl",
+      "archive_sha256": "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670"
+    },
+    {
+      "name": "altgraph",
+      "version": "0.17.5",
+      "official_url": "https://files.pythonhosted.org/packages/a9/ba/000a1996d4308bc65120167c21241a3b205464a2e0b58deda26ae8ac21d1/altgraph-0.17.5-py2.py3-none-any.whl",
+      "archive_sha256": "f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597"
+    },
+    {
+      "name": "bottle",
+      "version": "0.13.4",
+      "official_url": "https://files.pythonhosted.org/packages/83/f6/b55ec74cfe68c6584163faa311503c20b0da4c09883a41e8e00d6726c954/bottle-0.13.4-py2.py3-none-any.whl",
+      "archive_sha256": "045684fbd2764eac9cdeb824861d1551d113e8b683d8d26e296898d3dd99a12e"
+    },
+    {
+      "name": "proxy_tools",
+      "version": "0.1.0",
+      "official_url": "https://files.pythonhosted.org/packages/f2/cf/77d3e19b7fabd03895caca7857ef51e4c409e0ca6b37ee6e9f7daa50b642/proxy_tools-0.1.0.tar.gz",
+      "archive_sha256": "ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010"
+    },
+    {
+      "name": "pycparser",
+      "version": "3.0",
+      "official_url": "https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl",
+      "archive_sha256": "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992"
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "official_url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+      "archive_sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+    }
+  ],
+  "dependency_install_target": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\runtime-dependencies",
+  "tests": {
+    "unique_pytest": 33,
+    "failed": 0,
+    "skipped": 0,
+    "test_cases": [
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_foreign_json_is_not_online"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_bound_port_without_health_is_not_startable"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_actual_identity_controls_connection[change0-READY]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_actual_identity_controls_connection[change1-SOURCE_MISMATCH]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_actual_identity_controls_connection[change2-SOURCE_MISMATCH]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_actual_identity_controls_connection[change3-UNKNOWN]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_actual_identity_controls_connection[change4-CONFIG_MISMATCH]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_actual_identity_controls_connection[change5-DATA_PROFILE_MISMATCH]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_actual_identity_controls_connection[change6-DEPENDENCY_UNAVAILABLE]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_ready_service_does_not_need_python_or_launch"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_unknown_selection_never_probes"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_stopped_requires_explicit_python"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_external_page_argument_rejected[https://example.com]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_external_page_argument_rejected[//example.com]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_external_page_argument_rejected[/\\\\other]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_external_page_argument_rejected[file:///x]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_unsafe_external_destination_rejected[http://example.com]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_unsafe_external_destination_rejected[https://127.0.0.1/x]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_unsafe_external_destination_rejected[https://localhost]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_unsafe_external_destination_rejected[file:///x]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_unsafe_external_destination_rejected[javascript:alert(1)]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_unsafe_external_destination_rejected[https://u:p@example.com]"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_public_https_link_has_no_local_service_authority"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_profile_generation_is_exclusive_and_never_opens_stores"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_sensitive_filename_not_read_as_profile"
+      },
+      {
+        "class": "tests.test_desktop_session",
+        "name": "test_port_override_keeps_other_services_unchanged"
+      },
+      {
+        "class": "tests.test_product_publication_runtime",
+        "name": "test_service_contract_uses_exact_commands_and_identity_health_endpoints"
+      },
+      {
+        "class": "tests.test_product_publication_runtime",
+        "name": "test_status_is_read_only_and_validates_service_identity"
+      },
+      {
+        "class": "tests.test_product_publication_runtime",
+        "name": "test_start_reuses_healthy_service_and_launches_only_stopped_service"
+      },
+      {
+        "class": "tests.test_product_publication_runtime",
+        "name": "test_start_refuses_occupied_or_wrong_ports_without_launching_anything"
+      },
+      {
+        "class": "tests.test_product_publication_runtime",
+        "name": "test_launcher_writes_logs_and_atomic_pid_record_without_running_live_process"
+      },
+      {
+        "class": "tests.test_product_publication_runtime",
+        "name": "test_takeover_check_is_read_only_and_classifies_each_gate"
+      },
+      {
+        "class": "tests.test_product_publication_runtime",
+        "name": "test_takeover_check_reports_untracked_skill_without_starting_or_posting"
+      }
+    ],
+    "source_webview2_checks": [
+      {
+        "name": "main READY without Python",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "main top level no iframe",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "seven area website navigation",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "no service bridge",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "main screenshot captured",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "deep link identity 99003",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "actual synthetic images loaded",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "deep screenshot captured",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "same origin new window stays in same APP",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "user external HTTPS forwarded to opener",
+        "passed": true,
+        "detail": [
+          "https://example.com/d00"
+        ]
+      },
+      {
+        "name": "external website not loaded in WebView",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "other local service never opened",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "native download cancelled",
+        "passed": true,
+        "detail": [
+          {
+            "action": "same-origin-new-window",
+            "url": "http://127.0.0.1:56521/?view=knowledge"
+          },
+          {
+            "action": "external-open",
+            "url": "https://example.com/d00"
+          },
+          {
+            "action": "navigation-blocked",
+            "url": "http://127.0.0.1:8765/"
+          },
+          {
+            "action": "download-blocked",
+            "url": "http://127.0.0.1:56521/_download-test"
+          },
+          {
+            "action": "identity-rejected",
+            "url": "http://127.0.0.1:56521/_foreign-marker",
+            "state": "WRONG_SERVICE",
+            "phase": "navigation"
+          },
+          {
+            "action": "identity-rejected",
+            "url": "http://127.0.0.1:56521/_foreign-marker",
+            "state": "WRONG_SERVICE",
+            "phase": "document-request"
+          },
+          {
+            "action": "identity-rejected",
+            "url": "http://127.0.0.1:56521/_foreign-marker",
+            "state": "WRONG_SERVICE",
+            "phase": "navigation"
+          },
+          {
+            "action": "window-close",
+            "background_services_stopped": false,
+            "business_requests_sent": 0
+          }
+        ]
+      },
+      {
+        "name": "ordinary navigation rejects replaced service",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "explicit refresh recovers verified main",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "new window rejects replaced service",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "foreign target page never requested",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "no renderer business POST",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "no unintended external opener",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "fixture task DB unchanged before closing",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "closing kept own backend READY",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "closing preserved durable fixture task",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "closing event has no stop",
+        "passed": true,
+        "detail": null
+      }
+    ],
+    "source_webview2_count": 23,
+    "source_webview2_pid": 62284,
+    "identity_cycle_subset_count": 8,
+    "subset_not_added_to_23": true,
+    "source_task_db_sha256": "9d0c3c2ab0fc5beb5a6f6c0c30ef8e78de3519f3eff86aae638735db293c9b49",
+    "native_rejected_attempts_in_final23": [],
+    "final_artifact_runs": [
+      {
+        "label": "artifact-b8-main",
+        "pid": 52732,
+        "exit_code": 0,
+        "state": "READY",
+        "url": "http://127.0.0.1:56521/",
+        "command": [
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\d00b8\\dist\\OrbitDesktop\\OrbitDesktop.exe",
+          "--profile",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\handler-fixture\\preview-data\\runtime-profile.json",
+          "--port",
+          "56521",
+          "--state-dir",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\d00state-artifact-b8-main",
+          "--diagnostics",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-main\\diagnostics",
+          "--diagnostic-proxy-port",
+          "61368",
+          "--result",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-main\\status.json",
+          "--project-root",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-d00-app-20260905",
+          "--exit-after-diagnostics"
+        ],
+        "cwd": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-main\\empty-cwd",
+        "cwd_before": [],
+        "cwd_after": [],
+        "external_python_argument": false,
+        "child_PATH": "C:/Program Files/Git/cmd;C:/Windows/System32;C:/Windows",
+        "renderer": "edgechromium",
+        "version": "152.0.4191.62",
+        "evidence_layer": "actual WebView2 application test interface",
+        "image_wait_timed_out": false,
+        "images": [],
+        "selected_product_tab": null,
+        "product_identity": null,
+        "business_POST_count": 0,
+        "native_forwarded_request_count": 7,
+        "acceptance_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-main\\acceptance.json",
+        "renderer_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-main\\diagnostics\\renderer.json",
+        "screenshot_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-main\\diagnostics\\renderer.png"
+      },
+      {
+        "label": "artifact-b8-images",
+        "pid": 46772,
+        "exit_code": 0,
+        "state": "READY",
+        "url": "http://127.0.0.1:56521/product-workspace?offer_id=99003",
+        "command": [
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\d00b8\\dist\\OrbitDesktop\\OrbitDesktop.exe",
+          "--profile",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\handler-fixture\\preview-data\\runtime-profile.json",
+          "--port",
+          "56521",
+          "--state-dir",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\d00state-artifact-b8-images",
+          "--diagnostics",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-images\\diagnostics",
+          "--diagnostic-proxy-port",
+          "61418",
+          "--result",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-images\\status.json",
+          "--project-root",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-d00-app-20260905",
+          "--page",
+          "/product-workspace?offer_id=99003",
+          "--diagnostic-product-images",
+          "--exit-after-diagnostics"
+        ],
+        "cwd": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-images\\empty-cwd",
+        "cwd_before": [],
+        "cwd_after": [],
+        "external_python_argument": false,
+        "child_PATH": "C:/Program Files/Git/cmd;C:/Windows/System32;C:/Windows",
+        "renderer": "edgechromium",
+        "version": "152.0.4191.62",
+        "evidence_layer": "actual WebView2 application test interface",
+        "image_wait_timed_out": false,
+        "images": [
+          {
+            "src": "http://127.0.0.1:56521/api/proxy-image?url=https%3A%2F%2Ffixture.invalid%2Fgood.png",
+            "complete": true,
+            "width": 400,
+            "height": 400,
+            "visible_in_layout": true,
+            "visible_in_viewport": true
+          },
+          {
+            "src": "http://127.0.0.1:56521/api/proxy-image?url=https%3A%2F%2Ffixture.invalid%2Fbroken.png",
+            "complete": true,
+            "width": 400,
+            "height": 400,
+            "visible_in_layout": true,
+            "visible_in_viewport": true
+          },
+          {
+            "src": "http://127.0.0.1:56521/api/proxy-image?url=https%3A%2F%2Ffixture.invalid%2Fgood.png",
+            "complete": true,
+            "width": 400,
+            "height": 400,
+            "visible_in_layout": true,
+            "visible_in_viewport": true
+          },
+          {
+            "src": "http://127.0.0.1:56521/api/proxy-image?url=https%3A%2F%2Ffixture.invalid%2Fbroken.png",
+            "complete": true,
+            "width": 400,
+            "height": 400,
+            "visible_in_layout": true,
+            "visible_in_viewport": true
+          }
+        ],
+        "selected_product_tab": "images",
+        "product_identity": {
+          "path": "/product-workspace",
+          "offer": "99003",
+          "selected": "99003",
+          "ready": true
+        },
+        "business_POST_count": 0,
+        "native_forwarded_request_count": 13,
+        "acceptance_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-images\\acceptance.json",
+        "renderer_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-images\\diagnostics\\renderer.json",
+        "screenshot_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-images\\diagnostics\\renderer.png"
+      },
+      {
+        "label": "artifact-b8-missing",
+        "pid": 64840,
+        "exit_code": 0,
+        "state": "PROJECT_REQUIRED",
+        "url": "about:blank",
+        "command": [
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\d00b8\\dist\\OrbitDesktop\\OrbitDesktop.exe",
+          "--profile",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\handler-fixture\\preview-data\\runtime-profile.json",
+          "--port",
+          "56521",
+          "--state-dir",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\d00state-artifact-b8-missing",
+          "--diagnostics",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-missing\\diagnostics",
+          "--diagnostic-proxy-port",
+          "61472",
+          "--result",
+          "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-missing\\status.json",
+          "--exit-after-diagnostics"
+        ],
+        "cwd": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-missing\\empty-cwd",
+        "cwd_before": [],
+        "cwd_after": [],
+        "external_python_argument": false,
+        "child_PATH": "C:/Program Files/Git/cmd;C:/Windows/System32;C:/Windows",
+        "renderer": "edgechromium",
+        "version": "152.0.4191.62",
+        "evidence_layer": "actual WebView2 application test interface",
+        "image_wait_timed_out": false,
+        "images": [],
+        "selected_product_tab": null,
+        "product_identity": null,
+        "business_POST_count": 0,
+        "native_forwarded_request_count": 0,
+        "acceptance_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-missing\\acceptance.json",
+        "renderer_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-missing\\diagnostics\\renderer.json",
+        "screenshot_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-missing\\diagnostics\\renderer.png"
+      }
+    ],
+    "native_human_UI_acceptance": false,
+    "external_opener_is_spy": true
+  },
+  "isolation": {
+    "configuration_initializations": 0,
+    "configuration_cache": "manually attributed synthetic config only",
+    "business_database_connections": 0,
+    "allowed_database": "own generated real ReleaseStore fixture only",
+    "renderer_business_POST": 0,
+    "platform_or_paid_calls": 0,
+    "external_runtime_network_connections": 0,
+    "dependency_installation": "authorized official fixed PyPI downloads, separate from offline runtime evidence",
+    "services_preserved": [
+      "original3000/8788",
+      "original8765/8766/8767",
+      "C4 PID61600:49289",
+      "video PID56008:59620",
+      "U00dense PID63228:59502",
+      "U00 PID64568:49569"
+    ]
+  },
+  "preview_at_render_validation": {
+    "pid": 5176,
+    "command": [
+      "D:\\Users\\Windows11\\Desktop\\Agent_PR\\tiktok_e_comm\\.venv\\Scripts\\python.exe",
+      "-B",
+      "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\handler_fixture.py",
+      "--port",
+      "56521"
+    ],
+    "cwd": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-d00-app-20260905",
+    "guard_sha256": "0c7889e0453659d4dfcebdc55ea10e484132878e32fa92febeefec7ba4415f35",
+    "original_fixture_sha256": "945cff5e8f40a5ef7f5f43b8f33d5552c0b91047fe2616f8fed9b2b4a6a20e64",
+    "exit_code": null,
+    "ready": true
+  },
+  "limits": [
+    "Portable Windows x64 client requires complete external Git project, Git and installed WebView2; backend and business assets are not in bundle.",
+    "Existing READY service needs no external Python. Explicit backend start requires chosen interpreter and business dependencies.",
+    "Actual WebView2 diagnostic interface, not native human UI/file-picker or ordinary Chrome acceptance.",
+    "Explicit production main.py spawn is validated by offline launcher contracts; actual renderer connected to guarded real-handler synthetic fixture, not production backend startup.",
+    "Identity probes are bounded observations on navigation/new-window/document requests, not continuous authentication of an already loaded page or per-business API authorization.",
+    "External opener is a spy and downloads are cancelled; no actual external browser/network download performed.",
+    "Negative 404 and premature empty-src captures retained; final two-image success only applies to distinct valid synthetic-image fixture mode.",
+    "No signing/deployment/shortcut replacement/push or production operation."
+  ],
+  "evidence": [
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\preflight.json",
+      "sha256": "20a4e059480317dee8c6f4fed1596ab32847fab9f8aef4417eecaab8e4aaa5d9",
+      "bytes": 3277
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\red-health-result.json",
+      "sha256": "6d3c383516b2ad198d15ecfe7d6f8aa184d853731e4b2f0722d91132e2726ab2",
+      "bytes": 338
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\red-health2-command.json",
+      "sha256": "5ae7c4e083ef6eac9fb729488aa6002a25fe05e3560ee1cbaf23031c671d43db",
+      "bytes": 492
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\renderer-smoke-result.json",
+      "sha256": "b453ca5a1d3983647151014f2704e18825b070999310d81c61a7a63e5d1fe26b",
+      "bytes": 616
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\renderer-smoke2-result.json",
+      "sha256": "1640edbd6801db8a6ae9468b4293e975b8f7b8d3f7a28cd4ca99a46bd9f7b812",
+      "bytes": 262
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\renderer-final3-result.json",
+      "sha256": "0f862d41d1d565fe22ffe887c32b1c28ad8ec89bdae7397dd66457e57e6a3c12",
+      "bytes": 50082
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\renderer-final3-command.json",
+      "sha256": "5dbac0a4af8622e0226f26c77267838de5438b9ed412cade14996f22d14c3cef",
+      "bytes": 481
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\renderer-identity-cycle2-result.json",
+      "sha256": "dd3c115e9ce4a998e16703ba018ec9ab73e5d960a59b87896a68c5864ce3459d",
+      "bytes": 23934
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\renderer-identity-cycle3-result.json",
+      "sha256": "f5f5f98f8b5a3da5edae9e089922fec4a8155b6fcd46a1c9cce9b1b5190d6e88",
+      "bytes": 18885
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\final-junit.xml",
+      "sha256": "0fa3287db517117d27d189f5a87755e23cdf88ac122db4f0a591e9aca1e01109",
+      "bytes": 4595
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\tests-final-command.json",
+      "sha256": "6d847acbfc465846310c2e5b7b8421e249d0b1a4b1d9ae762152bb0ad18b2107",
+      "bytes": 503
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\tests-final.log",
+      "sha256": "6cdd766a941eba7344fec986acc623c4453981434c4e94283221f99e61438d96",
+      "bytes": 237
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\bundle-validation-d00b8.json",
+      "sha256": "df41d203ab81da25c2d390bb06a5fd75f38e2c2b69b9b2248cb649b079f23b26",
+      "bytes": 104980
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\d00b8-command.json",
+      "sha256": "2df7b457b94404d5be0967bfa6f22702bf50851ebb5304378d9976717ab0c7f2",
+      "bytes": 468
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\d00b8.log",
+      "sha256": "4d7bbd0978255af17cb70fa300de88743b901a0982c0a02e1f23a0370e734a2b",
+      "bytes": 111
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\dependency-resolution.json",
+      "sha256": "d1716c6f3c8e16193cc55757934f91aa678d56fcff906d48f45270de12c2ba20",
+      "bytes": 92640
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\dependency-staged-commands.json",
+      "sha256": "441dc6507b00c94f3b04031b486c4d94db741609fae464e4ddea7249f0343c30",
+      "bytes": 1892
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\dependency-wheels.json",
+      "sha256": "36077c4860055171eb8213eaa2c36f3af08d4db7f02972d28365f1ec13c64983",
+      "bytes": 91407
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\dependency-proxy-short.json",
+      "sha256": "359e849b11fb1c6c09c55d778887d7bbbb2e77e55ccd8800c4b7512fbbea4db2",
+      "bytes": 1783
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\build-canaries.json",
+      "sha256": "8436cebb482768b180cd55b67867f31d51e063e0e9a7fac9d12d089fec8838de",
+      "bytes": 2042
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\handler-before-final-build-stop.json",
+      "sha256": "aeeeacf9b4bf1b6849ca1112145ee7684adabd0ea876cae2c1436f5c715cd92b",
+      "bytes": 523
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\handler-port-recovery-stop.json",
+      "sha256": "fe69fed16e9b6052fd46392a5868c9465177689cddf72b3c1d82fac122a2b517",
+      "bytes": 1030
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\handler-final-source-process.json",
+      "sha256": "f2f88e13a7176007c3e4e9d44fef843f43b5b92de57d74efd30838c2f44ff1e9",
+      "bytes": 617
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\handler_fixture.py",
+      "sha256": "bd9113c12c508b59f83334a55b5d48371683d2483ec6f7da22a6a62e560fa530",
+      "bytes": 3855
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\native_proxy.py",
+      "sha256": "e0684dbde41d42e2f3c7a7188d5a4423f1a01acd1bb0e462d0977b8065a33201",
+      "bytes": 1774
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\guard\\sitecustomize.py",
+      "sha256": "0c7889e0453659d4dfcebdc55ea10e484132878e32fa92febeefec7ba4415f35",
+      "bytes": 3828
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\renderer_acceptance.py",
+      "sha256": "96d8b415fde7dcff144f497c5bfa5fcf7141f51d0afe504356b5daf9ed7baaab",
+      "bytes": 10832
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact_acceptance.py",
+      "sha256": "9162cb8251bfc79a9b09037b59873209222039e77f4f445c54c969ef9c4969eb",
+      "bytes": 3712
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\run_artifact.py",
+      "sha256": "6adce200784b3be4f3a00378698b02f54314e2497ff34a97878d3f4e1d9a9950",
+      "bytes": 951
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\run_renderer.py",
+      "sha256": "2d99e983766a5a7771056e704750f60b10061bf4daabd467212ba251ba5c18c4",
+      "bytes": 1196
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\run_build.py",
+      "sha256": "2277f995a801ec80fadaaa6a96f744c34369e8dc5e57d0ad7b185985627c3525",
+      "bytes": 1033
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\validate_bundle.py",
+      "sha256": "7278c0c4395ded8810fdbb725fc4a9f1dbb208f504401601a9b6e9cde58ae922",
+      "bytes": 4125
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-main1\\acceptance.json",
+      "sha256": "45310dc360d4b16f3f3e3216985fa019fc4169389bcd59e3bdb51df4b97dc14d",
+      "bytes": 2823
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-deep-final\\acceptance.json",
+      "sha256": "b1e1bb5ad00824f6c397bf48cb877258578f354a4b2d4ac3c78146e942a6dd1e",
+      "bytes": 14369
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-two-valid\\acceptance.json",
+      "sha256": "1ea7db3ac075532a3157906ee032a663697aab3943745c7ccc6e844571632b28",
+      "bytes": 14776
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-stale-commit\\acceptance.json",
+      "sha256": "25d8cb536ffc5ebe7a03270f0b4ca7930deacfeca58832b8b28b1e746fa3cffb",
+      "bytes": 6032
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-main\\acceptance.json",
+      "sha256": "bda284a6f51c4a680e1b34c1a4792f3a6b07ec4af44ee7571faff631583f3789",
+      "bytes": 9655
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-main\\diagnostics\\renderer.json",
+      "sha256": "9f46a4321a70c5da0b5116eadb722587413324ee4c846baa0f08207f28c6d8c2",
+      "bytes": 6941
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-main\\diagnostics\\renderer.png",
+      "sha256": "5ce4c763bc44b47d077a229869e9f520f2a475fecf2944a1649e488f0b776df3",
+      "bytes": 137451
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-images\\acceptance.json",
+      "sha256": "0d9ea024c29a2fca66b32490b75f24e3343eda6e6c8e69d2882f5f568904484a",
+      "bytes": 12881
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-images\\diagnostics\\renderer.json",
+      "sha256": "46cffc052b26e5f8fb549fae4ce8975bc91967c84fffceaa34c58d52b0cafcc4",
+      "bytes": 8922
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-images\\diagnostics\\renderer.png",
+      "sha256": "5c408d6d0c0df088857caa53e1ab1901e815c58664b714fe9ed254bf21de1303",
+      "bytes": 93547
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-missing\\acceptance.json",
+      "sha256": "98d296fec6fd503153ec899dbae7342b7b8f18e7a410bb98419818347b7a7335",
+      "bytes": 5501
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-missing\\diagnostics\\renderer.json",
+      "sha256": "3d96ee7154da85bf49d1ce8d5e81f0aa0ac703b4c5c50e4710c47104c0795829",
+      "bytes": 3833
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\d00-evidence\\artifact-b8-missing\\diagnostics\\renderer.png",
+      "sha256": "21ecec8fe0e4664a9d24a6c68fcd13a07044075cb1d225ec2571bc788ecb438b",
+      "bytes": 55883
+    }
+  ]
+}

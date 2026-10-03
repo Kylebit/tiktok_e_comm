@@ -7,6 +7,11 @@
 from __future__ import annotations
 
 import re
+import sqlite3
+from typing import Any
+
+from shared_platform.catalog_cost_projection import CatalogProjectionError
+from shared_platform.catalog_sku_costs import read_current
 
 
 def digits_only(sku: str) -> str:
@@ -55,3 +60,25 @@ def same_seller_sku(a: str, b: str) -> bool:
     if re.fullmatch(r"\d+", raw_a) and re.fullmatch(r"\d+", raw_b):
         return seller_sku_tail4(raw_a) == seller_sku_tail4(raw_b)
     return raw_a == raw_b
+
+
+def read_current_internal_sku_cost(
+    conn: sqlite3.Connection, identity: dict[str, str]
+) -> tuple[float | None, str]:
+    """Read the canonical shared procurement cost for one exact listing identity."""
+    try:
+        current: dict[str, Any] | None = read_current(conn, identity)
+    except (CatalogProjectionError, sqlite3.Error, KeyError, TypeError, ValueError):
+        return None, "canonical_internal_sku_unresolved"
+    if not current:
+        return None, "canonical_internal_sku_missing"
+    if current.get("source_kind") == "CONFLICT" or current.get("status") == "CONFLICT":
+        return None, "canonical_internal_sku_conflict"
+    try:
+        cost = float(current["amount"])
+    except (KeyError, TypeError, ValueError):
+        return None, "canonical_internal_sku_unresolved"
+    if cost <= 0:
+        return None, "canonical_internal_sku_unresolved"
+    source_kind = str(current.get("source_kind") or "UNRESOLVED").lower()
+    return cost, f"canonical_internal_sku_{source_kind}"

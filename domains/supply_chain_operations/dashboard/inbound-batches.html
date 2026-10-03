@@ -45,7 +45,7 @@
     <section class="section batch-control-section">
       <div class="section-heading">
         <div><span class="eyebrow">ETA CONFIRMATION LEDGER</span><h2>逐批确认预计可售时间</h2></div>
-        <p id="pageMessage">保存后，已打开的补货看板会自动接收更新；重新打开看板也会读取同一份本地确认数据。</p>
+        <p id="pageMessage" role="status" aria-live="polite">保存后，已打开的补货看板会自动接收更新；重新打开看板也会读取同一份本地确认数据。</p>
       </div>
       <div class="table-wrap batch-table-wrap">
         <table class="batch-table">
@@ -56,6 +56,17 @@
       <div class="empty-state" id="batchEmpty" hidden>当前国家没有运输中批次。</div>
     </section>
 
+    <details class="section override-transfer">
+      <summary>迁移批次确认 · 导出、导入预览与撤销</summary>
+      <p>在原地址打开此页，导出当前有效确认，再在新地址导入。国家、完整批次、SKU分摊、来源时间与确认依据逐项核对；过期项不导入，冲突默认保留本地。旧地址和旧版存储保持原样。</p>
+      <div class="transfer-fields">
+        <label>原地址导出<button id="exportOverrides" type="button" class="secondary">导出有效确认</button><textarea id="exportText" rows="5" readonly aria-label="导出JSON" placeholder="复制这里的版本化JSON，在新地址导入"></textarea></label>
+        <label>新地址导入<input id="importFile" type="file" accept=".json,application/json"><textarea id="importText" rows="5" aria-label="导入JSON" placeholder="粘贴原地址导出的JSON"></textarea></label>
+      </div>
+      <div class="transfer-actions"><button id="previewImport" type="button" class="secondary">预览导入</button><button id="applyImport" type="button" class="primary" disabled>导入所选确认</button><button id="undoImport" type="button" class="secondary" disabled>撤销最近导入</button></div>
+      <p id="transferMessage" role="status" aria-live="polite">预览不写入。勾选冲突项表示使用导入值替换该项；后续修改会结束本次撤销窗口。</p>
+      <div class="table-wrap"><table><thead><tr><th>选择</th><th>精确身份</th><th>核对结果</th><th>日期与依据</th></tr></thead><tbody id="importRows"></tbody></table></div>
+    </details>
     <section class="section evidence">
       <div class="evidence-grid">
         <article class="ok"><strong>批次是唯一修改单位</strong><p>不再以 SKU 保存日期。同一 SKU 横跨两批时保留两条独立事件。</p></article>
@@ -67,8 +78,8 @@
 
   <footer><span>Supply Chain Operations · Batch-level ETA control</span><span>这是本地决策确认，不是物流商或仓库到货承诺。</span></footer>
   <script src="./data.js?v=20260809-th15-override"></script>
-  <script src="./inbound-plan.js?v=20260809-th15-override"></script>
+  <script src="./inbound-plan.js?v=20260902-full-refresh"></script>
   <script src="./inbound-timeline.js?v=20260809-th15-override"></script>
-  <script src="./inbound-batches.js?v=20260809-th15-override"></script>
+  <script src="./inbound-batches.js?v=20260901-th-batch-eta"></script>
 </body>
 </html>

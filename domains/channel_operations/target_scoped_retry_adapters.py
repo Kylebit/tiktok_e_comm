@@ -234,18 +234,29 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
 
 
 def _ozon_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any], dict[str, Any]]:
-    from modules.ozon.target_scoped import read_existing_product
+    from modules.ozon.target_scoped import read_bound_warehouse, read_existing_product
 
-    product = read_existing_product(offer_id=request.seller_sku[-4:].zfill(4))
-    if str(product.get("product_id") or "") != "5687436857":
+    command = request.planned_command
+    product = read_existing_product(offer_id=command["offer_id"])
+    if (
+        str(product.get("product_id") or "") != command["product_id"]
+        or str(product.get("listing_digest") or "")
+        != command["expected_listing_digest"]
+    ):
         raise TargetScopedRetryError("Ozon product identity is not the approved existing product")
     required = ("created", "approved", "title", "price", "images", "stock_false")
     if any(product.get("checks", {}).get(key) is not True for key in required):
         raise TargetScopedRetryError("Ozon product is not exact created-and-unstocked")
-    return ({key: True for key in required} | {"existing_product_id": True, "no_import_or_create": True}, {
+    warehouse = read_bound_warehouse(warehouse_id=command["warehouse_id"])
+    if warehouse.get("exact") is not True:
+        raise TargetScopedRetryError("Ozon warehouse identity is not the approved exact warehouse")
+    return ({key: True for key in required} | {"existing_product_id": True, "listing_digest": True, "warehouse_id": True, "no_import_or_create": True}, {
         "source": "ozon:official_semantic_read",
-        "offer_id": request.seller_sku[-4:].zfill(4),
-        "product_id": "5687436857",
+        "offer_id": command["offer_id"],
+        "product_id": command["product_id"],
+        "expected_listing_digest": command["expected_listing_digest"],
+        "warehouse_id": command["warehouse_id"],
+        "desired_stock_quantity": command["desired_stock_quantity"],
         "state": "exact_created_unstocked",
         "checks": {key: True for key in required},
     })
@@ -303,8 +314,11 @@ def execute_target_scoped_operation(request: TargetScopedOperationRequest, proof
         if not request.planned_command:
             raise TargetScopedRetryError("Ozon successor stock decision is required")
         from modules.ozon.target_scoped import stock_existing_product
-        receipt = stock_existing_product(product_id="5687436857", offer_id=request.seller_sku[-4:].zfill(4))
+        receipt = stock_existing_product(
+            continuation_manifest=request.planned_command,
+        )
+        product_id = request.planned_command["product_id"]
         if receipt.get("verified") is not True:
-            return AdapterExecutionResult(False, False, "Ozon stock/readback requires reconciliation", "5687436857", {"external_writes_performed": ["ozon:stock:update"], "reconciliation_required": True})
-        return AdapterExecutionResult(True, True, "Ozon existing-product stock readback verified", "5687436857", {"verified": True, "external_writes_performed": ["ozon:stock:update"], "readback": receipt})
+            return AdapterExecutionResult(False, False, "Ozon stock/readback requires reconciliation", product_id, {"external_writes_performed": ["ozon:stock:update"], "reconciliation_required": True})
+        return AdapterExecutionResult(True, True, "Ozon existing-product stock readback verified", product_id, {"verified": True, "external_writes_performed": ["ozon:stock:update"], "readback": receipt})
     raise TargetScopedRetryError("unsupported target")

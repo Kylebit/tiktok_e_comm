@@ -171,7 +171,7 @@ def apply_snapshot(data: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, 
             }
             for platform in PLATFORMS
         }
-    data["snapshotDate"] = snapshot["capturedAt"][:10]
+    data["orderDemandCapturedAt"] = snapshot["capturedAt"]
     data["quantityBasis"] = "valid_order"
     data["economicsBasis"] = "settlement"
     return data

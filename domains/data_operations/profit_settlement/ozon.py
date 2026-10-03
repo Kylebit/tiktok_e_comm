@@ -34,7 +34,7 @@ class OzonProfitReport:
     period_kind: str
     period: Mapping[str, str]
     status: str
-    totals: Mapping[str, Decimal]
+    totals: Mapping[str, Decimal | None]
     order_lines: tuple[Mapping[str, Any], ...]
     quality_issues: tuple[OzonQualityIssue, ...]
     source: Mapping[str, Any]
@@ -52,6 +52,7 @@ class OzonProfitReport:
             "period_kind": self.period_kind,
             "period": self.period,
             "status": self.status,
+                "result_scope": "no_calculated_facts" if not self.order_lines else ("partial_diagnostic" if self.quality_issues else "calculated"),
             "totals": self.totals,
             "order_lines": self.order_lines,
             "quality_issues": self.quality_issues,
@@ -179,10 +180,10 @@ def _build_report(
         })
     lines.sort(key=_line_settlement_sort_key)
     totals=_totals(lines); source_checksum=_checksum(sorted((_ready(row) for row in source_rows),key=_canonical))
-    fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":period_kind,"period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"ad_rate_source":rate_source,"code_version":code_version})
+    fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":period_kind,"period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.payload(),"fx":fx.payload(),"ad_rate":str(rate_value),"ad_rate_source":rate_source,"code_version":code_version})
     return OzonProfitReport(
         report_id=f"ozon-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind=period_kind,
-        period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=totals,order_lines=tuple(lines),quality_issues=tuple(issues),
+        period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="needs_review" if issues else ("ready" if lines else "no_data"),totals=totals,order_lines=tuple(lines),quality_issues=tuple(issues),
         source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"basis":"buyer_paid_product_amount","policy_version":"operator-adjustable-ad-rate/v1"},
         generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version,
     )
@@ -199,7 +200,7 @@ def _fees(raw,default_currency,fx,issues,record_id):
     return tuple(output),external
 
 
-def _totals(lines):return {"settlement_cny":sum((x["settlement"]["net_amount_cny"] for x in lines),Decimal("0")),"product_cost_cny":sum((x["cost"]["total_cny"] for x in lines),Decimal("0")),"advertising_cny":sum((x["advertising"]["amount_cny"] for x in lines),Decimal("0")),"external_costs_cny":sum((x["external_costs_cny"] for x in lines),Decimal("0")),"profit_cny":sum((x["profit_cny"] for x in lines),Decimal("0"))}
+def _calculated_totals(lines):return {"settlement_cny":sum((x["settlement"]["net_amount_cny"] for x in lines),Decimal("0")),"product_cost_cny":sum((x["cost"]["total_cny"] for x in lines),Decimal("0")),"advertising_cny":sum((x["advertising"]["amount_cny"] for x in lines),Decimal("0")),"external_costs_cny":sum((x["external_costs_cny"] for x in lines),Decimal("0")),"profit_cny":sum((x["profit_cny"] for x in lines),Decimal("0"))}
 def _period(start,end):
     first=start if isinstance(start,date) else date.fromisoformat(str(start));last=end if isinstance(end,date) else date.fromisoformat(str(end))
     if last<first:raise ValueError("period_end must not precede period_start")
@@ -217,9 +218,13 @@ def _line_settlement_sort_key(item):
     identity=item["identity"]
     return (-settled_at.timestamp(),_text(identity.get("order_id")),_text(identity.get("order_line_id")))
 def _decimal(value):
-    if value is None or isinstance(value,bool) or str(value).strip()=="":return None
-    try:return Decimal(str(value))
-    except (InvalidOperation,ValueError):return None
+    if value is None or isinstance(value, bool) or str(value).strip() == "":
+        return None
+    try:
+        amount = Decimal(str(value))
+        return amount if amount.is_finite() else None
+    except (InvalidOperation, ValueError):
+        return None
 def _text(value):return str(value).strip() if value is not None else ""
 def _issue(code,record_id,field):return OzonQualityIssue(code,record_id,field,f"Ozon record {record_id} is missing or invalid {field}")
 def _audit_metadata(issues,fx,code_version):
@@ -235,3 +240,9 @@ def _ready(value):
     return value
 def _canonical(value):return json.dumps(_ready(value),ensure_ascii=False,sort_keys=True,separators=(",",":"))
 def _checksum(value):return sha256(_canonical(value).encode()).hexdigest()
+
+
+def _totals(lines):
+    """An empty calculated set provides no monetary fact."""
+    totals = _calculated_totals(lines)
+    return totals if lines else {field: None for field in totals}

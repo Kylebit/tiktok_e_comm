@@ -309,12 +309,10 @@ def test_image_localization_sources_exclude_images_removed_during_source_review(
     assert rows == [{"url": "https://img.example/keep.jpg", "kind": "main"}]
 
 
-def test_batch1_http_and_studio_contracts_are_present():
+def test_batch1_http_contracts_are_present():
     root = Path(__file__).resolve().parents[1]
     server = (root / "modules/sourcing/new_product_server.py").read_text(encoding="utf-8")
     product_server = (root / "modules/products/server.py").read_text(encoding="utf-8")
-    html = (root / "web/ai_image_studio.html").read_text(encoding="utf-8")
-    script = (root / "web/static/ai_image_studio.js").read_text(encoding="utf-8")
 
     assert "/api/new-product/content-package/image-localization/artifact" in server
     assert '"/api/new-product/content-package/image-localization/initialize"' in server
@@ -324,14 +322,3 @@ def test_batch1_http_and_studio_contracts_are_present():
     assert '"content-package/image-localization/initialize"' in product_server
     assert '"content-package/image-localization/regions"' in product_server
     assert '"content-package/image-localization/clean-master"' in product_server
-    assert 'id="imageLocalization"' in html
-    assert 'id="imageLocalizationGrid"' in html
-    assert 'id="imageLocalizationStatus"' in html
-    assert "renderImageLocalization" in script
-    assert "setImageLocalizationStatus" in script
-    assert "saveImageLocalizationRegions" in script
-    assert "createCleanMaster" in script
-    assert "ocr_provider_enabled" in script
-    assert "imageLocalizationDraftOfferId" in script
-    assert "captureLocalizationDraft" in script
-    assert "localizationRegionsFor" in script

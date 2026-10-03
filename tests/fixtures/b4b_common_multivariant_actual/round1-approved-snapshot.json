@@ -1,0 +1,291 @@
+{
+  "schema_version": "round1-approved-snapshot/v1",
+  "status": "APPROVED",
+  "offer_id": "9000052",
+  "approved_by": "Kyle",
+  "approval_authority": "EXPLICIT_CONVERSATION_APPROVAL",
+  "human_approval": true,
+  "decision_receipt_digest": null,
+  "approved_at": "2026-09-05T10:00:00+08:00",
+  "reviewed_product_center_revision": 42,
+  "approved_product_center_revision": 43,
+  "product_approval_id": "synthetic-multivariant-r1-approval",
+  "product_approval_fingerprint": "synthetic-multivariant-facts-fingerprint",
+  "canonical_targets": [
+    "tiktok:LH_PH",
+    "ozon:RU"
+  ],
+  "workbench_tiktok_sites": [
+    "lh_ph"
+  ],
+  "first_review_digest": "sha256:dc44885090b4f34ed244d1d0787bdb0e7ac1adf9c90b53cffeb6e41dba4d4291",
+  "image_plan": {
+    "status": "APPROVED",
+    "translation_plan": {
+      "status": "DEFERRED_UNTIL_ALL_IMAGES_GENERATED"
+    },
+    "brand_plans": [
+      {
+        "id": "livelyhive-sea",
+        "label": "livelyhive-sea",
+        "positioning": "fixture positioning",
+        "reference_positions": [
+          1
+        ],
+        "generated_assets": [
+          {
+            "role": "cover_scene",
+            "quantity": 1,
+            "brief": "fixture cover_scene"
+          },
+          {
+            "role": "installed_detail",
+            "quantity": 1,
+            "brief": "fixture installed_detail"
+          },
+          {
+            "role": "scene_1",
+            "quantity": 1,
+            "brief": "fixture scene_1"
+          },
+          {
+            "role": "scene_2",
+            "quantity": 1,
+            "brief": "fixture scene_2"
+          },
+          {
+            "role": "scene_3",
+            "quantity": 1,
+            "brief": "fixture scene_3"
+          },
+          {
+            "role": "assembled_size",
+            "quantity": 1,
+            "brief": "fixture assembled_size"
+          },
+          {
+            "role": "piece_layout_or_instructions",
+            "quantity": 1,
+            "brief": "fixture piece_layout_or_instructions"
+          }
+        ]
+      },
+      {
+        "id": "homebloom-sea",
+        "label": "homebloom-sea",
+        "positioning": "fixture positioning",
+        "reference_positions": [
+          1
+        ],
+        "generated_assets": [
+          {
+            "role": "cover_scene",
+            "quantity": 1,
+            "brief": "fixture cover_scene"
+          },
+          {
+            "role": "installed_detail",
+            "quantity": 1,
+            "brief": "fixture installed_detail"
+          },
+          {
+            "role": "scene_1",
+            "quantity": 1,
+            "brief": "fixture scene_1"
+          },
+          {
+            "role": "scene_2",
+            "quantity": 1,
+            "brief": "fixture scene_2"
+          },
+          {
+            "role": "scene_3",
+            "quantity": 1,
+            "brief": "fixture scene_3"
+          },
+          {
+            "role": "assembled_size",
+            "quantity": 1,
+            "brief": "fixture assembled_size"
+          },
+          {
+            "role": "piece_layout_or_instructions",
+            "quantity": 1,
+            "brief": "fixture piece_layout_or_instructions"
+          }
+        ]
+      }
+    ],
+    "schema_version": "first-review-image-plan/v1"
+  },
+  "image_plan_digest": "sha256:795c3184ef4497e633ccfd93f456b5d5808617316585a409cf8494965fcba0c7",
+  "fact_snapshot": {
+    "product_facts": {
+      "title": "Synthetic wall sticker",
+      "seller_sku": "0952",
+      "category_semantic": {
+        "name": "Wall Stickers"
+      },
+      "cost_cny": "2",
+      "weight_kg": "0.1",
+      "package_cm": [
+        20,
+        10,
+        1
+      ],
+      "skus": [
+        {
+          "source_key": "blue",
+          "seller_sku": "095202",
+          "approved_display_name": "Blue",
+          "cost_cny": "2",
+          "weight_kg": "0.1",
+          "package_cm": [
+            20,
+            10,
+            1
+          ]
+        },
+        {
+          "source_key": "red",
+          "seller_sku": "095201",
+          "approved_display_name": "Red",
+          "cost_cny": "2",
+          "weight_kg": "0.1",
+          "package_cm": [
+            20,
+            10,
+            1
+          ]
+        }
+      ],
+      "source_image_count": 1
+    },
+    "shared_review_facts": {
+      "variants": [
+        {
+          "sku_id": "095202",
+          "specification_value": "Blue"
+        },
+        {
+          "sku_id": "095201",
+          "specification_value": "Red"
+        }
+      ]
+    },
+    "publication_stock_policy": {
+      "stock_per_model_sku": 2
+    },
+    "targets": [
+      {
+        "target": "tiktok:LH_PH",
+        "category": {
+          "candidate": "600338 · Wall Stickers",
+          "evidence_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "authority": "OFFLINE_FIXTURE"
+        },
+        "copy": {
+          "title": "Synthetic wall sticker",
+          "description": "Decorative wall sticker."
+        },
+        "price": {
+          "sku_prices": [
+            {
+              "model_sku": "095202",
+              "amount": "20",
+              "currency": "PHP",
+              "old_price": "30",
+              "calculation": {
+                "kind": "SYNTHETIC_APPROVED_PRICE_V1",
+                "discount_rate_percent": "10",
+                "result": {
+                  "list_price": "20"
+                },
+                "derived_preview": {
+                  "sale_price": "18",
+                  "list_price": "20"
+                }
+              }
+            },
+            {
+              "model_sku": "095201",
+              "amount": "20",
+              "currency": "PHP",
+              "old_price": "30",
+              "calculation": {
+                "kind": "SYNTHETIC_APPROVED_PRICE_V1",
+                "discount_rate_percent": "10",
+                "result": {
+                  "list_price": "20"
+                },
+                "derived_preview": {
+                  "sale_price": "18",
+                  "list_price": "20"
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "target": "ozon:RU",
+        "category": {
+          "candidate": "17027906 / type 970 · Wall Stickers",
+          "evidence_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "authority": "OFFLINE_FIXTURE"
+        },
+        "copy": {
+          "title": "Synthetic wall sticker",
+          "description": "Decorative wall sticker."
+        },
+        "price": {
+          "sku_prices": [
+            {
+              "model_sku": "095202",
+              "amount": "20",
+              "currency": "CNY",
+              "old_price": "30",
+              "calculation": {
+                "kind": "SYNTHETIC_APPROVED_PRICE_V1",
+                "discount_rate_percent": "10",
+                "result": {
+                  "list_price": "20"
+                },
+                "derived_preview": {
+                  "sale_price": "18",
+                  "list_price": "20"
+                }
+              }
+            },
+            {
+              "model_sku": "095201",
+              "amount": "20",
+              "currency": "CNY",
+              "old_price": "30",
+              "calculation": {
+                "kind": "SYNTHETIC_APPROVED_PRICE_V1",
+                "discount_rate_percent": "10",
+                "result": {
+                  "list_price": "20"
+                },
+                "derived_preview": {
+                  "sale_price": "18",
+                  "list_price": "20"
+                }
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "platform_categories": [],
+    "copy_review_sets": [],
+    "content_groups": {}
+  },
+  "publication_stock_policy": {
+    "stock_per_model_sku": 2
+  },
+  "external_write_count": 0,
+  "next_round": "ROUND2_IMAGES_ONLY",
+  "snapshot_digest": "sha256:61e42461cad84c058309cca1931e42f9339a3909137a3aa5dd36c739dc3fa6cc"
+}

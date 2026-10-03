@@ -1,0 +1,167 @@
+{
+  "work_order": "WO-20260905-ORBIT-U00-B1",
+  "status": "IMPLEMENTED_ISOLATED_CANDIDATE",
+  "base": "8457cf2246c7520bade525957cba2893a9bf0526",
+  "implementation_commit": "f634ab9937971d24f80904c8340dce7dfef92afb",
+  "worktree": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905",
+  "branch": "codex/orbithive-u00-dense-20260905",
+  "implementation_tree_clean_before_receipt": true,
+  "receipt_commit_note": "This receipt is the following documentation-only commit; exact final HEAD and post-commit fixture PID/health are recorded in external finalization.json to avoid a self-referential commit hash.",
+  "implementation_files": [
+    "architecture/U00_B1_SOURCE_MATRIX.json",
+    "architecture/U00_B1_SOURCE_MATRIX.md",
+    "shared_platform/orbit_registry.py",
+    "shared_platform/runtime_identity.py",
+    "tests/dense_workspace_browser.cjs",
+    "tests/dense_workspace_preview.py",
+    "tests/test_dense_workspace_browser.py",
+    "web/index.html",
+    "web/product_workspace.html",
+    "web/static/operations.css",
+    "web/static/operations_shell.js",
+    "web/static/orbit_product.js",
+    "web/static/product_workspace.css",
+    "web/static/product_workspace.js"
+  ],
+  "scope": "主工作台/七区域入口/商品工作台高密度重构；保留当前批准与执行合同，不宣称其他全部业务页或APP完成",
+  "tests": {
+    "existing_unique_cases": 223,
+    "browser_pytest_cases": 1,
+    "combined_latest_passed": 224,
+    "combined_latest_skipped": 0,
+    "chrome_checks": 103,
+    "renderer": "installed Chrome headless",
+    "node_syntax_checks": [
+      "product_workspace.js",
+      "orbit_product.js",
+      "operations_shell.js"
+    ],
+    "git_diff_check": true,
+    "original_red_baseline": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\baseline.json",
+    "platform_red": "completed TikTok enabled before UI and pre-POST consumer guard",
+    "image_identity_red": "wrong offer preview adopted before strict top-level offer_id check",
+    "initial_harness_failures": "Initial 31 failures: synthetic SQLite file:///C URI rejected by test guard. Follow-up 10: Windows long report paths. Guard URI parsing and short isolated basetemp fixed; only failed cases rerun. No backend/test-contract source changes."
+  },
+  "isolation": {
+    "external_attempts": 0,
+    "real_http_post": 0,
+    "explicit_browser_stubbed_post_attempts": 3,
+    "stubbed_posts": [
+      "facts ->409 revision conflict",
+      "collect ->200 conflicting offer rejected",
+      "publish-ozon ->409 fixture denial"
+    ],
+    "real_credentials_read": false,
+    "real_configuration_initializations": 0,
+    "configuration_cache": "synthetic settings path manually attributed before imports; load_settings blocked in preview",
+    "business_database_reads": 0,
+    "database_fixture": "real ReleaseStore in generated exact-allowlisted SQLite; fake approval identity and readback",
+    "server_network": "process default-deny, only declared own loopback; foreign8765/8766 and requests.Session prohibited",
+    "browser_network": "own-origin requests only; explicit writes intercepted by browser, never sent to fixture backend/provider"
+  },
+  "identity_and_replay": {
+    "platforms": "Current immutable plan_id only; different plan history not used for current execution eligibility; missing run identity blocked. Completed/unknown/running or mixed targets block whole-platform submit and point to ledger. No scope trimming; independent all-PENDING platform retains current consumer.",
+    "image_preview": {
+      "proxy": "modules/products/server.py:13359-13445",
+      "read_route": "modules/sourcing/new_product_server.py:433-436 allow_precollect=False",
+      "producer": "modules/sourcing/new_product_workbench.py:6138-6144 returns top-level offer_id and revision",
+      "consumer": "web/static/product_workspace.js loadEmbeddedImageReview validates requestId then exact offer_id before adopting preview/saved copy",
+      "existing_read_side_effect_note": "build_preview:6052-6061 may call get_exchange_rates(force_refresh=False) when no saved FX. Production proxy still targets8766. The fixture replaces preview and never calls this producer or8766; no claim that the production GET has zero network activity."
+    },
+    "discard": "Confirmed local discard restores last loaded facts/image decisions and dirty indicators; cancel keeps invalid/dirty drafts. No mutation request; re-rendered own image assets may be fetched.",
+    "retired_route": "/api/product-workspace/publish remains HTTP410; three explicit platform202 consumers and backend approval contract unchanged"
+  },
+  "source_preservation": {
+    "original_functions": 223,
+    "unchanged_function_bodies": 194,
+    "changed_functions": 29,
+    "new_functions": 13,
+    "removed_function_names": [],
+    "removed_api_literals": [],
+    "removed_html_ids": [],
+    "duplicate_html_ids": [],
+    "method": "Full file physical-byte/r4 diff inventory plus convention-based function hashes; not semantic proof that every unchanged function was executed."
+  },
+  "manual_browser": "Root independently inspected empty/populated desktop, 390 navigation/summary contrast, real three-target ledger and final platform button availability. Agent Chrome extension tab latest reconnect returned No tab after navigation; final attached screenshots/103 checks are installed headless Chrome. No native WebView claim.",
+  "preview": {
+    "url": "http://127.0.0.1:59502/",
+    "before_final_restart_pid": 59740,
+    "post_receipt_restart_record": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\finalization.json",
+    "preserved_old_u00_pid": 64568,
+    "no_change_services": [
+      8765,
+      8766,
+      3000,
+      8788
+    ]
+  },
+  "evidence": [
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\verification-summary.json",
+      "sha256": "d0876237cfde8bd4e3ee56a4d4f699530b10423cd5d17a19bb3d0938f317b155"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\contract-preservation.json",
+      "sha256": "9aa4e0b2b4ac5f2e7f50b09b5c68aad2863174771b43d96ea0e892fc10a0d02e"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\source-differences.json",
+      "sha256": "c6c0accade78e13d0c8bb915971ef44e105f00af0857d9c00326513d46cd4a59"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\image-id-junit.xml",
+      "sha256": "63dc127e2c22e6c5e1c6067b5601d70d3562bf716384269517a230c529c3600c"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\image-id-red-junit.xml",
+      "sha256": "e79f0fb908a4c9b87cb1059388625fb2e730d3b49506065eea9d797040487271"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\platform-red-junit.xml",
+      "sha256": "5f971c9eeb220fede58935c2cc0c5d70e064c645834bdbb9086de92bc775ae80"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\final-visible\\visible-result.json",
+      "sha256": "479eda0de3e7446facd5939c5028139c6e1bc60a548f35493cc94e7a167705a7"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\browser-result.json",
+      "sha256": "3f85d987103b4193094457bf1c1bfda4b83562b1460a13bb347a115ee2261a5b"
+    }
+  ],
+  "screenshots": [
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\facts-1280.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\facts-1440.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\facts-390.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\first-screen-1280.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\first-screen-1440.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\first-screen-390.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\home-1440.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\images-1280.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\images-1440.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\images-390.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\release-1280.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\release-1440.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\release-390.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\targets-1280.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\targets-1440.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\t-u0-image-id\\test_dense_workspace_in_real_c0\\browser\\targets-390.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\final-visible\\mixed-ledger-1280.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\final-visible\\mixed-ledger-1440.png",
+    "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\final-visible\\mixed-ledger-390.png"
+  ],
+  "limitations": [
+    "Only homepage/seven-region entry presentation and product workspace rebuilt; other business pages remain for subsequent packages.",
+    "No real stock quantity exists in this dashboard projection. No zero-stock display scenario fabricated; tested cost0 versus null and inventory unknown.",
+    "Browser evidence is installed Chrome, not native WebView. Generated ReleaseStore records/readback are fixture evidence only, never proof of actual publication.",
+    "Real Handler and product view projection used with bounded release dashboard/authority/image-plan fixture substitutions; no provider or business database access.",
+    "No installation, paid generation, actual credential read, platform write, production restart, push, or deployment."
+  ],
+  "next_packages": [
+    "U02-V0 bounded existing video crash, activate by root",
+    "B4B/U02 semantic integration",
+    "remaining business page styling and D00 native APP"
+  ],
+  "push": false,
+  "deployment": false
+}

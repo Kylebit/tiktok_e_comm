@@ -238,6 +238,24 @@ def _post(url, payload):
         return error.code, json.loads(error.read())
 
 
+def _assert_v4_snapshot_required(status, response, publisher):
+    assert status == 409
+    assert response == {
+        "ok": False,
+        "error": "approved publication snapshot is unavailable",
+        "external_write_count": 0,
+        "code": "approved_publication_snapshot_required",
+        "migration": {
+            "required_snapshot_schema": "approved-publication-snapshot/v4",
+            "action": (
+                "Prepare and explicitly approve the exact product, revision and "
+                "targets; legacy approval is not migrated automatically."
+            ),
+        },
+    }
+    assert getattr(publisher, "snapshots", []) == []
+
+
 def _install_server_fakes(monkeypatch, plan, contexts, publisher):
     monkeypatch.setattr(
         product_server,
@@ -263,7 +281,7 @@ def _install_server_fakes(monkeypatch, plan, contexts, publisher):
     )
 
 
-def test_http_builds_exact_six_target_snapshot_without_common(
+def test_http_rejects_legacy_six_target_plan_without_v4_snapshot(
     monkeypatch,
     product_http_server,
 ):
@@ -276,40 +294,10 @@ def test_http_builds_exact_six_target_snapshot_without_common(
         product_http_server + "/api/product-workspace/publish-tiktok",
         _request_body(plan),
     )
-
-    assert status == 200
-    assert response["success"] is True
-    assert len(publisher.snapshots) == 1
-    snapshot = publisher.snapshots[0]
-    assert snapshot["schema_version"] == "approved-tiktok-publish-snapshot/v2"
-    assert [row["target_label"] for row in snapshot["targets"]] == list(
-        TIKTOK_TARGETS
-    )
-    assert "miaoshou:COMMON" not in json.dumps(snapshot)
-    assert {
-        row["target_label"]: (
-            row["expected_price"],
-            row["expected_currency"],
-        )
-        for row in snapshot["targets"]
-    } == {
-        target: (str(price), currency)
-        for target, (_key, price, currency) in PRICES.items()
-    }
-    assert all(row["expected_category_id"].isdigit() for row in snapshot["targets"])
-    assert all(len(row["category_evidence_digest"]) == 64 for row in snapshot["targets"])
-    assert all(len(row["target_identity_digest"]) == 64 for row in snapshot["targets"])
-    assert all(len(row["publish_identity_digest"]) == 64 for row in snapshot["targets"])
-    assert all(len(row["receipt_digest"]) == 64 for row in snapshot["targets"])
-    assert all(row["expected_weight_kg"] == "0.1" for row in snapshot["targets"])
-    assert all(
-        row["expected_package_cm"] == ["20", "20", "3"]
-        for row in snapshot["targets"]
-    )
-    assert all(row["expected_sku_parcels"] == {} for row in snapshot["targets"])
+    _assert_v4_snapshot_required(status, response, publisher)
 
 
-def test_http_target_scope_dispatches_only_the_approved_gb_store(
+def test_legacy_target_scope_is_rejected_before_gb_dispatch(
     monkeypatch,
     product_http_server,
 ):
@@ -325,20 +313,14 @@ def test_http_target_scope_dispatches_only_the_approved_gb_store(
         request,
     )
 
-    assert status == 200
-    assert response["success"] is True
-    assert response["target_count"] == 1
-    assert len(publisher.snapshots) == 1
-    snapshot = publisher.snapshots[0]
-    assert [row["target_label"] for row in snapshot["targets"]] == ["tiktok:GB"]
-    assert snapshot["unavailable_targets"] == []
+    _assert_v4_snapshot_required(status, response, publisher)
 
 
 @pytest.mark.parametrize(
     "scope",
     [[], ["tiktok:GB", "tiktok:GB"], ["shopee:PH"], ["tiktok:NOT_APPROVED"]],
 )
-def test_http_invalid_target_scope_fails_before_platform_writes(
+def test_legacy_invalid_target_scope_fails_before_platform_writes(
     monkeypatch,
     product_http_server,
     scope,
@@ -355,13 +337,10 @@ def test_http_invalid_target_scope_fails_before_platform_writes(
         request,
     )
 
-    assert status == 409
-    assert response["error"]["code"] == "tiktok_approved_snapshot_invalid"
-    assert response["external_write_count"] == 0
-    assert publisher.snapshots == []
+    _assert_v4_snapshot_required(status, response, publisher)
 
 
-def test_missing_collectbox_target_reports_only_that_store_unavailable(
+def test_legacy_missing_collectbox_target_cannot_bypass_v4_snapshot(
     monkeypatch,
     product_http_server,
 ):
@@ -376,16 +355,10 @@ def test_missing_collectbox_target_reports_only_that_store_unavailable(
         _request_body(plan),
     )
 
-    assert status == 200
-    assert response["success"] is False
-    assert response["successful_target_count"] == 5
-    assert response["not_attempted_target_count"] == 1
-    assert response["failed_targets"] == ["tiktok:GB"]
-    assert response["external_write_count"] == 5
-    assert len(publisher.snapshots) == 1
+    _assert_v4_snapshot_required(status, response, publisher)
 
 
-def test_legacy_plan_projects_category_only_from_immutable_product_snapshot(
+def test_legacy_plan_without_category_decisions_cannot_bypass_v4_snapshot(
     monkeypatch,
     product_http_server,
 ):
@@ -399,14 +372,10 @@ def test_legacy_plan_projects_category_only_from_immutable_product_snapshot(
         _request_body(plan),
     )
 
-    assert status == 200
-    assert response["success"] is True
-    assert publisher.snapshots[0]["targets"][-1][
-        "category_evidence_digest"
-    ] == "24eb8b5d3f5dedeac07212c600140510f408e5479e9e1b80251f4e1af36a1486"
+    _assert_v4_snapshot_required(status, response, publisher)
 
 
-def test_persisted_category_decision_drift_fails_before_publisher_call(
+def test_legacy_category_drift_fails_before_publisher_call(
     monkeypatch,
     product_http_server,
 ):
@@ -424,13 +393,10 @@ def test_persisted_category_decision_drift_fails_before_publisher_call(
         _request_body(plan),
     )
 
-    assert status == 409
-    assert response["error"]["code"] == "tiktok_approved_snapshot_invalid"
-    assert response["external_write_count"] == 0
-    assert publisher.snapshots == []
+    _assert_v4_snapshot_required(status, response, publisher)
 
 
-def test_provider_rejection_reason_survives_http_projection(
+def test_legacy_provider_result_is_not_reached_without_v4_snapshot(
     monkeypatch,
     product_http_server,
     caplog,
@@ -475,22 +441,11 @@ def test_provider_rejection_reason_survives_http_projection(
         _request_body(plan),
     )
 
-    assert status == 200
-    assert response["success"] is False
-    assert response["failed_targets"] == ["tiktok:GB"]
-    assert response["error"]["provider_code"] == "category_required"
-    assert response["error"]["provider_reason"] == (
-        "GB category attribute is required"
-    )
-    assert "GB category attribute is required" in response["message"]
-    assert response["write_request_count"] == 6
-    assert response["external_write_count"] == 5
-    assert "target=tiktok:GB" in caplog.text
-    assert "provider_code=category_required" in caplog.text
-    assert "provider_reason=GB category attribute is required" in caplog.text
+    _assert_v4_snapshot_required(status, response, publisher)
+    assert "GB category attribute is required" not in caplog.text
 
 
-def test_http_handler_executes_the_real_independent_publisher_contract(
+def test_retired_http_bridge_does_not_execute_independent_publisher(
     monkeypatch,
     product_http_server,
 ):
@@ -527,15 +482,8 @@ def test_http_handler_executes_the_real_independent_publisher_contract(
         _request_body(plan),
     )
 
-    assert status == 200
-    assert response["success"] is True
-    assert response["successful_target_count"] == 6
-    assert response["failed_targets"] == []
-    assert response["write_request_count"] == 7
-    assert response["external_write_count"] == 7
+    _assert_v4_snapshot_required(status, response, publisher)
     read_paths = {READ_SITE_DRAFT_PATH, READ_SHOP_DRAFT_PATH}
-    assert len([call for call in transport.calls if call[0] in read_paths]) == 6
-    assert len([call for call in transport.calls if call[0] == PUBLISH_PATH]) == 6
-    assert len(
-        [call for call in transport.calls if call[0] == SAVE_SHOP_DRAFT_PATH]
-    ) == 1
+    assert not [call for call in transport.calls if call[0] in read_paths]
+    assert not [call for call in transport.calls if call[0] == PUBLISH_PATH]
+    assert not [call for call in transport.calls if call[0] == SAVE_SHOP_DRAFT_PATH]

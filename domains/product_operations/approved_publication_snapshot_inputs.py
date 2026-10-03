@@ -16,6 +16,11 @@ from typing import Any
 
 from .approved_publication_snapshot import (
     ApprovedPublicationSnapshotError,
+    _ozon_stock_decision,
+    _postpublish_promotion_policy,
+    _publication_stock_policy,
+    _targets,
+    _warehouse_inventory_by_target,
     publication_category_decision_digest,
 )
 
@@ -24,6 +29,8 @@ def build_approved_publication_snapshot_inputs(
     *,
     dashboard: Mapping[str, Any],
     release_plan_payload: Mapping[str, Any],
+    native_category_store=None,
+    native_category_connection=None,
 ) -> dict[str, Any]:
     """Return complete, detached v4 projection inputs or fail closed.
 
@@ -40,6 +47,46 @@ def build_approved_publication_snapshot_inputs(
         dashboard_copy.get("listing_copy"), "approved listing copy"
     )
     product_facts = _mapping(payload.get("product_facts"), "product_facts")
+
+    plan_stock_policy = product_facts.get("stock_policy")
+    dashboard_stock_policy = product.get("stock_policy")
+    stock_policy: dict[str, Any] | None = None
+    if plan_stock_policy is not None or dashboard_stock_policy is not None:
+        if plan_stock_policy is None or dashboard_stock_policy is None:
+            raise ApprovedPublicationSnapshotError(
+                "publication stock approval facts are incomplete"
+            )
+        stock_policy = _publication_stock_policy(plan_stock_policy)
+        if stock_policy != _publication_stock_policy(dashboard_stock_policy):
+            raise ApprovedPublicationSnapshotError(
+                "publication stock approval facts conflict"
+            )
+    postpublish_promotion_policy = _postpublish_promotion_policy(
+        payload.get("approved_postpublish_promotion_policy")
+    )
+    plan_ozon_stock_decision = product_facts.get("ozon_stock_decision")
+    dashboard_ozon_stock_decision = product.get("ozon_stock_decision")
+    ozon_stock_decision: dict[str, Any] | None = None
+    if (
+        plan_ozon_stock_decision is not None
+        or dashboard_ozon_stock_decision is not None
+    ):
+        if (
+            plan_ozon_stock_decision is None
+            or dashboard_ozon_stock_decision is None
+        ):
+            raise ApprovedPublicationSnapshotError(
+                "Ozon stock warehouse approval facts are incomplete"
+            )
+        ozon_stock_decision = _ozon_stock_decision(
+            plan_ozon_stock_decision, stock_policy=stock_policy
+        )
+        if ozon_stock_decision != _ozon_stock_decision(
+            dashboard_ozon_stock_decision, stock_policy=stock_policy
+        ):
+            raise ApprovedPublicationSnapshotError(
+                "Ozon stock warehouse approval facts conflict"
+            )
 
     if product.get("actual_product_approved") is not True:
         raise ApprovedPublicationSnapshotError("product facts are not approved")
@@ -65,6 +112,17 @@ def build_approved_publication_snapshot_inputs(
         "content package identity",
     )
     _same_text(product.get("title"), product_facts.get("title"), "title identity")
+    verified_product_claims = _json_object(
+        product_facts.get("verified_product_claims") or {},
+        "verified product claims",
+    )
+    if verified_product_claims != _json_object(
+        product.get("verified_product_claims") or {},
+        "dashboard verified product claims",
+    ):
+        raise ApprovedPublicationSnapshotError(
+            "verified product claim identity conflicts"
+        )
 
     targets = _text_list(payload.get("targets"), "publication targets")
     scope = _mapping(
@@ -77,6 +135,36 @@ def build_approved_publication_snapshot_inputs(
         != targets
     ):
         raise ApprovedPublicationSnapshotError("publication target identity conflicts")
+
+    plan_warehouse_inventory = product_facts.get("warehouse_inventory_by_target")
+    dashboard_warehouse_inventory = product.get("warehouse_inventory_by_target")
+    warehouse_inventory_by_target: dict[str, Any] | None = None
+    if plan_warehouse_inventory is not None or dashboard_warehouse_inventory is not None:
+        if not isinstance(plan_warehouse_inventory, Mapping) or not isinstance(
+            dashboard_warehouse_inventory, Mapping
+        ):
+            raise ApprovedPublicationSnapshotError(
+                "warehouse inventory approval facts are incomplete"
+            )
+        warehouse_inventory_by_target = _json_object(
+            plan_warehouse_inventory, "approved warehouse inventory"
+        )
+        dashboard_warehouse_inventory = _json_object(
+            dashboard_warehouse_inventory, "dashboard warehouse inventory"
+        )
+        # Both approval inputs must satisfy the same frozen allocation contract;
+        # equality alone admits Python's True == 1 and 1.0 == 1 type aliases.
+        warehouse_targets = _targets(targets)
+        _warehouse_inventory_by_target(
+            warehouse_inventory_by_target, targets=warehouse_targets
+        )
+        _warehouse_inventory_by_target(
+            dashboard_warehouse_inventory, targets=warehouse_targets
+        )
+        if _digest(warehouse_inventory_by_target) != _digest(dashboard_warehouse_inventory):
+            raise ApprovedPublicationSnapshotError(
+                "warehouse inventory approval facts conflict"
+            )
 
     plan_copy = _mapping(payload.get("listing_copy"), "plan listing copy")
     description = _text(
@@ -240,6 +328,13 @@ def build_approved_publication_snapshot_inputs(
             for variant_key, model_sku in lineage_models.items()
         },
     )
+    if (shopee_global_master is not None
+            and shopee_global_master['category_decision']['status'] == 'DEFERRED_TO_SKILL'
+            and native_category_store is not None):
+        from shared_platform.publication_r3_image_bridge import _native_shopee_global_category
+        shopee_global_master['category_decision'] = _native_shopee_global_category(
+            payload, category_store=native_category_store,
+            category_connection=native_category_connection)
     digests = {
         "source": source_digest,
         "content": _digest(
@@ -265,6 +360,10 @@ def build_approved_publication_snapshot_inputs(
                 "postpublish_promotion_policy": payload.get(
                     "approved_postpublish_promotion_policy"
                 ),
+                "stock_policy": stock_policy,
+                "ozon_stock_decision": ozon_stock_decision,
+                "verified_product_claims": verified_product_claims,
+                "warehouse_inventory_by_target": warehouse_inventory_by_target,
             }
         ),
         "category": _digest(
@@ -281,15 +380,27 @@ def build_approved_publication_snapshot_inputs(
         ),
         "sku_lineage": lineage_digest,
     }
-    return {
+    result = {
         "main_category": main_category,
         "description": description,
+        "verified_product_claims": verified_product_claims,
         "categories_by_target": categories_by_target,
         "sku_details_by_key": sku_details,
         "pricing": normalized_pricing,
         "shopee_global_master": shopee_global_master,
         "digests": digests,
     }
+    if warehouse_inventory_by_target is not None:
+        result["warehouse_inventory_by_target"] = warehouse_inventory_by_target
+    if stock_policy is not None:
+        result["stock_policy"] = stock_policy
+    if ozon_stock_decision is not None:
+        result["ozon_stock_decision"] = ozon_stock_decision
+    if postpublish_promotion_policy is not None:
+        result["approved_postpublish_promotion_policy"] = (
+            postpublish_promotion_policy
+        )
+    return result
 
 
 def _shopee_global_master_inputs(
@@ -379,7 +490,7 @@ def _shopee_global_master_inputs(
         )
 
     category_decision, decision_policy = _shopee_global_category_and_policy(payload)
-    positions = _shopee_global_variant_image_positions(
+    variant_images = _shopee_global_variant_images(
         payload=payload,
         model_skus=model_skus,
         approved_product_images=approved_product_images,
@@ -402,15 +513,16 @@ def _shopee_global_master_inputs(
         variant_keys_by_model=variant_keys_by_model,
         sku_commercial_by_key=sku_commercial_by_key,
     )
-    return {
-        "schema_version": "shopee-global-master/v1",
+    master = {
+        "schema_version": variant_images["schema_version"],
         "price_source": price_source,
         "sku_original_prices_cny": [prices_by_model[model] for model in model_skus],
         "category_decision": category_decision,
         "parcel_envelope": parcel_envelope,
         "policy": decision_policy,
-        "variant_image_positions": positions,
     }
+    master[variant_images["field_name"]] = variant_images["rows"]
+    return master
 
 
 def _shopee_parcel_envelope_inputs(
@@ -588,16 +700,92 @@ def _deferred_shopee_global_policy() -> dict[str, Any]:
     }
 
 
-def _shopee_global_variant_image_positions(
+def _shopee_global_variant_images(
     *,
     payload: Mapping[str, Any],
     model_skus: list[str],
     approved_product_images: list[str],
     sku_details_by_key: Mapping[str, Mapping[str, Any]],
     variant_keys_by_model: Mapping[str, str],
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     product_facts = _mapping(payload.get("product_facts"), "product_facts")
+    bindings = product_facts.get("shopee_global_variant_image_bindings")
     explicit = product_facts.get("shopee_global_variant_image_positions")
+    if bindings is not None:
+        if explicit is not None:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee variant image positions and bindings cannot coexist"
+            )
+        if type(bindings) is not list:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global variant image bindings must be a list"
+            )
+        normalized: list[dict[str, Any]] = []
+        seen_models: set[str] = set()
+        for raw in bindings:
+            row = _mapping(raw, "Shopee global variant image binding")
+            if set(row) != {"model_sku", "image_url", "image_digest", "source"}:
+                raise ApprovedPublicationSnapshotError(
+                    "Shopee global variant image binding fields are invalid"
+                )
+            model = _text(row.get("model_sku"), "Shopee variant image model_sku")
+            image_url = _text(row.get("image_url"), "Shopee variant image URL")
+            image_digest = _digest_text_with_prefix(
+                row.get("image_digest"), "Shopee variant image digest"
+            )
+            source = _mapping(row.get("source"), "Shopee variant image source")
+            if set(source) != {"kind", "source_offer_id", "source_position"}:
+                raise ApprovedPublicationSnapshotError(
+                    "Shopee global variant image source fields are invalid"
+                )
+            source_position = source.get("source_position")
+            if (
+                model not in model_skus
+                or model in seen_models
+                or not image_url.startswith("https://")
+                or source.get("kind") != "MIAOSHOU_SOURCE_IMAGE"
+                or source.get("source_offer_id") != payload.get("product_id")
+                or type(source_position) is not int
+                or source_position <= 0
+            ):
+                raise ApprovedPublicationSnapshotError(
+                    "Shopee global variant image bindings conflict"
+                )
+            seen_models.add(model)
+            normalized.append(
+                {
+                    "model_sku": model,
+                    "image_url": image_url,
+                    "image_digest": image_digest,
+                    "source": {
+                        "kind": "MIAOSHOU_SOURCE_IMAGE",
+                        "source_offer_id": str(payload["product_id"]),
+                        "source_position": source_position,
+                    },
+                }
+            )
+        if [row["model_sku"] for row in normalized] != model_skus:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global variant image binding coverage conflicts"
+            )
+        if len(model_skus) > 1 and any(
+            len({row[field] for row in normalized}) != len(normalized)
+            for field in ("image_url", "image_digest")
+        ):
+            raise ApprovedPublicationSnapshotError(
+                "Shopee multi-SKU variant image bindings must be distinct"
+            )
+        if len(model_skus) > 1 and len(
+            {row["source"]["source_position"] for row in normalized}
+        ) != len(normalized):
+            raise ApprovedPublicationSnapshotError(
+                "Shopee multi-SKU variant image sources must be distinct"
+            )
+        return {
+            "schema_version": "shopee-global-master/v2",
+            "field_name": "variant_image_bindings",
+            "rows": normalized,
+        }
     explicit_by_model: dict[str, int] = {}
     if explicit is not None:
         if type(explicit) is not list:
@@ -654,7 +842,17 @@ def _shopee_global_variant_image_positions(
                 "image_url": approved_product_images[position],
             }
         )
-    return positions
+    if len(model_skus) > 1 and len(
+        {int(row["position"]) for row in positions}
+    ) != len(positions):
+        raise ApprovedPublicationSnapshotError(
+            "Shopee multi-SKU variant images must use distinct approved positions"
+        )
+    return {
+        "schema_version": "shopee-global-master/v1",
+        "field_name": "variant_image_positions",
+        "rows": positions,
+    }
 
 
 def _deferred_categories(targets: list[str]) -> dict[str, dict[str, Any]]:

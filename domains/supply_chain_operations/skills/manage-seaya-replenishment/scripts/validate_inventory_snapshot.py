@@ -56,8 +56,24 @@ def validate_payload(payload: Any) -> list[str]:
     if type(records) is not list:
         return ["payload: expected a list or an object containing a records list"]
     errors: list[str] = []
+    seen_raw_identities: dict[tuple[str, str], int] = {}
     for index, record in enumerate(records):
         errors.extend(validate_record(record, index))
+        if type(record) is not dict:
+            continue
+        warehouse = record.get("warehouse")
+        seller_sku = record.get("seller_sku")
+        if type(warehouse) is not str or type(seller_sku) is not str:
+            continue
+        raw_identity = (warehouse, seller_sku)
+        first_index = seen_raw_identities.get(raw_identity)
+        if first_index is not None:
+            errors.append(
+                f"records[{index}]: BLOCKED_INVENTORY duplicate raw identity "
+                f"first seen at records[{first_index}]; source position identity is required"
+            )
+            continue
+        seen_raw_identities[raw_identity] = index
     return errors
 
 

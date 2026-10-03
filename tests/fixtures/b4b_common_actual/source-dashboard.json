@@ -1,0 +1,268 @@
+{
+  "ok": true,
+  "_source_identity_inputs": {
+    "collect_box": {
+      "source_item_id": "986159122616",
+      "source_item_code": "DOG-WALL-34X58"
+    },
+    "precollect": {
+      "records": [
+        {
+          "source_id": "986159122616"
+        }
+      ]
+    },
+    "source_record": {
+      "source_id": "986159122616"
+    },
+    "source_authority": "1688"
+  },
+  "_source_product_identity": {
+    "schema_version": "source-product-identity/v1",
+    "status": "READY",
+    "ready": true,
+    "identity": {
+      "schema_version": "source-product-identity/v1",
+      "source_offer_id": "986159122616",
+      "source_item_code": "DOG-WALL-34X58",
+      "source_authority": "1688",
+      "provenance": [
+        {
+          "path": "collect_box.source_item_id",
+          "source_offer_id": "986159122616"
+        },
+        {
+          "path": "precollect.records[0].source_id",
+          "source_offer_id": "986159122616"
+        },
+        {
+          "path": "source_record.source_id",
+          "source_offer_id": "986159122616"
+        }
+      ],
+      "identity_digest": "sha256:8c981cf78f57e826ec56e156ea826d6dec3146e6c94c143e29c319b8867ffe97"
+    },
+    "blockers": []
+  },
+  "_sku_lineage": {
+    "schema_version": "sku-lineage-reservation/v1",
+    "status": "READY",
+    "ready": true,
+    "source_identity_digest": "sha256:8c981cf78f57e826ec56e156ea826d6dec3146e6c94c143e29c319b8867ffe97",
+    "lineage_mode": "NEW_SOURCE",
+    "assignment": {
+      "seller_sku": "0952",
+      "model_skus": [
+        {
+          "variant_key": "default",
+          "model_sku": "0952"
+        }
+      ]
+    },
+    "predecessor_id": null,
+    "predecessor_revision": null,
+    "predecessor_digest": null,
+    "reservation": {
+      "schema_version": "new-source-sku-reservation/v1",
+      "source_identity_digest": "sha256:8c981cf78f57e826ec56e156ea826d6dec3146e6c94c143e29c319b8867ffe97",
+      "assignment": {
+        "seller_sku": "0952",
+        "model_skus": [
+          {
+            "variant_key": "default",
+            "model_sku": "0952"
+          }
+        ]
+      },
+      "reservation_digest": "sha256:41b2997ae1cf36832573bc51b1f08a68b6e8ea4306b62df194e39e9e4d15cedf",
+      "reservation_keys": [
+        "0952"
+      ],
+      "idempotent": false
+    },
+    "blockers": []
+  },
+  "source_product_identity": {
+    "schema_version": "source-product-identity/v1",
+    "status": "READY",
+    "ready": true,
+    "blockers": [],
+    "identity_digest": "sha256:8c981cf78f57e826ec56e156ea826d6dec3146e6c94c143e29c319b8867ffe97",
+    "source_item_code": "DOG-WALL-34X58"
+  },
+  "sku_lineage": {
+    "schema_version": "sku-lineage-reservation/v1",
+    "status": "READY",
+    "ready": true,
+    "lineage_mode": "NEW_SOURCE",
+    "assignment": {
+      "seller_sku": "0952",
+      "model_skus": [
+        {
+          "variant_key": "default",
+          "model_sku": "0952"
+        }
+      ]
+    },
+    "reservation_digest": "sha256:41b2997ae1cf36832573bc51b1f08a68b6e8ea4306b62df194e39e9e4d15cedf",
+    "blockers": []
+  },
+  "product": {
+    "offer_id": "9000052",
+    "seller_sku_candidate": "0952",
+    "revision": 43,
+    "title": "Synthetic wall sticker",
+    "category": {
+      "name": "Wall Stickers"
+    },
+    "actual_product_approved": true,
+    "actual_approval": {
+      "approval_id": "synthetic-common-r1-approval",
+      "package_id": "product:9000052:0952",
+      "input_fingerprint": "synthetic-common-facts-fingerprint"
+    },
+    "cost_cny": "2",
+    "weight_kg": "0.1",
+    "package_cm": [
+      20,
+      10,
+      1
+    ],
+    "selected_sku_keys": [
+      "default"
+    ],
+    "sku_label_overrides": {
+      "default": "Blue"
+    },
+    "sku_commercial_facts": {
+      "default": {
+        "cost_cny": "2",
+        "weight_kg": "0.1",
+        "package_cm": [
+          20,
+          10,
+          1
+        ]
+      }
+    },
+    "source_skus": [
+      {
+        "key": "default",
+        "label": "Blue",
+        "model_sku": "0952",
+        "price_cny": "2",
+        "commercial_facts": {
+          "cost_cny": "2",
+          "weight_kg": "0.1",
+          "package_cm": [
+            20,
+            10,
+            1
+          ]
+        }
+      }
+    ]
+  },
+  "content": {
+    "approved": true,
+    "approval_status": "approved",
+    "package_id": "content:3828540231:v1",
+    "strategy": "source_only",
+    "images": [
+      {
+        "position": 1,
+        "image_url": "https://assets.example/main.jpg",
+        "artifact_id": "source-1",
+        "audit_id": "review-1",
+        "asset_type": "source",
+        "decision_source": "review.image_actions"
+      }
+    ],
+    "video_urls": [
+      "https://assets.example/main.mp4"
+    ]
+  },
+  "publication_scope": {
+    "selected_labels": [
+      "tiktok:LH_PH",
+      "ozon:RU"
+    ]
+  },
+  "pricing_review": {
+    "status": "ready",
+    "schema_version": "pricing-v1",
+    "target_pricing": {
+      "miaoshou:COMMON": {
+        "status": "ready"
+      },
+      "tiktok:MX": {
+        "status": "ready"
+      }
+    },
+    "workbench_exchange_rates": {
+      "MXN": 2.1
+    },
+    "shopee_exchange_rates": {},
+    "ozon_exchange_rates": {}
+  },
+  "omnichannel_preview": {
+    "available": true,
+    "plan_id": "omnichannel:v1-test",
+    "approval_summary": {
+      "approval_scope_digest": "scope-digest"
+    },
+    "targets": [
+      {
+        "channel": "miaoshou",
+        "site": "COMMON",
+        "adapter": "new_product_workbench_miaoshou_commit",
+        "preflights": [
+          {
+            "code": "audited_adapter_site",
+            "passed": true,
+            "detail": "legacy path found"
+          }
+        ]
+      },
+      {
+        "channel": "tiktok",
+        "site": "MX",
+        "adapter": "miaoshou_tiktok_publish",
+        "preflights": [
+          {
+            "code": "audited_adapter_site",
+            "passed": true,
+            "detail": "legacy path found"
+          }
+        ]
+      }
+    ],
+    "blockers": []
+  },
+  "actual_release_gate": {
+    "ready": true,
+    "blockers": []
+  },
+  "listing_copy": {
+    "schema_version": "listing-copy-candidates-v8",
+    "status": "adopted_in_product_facts",
+    "provider": "toapi",
+    "policy_version": "listing-copy-candidates-v8",
+    "model": "gpt-5.4-mini-official",
+    "input_signature": "sha256:copy-facts-v1",
+    "current_input_signature": "sha256:copy-facts-v1",
+    "semantic_master_en": "Cute Dog PVC Wall Sticker 34 x 58 cm",
+    "shopee_description_en": "",
+    "candidates": [
+      {
+        "channel": "tiktok",
+        "site": "MX",
+        "language": "Spanish (Mexico)",
+        "limit": 255,
+        "title": "Pegatina de pared de perro PVC 34 x 58 cm",
+        "policy_check": "passed",
+        "created_at": "2026-07-27T01:00:00+00:00"
+      }
+    ]
+  }
+}

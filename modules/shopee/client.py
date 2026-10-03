@@ -24,7 +24,7 @@ def _parse_json(raw: str, ctx: str) -> dict:
         raise RuntimeError(f"Shopee {ctx} 非 JSON: {raw[:300]}") from e
 
 
-def shop_get(path: str, shop_id: int, access_token: str, params: dict | None = None) -> dict:
+def shop_get(path: str, shop_id: int, access_token: str, params: dict | None = None, *, call_guard=None) -> dict:
     c = shopee_config()
     ts, sig = sign_shop(path, c["partner_id"], c["partner_key"], access_token, shop_id)
     q = {
@@ -38,11 +38,13 @@ def shop_get(path: str, shop_id: int, access_token: str, params: dict | None = N
         q.update(params)
     url = f"{c['host']}{path}?{urllib.parse.urlencode(q)}"
     req = urllib.request.Request(url, method="GET")
-    with urlopen_retry(req, timeout=60, context=SSL_CTX) as resp:
+    if call_guard: call_guard()
+    with urlopen_retry(req, timeout=60, context=SSL_CTX,
+                       **({'attempts':1,'allow_curl_fallback':False} if call_guard else {})) as resp:
         return _parse_json(resp.read().decode("utf-8"), path)
 
 
-def shop_post(path: str, shop_id: int, access_token: str, body: dict) -> dict:
+def shop_post(path: str, shop_id: int, access_token: str, body: dict, *, call_guard=None) -> dict:
     c = shopee_config()
     ts, sig = sign_shop(path, c["partner_id"], c["partner_key"], access_token, shop_id)
     q = {
@@ -60,6 +62,7 @@ def shop_post(path: str, shop_id: int, access_token: str, body: dict) -> dict:
         method="POST",
         headers={"Content-Type": "application/json"},
     )
+    if call_guard: call_guard()
     with urlopen_retry(
         req,
         timeout=90,

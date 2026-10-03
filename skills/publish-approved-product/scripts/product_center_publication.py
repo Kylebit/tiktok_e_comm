@@ -67,6 +67,12 @@ def _plan_id(value: object) -> str:
     return value
 
 
+def _run_id(value: object) -> str:
+    if type(value) is not str or value != value.strip() or not SAFE_RUN_ID.fullmatch(value):
+        raise ValueError("retry_of_run_id must be an exact safe run id")
+    return value
+
+
 def _platforms(value: str) -> tuple[str, ...]:
     normalized = str(value).strip().upper()
     if normalized == "ALL":
@@ -225,6 +231,21 @@ def _poll_report(
                     report_id=report_id,
                     run_id=run_id,
                 )
+            report = payload.get("report")
+            summary = report.get("summary") if isinstance(report, Mapping) else None
+            evidence = summary.get("evidence") if isinstance(summary, Mapping) else None
+            if (
+                last_status == "PROCESSING"
+                and isinstance(evidence, Mapping)
+                and evidence.get("readback_completed") is True
+            ):
+                return _row(
+                    platform,
+                    "PROCESSING",
+                    report_id=report_id,
+                    run_id=run_id,
+                    reason_code="READBACK_COMPLETE_PROCESSING",
+                )
         if monotonic() >= deadline:
             return _row(
                 platform,
@@ -252,11 +273,20 @@ def _run_platform(
     poll_timeout_seconds: float,
     monotonic: Callable[[], float],
     sleep: Callable[[float], None],
+    target_scope: tuple[str, ...] | None = None,
+    retry_of_run_id: str | None = None,
+    recovery_manifest_digest: str | None = None,
 ) -> dict[str, Any]:
     endpoint = PLATFORM_ENDPOINTS[platform]
     http_status, payload = request(
         f"{base_url.rstrip('/')}{endpoint}",
-        payload={"offer_id": offer_id, "plan_id": plan_id},
+        payload={
+            "offer_id": offer_id,
+            "plan_id": plan_id,
+            **({"target_scope": list(target_scope)} if target_scope else {}),
+            **({"retry_of_run_id": retry_of_run_id} if retry_of_run_id else {}),
+            **({"recovery_manifest_digest": recovery_manifest_digest} if recovery_manifest_digest else {}),
+        },
         timeout_seconds=request_timeout_seconds,
     )
     if http_status == 0:
@@ -317,10 +347,39 @@ def run_publication(
     poll_timeout_seconds: float = 300,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    target_scope: tuple[str, ...] | None = None,
+    retry_of_run_id: str | None = None,
+    recovery_manifest_digest: str | None = None,
 ) -> dict[str, Any]:
     safe_offer = _offer_id(offer_id)
     safe_plan = _plan_id(plan_id)
     selected = _platforms(platform)
+    if target_scope:
+        if len(selected) != 1:
+            raise ValueError("target-scoped recovery requires exactly one platform")
+        normalized_scope = tuple(str(label).strip() for label in target_scope)
+        if any(not label for label in normalized_scope):
+            raise ValueError("target_scope labels must be nonempty")
+        if len(set(normalized_scope)) != len(normalized_scope):
+            raise ValueError("target_scope labels must be unique")
+        expected_prefix = selected[0].lower() + ":"
+        if any(not label.lower().startswith(expected_prefix) for label in normalized_scope):
+            raise ValueError("target_scope must match the selected platform")
+        target_scope = normalized_scope
+    if retry_of_run_id is not None:
+        if target_scope is None or len(selected) != 1:
+            raise ValueError(
+                "retry_of_run_id requires a target-scoped single-platform recovery"
+            )
+        retry_of_run_id = _run_id(retry_of_run_id)
+    if recovery_manifest_digest is not None:
+        if selected != ("SHOPEE",) or target_scope is None or retry_of_run_id is not None:
+            raise ValueError(
+                "Shopee recovery requires one target scope and no retry_of_run_id"
+            )
+        recovery_manifest_digest = str(recovery_manifest_digest).strip()
+        if not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", recovery_manifest_digest):
+            raise ValueError("recovery_manifest_digest is invalid")
     if request_timeout_seconds <= 0:
         raise ValueError("request_timeout_seconds must be positive")
     if poll_interval_seconds <= 0 or poll_timeout_seconds < 0:
@@ -339,6 +398,9 @@ def run_publication(
                 poll_timeout_seconds=poll_timeout_seconds,
                 monotonic=monotonic,
                 sleep=sleep,
+                target_scope=target_scope,
+                retry_of_run_id=retry_of_run_id,
+                recovery_manifest_digest=recovery_manifest_digest,
             )
         except Exception:
             # No exception detail enters the public artifact.  Other platform
@@ -350,13 +412,30 @@ def run_publication(
             )
         rows.append(row)
     overall = _overall_status(rows)
+    scope_kind = (
+        "TARGET_SCOPED"
+        if target_scope is not None
+        else "FULL_PRODUCT"
+        if selected == PLATFORM_ORDER
+        else "PLATFORM"
+    )
+    overall_label = (
+        "全商品发布完成"
+        if overall == "PUBLISHED" and scope_kind == "FULL_PRODUCT"
+        else "本次范围完成"
+        if overall == "PUBLISHED"
+        else STATUS_LABELS[overall]
+    )
     return {
         "schema_version": SUMMARY_SCHEMA,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "offer_id": safe_offer,
         "plan_id": safe_plan,
+        "scope_kind": scope_kind,
+        "selected_platforms": list(selected),
+        "target_scope": list(target_scope or ()),
         "overall_status": overall,
-        "overall_label": STATUS_LABELS[overall],
+        "overall_label": overall_label,
         "platforms": rows,
     }
 
@@ -370,6 +449,18 @@ def main() -> int:
     parser.add_argument(
         "--platform", choices=("all", "tiktok", "shopee", "ozon"), default="all"
     )
+    parser.add_argument(
+        "--target-labels",
+        help="Optional comma-separated approved target-only retry scope.",
+    )
+    parser.add_argument(
+        "--retry-of-run-id",
+        help="Exact zero-write failed run bound to this single-platform target scope.",
+    )
+    parser.add_argument(
+        "--shopee-recovery-manifest-digest",
+        help="Exact server-frozen shopee-regional-recovery/v1 manifest digest.",
+    )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--request-timeout-seconds", type=float, default=30)
     parser.add_argument("--poll-interval-seconds", type=float, default=1)
@@ -377,6 +468,14 @@ def main() -> int:
     parser.add_argument("--output")
     parser.add_argument("--execute", action="store_true", required=True)
     args = parser.parse_args()
+    target_scope = (
+        tuple(
+            label.strip()
+            for label in str(args.target_labels or "").split(",")
+            if label.strip()
+        )
+        or None
+    )
     result = run_publication(
         offer_id=args.offer_id,
         plan_id=args.plan_id,
@@ -385,6 +484,9 @@ def main() -> int:
         request_timeout_seconds=args.request_timeout_seconds,
         poll_interval_seconds=args.poll_interval_seconds,
         poll_timeout_seconds=args.poll_timeout_seconds,
+        target_scope=target_scope,
+        retry_of_run_id=args.retry_of_run_id,
+        recovery_manifest_digest=args.shopee_recovery_manifest_digest,
     )
     emit(result, args.output)
     return 0 if result["overall_status"] in {"PUBLISHED", "PROCESSING"} else 1

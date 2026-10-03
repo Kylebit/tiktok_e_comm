@@ -353,7 +353,21 @@ def test_adopt_then_save_same_facts_keeps_candidate_current(
     monkeypatch,
     tmp_path,
 ):
-    state, saves, _store = _install(monkeypatch, tmp_path)
+    from domains.product_operations.variant_display import (
+        normalize_publication_specification,
+    )
+
+    initial = _locked_state()
+    sku_key = ";HS4489Q;30*40CM*3排版;"
+    initial["review"]["sku_label_overrides"][sku_key] = (
+        normalize_publication_specification("30 x 40 cm, 3 Pieces")
+    )
+    initial["listing_copy"]["input_signature"] = listing_title_fact_signature(
+        product_server._listing_title_facts(
+            new_product_workbench, OFFER_ID, initial, source=SOURCE
+        )
+    )
+    state, saves, _store = _install(monkeypatch, tmp_path, initial=initial)
 
     adopt_status, _adopt_payload = (
         product_server._adopt_product_workspace_title_candidate(_request(state))

@@ -7,8 +7,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from core.config import ROOT
+from core.static_files import resolve_static_path
 
 WEB_DIR = ROOT / "web"
+from shared_platform.runtime_identity import capture_runtime_identity
+RUNTIME_IDENTITY = capture_runtime_identity("orbit_rus", root=ROOT, web_root=WEB_DIR)
 STATIC_DIR = WEB_DIR / "static"
 DEFAULT_PORT = 8767
 
@@ -172,12 +175,16 @@ class OrbitRusHandler(BaseHTTPRequestHandler):
         if self._handle_rus_api("GET"):
             return
         if path in ("/", "/rus", "/rus.html", "/ozon", "/ozon.html"):
-            return self._file(WEB_DIR / "ozon.html")
+            return self._json(404, {"ok": False, "error": "legacy operations page retired"})
         if path.startswith("/static/"):
-            rel = path[len("/static/") :].strip("/")
-            return self._file(STATIC_DIR / rel)
+            asset = resolve_static_path(STATIC_DIR, path[len("/static/") :])
+            if asset is None:
+                return self.send_error(404)
+            return self._file(asset)
         if path == "/health":
-            return self._json(200, {"ok": True, "service": "orbit_rus", "port_default": DEFAULT_PORT})
+            from shared_platform.runtime_identity import health_payload
+
+            return self._json(200, {**health_payload("orbit_rus", root=ROOT, web_root=WEB_DIR, startup=RUNTIME_IDENTITY), "port_default": DEFAULT_PORT})
         self.send_error(404)
 
     def do_POST(self) -> None:

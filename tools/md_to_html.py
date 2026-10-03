@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""通用 Markdown -> 自包含 HTML 报告转换器（用于飞书直开交付物）。
+"""通用 Markdown -> 自包含 HTML 报告转换器。
 
 用法:
   python tools/md_to_html.py <input.md> <output.html> \
@@ -7,7 +7,7 @@
 
 特性: #/##/###/#### 标题、表格、有序/无序列表、代码块、引用、分隔线、
 行内 **粗体** `代码` [链接](url) ![图片](url)。自动生成目录(TOC)。
-输出为单文件 HTML，可直接双击在浏览器打开，也可经 8790 静态服务直开。
+输出为单文件 HTML，可直接双击在浏览器打开。
 """
 from __future__ import annotations
 
@@ -265,7 +265,7 @@ def derive(md_path: Path) -> tuple[str, str, str]:
     txt = md_path.read_text(encoding="utf-8")
     first = next((l for l in txt.splitlines() if l.startswith("# ")), md_path.stem)
     title = first[2:].strip() if first.startswith("# ") else md_path.stem
-    return title, "Orbit Hive · HTML 交付物", f"源文件：{md_path.name} · 经 8790 静态服务可直开"
+    return title, "Orbit Hive · HTML 交付物", f"源文件：{md_path.name}"
 
 
 def main() -> None:
@@ -290,7 +290,7 @@ def main() -> None:
     title = args.title or d_title
     badge = args.badge or d_badge
     subtitle = args.subtitle or d_sub
-    footer = args.footer or f"源文件：{inp.name} · 经 8790 静态服务可直开"
+    footer = args.footer or f"源文件：{inp.name}"
 
     doc = md_to_html(md, title, badge, subtitle, footer)
     out.parent.mkdir(parents=True, exist_ok=True)

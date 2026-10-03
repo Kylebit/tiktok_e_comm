@@ -1,0 +1,28 @@
+{
+  "schema_version": "product-publication-knowledge/v1",
+  "section": "99-后台/01-系统规则/商品发布Agent",
+  "documents": [
+    {
+      "path": "99-后台/01-系统规则/商品发布Agent/draft.md",
+      "title": "Draft example",
+      "metadata": {
+        "title": "Draft example",
+        "status": "draft"
+      },
+      "content": "Unreviewed synthetic proposal.\n",
+      "content_digest": "sha256:0564c6c1cfe1be099db4dee02df96fc47bab8842b83ecafe27bb3ef087afce5e"
+    },
+    {
+      "path": "99-后台/01-系统规则/商品发布Agent/reviewed.md",
+      "title": "Reviewed example",
+      "metadata": {
+        "title": "Reviewed example",
+        "status": "reviewed"
+      },
+      "content": "Approved synthetic rule.\n",
+      "content_digest": "sha256:bee8af1c7d2dc9f9ed987317824dd2edc134ebc45eab571cee3867fa7e2dd787"
+    }
+  ],
+  "knowledge_version": "sha256:38f20809487e3dfe776f6a9c75d62696c8ae3d788a6db5d793656925995b1b51",
+  "vault_name": "synthetic-vault"
+}

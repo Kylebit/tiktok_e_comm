@@ -229,6 +229,44 @@ function jsonResponse(payload, status = 200) {
 function apiFixture(url, method, state) {
   const path = url.pathname;
   if (path === "/api/orbit/navigation") return jsonResponse(orbitNavigation);
+  if (path === "/api/orbit/operations-runtime") {
+    return jsonResponse({
+      environment: "stable",
+      execution_mode: "web-only",
+      worker_enabled: false,
+      dispatcher: { state: "stopped" },
+    });
+  }
+  if (path === "/api/orbit/tasks") {
+    return jsonResponse({ ok: true, tasks: [], executor: { connected: false } });
+  }
+  if (path === "/api/product-workspace/history") {
+    return jsonResponse({ ok: true, items: [], errors: [] });
+  }
+  if (path === "/api/product-workspace/publication-stages") {
+    return jsonResponse({
+      schema_version: "publication-stages/v1",
+      offer_id: url.searchParams.get("offer_id"),
+      stage: "RECONCILIATION_REQUIRED",
+      error: "Offline UX fixture has no verified publication state.",
+    });
+  }
+  if (path === "/api/product-workspace/evidence") {
+    return jsonResponse({
+      ok: true,
+      offer_id: url.searchParams.get("offer_id"),
+      local_images: [], rounds: [], closures: [],
+    });
+  }
+  if (path === "/api/product-workspace/publication-history") {
+    return jsonResponse({
+      execution_authority: false,
+      display_mode: "HISTORICAL_READ_ONLY",
+      history_status: "AVAILABLE",
+      blocked_count: 0,
+      items: [],
+    });
+  }
   if (path === "/api/status") {
     return jsonResponse({
       ok: true,
@@ -397,6 +435,9 @@ async function openScenario(browser, path, viewport, options = {}) {
   const page = await context.newPage();
   const errors = [];
   const requests = [];
+  const failedRequests = [];
+  const resourceResponses = [];
+  const consoleFailures = [];
   const state = {
     delayWeekly: false,
     delaySku: false,
@@ -408,10 +449,18 @@ async function openScenario(browser, path, viewport, options = {}) {
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
+    if (message.type() === "error") consoleFailures.push({ text: message.text(), location: message.location() });
+  });
+  page.on("response", (response) => {
+    if (response.status() === 404) errors.push(`http 404: ${response.url()}`);
+    resourceResponses.push({ url: response.url(), status: response.status(), type: response.request().resourceType() });
+  });
+  page.on("requestfailed", (request) => {
+    failedRequests.push({ url: request.url(), type: request.resourceType(), failure: request.failure() });
   });
   await installApiRoutes(page, state, requests);
   await page.goto(`${baseUrl}${path}`, { waitUntil: "networkidle" });
-  return { context, page, errors, requests, state };
+  return { context, page, errors, requests, state, failedRequests, resourceResponses, consoleFailures };
 }
 
 async function productQueueLongTitleMobileContract(browser) {
@@ -440,8 +489,8 @@ async function productQueueLongTitleMobileContract(browser) {
   try {
     const cardCount = await page.locator(".queue-card").count();
     check(
-      cardCount === 6 && await page.locator(".queue-section").isHidden(),
-      "mobile queue: compatibility state remains available but the centralized single-product review hides queue clutter",
+      cardCount === 0 && await page.locator(".queue-section").isHidden(),
+      "mobile queue: legacy local queue does not reappear over the centralized single-product review",
       cardCount,
     );
     const overflow = await overflowAudit(page);
@@ -468,12 +517,19 @@ async function productQueueLongTitleMobileContract(browser) {
 async function auditPage(browser, definition, viewport) {
   const scenario = await openScenario(browser, definition.path, viewport);
   const { page, context, errors, requests } = scenario;
+  const diagnostic = { page: definition.name, path: definition.path, viewport, failedRequests: scenario.failedRequests, resourceResponses: scenario.resourceResponses, consoleFailures: scenario.consoleFailures };
   try {
     for (const selector of definition.nextActions) {
       const count = await page.locator(selector).count();
       check(count === 1, `${definition.name}: next-action selector exists: ${selector}`, count);
       if (count === 1) {
         const visible = await computedVisibility(page, selector);
+        if (!visible) diagnostic.failedDOM = await page.evaluate((selector) => ({
+          readyState: document.readyState,
+          url: location.href,
+          scripts: [...document.scripts].map((element) => ({ src: element.src, defer: element.defer })),
+          element: document.querySelector(selector)?.outerHTML || null,
+        }), selector);
         const text = (await page.locator(selector).innerText()).trim();
         check(visible, `${definition.name}: computed next action is visible: ${selector}`);
         check(Boolean(text), `${definition.name}: next action is non-empty: ${selector}`, text);
@@ -491,6 +547,9 @@ async function auditPage(browser, definition, viewport) {
     check(initialPosts.length === 0, `${definition.name}: initial POST budget is zero`, initialPosts);
     check(external.length === 0, `${definition.name}: external network budget is zero`, external);
   } finally {
+    if (errors.length || failures.some((row) => row.message.startsWith(`${definition.name}:`))) {
+      process.stderr.write(`RELEASE_PAGE_DIAGNOSTIC ${JSON.stringify(diagnostic)}\n`);
+    }
     await context.close();
   }
 }
@@ -603,9 +662,6 @@ async function productAsyncFeedback(browser) {
       "product: warning evidence remains in the DOM without exposing an approval action",
       approvalMessage,
     );
-    await page.route("**/api/product-workspace/title-draft", (route) => {
-      state.pending.titleDraft = route;
-    });
     const unsavedCommercialDraft = {
       cost_cny: "19.87",
       weight_kg: "0.456",
@@ -618,83 +674,20 @@ async function productAsyncFeedback(browser) {
         `.sku-commercial-input[data-commercial-field="${field}"]`,
       ).first().fill(value);
     }
-    await page.locator("#generateTitleDraftButton").click();
-    await page.waitForFunction(() => document.querySelector("#generateTitleDraftButton")?.classList.contains("is-loading"));
-    const editedSpecification = "Kyle edited specification while AI is running";
-    await page.locator(".sku-label-input").first().fill(editedSpecification);
     check(
-      await computedVisibility(page, "#titleDraftStatus"),
-      "product: title model action exposes visible progress feedback",
-    );
-    const listingCopy = {
-      status: "draft_pending_kyle_review",
-      semantic_master_en: "Watercolour Floral Butterfly Wall Decal",
-      candidates: [
-        {
-          channel: "tiktok",
-          site: "PH",
-          language: "English",
-          limit: 255,
-          title: "Watercolour Floral Butterfly Wall Decal",
-        },
-        {
-          channel: "ozon",
-          site: "RU",
-          language: "Russian",
-          limit: 200,
-          title: "Наклейка на стену с цветами и бабочками",
-        },
-      ],
-      input_signature: "sha256:offline-title-fixture",
-      policy_version: "listing-title-candidates-v2",
-      provider: "toapi",
-      model: "gpt-5.4-mini-official",
-    };
-    await state.pending.titleDraft.fulfill(
-      jsonResponse({
-        ok: true,
-        marketplace_writes_performed: [],
-        dashboard: { ...productDashboard, listing_copy: listingCopy },
-      }),
-    );
-    await page.waitForFunction(() => !document.querySelector("#generateTitleDraftButton")?.classList.contains("is-loading"));
-    check(
-      (await page.locator("#titleCandidateGrid").innerText()).includes("Watercolour Floral"),
-      "product: generated platform title candidates are visible",
+      await page.locator("#generateTitleDraftButton").isDisabled(),
+      "product: paid title generation requires a verified task context",
     );
     check(
-      (await page.locator("#factsEditTitle").inputValue()).includes("Watercolour Floral"),
-      "product: semantic English master is placed into the editable fact field",
-    );
-    check(
-      (await page.locator(".sku-label-input").first().inputValue()) === editedSpecification,
-      "product: async title generation preserves a specification edited while the request is running",
-      await page.locator(".sku-label-input").first().inputValue(),
-    );
-    check(
-      await page.locator("#factsEditTitle").isEnabled(),
-      "product: generated English title remains directly editable before save",
-    );
-    check(
-      await page.locator(".adopt-title-candidate").count() === 0,
-      "product: unlocked facts do not expose a redundant title adoption button",
-    );
-    const generatedTitleFeedback = (
-      await page.locator("#titleDraftStatus").innerText()
-    ).trim();
-    check(
-      generatedTitleFeedback.includes("已填入上方正式英文标题")
-      && generatedTitleFeedback.includes("尚未保存")
-      && generatedTitleFeedback.includes("可以直接修改"),
-      "product: title generation gives visible local-only unsaved feedback",
-      generatedTitleFeedback,
+      (await page.locator("#generateTitleDraftButton").getAttribute("title") || "").includes("付费任务上下文"),
+      "product: disabled title action explains its prerequisite",
     );
     for (const [field, value] of Object.entries(unsavedCommercialDraft)) {
       check(
         await page.locator(
           `.sku-commercial-input[data-commercial-field="${field}"]`,
         ).first().inputValue() === value,
-        `product: title generation preserves unsaved ${field}`,
+        `product: unavailable title generation preserves unsaved ${field}`,
       );
     }
     await page.route("**/api/product-workspace/facts", (route) => {
@@ -3977,6 +3970,12 @@ function oneClickDashboard({
       confirmation_token: "browser-echo-only",
       payload_digest: payloadDigest,
       targets_digest: targetsDigest,
+      targets: [
+        "shopee:MY",
+        "tiktok:GB",
+        "shopee:VN",
+        "ozon:RU",
+      ],
     },
     run: null,
     target_recovery_actions: [],
@@ -8118,51 +8117,23 @@ async function shopeeCategoryDecisionContract(browser, viewport) {
 }
 
 async function profitAsyncAndNoFalseSuccess(browser) {
-  const scenario = await openScenario(browser, "/profit", { width: 1440, height: 900 });
-  const { page, context, errors, state } = scenario;
+  // The active /profit deployment redirects to the approved July report. This
+  // static compatibility page must not imply a new calculation before inputs.
+  const scenario = await openScenario(browser, "/profit-review", { width: 1440, height: 900 });
+  const { page, context, errors, requests } = scenario;
   try {
-    const badge = (await page.locator("#weeklyStatusBadge").innerText()).trim().toUpperCase();
-    check(!badge.includes("READY"), "profit: no-data weekly state is not READY", badge);
-    const verdictClass = await page.locator("#weeklyVerdict").getAttribute("class");
-    check(!String(verdictClass).includes(" ready"), "profit: no-data weekly state has no ready style", verdictClass);
-
-    state.delayWeekly = true;
-    await page.locator("#weeklyForm").evaluate((form) => form.requestSubmit());
-    await page.waitForFunction(() => document.querySelector("#weeklyForm")?.classList.contains("is-loading"));
-    const weeklyLoading = await page.locator("#weeklyForm .button-loading").evaluate((node) => {
-      const style = getComputedStyle(node);
-      return style.display !== "none" && style.visibility !== "hidden";
-    });
-    check(weeklyLoading, "profit: weekly refresh exposes loading state");
-    await state.pending.weekly.fulfill(
-      jsonResponse({ ok: false, error: "离线周报失败" }, 500),
-    );
-    await page.waitForFunction(() => !document.querySelector("#weeklyForm")?.classList.contains("is-loading"));
-    check(await computedVisibility(page, "#weeklyAlert"), "profit: weekly failure alert is visible");
-    const failedBadge = (await page.locator("#weeklyStatusBadge").innerText()).trim().toUpperCase();
-    check(!failedBadge.includes("READY"), "profit: failed weekly request is not READY", failedBadge);
-
-    state.delaySku = true;
-    await page.locator("#skuInput").fill("0021");
-    await page.locator("#skuForm").evaluate((form) => form.requestSubmit());
-    await page.waitForFunction(() => document.querySelector("#skuForm")?.classList.contains("is-loading"));
-    const skuLoading = await page.locator("#skuForm .button-loading").evaluate((node) => {
-      const style = getComputedStyle(node);
-      return style.display !== "none" && style.visibility !== "hidden";
-    });
-    check(skuLoading, "profit: SKU lookup exposes loading state");
-    await state.pending.sku.fulfill(
-      jsonResponse({ ok: false, error: "离线样例：没有可审计样本" }, 422),
-    );
-    await page.waitForFunction(() => !document.querySelector("#skuForm")?.classList.contains("is-loading"));
-    check(await computedVisibility(page, "#skuAlert"), "profit: SKU failure alert is visible");
-    const skuText = (await page.locator("#skuResult").innerText()).toUpperCase();
-    check(!skuText.includes("CALCULATED"), "profit: failed SKU lookup is not CALCULATED", skuText);
+    const status = (await page.locator("#statusLabel").innerText()).trim();
+    check(status.includes("选择输入后开始"), "profit: no-input review does not claim completion", status);
+    check(await page.locator("#reviewButton").isDisabled(), "profit: review is unavailable without a local profile");
+    check(await page.locator("#skuEvidence").isDisabled(), "profit: SKU evidence is unavailable without a profile");
     check(
-      unexpectedInteractionErrors(errors).length === 0,
-      "profit interaction: no unexpected console/page errors",
-      errors,
+      (await page.locator("#metricProfit").innerText()).trim() === "—",
+      "profit: no-input review does not fabricate a profit figure",
     );
+    check(requests.filter(row => row.method === "POST").length === 0,
+      "profit: opening unconfigured review performs no write", requests);
+    check(unexpectedInteractionErrors(errors).length === 0,
+      "profit interaction: no unexpected console/page errors", errors);
   } finally {
     await context.close();
   }
@@ -8372,7 +8343,7 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
   });
   try {
     await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle",
     });
     const tiktok = page.locator("#releasePrimaryActionButton");
     const shopee = page.locator("#shopeeGlobalReleaseButton");
@@ -8382,9 +8353,22 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
       && document.querySelector("#shopeeGlobalReleaseButton")?.disabled === false
       && document.querySelector("#ozonReleaseButton")?.disabled === false
     ));
+    await page.locator("#tab-release").click();
+    await page.waitForFunction(() => (
+      document.querySelector("#pane-release")?.hidden === false
+    ));
+    check(
+      await page.locator("#releasePrimaryActionPanel").isVisible(),
+      `simple publish ${suffix}: approved platform action panel is visible`,
+      await page.locator("#releasePrimaryActionPanel").evaluate((node) => ({
+        hidden: node.hidden,
+        display: getComputedStyle(node).display,
+        parentHidden: node.closest("[hidden]")?.id || "",
+      })),
+    );
     await screenshot("initial");
 
-    const firstClick = tiktok.click();
+    await tiktok.click();
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="TIKTOK"]')
         ?.textContent?.includes("PROCESSING")
@@ -8395,10 +8379,8 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     );
     await screenshot("publishing");
 
-    const shopeeClick = shopee.click();
+    await shopee.click();
     releaseFirstTiktok();
-    await firstClick;
-    await shopeeClick;
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="SHOPEE_GLOBAL"]')
         ?.textContent?.includes("PUBLISHED")
@@ -8416,42 +8398,18 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
       `simple publish ${suffix}: independent success and failure remain visible`,
       combined,
     );
-    check(await tiktok.isEnabled(), `simple publish ${suffix}: failed TikTok can retry`);
+    check(
+      !(await tiktok.isEnabled()),
+      `simple publish ${suffix}: failed TikTok requires durable recovery before retry`,
+    );
     await screenshot("failure-and-independent-success");
 
-    const siblingsBeforeTiktokRetry = await page.evaluate(() => ({
-      shopee: document.querySelector(
-        '[data-platform-publish-result="SHOPEE_GLOBAL"]',
-      )?.outerHTML,
-      ozon: document.querySelector(
-        '[data-platform-publish-result="OZON"]',
-      )?.outerHTML,
-    }));
-    await tiktok.click();
-    await page.waitForFunction(() => (
-      document.querySelector('[data-platform-publish-result="TIKTOK"]')
-        ?.textContent?.includes("PUBLISHED")
-    ));
-    const siblingsAfterTiktokRetry = await page.evaluate(() => ({
-      shopee: document.querySelector(
-        '[data-platform-publish-result="SHOPEE_GLOBAL"]',
-      )?.outerHTML,
-      ozon: document.querySelector(
-        '[data-platform-publish-result="OZON"]',
-      )?.outerHTML,
-    }));
-    check(
-      JSON.stringify(siblingsAfterTiktokRetry)
-        === JSON.stringify(siblingsBeforeTiktokRetry),
-      `simple publish ${suffix}: TikTok retry leaves sibling cards byte-for-byte unchanged`,
-      { siblingsBeforeTiktokRetry, siblingsAfterTiktokRetry },
-    );
     await ozon.click();
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="OZON"]')
         ?.textContent?.includes("PUBLISHED")
     ));
-    await screenshot("all-success-after-retry");
+    await screenshot("terminal-independent-results");
 
     const siblingsBeforeTiktokReimport = await page.evaluate(() => ({
       shopee: document.querySelector(
@@ -8490,7 +8448,7 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
       (row) => row.path === "/api/product-workspace/publish-tiktok",
     );
     check(
-      tiktokPosts.length === 2
+      tiktokPosts.length === 1
         && tiktokPosts.every((row) => (
           row.body?.offer_id === "3828540231"
           && row.body?.plan_id === "omnichannel:oneclick-ui"
@@ -8506,7 +8464,7 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     );
     const finalText = await page.locator("#oneClickExecutionPreview").innerText();
     check(
-      statusReads.length === 0 && reportReads.length === 4,
+      statusReads.length === 0 && reportReads.length === 3,
       `simple publish ${suffix}: only durable publication reports are polled`,
       { statusReads, reportReads },
     );
@@ -8515,9 +8473,282 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
       `simple publish ${suffix}: obsolete workflow text is absent`,
       finalText,
     );
-    check(errors.length === 0, `simple publish ${suffix}: no browser errors`, errors);
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `simple publish ${suffix}: no unexpected browser errors`,
+      errors,
+    );
   } finally {
     await context.close();
+  }
+}
+
+async function categoryPreviewManagedReadonlyContract(browser, viewport) {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  const requests = [];
+  const errors = [];
+  const offerId = process.env.ORBIT_CATEGORY_FIXTURE_OFFER;
+  const fixtureBase = process.env.ORBIT_CATEGORY_FIXTURE_BASE;
+  let fixtureReads = 0;
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    requests.push({ method: request.method(), path: url.pathname, external: url.origin !== baseUrl });
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    if (url.pathname === "/api/product-workspace/channel-category-decision-preview") {
+      fixtureReads += 1;
+      const response = await route.fetch({ url: `${fixtureBase}${url.pathname}${url.search}` });
+      return route.fulfill({ response });
+    }
+    if (url.pathname === "/api/product-workspace/publication-stages") {
+      return route.fulfill(jsonResponse({ ok: false, error: "synthetic unavailable admission" }, 503));
+    }
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(oneClickDashboard()));
+    }
+    const fixture = apiFixture(url, request.method(), { delayWeekly: false, delaySku: false, pending: {} });
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    // Every production asset remains intact. This is deliberately not a fake
+    // LEGACY_ONLY response or a controller-free page claiming executable R3.
+    await page.goto(`${baseUrl}/product-workspace?offer_id=${offerId}`, { waitUntil: "networkidle" });
+    const responses = await page.evaluate(async ({ offerId }) => {
+      const results = [];
+      for (let n = 0; n < 2; n += 1) {
+        const response = await fetch(`/api/product-workspace/channel-category-decision-preview?offer_id=${offerId}&target_label=shopee%3AGLOBAL`);
+        results.push({ status: response.status, body: await response.json() });
+      }
+      return results;
+    }, { offerId });
+    check(responses.every((r) => r.status === 200 && r.body.external_writes_performed.length === 0), "managed category: repeated real local HTTP GET remains available", responses);
+    check(responses.every((r) => r.body.status === process.env.ORBIT_CATEGORY_EXPECTED_STATUS), "managed category: actual backend preview status retained", responses);
+    check(await page.evaluate(() => window.OrbitPublicationWorkspace?.managed()) === true, "managed category: real production controller remains managed", viewport);
+    check(requests.filter((r) => r.method === "POST").length === 0, "managed category: no automatic or legacy POST", requests);
+    check(requests.filter((r) => r.external).length === 0 && fixtureReads >= 2, "managed category: bounded loopback preview only", requests);
+    check(errors.length === 0, "managed category: no page errors", errors);
+  } finally {
+    await context.close();
+  }
+}
+
+async function r3ManagedLegacyPublishBlockContract(browser, viewport) {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  const requests = [];
+  const errors = [];
+  const artifactRoot = process.env.ORBIT_BROWSER_ARTIFACT_DIR || "";
+  const suffix = `${viewport.width}x${viewport.height}`;
+  const offerId = "3828540231";
+  const targetLabels = ["tiktok:LH_MY", "shopee:MY", "ozon:RU"];
+  let stageReads = 0;
+  const stageView = () => ({
+    ok: true,
+    schema_version: "publication-stages/v1",
+    offer_id: offerId,
+    common: {
+      status: "VERIFIED",
+      plan: { plan_id: "fixture-common-plan", product_id: offerId,
+        targets: ["miaoshou:COMMON"], status: "APPROVED",
+        payload: { product_id: offerId, product_revision: 1,
+          targets: ["miaoshou:COMMON"] } },
+      run: { run_id: "fixture-common-run", status: "SUCCEEDED" },
+      blockers: [],
+    },
+    marketplace: {
+      status: "RECONCILIATION_REQUIRED",
+      blockers: ["TARGET_READBACK_UNKNOWN"],
+      final_review_available: false,
+      execution_authority: false,
+      plan: { plan_id: "fixture-market-plan", product_id: offerId,
+        targets: targetLabels, status: "APPROVED",
+        payload: { product_id: offerId, product_revision: 1,
+          targets: targetLabels } },
+      candidate: { candidate_digest: "a".repeat(64),
+        snapshot_digest: "b".repeat(64), target_labels: targetLabels },
+      approval: { status: "APPROVED", plan_id: "fixture-market-plan",
+        candidate_digest: "a".repeat(64), snapshot_digest: "b".repeat(64),
+        ordered_targets: targetLabels },
+      target_results: [
+        { target_label: "tiktok:LH_MY", status: stageReads > 1
+          ? "RECONCILIATION_REQUIRED" : "FAILED" },
+        { target_label: "shopee:MY", status: "PUBLISHED" },
+        { target_label: "ozon:RU", status: "PUBLISHED" },
+      ],
+      platforms: [
+        { platform: "TIKTOK", status: stageReads > 1
+          ? "RECONCILIATION_REQUIRED" : "FAILED", next_action: "READ_ONLY_HISTORY" },
+        { platform: "SHOPEE", status: "PUBLISHED", next_action: "READ_ONLY_HISTORY" },
+        { platform: "OZON", status: "PUBLISHED", next_action: "READ_ONLY_HISTORY" },
+      ],
+    },
+    external_writes_performed: [],
+  });
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    requests.push({ method: request.method(), url: url.href, path: url.pathname });
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    if (url.pathname === "/api/product-workspace/publication-stages") {
+      stageReads += 1;
+      return route.fulfill(jsonResponse(stageView()));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=${offerId}`, {
+      waitUntil: "networkidle",
+    });
+    await page.waitForFunction(() => (
+      document.querySelector("#publicationFlowStatus")?.textContent
+        ?.includes("部分平台结果未知")
+    ));
+    await page.locator("#tab-release").click();
+    const state = await page.evaluate(() => ({
+      managed: window.OrbitPublicationWorkspace?.managed(),
+      primaryHidden: document.querySelector("#releasePrimaryActionPanel")?.hidden,
+      legacyHidden: document.querySelector("#legacyReleaseActionPanels")?.hidden,
+      approvalHidden: document.querySelector("#releasePlanApprovalForm")?.hidden,
+      buttonsDisabled: [
+        "#releasePrimaryActionButton",
+        "#shopeeGlobalReleaseButton",
+        "#ozonReleaseButton",
+      ].map((selector) => document.querySelector(selector)?.disabled),
+    }));
+    check(
+      state.managed === true
+      && state.primaryHidden === true
+      && state.legacyHidden === true
+      && state.approvalHidden === true
+      && state.buttonsDisabled.every((value) => value === true),
+      `R3 reconciliation ${suffix}: legacy publish controls remain closed`,
+      state,
+    );
+    check(
+      await page.locator("#publicationFlowActions button").count() === 0,
+      `R3 reconciliation ${suffix}: no new approval or execute action`,
+    );
+    const siblingRows = async () => page.locator("#publicationFlowLedger tr")
+      .evaluateAll((rows) => Object.fromEntries(rows
+        .filter((row) => /SHOPEE|OZON/.test(row.cells[0]?.textContent || ""))
+        .map((row) => [row.cells[0].textContent.trim(), row.outerHTML])));
+    const beforeRefresh = await siblingRows();
+    await page.locator("#refreshPublicationFlow").click();
+    await page.waitForFunction(() => document.querySelector("#publicationFlowLedger")
+      ?.textContent?.includes("原结果待核对"));
+    const afterRefresh = await siblingRows();
+    check(
+      Object.keys(beforeRefresh).length === 2
+      && JSON.stringify(afterRefresh) === JSON.stringify(beforeRefresh),
+      `R3 reconciliation ${suffix}: unrelated platform ledger rows stay unchanged`,
+      { beforeRefresh, afterRefresh },
+    );
+    for (const selector of [
+      "#releasePrimaryActionButton",
+      "#shopeeGlobalReleaseButton",
+      "#ozonReleaseButton",
+      "#approveReleasePlanButton",
+    ]) {
+      await page.locator(selector).evaluate((button) => button.click());
+    }
+    check(
+      stageReads === 2
+      && requests.some((row) => row.path === "/api/product-workspace/publication-stages")
+      && requests.every((row) => row.method === "GET"),
+      `R3 reconciliation ${suffix}: reads and attempted blocked controls send zero POSTs`,
+      requests,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `R3 reconciliation ${suffix}: no unexpected browser errors`,
+      errors,
+    );
+    if (artifactRoot) {
+      fs.mkdirSync(artifactRoot, { recursive: true });
+      await page.locator("#pane-release").screenshot({
+        path: path.join(artifactRoot, `${suffix}-r3-reconciliation-blocked.png`),
+      });
+    }
+  } finally {
+    await context.close();
+  }
+}
+
+async function publishSelectedTargetsDynamicContinuationContract(browser) {
+  const appSource = fs.readFileSync(
+    path.join(__dirname, "..", "..", "web", "static", "product_workspace.js"),
+    "utf8",
+  );
+  const marker = "async function publishSelectedTargets()";
+  const start = appSource.indexOf(marker);
+  if (start < 0) throw new Error("publishSelectedTargets is missing");
+  const open = appSource.indexOf("{", start);
+  let depth = 0;
+  let end = -1;
+  for (let index = open; index < appSource.length; index += 1) {
+    if (appSource[index] === "{") depth += 1;
+    if (appSource[index] === "}") depth -= 1;
+    if (depth === 0) {
+      end = index + 1;
+      break;
+    }
+  }
+  if (end < 0) throw new Error("publishSelectedTargets body is incomplete");
+  const functionSource = appSource.slice(start, end);
+  const page = await browser.newPage();
+  try {
+    await page.goto("about:blank");
+    for (const failureMode of ["blocker", "http-409", "transport-throw"]) {
+      const observed = await page.evaluate(async ({ source, mode }) => {
+        const calls = [];
+        const publishPlatformBatch = async (endpoint, name, platform) => {
+          calls.push({ endpoint, name, platform });
+          if (platform !== "TIKTOK" || mode === "blocker") return;
+          const error = new Error(
+            mode === "http-409" ? "HTTP 409" : "transport failed",
+          );
+          if (mode === "http-409") error.status = 409;
+          throw error;
+        };
+        const publishSelectedTargets = new Function(
+          "publishPlatformBatch",
+          `return (${source});`,
+        )(publishPlatformBatch);
+        let escapedError = null;
+        try {
+          await publishSelectedTargets();
+        } catch (error) {
+          escapedError = error.message;
+        }
+        return { calls, escapedError };
+      }, { source: functionSource, mode: failureMode });
+      check(
+        JSON.stringify(observed.calls.map((row) => row.platform))
+          === JSON.stringify(["TIKTOK", "SHOPEE_GLOBAL", "OZON"]),
+        `publishSelectedTargets ${failureMode}: all platform starts are attempted in order`,
+        observed,
+      );
+      check(
+        observed.escapedError === null,
+        `publishSelectedTargets ${failureMode}: a TikTok outcome does not escape the orchestrator`,
+        observed,
+      );
+    }
+  } finally {
+    await page.close();
   }
 }
 
@@ -8637,18 +8868,39 @@ async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
       if (failures.length) process.exitCode = 1;
       return;
     }
+    if (process.env.ORBIT_BROWSER_CONTRACT_ONLY === "category-managed-readonly") {
+      for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+        await categoryPreviewManagedReadonlyContract(browser, viewport);
+      }
+      process.stdout.write(`${JSON.stringify({ ok: failures.length === 0, failures, results }, null, 2)}\n`);
+      if (failures.length) process.exitCode = 1;
+      return;
+    }
     if (
       process.env.ORBIT_BROWSER_CONTRACT_ONLY
-        === "simplified-platform-publish"
+        === "r3-managed-publish-block"
     ) {
-      await simplifiedPlatformPublishContract(
+      await r3ManagedLegacyPublishBlockContract(
         browser,
         { width: 1440, height: 900 },
       );
-      await simplifiedPlatformPublishContract(
+      await r3ManagedLegacyPublishBlockContract(
         browser,
         { width: 390, height: 844 },
       );
+      process.stdout.write(`${JSON.stringify({
+        ok: failures.length === 0,
+        failures,
+        results,
+      }, null, 2)}\n`);
+      if (failures.length) process.exitCode = 1;
+      return;
+    }
+    if (
+      process.env.ORBIT_BROWSER_CONTRACT_ONLY
+        === "publish-all-platform-continuation"
+    ) {
+      await publishSelectedTargetsDynamicContinuationContract(browser);
       process.stdout.write(`${JSON.stringify({
         ok: failures.length === 0,
         failures,
@@ -8734,12 +8986,12 @@ async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
       {
         name: "Orbit 首页",
         path: "/",
-        nextActions: [".focus-product", ".focus-profit"],
+        nextActions: ["#countCurrent", "#attentionList"],
       },
       {
         name: "商品发布中心",
         path: "/product-workspace?offer_id=3828540231",
-        nextActions: ["#productFactsPanel", "#embeddedImageReview"],
+        nextActions: ["#productFactsPanel"],
       },
       {
         name: "AI 图片工作室",
@@ -8748,8 +9000,8 @@ async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
       },
       {
         name: "利润中心",
-        path: "/profit",
-        nextActions: ["#weeklyVerdict", "#skuResult"],
+        path: "/profit-review",
+        nextActions: ["#statusLabel", "#emptyState"],
       },
     ];
     for (const definition of pages) {

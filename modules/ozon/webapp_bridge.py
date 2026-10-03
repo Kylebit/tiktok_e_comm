@@ -23,7 +23,7 @@ def webapp_dir() -> Path:
     if legacy_sibling.is_dir():
         return legacy_sibling
     raise RuntimeError(
-        "找不到 Ozon legacy webapp。请配置 ozon.data_dir 或 feishu.ozon_data_dir，"
+        "找不到 Ozon legacy webapp。请配置 ozon.data_dir，"
         f"或确保存在 {fallback}"
     )
 

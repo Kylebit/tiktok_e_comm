@@ -15,6 +15,10 @@ from domains.data_operations.profit_settlement.shared_inputs import CostSnapshot
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build or approve detailed settled-order profit reports")
     commands = parser.add_subparsers(dest="command", required=True)
+    captured = commands.add_parser("review-captured", help="read an explicitly selected captured profile without network activity")
+    captured.add_argument("--profile", required=True, type=Path)
+    captured.add_argument("--output", type=Path)
+    captured.add_argument("--html", type=Path)
     build = commands.add_parser("build")
     build.add_argument("--platform", required=True, choices=("tiktok", "shopee", "ozon"))
     build.add_argument("--period-kind", required=True, choices=("weekly", "monthly"))
@@ -49,6 +53,21 @@ def main(argv: list[str] | None = None) -> int:
     listing.add_argument("--month", type=int)
 
     args = parser.parse_args(argv)
+    if args.command == "review-captured":
+        from domains.data_operations.profit_settlement.captured_consumer import build_captured_weekly
+        from domains.data_operations.profit_settlement.render import render_profit_report_html
+        payload = build_captured_weekly(_read_json(args.profile))
+        text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(text, encoding="utf-8")
+        else:
+            print(text, end="")
+        if args.html:
+            report = next((item["report"] for item in payload.get("reports", {}).values() if "report" in item), payload)
+            args.html.parent.mkdir(parents=True, exist_ok=True)
+            args.html.write_text(render_profit_report_html(report), encoding="utf-8")
+        return 0 if payload["status"] == "ready" else 2
     if args.command == "build":
         payload = _build(args)
         text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"

@@ -1,15 +1,9 @@
-"""按 POP 测算更新 MX 店售价与库存（仅 save 草稿，不触发发布）。"""
+"""已停用的历史 MX 工具；不创建审核卡或执行店铺动作。"""
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from modules.miaoshou.mx_publish import publish_mx_listing
-from scripts.mx_pop_pricing import fetch_cny_mxn, quote_sku
-
+# 历史映射仅作原件事实保留，本入口不消费这些数据。
 MX_LISTINGS = [
     {
         "collect_box_detail_id": 1742250495,
@@ -22,32 +16,15 @@ MX_LISTINGS = [
         "ph_product_id": "1732379849767749563",
     },
 ]
+
 STOCK = 200
+
+RETIRED_ENTRY_CODE = "LEGACY_MX_ENTRY_RETIRED"
 
 
 def main() -> int:
-    rate = fetch_cny_mxn()
-    rc = 0
-    for row in MX_LISTINGS:
-        q = quote_sku(row["seller_sku"], cny_mxn=rate)
-        print(
-            f"\n>>> {row['seller_sku']}: POP {q.pop_sale_mxn:.2f} -> "
-            f"sale {q.sale_price_mxn:.2f} MXN | list ceil {q.list_price_ceil_mxn} | stock {STOCK}"
-        )
-        if q.sfp_adjustment:
-            print(f"    {q.sfp_adjustment}")
-        code = publish_mx_listing(
-            collect_box_detail_id=row["collect_box_detail_id"],
-            seller_sku=row["seller_sku"],
-            ph_product_id=row["ph_product_id"],
-            publish=False,
-            mxn_sale=q.sale_price_mxn,
-            mxn_list=q.list_price_ceil_mxn,
-            stock=STOCK,
-        )
-        if code:
-            rc = code
-    return rc
+    sys.stderr.write(RETIRED_ENTRY_CODE + ": 该历史工具已停用，请使用 Orbit 商品上架页面或当前上架 Skill\n")
+    return 2
 
 
 if __name__ == "__main__":

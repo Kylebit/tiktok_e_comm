@@ -236,6 +236,18 @@ def test_local_catalog_is_read_only_versioned_and_enriches_weight_and_image(tmp_
         INSERT INTO shopee_products VALUES
           ('2345','Shopee Widget','Blue','https://image.invalid/s.jpg','THB','TH',22,12);
         INSERT INTO sku_logistics_weights VALUES ('2345',188,1,10,20,30,13);
+        ALTER TABLE products ADD COLUMN product_id TEXT;
+        UPDATE products SET product_id='PRODUCT-1';
+        ALTER TABLE shopee_products ADD COLUMN item_id TEXT;
+        ALTER TABLE shopee_products ADD COLUMN model_id TEXT;
+        ALTER TABLE shopee_products ADD COLUMN price REAL;
+        UPDATE shopee_products SET item_id='ITEM-1',model_id='MODEL-1';
+        CREATE TABLE shops(cipher TEXT,shop_id TEXT,region TEXT);
+        INSERT INTO shops VALUES ('TK-TH','TK-TH','TH');
+        CREATE TABLE shopee_shops(shop_id TEXT,region TEXT);
+        INSERT INTO shopee_shops VALUES ('22','TH');
+        CREATE TABLE product_analytics(product_id TEXT,shop_cipher TEXT);
+        UPDATE sku_logistics_weights SET seller_sku='12345';
         """
     )
     connection.commit()
@@ -243,11 +255,12 @@ def test_local_catalog_is_read_only_versioned_and_enriches_weight_and_image(tmp_
 
     catalog = load_local_catalog(path)
     enriched = enrich_settlement_row(
-        {"platform_sku": "PLATFORM-1", "canonical_sku": "2345"}, catalog
+        {"platform_sku": "PLATFORM-1", "canonical_sku": "12345", "platform": "tiktok",
+         "shop_id": "TK-TH", "region": "TH", "currency": "THB"}, catalog
     )
 
-    assert catalog.seller_sku_by_platform_sku == {"PLATFORM-1": "2345"}
-    assert catalog.costs_by_sku["2345"] == Decimal("7.25")
+    assert catalog.seller_sku_by_platform_sku == {"PLATFORM-1": "12345"}
+    assert catalog.costs_by_sku["12345"] == Decimal("7.25")
     assert catalog.snapshot_id.startswith("shop-db-catalog:")
     assert enriched["image_url"] == "https://image.invalid/1.jpg"
     assert enriched["unit_weight_g"] == 188
@@ -1265,7 +1278,7 @@ def test_stage_two_bundle_supports_global_and_platform_ad_rate_overrides():
     bundle = build_weekly_evidence_bundle(
         {
             "tiktok": evidence("tiktok", "TH", "platform-1"),
-            "shopee": evidence("shopee", "TH", "1"),
+            "shopee": evidence("shopee", "TH", "0001"),
             "ozon": evidence("ozon", "RU", "ozon-1"),
         },
         _catalog_stub(),
@@ -1278,7 +1291,7 @@ def test_stage_two_bundle_supports_global_and_platform_ad_rate_overrides():
         fx=FxSnapshot.from_mapping(
             {"THB": "0.2", "RUB": "0.08"}, source="fixture-fx", as_of="2026-08-03"
         ),
-        seller_sku_by_ozon_sku={"ozon-1": "1"},
+        seller_sku_by_ozon_sku={"ozon-1": "0001"},
         ad_rate=Decimal("0.15"),
         ad_rate_source="operator_global_override",
         ad_rates={"shopee": Decimal("0.19"), "ozon": Decimal("0.18")},
@@ -1304,7 +1317,7 @@ def test_stage_two_bundle_supports_global_and_platform_ad_rate_overrides():
     assert bundle["external_writes_performed"] == []
 
     shopee_only = build_weekly_evidence_bundle(
-        {"shopee": evidence("shopee", "MY", "1")},
+        {"shopee": evidence("shopee", "MY", "0001")},
         _catalog_stub(),
         period_start="2026-07-27",
         period_end="2026-08-02",
@@ -1365,7 +1378,7 @@ def test_ozon_read_enrichment_supplies_mapping_and_quantity_without_inference():
         evidence,
         _catalog_stub(),
         period_kind="weekly",
-        seller_sku_by_platform_sku={"ozon-1": "1"},
+        seller_sku_by_platform_sku={"ozon-1": "0001"},
         quantity_by_order_platform_sku={"posting-1|ozon-1": "2"},
     )
 
@@ -1379,7 +1392,7 @@ def test_shopee_weekly_ad_basis_uses_buyer_cash_product_payment():
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",
         "snapshot_id": "shopee-settlement:fixture", "checksum": "fixture", "net_settlement_total_local": "90",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "order-1", "order_created_at": "2026-07-20T08:30:00+07:00", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "2", "discounted_price": "150"}], "financial_components": [{"code": "order_discounted_price", "amount": "150"}, {"code": "buyer_paid_shipping_fee", "amount": "40"}, {"code": "voucher_from_shopee", "amount": "70"}, {"code": "vat_on_imported_goods", "amount": "13"}, {"code": "th_import_duty", "amount": "37"}]}],
+        "orders": [{"order_id": "order-1", "order_created_at": "2026-07-20T08:30:00+07:00", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "0001", "quantity": "2", "discounted_price": "150"}], "financial_components": [{"code": "order_discounted_price", "amount": "150"}, {"code": "buyer_paid_shipping_fee", "amount": "40"}, {"code": "voucher_from_shopee", "amount": "70"}, {"code": "vat_on_imported_goods", "amount": "13"}, {"code": "th_import_duty", "amount": "37"}]}],
     }
 
     result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
@@ -1562,7 +1575,7 @@ def test_shopee_adapter_classifies_zero_import_vat_and_duty_as_local():
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",
         "snapshot_id": "shopee-settlement:local", "checksum": "local", "net_settlement_total_local": "90",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "local-1", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "120"}], "financial_components": [{"code": "vat_on_imported_goods", "amount": "0"}, {"code": "th_import_duty", "amount": "0"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}, {"code": "order_discounted_price", "amount": "120"}]}],
+        "orders": [{"order_id": "local-1", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "0001", "quantity": "1", "discounted_price": "120"}], "financial_components": [{"code": "vat_on_imported_goods", "amount": "0"}, {"code": "th_import_duty", "amount": "0"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}, {"code": "order_discounted_price", "amount": "120"}]}],
     }
 
     result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
@@ -1593,7 +1606,7 @@ def test_shopee_import_tax_pair_is_fail_closed(vat, duty, expected_mode, expecte
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",
         "snapshot_id": "shopee-settlement:tax-pair", "checksum": "tax-pair", "net_settlement_total_local": "90",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "tax-pair-1", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "120"}], "financial_components": components}],
+        "orders": [{"order_id": "tax-pair-1", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "0001", "quantity": "1", "discounted_price": "120"}], "financial_components": components}],
     }
 
     result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
@@ -1623,7 +1636,7 @@ def test_shopee_my_uses_low_value_goods_sales_tax_for_fulfillment(
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "MY",
         "snapshot_id": "shopee-settlement:my-lvg", "checksum": "my-lvg", "net_settlement_total_local": "25.83",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "my-lvg-1", "settled_at": "2026-08-03T00:00:00+08:00", "currency": "MYR", "net_settlement_amount": "25.83", "buyer_total_amount": "56.52", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "56.52"}], "financial_components": components}],
+        "orders": [{"order_id": "my-lvg-1", "settled_at": "2026-08-03T00:00:00+08:00", "currency": "MYR", "net_settlement_amount": "25.83", "buyer_total_amount": "56.52", "items": [{"seller_sku": "0001", "quantity": "1", "discounted_price": "56.52"}], "financial_components": components}],
     }
 
     result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
@@ -1650,7 +1663,7 @@ def test_shopee_vn_uses_import_vat_for_fulfillment(
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "VN",
         "snapshot_id": "shopee-settlement:vn-vat", "checksum": "vn-vat", "net_settlement_total_local": "87834",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "vn-vat-1", "settled_at": "2026-08-03T00:00:00+07:00", "currency": "VND", "net_settlement_amount": "87834", "buyer_total_amount": "194195", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "194195"}], "financial_components": components}],
+        "orders": [{"order_id": "vn-vat-1", "settled_at": "2026-08-03T00:00:00+07:00", "currency": "VND", "net_settlement_amount": "87834", "buyer_total_amount": "194195", "items": [{"seller_sku": "0001", "quantity": "1", "discounted_price": "194195"}], "financial_components": components}],
     }
 
     result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
@@ -1665,7 +1678,7 @@ def test_shopee_ph_classifies_every_order_as_cross_border():
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "PH",
         "snapshot_id": "shopee-settlement:ph", "checksum": "ph", "net_settlement_total_local": "100",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "ph-1", "settled_at": "2026-08-03T00:00:00+08:00", "currency": "PHP", "net_settlement_amount": "100", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "120"}], "financial_components": [{"code": "buyer_paid_shipping_fee", "amount": "0"}, {"code": "order_discounted_price", "amount": "120"}]}],
+        "orders": [{"order_id": "ph-1", "settled_at": "2026-08-03T00:00:00+08:00", "currency": "PHP", "net_settlement_amount": "100", "buyer_total_amount": "120", "items": [{"seller_sku": "0001", "quantity": "1", "discounted_price": "120"}], "financial_components": [{"code": "buyer_paid_shipping_fee", "amount": "0"}, {"code": "order_discounted_price", "amount": "120"}]}],
     }
 
     result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
@@ -1874,7 +1887,7 @@ def test_missing_cost_and_fx_fail_closed_without_zero_profit_fabrication():
     assert report.status == "needs_review"
     assert report.order_lines == ()
     assert {issue.code for issue in report.quality_issues} >= {"missing_cost", "missing_fx"}
-    assert report.totals["profit_cny"] == Decimal("0")
+    assert report.totals["profit_cny"] is None
 
 
 def test_unsettled_and_unknown_orders_never_enter_profit():

@@ -1,0 +1,223 @@
+{
+  "schema_version": "publication-incident-registry/v1",
+  "registry_version": "2026-08-31.3",
+  "language": "zh-CN",
+  "incidents": [
+    {
+      "incident_id": "PPI-2026-001",
+      "status": "CONFIRMED",
+      "stage": "PRE_WRITE_SIMULATION",
+      "trigger": "变体规格或价格绑定无效，但提供方写入已经开始",
+      "root_cause": "逐变体完整性校验发生在第一写入边界之后",
+      "invariant": "全部选中变体的规格、价格、重量、包裹尺寸和目标覆盖必须在任何提供方写入前一次性验证",
+      "regression_tests": [
+        "tests/test_miaoshou_variant_contract.py",
+        "tests/test_publication_autopilot.py"
+      ],
+      "fix_commit": "193a2db",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-002",
+      "status": "CONFIRMED",
+      "stage": "TARGET_SCOPED_RETRY",
+      "trigger": "单目标重试准备或写入了未选中的其他目标",
+      "root_cause": "重试目标集合没有成为准备器和执行器共同的结构化边界",
+      "invariant": "目标级重试只能读取完整快照，但准备、写入、回读和预算必须严格限制在精确目标集合",
+      "regression_tests": [
+        "tests/test_target_scoped_release_cross_layer.py",
+        "tests/test_target_scoped_release_platform.py",
+        "tests/test_publication_autopilot.py"
+      ],
+      "fix_commit": "c150cba",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-003",
+      "status": "CONFIRMED",
+      "stage": "DESCRIPTION_MEDIA_PREFLIGHT",
+      "trigger": "相册有图但商品描述只有文字，或图片国家、品牌、顺序不一致",
+      "root_cause": "相册与描述媒体被错误视为同一个平台字段",
+      "invariant": "每个目标在首个写入前必须证明相册与描述图片均为完整、唯一、有序且使用同一目标路由，正式回读再次验证",
+      "regression_tests": [
+        "tests/test_product_description_media.py",
+        "tests/test_product_publication_executors.py",
+        "tests/test_publication_autopilot.py"
+      ],
+      "fix_commit": "ff81f25",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-004",
+      "status": "CONFIRMED",
+      "stage": "REGIONAL_COPY",
+      "trigger": "Shopee MY、TH、VN 区域文案出现英语混用或修复文字时丢失描述图片",
+      "root_cause": "区域语言校验过宽，且文字与扩展描述媒体更新不是原子操作",
+      "invariant": "MY 使用马来语、TH 使用泰语、VN 使用越南语；区域修复必须原位并原子保留完整有序描述图片",
+      "regression_tests": [
+        "tests/test_shopee_publish_regional_facts.py",
+        "tests/test_shopee_global_v4_executor.py",
+        "tests/test_publication_autopilot.py"
+      ],
+      "fix_commit": "e8da214",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-005",
+      "status": "FIXED_LOCAL_PENDING_MERGE",
+      "stage": "TIKTOK_DRAFT_PREPARATION",
+      "trigger": "无既有妙手平台草稿的多目标 TikTok 发布只创建了首个目标草稿，其余目标被误报为提供方结果未知",
+      "root_cause": "TikTok 公共写入预算静态为 1、逐目标预算漏算正式发布，且本地预算异常被通用异常处理误分类为提供方 UNKNOWN",
+      "invariant": "TikTok 草稿创建预算必须按已批准目标数计算，逐目标预算必须覆盖绑定、保存和发布；任何发生在网络调用前的本地预算异常必须直接中止并明确归类为本地错误",
+      "regression_tests": [
+        "tests/test_publication_autopilot.py",
+        "tests/test_miaoshou_tiktok_v4_drafts.py"
+      ],
+      "fix_commit": "WORKTREE_PENDING",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-006",
+      "status": "FIXED_LOCAL_PENDING_MERGE",
+      "stage": "TARGET_SCOPED_IMAGE_ROUTING",
+      "trigger": "Shopee 单国家恢复保留全量国家图片路由，导致本地误报路由覆盖漂移",
+      "root_cause": "publication_targets 已缩小，但 product.image_routing.routes 没有同步缩小",
+      "invariant": "目标级恢复读取完整冻结快照，但所有按目标索引的执行投影必须同步缩小到同一精确目标集合",
+      "regression_tests": [
+        "tests/test_product_publication_executors.py",
+        "tests/test_product_publication_report_http.py"
+      ],
+      "fix_commit": "WORKTREE_PENDING",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-007",
+      "status": "DEFERRED_BY_USER",
+      "stage": "OZON_RECOVERY_READBACK",
+      "trigger": "Ozon 已存在终态校验失败商品时，恢复流程可能先重复导入再回读",
+      "root_cause": "生产恢复沿用了首次发布的写入优先顺序，未先区分已有、处理中和终态失败",
+      "invariant": "Ozon 恢复必须先回读；已有终态失败保留批准事实并以零写入失败，记录官方校验码，禁止盲目重投",
+      "regression_tests": [
+        "tests/test_ozon_approved_publication_v4.py",
+        "tests/test_product_publication_live_dependencies.py"
+      ],
+      "fix_commit": "WORKTREE_PENDING",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-008",
+      "status": "FIXED_LOCAL_PENDING_MERGE",
+      "stage": "SHOPEE_GLOBAL_TIER_IMAGE_UPDATE",
+      "trigger": "Shopee 已接受变体图片更新，但即时响应报错或首次官方回读仍返回旧图片",
+      "root_cause": "变体图片更新只处理传输异常且只回读一次，没有覆盖提供方报错后最终状态延迟可见",
+      "invariant": "变体图片写入只允许提交一次；无论响应成功或异常，最多进行三次官方 GET 回读，禁止为等待可见性重复 POST",
+      "regression_tests": [
+        "tests/test_shopee_global_v4_live_runtime.py",
+        "tests/test_shopee_global_v4_executor.py",
+        "tests/test_shopee_variant_image_successor.py"
+      ],
+      "fix_commit": "WORKTREE_PENDING",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-009",
+      "status": "FIXED_LOCAL_PENDING_MERGE",
+      "stage": "TIKTOK_WAREHOUSE_BINDING",
+      "trigger": "HomeBloom SEA 的大陆揽收仓名为瓯江口，英文仓名硬编码导致四店发布前失败",
+      "root_cause": "大陆揽收仓语义匹配没有包含按精确店铺限定的运营别名",
+      "invariant": "瓯江口只可作为四个精确 HomeBloom 店铺的大陆揽收仓别名；运行时仍须回读各店当前仓库 ID，并把其他活动仓库存显式设为 0",
+      "regression_tests": [
+        "tests/test_tiktok_independent_publisher.py",
+        "tests/test_miaoshou_tiktok_v4_drafts.py"
+      ],
+      "fix_commit": "WORKTREE_PENDING",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-010",
+      "status": "FIXED_LOCAL_PENDING_MERGE",
+      "stage": "TIKTOK_WAREHOUSE_BINDING",
+      "trigger": "MX 和 GB 已在批准目标中，但官方仓名未被识别，导致写入前失败",
+      "root_cause": "大陆揽收仓别名表只覆盖 HomeBloom，未覆盖两个精确非 SEA 店铺",
+      "invariant": "中国仓库只可绑定 MX 店铺 16265910，自有仓库只可绑定 GB 店铺 10204699；仓库 ID 必须逐次官方回读，其他活动仓库存为 0",
+      "regression_tests": [
+        "tests/test_tiktok_warehouses.py",
+        "tests/test_tiktok_independent_publisher.py"
+      ],
+      "fix_commit": "WORKTREE_PENDING",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-011",
+      "status": "FIXED_LOCAL_PENDING_MERGE",
+      "stage": "TARGET_SCOPED_RECOVERY_VISIBILITY",
+      "trigger": "局部恢复成功后，前端隐藏了旧运行中仍失败的 MX、GB 等目标",
+      "root_cause": "服务端已生成逐目标最新聚合 target_results，但前端仍只渲染单次报告 targets",
+      "invariant": "局部恢复只能作用于一个匹配平台；商品级页面必须渲染完整批准目标列表的逐目标最新聚合结果，任何未解决目标不得被后续局部成功隐藏",
+      "regression_tests": [
+        "skills/publish-approved-product/scripts/test_product_center_publication.py",
+        "tests/test_product_surfaces.py",
+        "tests/test_product_publication_report_http.py"
+      ],
+      "fix_commit": "WORKTREE_PENDING",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-012",
+      "status": "FIXED_LOCAL_PENDING_MERGE",
+      "stage": "TIKTOK_POST_SAVE_PREFLIGHT",
+      "trigger": "v4 草稿准备 SAVE 已成功后，严格预检把妙手规范化投影误判为漂移并发送第二次 SAVE",
+      "root_cause": "执行器未把逐目标 DRAFT_SAVED 凭证传入发布器，第二次 SAVE 复用乐观锁版本并被妙手拒绝",
+      "invariant": "仅持有同目标 DRAFT_SAVED 凭证时使用保存后回读；核心事实一致则直接发布，核心事实漂移才使用最新 ossMd5 准备一次修复保存",
+      "regression_tests": [
+        "tests/test_tiktok_independent_publisher.py",
+        "tests/test_tiktok_v4_execution.py",
+        "tests/test_product_publication_executors.py"
+      ],
+      "fix_commit": "WORKTREE_PENDING",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-013",
+      "status": "FIXED_LOCAL_PENDING_MERGE",
+      "stage": "PRE_WRITE_SIMULATION",
+      "trigger": "发布前模拟只校验字段存在，未阻断 Shopee 类目/必填属性未冻结或多个变体误用同一图片",
+      "root_cause": "平台预检停留在顶层键检查，没有验证官方类目决策、必填属性选择与逐变体图片一一覆盖",
+      "invariant": "任何平台写入前，Shopee 官方类目和必填属性必须冻结；所有变体必须由 model_sku 精确覆盖、使用有效且互不重复的 HTTPS 图片",
+      "regression_tests": [
+        "tests/test_publication_preflight.py",
+        "tests/test_publication_autopilot.py"
+      ],
+      "fix_commit": "WORKTREE_PENDING",
+      "provider_readback_required": true
+    },
+    {
+      "incident_id": "PPI-2026-014",
+      "status": "FIXED_LOCAL_PENDING_MERGE",
+      "stage": "FINAL_REVIEW_VISIBILITY",
+      "trigger": "最终审核已批准或平台已执行后，页面仍显示等待审核或当前没有发布运行",
+      "root_cause": "候选状态、兼容 ReleaseRun 与正式平台报告使用了互不协调的展示来源",
+      "invariant": "最终候选必须明确区分待审核、已批准和已执行；发生正式执行后，逐平台持久化报告是主账本，兼容账本不得暗示尚未运行或授权重发",
+      "regression_tests": [
+        "tests/test_product_surfaces.py",
+        "tests/test_product_publication_report_http.py"
+      ],
+      "fix_commit": "WORKTREE_PENDING",
+      "provider_readback_required": false
+    },
+    {
+      "incident_id": "PPI-2026-015",
+      "status": "FIXED_LOCAL_PENDING_MERGE",
+      "stage": "POST_DISPATCH_RECONCILIATION",
+      "trigger": "提供方仍返回 PROCESSING，但本轮官方回读已完成，页面被误认为仍有后台 worker 或需要继续等待",
+      "root_cause": "业务四态和本地执行生命周期共用一个 PROCESSING 标签，没有公开 readback_completed 边界",
+      "invariant": "PROCESSING 且 readback_completed=true 必须标为稳定 READBACK_ONLY；本轮执行已结束，只能后续只读对账，禁止重复提交或无限等待 worker",
+      "regression_tests": [
+        "tests/test_product_surfaces.py",
+        "tests/test_product_publication_report_http.py"
+      ],
+      "fix_commit": "WORKTREE_PENDING",
+      "provider_readback_required": true
+    }
+  ]
+}

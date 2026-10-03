@@ -1,0 +1,37 @@
+# COMMON 私有导入与预约合同
+
+本段来源基线83aa692f。`shared_platform/common_offer_authority_store.py` 是新建私有ReleaseStore上的可运行合同实现，**未接HTTP、CLI生产路径、worker、provider或正式库**。`ReleaseStore.private_common_authority(private_root=...)`仅返回显式私有facade，不自动迁移普通库；原`publication_common_write_admission`继续fail closed。
+
+导入链为：独立审阅fixture固定packet SHA/reference → packet实际字节 → attachment_manifest与实际附件字节 → synthetic history分页/cursor/事件数/UNKNOWN → synthetic policy及其实际approval附件SHA → 同库不可变来源/政策版本。JSON自称OFFICIAL_COMPLETE、HTTP cap/history/digest均不能建立生产权威。当前唯一允许的证据类别为`SYNTHETIC_TEST_ONLY`；所有回执`execution_authority=false`，`final_review_available=false`。这是真实可运行的私有导入/事务接缝，尚无官方完整历史producer。
+
+CLI仅支持`init-private`（新绝对目录独占创建）、`validate`、`apply-private`与只读`inspect`。它没有default database、生产选项或自动从环境变量选正式库。packet文件夹下附件仅允许直接普通文件名，不读取任意路径或junction。SHA和review_ref是已审本地fixture的输入，并不是真实用户身份认证。
+
+## packet与实际附件
+
+packet `common-authority-import/v1`字段：schema_version、evidence_kind、identity、coverage_ref、coverage_generation、policy_ref、attachment_manifest。identity精确绑定tenant_id/account_id/offer_id/common_item_id。额外字段拒绝，不接受packet cap/history_count为权威。
+
+history附件 `common-history-fixture/v1`含：相同identity/evidence_kind、lifecycle_start_epoch/covered_through_epoch、pages、declared_event_count、retention_complete、gaps。page按1..N且cursor链相接，最后next_cursor=null才完整；events有唯一event_id、显式operation_class（COMMON_EDIT/COMMON_CLAIM/COMMON_FETCH）、outcome及可选legacy_attempt(run_id/attempt)。UNKNOWN、缺末页、retention缺失、gaps均不能预约。baseline count从实际附件事件计算，不采用调用者自报count。
+
+policy附件 `common-policy-fixture/v1`有same identity、generation/parent_generation、operation_classes、maximum_attempts、历史及预约计数语义、effective/expiry/revoked、approval_evidence_ref。approval附件反向绑定实际policy附件SHA。现合同保守计数：历史CONFIRMED与UNKNOWN各1，历史PROVEN_NOT_DISPATCHED为0；本账本每笔RESERVED/UNKNOWN/VERIFIED/PROVEN_NOT_DISPATCHED均1，绝不自动退额。历史截止必须不晚于私有ledger创建，基线不下降；新版本不得自动吸收本ledger预约，避免双计或重置额度。
+
+## 单账本事务
+
+显式migration在现有ReleaseStore同SQLite库加coverage/policy/import/raw-attachment/reservation/event表；来源/政策/事件不可变，预约身份不可变且不删除。旧ReleaseStore行不改。迁移与schema碰撞拒绝另行测试。
+
+私有stored plan需`product_revision`及`common_private_contract`（schema common-private-plan/v1、identity、operation_class、mutation）。它是未来domain producer的私有测试接缝，不从HTTP包创建权威。reserve仅接受精确plan/run/attempt/revision/payload digest/coverage generation/policy generation和实际mutation bytes，重新计算stored完整plan与mutation字节SHA、核targets顺序和identity；caller给digest只用于比较。来源与cap都从store重读。
+
+`reserve`一笔BEGIN IMMEDIATE核来源/政策/旧COMMON未预约attempt/remaining budget、append reservation并条件推进target/run。条件更新失去一行则整笔rollback。exact replay返回原预约，不派发；冲突重放拒绝。`consume_private`再核冻结绑定、时效/版本，CAS RESERVED→UNKNOWN并append event；只输出consumed模拟标记，dispatch_allowed仍false。响应丢失、重启或再次consume不会创建新消费。
+
+`reconcile_private`只接SYNTHETIC_TEST_ONLY逐字段读回，核identity/实际mutation/external item/预约身份，再把UNKNOWN推进VERIFIED及同事务写入release_target_readbacks/target/run；PROVEN_NOT_DISPATCHED可终结技术失败但不退预约额度。它不是官方readback验证器。来源/政策稳定authority_digest不包含预约状态，reserve/consume/readback的正常技术推进不会更改终审关键预算指纹；新coverage或policy版本则改变此绑定。
+
+`common_private_fake_adapter.execute_fake_common`只接受确切的无网络fake类，读取stored plan的实际mutation字节，消费预约后执行一次内存写入/读回。它可走私有`COMMON_READY → RESERVED → UNKNOWN → VERIFIED → FINAL_REVIEW_READY`，其中最后状态仅private_stage，实际final_review_available仍false。响应丢失或UNKNOWN时再次调用不得模拟重发，必须先用既有预约作读回恢复。
+
+## 后续正式producer如何沿用本schema
+
+同一ReleaseStore表组是未来服务端导入与消费的共享接缝；不新建第二份预算账本或跨库补偿链。下一段应建立独立的service-owned trusted producer：它拿到实际官方分页/retention及全部旧attempt对账，或针对具体旧Offer的有效legacy baseline决定，再向同库append版本化来源/政策。它必须证明authority来自OS/服务端受控导入上下文，HTTP/CLI caller不能传入任意attestation对象取得生产权威。
+
+当前private facade和CLI只接受synthetic类别；未来正式producer不能复用`private_root`标记、review_ref或SYNTHETIC记录来解锁。正式演进需显式schema/producer版本、新的migration和拒绝旧synthetic记录进入正式域的反例。reserve/consume实际字节、Offer级预算池、版本重核及UNKNOWN不释放合同可沿用；业务transport需要自己重建实际payload并消费同事务已经持久化的预约。schema/consumer演进只允许具名后继提交，不以`allow_real=true`之类调用者开关临时开启。
+
+## 下一段未交付writer接线
+
+受管Offer的真实编辑路径仍为release_adapters、oneclick_release、new_product_workbench、common_variant_recovery及各自server/CLI入口。COMMON fetch/claim/create也须显式操作分类或provider前拒绝。本段没有修改这些writer或正式admission；不要把私有consume模拟回执当真实transport token。下一段需实现可信官方/明确已接受legacy baseline producer、全writer唯一消费口、实际transport payload构造到本ledger的domain-owned绑定，以及真实schema受控迁移。任何真实既有Offer缺完整历史时仍UNKNOWN，不会因开发授权重置写次数。

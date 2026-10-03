@@ -86,20 +86,21 @@ def test_tiktok_busy_state_already_disables_only_the_tiktok_button():
 
     source = _script()
     publish = _function_body(source, "publishPlatformBatch")
+    blocker = _function_body(source, "platformPublicationBlocker")
     controls = _function_body(source, "updateReleasePrimaryAction")
 
     assert "releaseSubmitting" not in publish
     assert "oneClickExecution.controller" not in publish
     assert "platformPublish[platformKey]" in publish
+    assert "const result = platformPublish[platformKey]" in blocker
+    assert 'result.status === "PROCESSING"' in blocker
     assert (
-        'platformPublish.TIKTOK.status === "PROCESSING"'
+        '[["TIKTOK", button], ["SHOPEE_GLOBAL", shopeeButton], '
+        '["OZON", ozonButton]]'
         in controls
     )
-    assert (
-        'platformPublish.SHOPEE_GLOBAL.status === "PROCESSING"'
-        in controls
-    )
-    assert 'platformPublish.OZON.status === "PROCESSING"' in controls
+    assert "platformPublicationBlocker(data, key)" in controls
+    assert "control.disabled = Boolean(reason)" in controls
 
 
 def test_frontend_displays_provider_safe_reason_instead_of_generic_failure():

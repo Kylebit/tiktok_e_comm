@@ -340,6 +340,77 @@ def test_new_source_assignment_is_finalized_with_a_dedicated_typed_contract():
     )
 
 
+def test_governed_ab_b_link_uses_full_six_digit_reservation_namespace():
+    identity = _identity()
+    assignment = SkuAssignment(
+        seller_sku="990003",
+        model_skus=(
+            ModelSkuAssignment(variant_key="default", model_sku="990003"),
+        ),
+    )
+
+    result = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=assignment,
+    )
+
+    assert result.ready is True
+    assert result.reservation is not None
+    assert result.reservation.payload()["reservation_keys"] == ["990003"]
+
+
+def test_ordinary_six_digit_sku_still_reserves_by_last_four_digits():
+    identity = _identity()
+    assignment = SkuAssignment(
+        seller_sku="660003",
+        model_skus=(
+            ModelSkuAssignment(variant_key="default", model_sku="660003"),
+        ),
+    )
+
+    result = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=assignment,
+    )
+
+    assert result.ready is True
+    assert result.reservation is not None
+    assert result.reservation.payload()["reservation_keys"] == ["0003"]
+
+
+def test_governed_full_six_digit_and_ordinary_same_tail_do_not_collide():
+    ordinary_identity = _identity("986159122617")
+    ordinary_assignment = SkuAssignment(
+        seller_sku="770003",
+        model_skus=(
+            ModelSkuAssignment(variant_key="ordinary", model_sku="770003"),
+        ),
+    )
+    ordinary = finalize_new_source_sku_reservation(
+        source_identity=ordinary_identity,
+        assignment=ordinary_assignment,
+    )
+    assert ordinary.reservation is not None
+
+    governed_assignment = SkuAssignment(
+        seller_sku="990003",
+        model_skus=(
+            ModelSkuAssignment(variant_key="governed-b", model_sku="990003"),
+        ),
+    )
+    governed = finalize_new_source_sku_reservation(
+        source_identity=_identity(),
+        assignment=governed_assignment,
+        existing_reservations=(
+            {**ordinary.reservation.payload(), "status": "ACTIVE"},
+        ),
+    )
+
+    assert governed.ready is True
+    assert governed.reservation is not None
+    assert governed.reservation.reservation_keys == ("990003",)
+
+
 def test_new_source_exact_replay_is_idempotent_and_store_verifiable():
     identity = _identity()
     first = finalize_new_source_sku_reservation(

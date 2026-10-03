@@ -1,190 +1,108 @@
-# Codex thread operating model
+# OrbitHive 协作与交付治理
 
-This is the normative operating model for the CEO, shared platform, and the
-five business-domain threads. A thread title or `active` indicator is not a
-business status. Work Order messages, commits, test evidence, integration
-receipts, and explicit acceptance are the sources of truth.
+本页是项目职责、授权、状态和 Git 的权威规则。工单写具体范围，其他文档链接本页；不复制一套平行规则。当前任务依据系统/开发者约束与最新用户明确要求执行，仓库默认不能覆盖它们。
 
-## Fixed execution lanes
+## 逻辑职责与当前负责人
 
-| Lane | Responsibility |
+| 逻辑职责 | 所负责的合同与结果 |
 | --- | --- |
-| CEO/integrator | Priority, decomposition, Work Orders, review, integration, release, and escalation to Kyle |
-| `00` Shared platform | Cross-domain contracts, registry, approvals/audit/jobs/health, shared shell, governance, and independent browser acceptance |
-| `01` Product operations | Product/SKU master data, intake, approval, and `ApprovedProductPackage` |
-| `02` Content operations | Copy, image/video assets, review evidence, and `ContentPackage` |
-| `03` Channel operations | Marketplace adapters, listings, price/promotion/deactivation, and all authorized external-platform writes |
-| `04` Supply-chain operations | Suppliers, warehouse/inventory facts, receiving, replenishment, and `InventorySnapshot` |
-| `05` Data operations | Costs, settlement, profit, ads, analytics, and `FinancialFact` |
+| 协调者 / integrator | 优先级、分解、指派、审查、组合和发布交接 |
+| 00 共享平台 | 跨域合同、审批/审计/运行记录/健康、公共界面、治理 |
+| 01 商品运营 | 商品与 SKU 身份、来源、事实和批准快照 |
+| 02 内容运营 | 文案、图片/视频资产、内容包与质量证据 |
+| 03 渠道运营 | 渠道适配、刊登、价格/促销/下架及外部业务写入协调 |
+| 04 供应链运营 | 供应商、仓库/库存、收货和补货事实 |
+| 05 数据运营 | 成本、结算、利润、广告分析和财务事实 |
 
-The CEO is a control and integration lane, not the default business
-implementer. A task spanning two or more business domains must be split into
-Work Orders for every owning fixed lane. The CEO may not keep the whole
-implementation merely because it is convenient to edit one file.
+编号表示责任，不永久绑定侧栏任务。以最新有效工单中的 owner/task_id、仓库和范围确认执行者，不按名称、改名、修订后缀或 active 图标推定权限。当前用户指定的委派方式优先；不要求所有工作经过六个固定旧任务。跨域工作明确每份合同的 producer/consumer、当前负责人、精确来源提交与整合顺序。协调者按本次授权分派实现、审查与组合；本轮用户要求委派时不自行包办业务实现。
 
-Fixed `00`-`05` lanes take priority over temporary sub-agents. A temporary
-agent may perform bounded research, test generation, or an isolated helper
-task, but it does not become the domain owner, approve its own result, or
-replace the required fixed-lane acknowledgement and delivery. The fixed lane
-remains accountable for scope, commit, tests, and hand-off.
+同一工作树/分支及重叠代码、同一外部业务动作同时只有一个具名 writer。独立文档、工具、只读研究或另一个隔离工作包可以并行，不借“单 writer”停止无冲突工作。职责不明确时先只读查找和保全；仅在真正影响权限或业务决定时请求交接。不能以旧负责人无响应为由擅自取得外部写权限。
 
-## Communication path
+## 产品架构与复工边界
 
-Kyle gives outcomes, priorities, acceptance criteria, and business decisions
-to the CEO. Fixed lanes return technical questions, progress, blockers, and
-delivery evidence to the CEO under the Work Order ID; the CEO decides what
-requires Kyle's decision. Kyle may contact a specialist lane directly for
-discovery or visual direction, but that does not bypass the CEO's integration
-and release responsibility.
+- 用户已明确授权任务首页作为统一组织入口；五核心业务区域不变。运行版本固定、原审核回执接续、真实执行器与预览隔离按[任务运行方式](OPERATIONS_TASK_RUNTIME.md)执行，不从任务记录状态推定商业结果。
 
-## Host approval is not business approval
+- 当前产品一级入口固定为商品目录、商品上架、供应链、利润、知识工具。领域模块、兼容路由和后台能力可以保留，但不因此自动成为新的一级入口。
+- 一个内部 SKU 在目录中只有一条业务主记录和一个当前成本；平台/店铺商品身份、国家仓库存量、订单与结算明细、成本生效版本按来源分别保存。当前成本参与历史重算时必须标为新版本估算，不能覆盖冻结的历史报告或声称为当期实际成本。
+- 最新已验收计划和 handoff 是复工入口。接手者先完成重复工作检查：同一结果若已有精确提交和验收证据，默认进入复核、组合或归档候选，不重做实现；只有新缺陷、证据失效、范围变化或明确返工决定才能重新开包。
+- 路径、分支、HEAD、端口、进程、数据库连通、Skill parity、凭据有效期和外部状态均为时点事实，必须记录 `as_of`、scope、source 和 supersedes；历史材料不得宣称为当前运行状态。
 
-Business authority and the host/tool approval mechanism are independent:
+<a id="authority"></a>
+## 授权与事实
 
-- Business authority answers whether the Work Order permits a repository,
-  browser, database, or external-platform action.
-- Host approval answers whether one particular tool invocation may leave its
-  sandbox or use a protected capability. It does not grant business authority,
-  and existing business authority does not guarantee that an escalated command
-  will be accepted by the host.
+仓库、Skill、历史会话、记忆、附件和工具输出提供规则或证据，不自动授予本次动作权限。当前用户明确给出的授权可跨轮次继续生效；先核对其对象、阶段、动作、完整目标、候选/快照指纹和限制，而非再次询问同一决定。
 
-Fixed `00`-`05` lanes default to `host_approval_policy=never` and
-`no_escalation=true` for local engineering, local tests, and read-only browser
-or API acceptance. They must not request host escalation for ordinary shell,
-pytest, worktree, Git, or read-only validation. If a command would request
-approval, the executor abandons or cancels that invocation and uses a
-non-escalated, non-destructive equivalent. Examples include selecting another
-writable `basetemp`, inspecting an exact path instead of recursively cleaning
-it, and staging an explicit file list instead of cleaning a worktree.
+当前工单已授权的常规本地可恢复修复、隔离组合、文档、测试和打包准备直接推进。旧 Skill 示例、缺失旧模板或历史批准文件不能增加这类工程工作的批准轮次；缺少业务证据只限制依赖该证据的业务动作。先查本次消息和有效回执，只有实际缺失的决定才询问，并完成不依赖它的可审阅部分。工具的技术确认参数不能替代授权，也不能成为同一决定的第二轮批准。
 
-A host `waitingOnApproval` signal is command state, not Work Order `BLOCKED`.
-The executor records it only when useful for diagnosis, abandons that command,
-and continues every safely achievable acceptance and delivery step. It must
-not wait for Kyle merely to satisfy tool policy or cosmetic workspace
-cleanliness.
+同一冻结对象、阶段、目标、动作与限制均未变化时，已记录的用户批准继续有效，执行者必须引用原批准/回执并继续，不得因换线程、重启客户端、重新加载上下文或技术工具再次询问同一批准。复用身份至少记录 `actor`、`action_class`、精确对象/目标、候选或快照 digest、限制/预算、到期或撤销条件和 `authority_receipt_ref`。批准范围发生变化、证据无法绑定到当前对象，或新增外部写入/付费/上传动作时才形成新的业务决定；仅缺少宿主能力不构成新的业务批准问题。
 
-Escalation to Kyle is reserved for external business authorization or a
-high-risk action that is both necessary and has no safe, non-escalated
-substitute. The report must name the exact action, target, risk, attempted safe
-alternatives, and the decision Kyle must make. This exception does not weaken
-the rule that external-platform writes belong only to `03`.
+业务批准、技术执行参数、视觉验收和宿主权限分别处理：
 
-## Limited CEO coding exceptions
+- 有效批准只用于其冻结范围。需要的命令参数和批准回执由执行者依现有合同持久化；`--user-approved` 一类参数不能自行生成业务授权，QA 或页面验收也不构成第二份重复批准。
+- 候选、图片、目标、价格或预算等批准关键范围变化时，旧证据不能覆盖新范围。明确的“继续/通过”须与当时展示的冻结内容相绑定，不能扩成无限付费或全店发布权。
+- 按候选中实际支持的 workflow mode、policy 和持久回执继续。历史 supervised/autopilot 说明不能证明该模式已集成，也不能借文档省略现有校验。模式与 UI/Skill 一致性缺口交对应产品工单。
+- 外部商业平台（商城、ERP、仓库 SaaS 等）同一动作由本次被授权的渠道 writer 负责，工单登记平台/租户/精确对象与操作、批准证据、preflight、幂等身份、预期数量、恢复和回读。03 是默认逻辑归属；用户指定的执行者仍需绑定精确范围。其他 agent 不形成第二条写入路径。
+- Git、文档、工具安装、独立新项目不自动归入电商渠道写入。各按自身任务授权处理。付费调用与上传还须有对应预算、用途和材料权限；项目开发授权不自动包含这些动作。
+- OAuth 刷新是 `auth_writes`，与 `business_writes`、付费请求分列。凭据 owner 按本次既有授权与 scope 执行受控刷新；缺凭据显示 auth_unavailable，不能伪装无业务数据。只记录引用名称、范围、期限等必要元数据，禁止复制/打印密钥。此规则不声称受控运行时已经完整接入。
 
-The CEO may write code only when the change is:
+<a id="recovery"></a>
+## 持续推进与恢复
 
-1. a mechanical integration resolution that does not choose or change domain
-   business semantics;
-2. release wiring or repository metadata with no owning domain implementation;
-3. an urgent P0 restoration explicitly authorized by Kyle when the owning lane
-   cannot respond.
+已授权的可恢复工程工作持续做完。本职责内的缺实现由 owner 实现并验证；上游未交付时，记录具体 schema/commit/owner 缺口，先完成不依赖部分。不得伪造 API 或全成功 fixture。
 
-The CEO records the exception and reason in the Work Order. If the change
-touches domain behavior, the owning fixed lane must independently review it
-before acceptance. Shared-platform feature work still belongs to `00`; a broad
-server file is not automatically CEO-owned.
+外部动作的 attempted、confirmed、unknown 分开记，并区分未知提交的重放与已知终态后的新返工：
 
-## Work Order lifecycle
+- 请求可能到达平台或已计费但结果未知时，恢复已有 run/task/idempotency 和逐目标账本，做有界只读对账；保留未决预算，不自动再次 POST。同一提交只有已证实零写/未计费、当前专项策略允许、预算足够且授权仍有效时才走既有恢复接口重试。
+- 已知任务已经完成并收费，但产物 QA 不合格时，可以按已授权专项 policy 与剩余额度发起有界的新返工。返工必须绑定旧任务/产物、QA 原因和批准范围，旧付费仍计入累计预算；不要求旧任务“未收费”才能返工。新返工不等于重放未知提交，也不能靠随机身份规避累计预算或目标去重。
+- 没有实现的恢复接口是待办，不能用删除账本绕过。精确正式回读才支持“已发布/已改价”，HTTP 200、绿测或 READY_FOR_FINAL_REVIEW 都不支持这种结论。
 
-The minimum fields and message format are defined in
-[`pm/DISPATCH_CONVENTION.md`](pm/DISPATCH_CONVENTION.md). The observable states
-are:
+<a id="host-policy"></a>
+遵守当前宿主权限，记录实际策略；项目文字不能修改 Codex 应用的 sandbox、approval policy 或解除任务暂停，业务批准也不能替代运行时权限。单次 `waitingOnApproval` 只是命令状态，不能直接判长期业务 BLOCKED。先检查当前进程是否还运行，避免重复启动；在当前权限内有安全替代则继续。自动审核或工具明确拒绝时不绕过；确有不可替代动作，报告具体动作、拒绝来源和原因，暂停依赖部分。已获授权的最小系统修复仍须走正常系统权限路径，不修改全局策略来绕过限制。[官方权限说明](https://learn.chatgpt.com/docs/agent-approvals-security)（核对日期 2026-09-06）。
 
-- `DRAFT`: CEO is shaping scope; no executor authority.
-- `DISPATCHED`: the Work Order was sent to a named fixed lane.
-- `ACKED`: that lane verified the Work Order, Git top-level, base, worktree,
-  branch, and initial status.
-- `RUNNING`: the executor has started; this is evidenced by a timestamped
-  update, not inferred from a title.
-- `BLOCKED`: a named business decision or dependency prevents safe progress
-  after safe non-escalated alternatives are exhausted. A tool command in
-  `waitingOnApproval` is not by itself a business blocker.
-- `DELIVERED`: the fixed lane returned a commit and required evidence.
-- `REVIEWED`: CEO accepted the review or returned specific changes.
-- `INTEGRATED`: CEO recorded source-to-main commit mapping and integration
-  tests.
-- `ACCEPTED`: Kyle or the explicitly authorized release decision accepted the
-  outcome.
-- `CANCELLED`: CEO or Kyle ended the Work Order without integration.
+宿主命令拒绝不得转换成新的业务审批请求；取消或放弃该调用，并采用当前策略允许的非升级、非破坏等价路径。只有不存在等价路径且确实需要用户完成宿主动作时，才报告技术阻断；报告不得把它写成业务授权缺失。
 
-`DELIVERED` is not `INTEGRATED`, and `INTEGRATED` is not `ACCEPTED`.
-Cherry-picked work must record both the source and main commit because hashes
-will differ.
+恢复 ACK、首个实际动作与交付核验格式见[派单约定](pm/DISPATCH_CONVENTION.md#resume)。发送纠偏成功不等于恢复成功。交付后向协调者移交当前结果和下一动作；只有下一包已有授权才接续，不能靠心跳、标题或重复承诺宣称 RUNNING。
 
-## UI implementation and independent acceptance
+## 可观察状态
 
-The owning domain implements a formal UI change and its focused tests. `00`
-then performs independent acceptance in a real browser; source-string or fake
-DOM assertions do not satisfy this gate. At minimum, acceptance covers the
-supported desktop and narrow viewports, computed visibility, horizontal
-overflow, primary controls, asynchronous feedback, browser console/page
-errors, and explicit `unknown`/`unavailable` states.
+| 状态 | 所需证据 |
+| --- | --- |
+| DRAFT | 草拟范围；不授予执行权 |
+| DISPATCHED | 当前工单实际发送给具名 owner |
+| ACKED | 已核验 root/base/HEAD/owner/scope 与初始状态 |
+| RUNNING | 本工单内实际命令、编辑或测试及时间；单有 ACK 不够 |
+| BLOCKED | 精确缺失决定/依赖且当前必要动作无法安全继续；独立工作继续 |
+| DELIVERED | 返回持久工件与要求的验证证据；有修改时含精确提交 |
+| REVIEWED | 指定审查者给出明确接受范围或修正项 |
+| INTEGRATED | 组合者记录源到重放提交映射与组合验证 |
+| ACCEPTED | 具有相应授权的验收者接受该明确范围 |
+| CANCELLED | 当前有权指令取消该包，保留未交付产物和交接 |
 
-`00` reports findings to the owning lane and does not silently implement the
-same domain change during the acceptance pass. The CEO integrates only after
-the domain tests, independent browser evidence, and complete regression suite
-pass. Browser acceptance must use isolated local fixtures and block external
-platform traffic.
+状态不能由任务图标、工具回传成功或静态看板自动推进。局部接受不代表全工程完成；已交付不等于已组合，更不等于生产发布。
 
-## External writes and single writer
+协调状态、自动化清单和任务索引必须以最近一次真实 readback 为准。已关闭、撤销或被后续工单替代的项目标为 `STALE` / `SUPERSEDED` 并保留来源，不继续投影为 `RUNNING`、`PENDING` 或 `ACTIVE`。整理状态不删除会话、唯一产物或历史证据；物理归档另按明确范围执行。
 
-All writes to an external marketplace, store, ERP, warehouse SaaS, or other
-business platform are executed only by `03` as a single writer under CEO
-supervision. Other lanes produce approved contracts or dry-run plans; they do
-not call the external mutation. Temporary agents and the CEO never substitute
-for `03` on an external write.
+<a id="git"></a>
+## Git、产物与隔离
 
-An external-write Work Order must name the target, exact mutation, approval
-evidence, dry-run/preflight result, rollback or recovery plan, and audit
-artifact. Missing authority means read-only. Repository commits and an
-explicitly authorized Git push are governed separately and are not business
-platform writes.
+按当前工单精确 base 建立独立工作树/分支，不自动从“最新 master”开始。编辑前记录 `git rev-parse --show-toplevel`、`git branch --show-current`、`git rev-parse HEAD`、`git status --porcelain=v1 -uall`。只读审计可用 `GIT_OPTIONAL_LOCKS=0`，状态比较统一 untracked 粒度并记录 safe.directory 配置，不靠索引刷新制造差异。安全目录信任仅在验证身份后针对精确路径，不设全局通配信任。
 
-## Git isolation
+保护已存在 WIP、其他暂存内容、唯一报告和图片；不 reset、clean、覆盖或把他人改动吸收入本包。只有本次明确授权的无竞争文档维护可直接用已核验 checkout；无法安全拆分则保全并如实报告待独立提交。目录说明见 [Git 操作说明](GIT_SYNC_MX_UK.md)。
 
-Every code-writing lane uses an independent worktree and branch created from
-the Work Order base. Before editing, it verifies and reports:
+持续代码/治理交付形成聚焦 commit，先审 diff，再暂存明确路径并审 staged diff。不批量 add 整树/通配目录，不改 Git 身份冒充作者；只读审查不造空 commit。没有明确授权不 pull/push/上线，分支 ahead 不构成推送依据。组合记录 source commit→重放 commit，冲突按工单允许的语义解决并复验。
 
-```text
-git rev-parse --show-toplevel
-git branch --show-current
-git rev-parse HEAD
-git status --short --branch
-```
+临时测试目录归属当前工作包；允许在隔离工作树或指定输出根使用唯一短 basetemp，路径和生命周期写入证据，避免 Windows 长路径错误。提交不以删除这些目录为前提。移除工作树必须先完成集成与 owner 交接、核对未提交/ignored/唯一工件，验证恢复副本的路径与 hash，再依具体清理范围执行；不要因“合并后立即清理”丢失内容。Windows 删除/移动先核验最终绝对目标，在同一 shell 内执行。本页不授权清理旧树。
 
-There is one writer per worktree and branch. Two agents must not concurrently
-edit the same checkout, branch, or overlapping files. A temporary helper is
-read-only unless it receives another isolated worktree; the fixed lane still
-owns the result. Never reset, clean, overwrite, or absorb pre-existing user
-changes to make a worktree usable.
+凭据、私有配置、真实运行数据库/队列、未脱敏原始响应、备份和浏览器缓存不入 Git。可版本化的最终报告、生成资源、诊断工具或合成 fixture 按本包显式清单审查：来源/用途、必要性、敏感信息检查、依赖和恢复 manifest；不能只因“生成”一词全禁，也不能提交整个 reports/data 目录。测试临时 DB 默认只留测试目录，受控可复现 fixture 需要明确列为交付。数据库恢复原则见[数据库治理](DATABASE_GOVERNANCE.md)。
 
-Tests that need temporary files use a Work Order-specific `basetemp` inside
-the executor's independent worktree. Test artifacts are not delivery files
-and do not need to be deleted to make a commit. Leave or ignore them, verify
-the intended diff, and stage only the explicit delivery paths. Do not run a
-recursive delete, `git clean`, or an escalated cleanup merely to obtain a
-cosmetically clean status. A cleanup that is independently required must have
-an exact verified target and remain within the worktree, but cleanup is never
-a prerequisite for focused staging or delivery.
+## 验证、审查与交接
 
-Durable code and governance changes require a focused commit before delivery.
-Read-only audits and probes do not create empty commits. Push is forbidden
-unless Kyle or the formal release process explicitly authorizes it.
+验证层级与外部预算统一见[测试治理](TESTING_GOVERNANCE.md)。所属 owner 实现并交付；正式 UI 由工单指定的独立审查者用真实浏览器验收，00 是默认治理归属，用户或协调者可以指定其他独立 reviewer。缺少 reviewer 只阻止最终 UI PASS 声明，不阻止无冲突实现、测试和证据整理。只读 API 或源码断言不能冒充页面已可用。
 
-## Review and hand-off
+工单/回执见[派单约定](pm/DISPATCH_CONVENTION.md)。协调者核对精确提交、实际命令/结果、范围和未解项后组合。通知系统是可选镜像，不是授权源或开发前置条件；没有当前发送授权不向其他人发送消息。
 
-The executor sends progress, blockers, and delivery back to the CEO under the
-same Work Order ID. A completed delivery includes:
+## 指令适用与历史材料
 
-- outcome and owning lane;
-- changed files and contract or migration impact;
-- test and browser evidence;
-- external writes, stated explicitly even when zero;
-- source branch and commit;
-- remaining risks and decisions.
+官方说明：Codex 在每次 run 开始构建 global 与项目根到 cwd 的指令链，各层优先选 override；历史工作树副本不会全部加载。改写本文件不证明其他已运行任务重新加载，接续时须核验当前指令来源与工单。仓库根 AGENTS 是本项目索引，THREAD 管授权/职责/Git，领域文档管合同，Skill 管其具体流程；旧 README、翻译和历史设计不另建权威层级。[官方 AGENTS discovery](https://learn.chatgpt.com/docs/agent-configuration/agents-md)（核对日期 2026-09-06）。
 
-The CEO sends review findings back to the fixed lane, integrates only tested
-commits, and records an Integration Receipt with source-to-main mapping,
-integration method, regression results, external-write evidence, and final
-owner. Optional notification systems may mirror these records but are not a
-required dependency or source of truth.
+历史参数/库存/端口/旧审批/事故保留日期、scope、source 和 supersedes，不作为当前现状或动作授权。[历史参考](LEGACY_PLATFORM_REFERENCE.md)只供定向核验；长期记忆的修改按当前用户明确授权及环境允许的追加方式另行交付，不直接改写原始会话或旧索引。

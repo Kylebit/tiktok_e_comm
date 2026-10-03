@@ -44,15 +44,17 @@ def _image(item: dict) -> str:
     return urls[0] if urls else ""
 
 
-def _fetch_item_ids(shop_id: int, token: str) -> list[int]:
+def _fetch_item_ids(shop_id: int, token: str, *, call_guard=None) -> list[int]:
     ids: list[int] = []
     offset = 0
     while True:
+        if call_guard: call_guard()
         resp = shop_get(
             "/api/v2/product/get_item_list",
             shop_id,
             token,
             {"offset": offset, "page_size": PAGE_SIZE, "item_status": "NORMAL"},
+            **({'call_guard':call_guard} if call_guard else {}),
         )
         if resp.get("error"):
             raise RuntimeError(resp.get("message") or resp)
@@ -66,16 +68,18 @@ def _fetch_item_ids(shop_id: int, token: str) -> list[int]:
     return ids
 
 
-def _fetch_items_base(shop_id: int, token: str, item_ids: list[int]) -> list[dict]:
+def _fetch_items_base(shop_id: int, token: str, item_ids: list[int], *, call_guard=None) -> list[dict]:
     out: list[dict] = []
     for i in range(0, len(item_ids), BATCH_INFO):
         batch = item_ids[i : i + BATCH_INFO]
         id_str = ",".join(str(x) for x in batch)
+        if call_guard: call_guard()
         resp = shop_get(
             "/api/v2/product/get_item_base_info",
             shop_id,
             token,
             {"item_id_list": id_str},
+            **({'call_guard':call_guard} if call_guard else {}),
         )
         if resp.get("error"):
             raise RuntimeError(resp.get("message") or resp)
@@ -92,6 +96,7 @@ def _rows_from_item(
     *,
     use_cache: bool = True,
     force_refresh: bool = False,
+    call_guard=None,
 ) -> tuple[list[dict], bool]:
     """返回 (rows, used_cache)。"""
     from modules.catalog.sync_cache import load_shopee_item, save_shopee_item
@@ -112,11 +117,13 @@ def _rows_from_item(
                 models = cached["models"]
                 used_cache = True
         if models is None:
+            if call_guard: call_guard()
             resp = shop_get(
                 "/api/v2/product/get_model_list",
                 shop_id,
                 token,
                 {"item_id": item_id},
+                **({'call_guard':call_guard} if call_guard else {}),
             )
             if resp.get("error"):
                 raise RuntimeError(resp.get("message") or resp)

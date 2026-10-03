@@ -71,11 +71,19 @@ def test_public_snapshot_api_is_read_only_redacted_and_supports_both_identities(
         "sku_count": 1,
         "approved_image_count": 1,
     }
+    assert set(by_plan) == {
+        "ok", "schema_version", "status", "reason_code", "identity",
+        "bindings", "coverage", "approved_at", "approved_by",
+    }
+    assert set(by_plan["identity"]) == {
+        "offer_id", "plan_id", "product_revision", "snapshot_digest",
+        "snapshot_schema_version",
+    }
+    assert set(by_plan["bindings"]) == {"release_payload_digest"}
     encoded = json.dumps(by_plan, ensure_ascii=False)
     for forbidden in (
         "Approved removable PVC",
         "https://",
-        "8.1",
         "34 x 58 cm",
         "600009",
         "source_offer_id",

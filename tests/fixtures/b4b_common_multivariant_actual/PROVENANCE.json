@@ -1,0 +1,146 @@
+{
+  "schema_version": "b4b-common-producer-fixture/v1",
+  "source_commit": "c50d3d31d55004aacdd32c96c6d5bd7ded9356bb",
+  "producer_manifest": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\domain-prep\\03\\b4b-common\\R2_COMMON_MULTIVARIANT_PRODUCER_V2.json",
+  "files": [
+    {
+      "name": "round1-approved-snapshot.json",
+      "source": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\domain-prep\\03\\b4b-common\\mv2\\reports\\product-preparation\\9000052\\round1-approved-snapshot.json",
+      "sha256": "d7d4a5ba09fe5f1fed1fccb6ef079d17bef445e3599fe7e62c9fb23297d98b18"
+    },
+    {
+      "name": "first-review.json",
+      "source": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\domain-prep\\03\\b4b-common\\mv2\\reports\\product-preparation\\9000052\\first-review.json",
+      "sha256": "063b791a646b766b9e44eb3948dc18604305aa91182181a3430c2bd81e693273"
+    },
+    {
+      "name": "brand-image-generation.json",
+      "source": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\domain-prep\\03\\b4b-common\\mv2\\reports\\product-preparation\\9000052\\brand-image-generation.json",
+      "sha256": "a48da248f00992ab6da92eea49553072dcb206ca4b6a47989bd85b7e1dd40ac4"
+    },
+    {
+      "name": "brand-image-translation-plan.json",
+      "source": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\domain-prep\\03\\b4b-common\\mv2\\reports\\product-preparation\\9000052\\brand-image-translation-plan.json",
+      "sha256": "13270ff8e4c2a639b1d48e6176bd0d95726338451bdfd995b4081cec7640be7d"
+    },
+    {
+      "name": "brand-image-translation.json",
+      "source": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\domain-prep\\03\\b4b-common\\mv2\\reports\\product-preparation\\9000052\\brand-image-translation.json",
+      "sha256": "253218f995e6a0e5b9369ab1fe8ecaecb48c4e09bfabf167330364a45dfc9eb2"
+    },
+    {
+      "name": "automated-image-qa.json",
+      "source": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\domain-prep\\03\\b4b-common\\mv2\\reports\\product-preparation\\9000052\\automated-image-qa.json",
+      "sha256": "e1b6428e5ba12829fafbcba71393c9d08135eaa38bcd777a1b5e64e3d0f596c4"
+    },
+    {
+      "name": "source-dashboard.json",
+      "source": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\domain-prep\\03\\b4b-common\\mv2\\source-dashboard.json",
+      "sha256": "8a00d6ccb6d7a51e657b2b0c23c6496b7ac3f04f81616f3ef6152ab47e3892f9"
+    }
+  ],
+  "fake_calls": [
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "brand"
+    },
+    {
+      "kind": "qa"
+    },
+    {
+      "kind": "qa"
+    },
+    {
+      "kind": "qa"
+    },
+    {
+      "kind": "qa"
+    },
+    {
+      "kind": "text"
+    },
+    {
+      "kind": "text"
+    },
+    {
+      "kind": "text"
+    },
+    {
+      "kind": "text"
+    },
+    {
+      "kind": "text"
+    },
+    {
+      "kind": "text"
+    },
+    {
+      "kind": "text"
+    },
+    {
+      "kind": "localized"
+    },
+    {
+      "kind": "localized"
+    },
+    {
+      "kind": "localized"
+    },
+    {
+      "kind": "localized"
+    },
+    {
+      "kind": "localized"
+    },
+    {
+      "kind": "localized"
+    },
+    {
+      "kind": "localized"
+    },
+    {
+      "kind": "qa"
+    }
+  ],
+  "qa_digest": "sha256:ffafcc65c230167110a6ad8947ebf92912e83c672840db97a9fc66d118f0401f",
+  "source_verification": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\domain-prep\\03\\b4b-common\\PRODUCER_SOURCE_BLOB_VERIFICATION.json",
+  "scope": "Synthetic two-variant facts before real R1 freeze, actual R2 entry/QA, lowest provider fake only; zero real network/paid calls"
+}

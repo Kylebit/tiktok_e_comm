@@ -1,0 +1,328 @@
+{
+  "package": "S02-D",
+  "status": "READY_FOR_ROOT_REVIEW",
+  "base": "cdcf7e002ea30f3cf0b2a96721e68d5c68bdc9ab",
+  "worktree": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-s02-lock-20260905",
+  "branch": "codex/orbithive-s02-lock-20260905",
+  "commit_reference": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\finalization.json",
+  "production_scope": {
+    "path": "modules/sourcing/image_generation_checkpoint.py",
+    "function": "business_lock",
+    "lines": [
+      94,
+      155
+    ],
+    "base_blob": "b3a9f5339dfa6ff2f4b88590250a64cf105be86e",
+    "final_blob": "91cd7ed4a2e5db2e49308f7809404534cb7c3ef4",
+    "sha256_physical": "e88828a27b37bfa74fac5fc319c29399306fa2ea2ea7944dbb84b9e4e4fd781c",
+    "sha256_lf": "843368c3ed1922fa208b98e327f5da79ff16fab35ffee7dea4fec86b6a22ce4d",
+    "all_other_ast_unchanged": true
+  },
+  "changes": [
+    "Remove all pre-lock initialization writes; still lock byte zero for length one.",
+    "Always attempt close and release local thread lock; retain original exception and add cleanup notes.",
+    "Retain persistent lock file, stable identity, timeout, crash release and all provider recovery rules."
+  ],
+  "red_evidence_layers": {
+    "original_C4": "Unmodified Python stream failure in real generator test; complete original stderr was not separately captured.",
+    "original_stream_barriers": "red1/red2/red4 python-stream: both see empty file; both exit zero; physical double initialization 3030, no PermissionError.",
+    "native_append_gap": {
+      "description": "Two real processes call business_lock. Test-only B stream flush splits real EOF positioning and real WriteFile on same native handle. A owns the real kernel lock in the gap. Error is returned by Windows, never injected.",
+      "pids": [
+        65032,
+        64572
+      ],
+      "exit_codes": [
+        0,
+        1
+      ],
+      "winerror": 33,
+      "worker_stderr": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\s02dt-red4\\t1\\B-stderr.txt",
+      "syscall_record": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\s02dt-red4\\t1\\native-write.json",
+      "process_record": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\s02dt-red4\\t1\\process-evidence.json",
+      "lock_after_exit_hex": "3030",
+      "limit": "Concrete native interleaving mechanism, not a claim that unchanged Python BufferedRandom deterministically reproduces the C4 exception."
+    },
+    "cleanup_faults": "Explicit close failure injection is used only to test exception priority and handle/thread cleanup, not as race-cause evidence."
+  },
+  "green_process": {
+    "pids": [
+      65400,
+      57500
+    ],
+    "exit_codes": [
+      0,
+      0
+    ],
+    "lock_after_exit_size": 0,
+    "record": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\s02dt-green1\\t1\\process-evidence.json"
+  },
+  "tests": {
+    "unique_latest_business_and_lock": 124,
+    "passed": 124,
+    "failed": 0,
+    "skipped": 0,
+    "new_lock_cases": 13,
+    "content_regression": 103,
+    "R2_budget_regression": 8,
+    "guard_negative_test_cases": 1,
+    "guard_negative_operations": 5,
+    "not_a_single_all_green_run": true,
+    "history_and_dedup": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\validation-summary.json"
+  },
+  "isolation": {
+    "startup_guard_before_imports": true,
+    "candidate_imports_verified": true,
+    "external_connect_or_DNS_events_except_negative": 0,
+    "business_DB_calls": 0,
+    "real_platform_calls": 0,
+    "paid_calls": 0,
+    "original_services_touched": false,
+    "OS_permissions_changed": false,
+    "blocked_counts": {
+      "content": 5,
+      "budget": 15,
+      "negative": 5
+    },
+    "nonnegative_blocks": "urllib3 import-time ::1 port 0 bind capability probes; blocked before binding and handled by urllib3.",
+    "bytecode": false,
+    "pytest_cache": false,
+    "runtime_only_D_venv": "3.12.8 (tags/v3.12.8:2dc476b, Dec  3 2024, 19:30:04) [MSC v.1942 64 bit (AMD64)]",
+    "windows": [
+      10,
+      0,
+      22000,
+      2,
+      ""
+    ]
+  },
+  "consumers": [
+    {
+      "path": "modules/sourcing/image_generation_checkpoint.py",
+      "sha256_physical": "e88828a27b37bfa74fac5fc319c29399306fa2ea2ea7944dbb84b9e4e4fd781c",
+      "lines": [
+        {
+          "line": 94,
+          "source": "def business_lock(root: Path, business_digest: str, *, timeout: float = 30):"
+        },
+        {
+          "line": 318,
+          "source": "with business_lock(path.parent, digest(\"checkpoint-ownership-registry\")):"
+        },
+        {
+          "line": 633,
+          "source": "with business_lock(checkpoint.root, checkpoint.business_digest):"
+        },
+        {
+          "line": 771,
+          "source": "with business_lock(checkpoint.root,checkpoint.business_digest):"
+        },
+        {
+          "line": 788,
+          "source": "with business_lock(checkpoint.root, checkpoint.business_digest):"
+        }
+      ]
+    },
+    {
+      "path": "shared_platform/publication_paid_requests.py",
+      "sha256_physical": "635f55cfba4e07334a26465e357b41562157396c4c9ca72efcb28866508ef9ca",
+      "lines": [
+        {
+          "line": 21,
+          "source": "from modules.sourcing.image_generation_checkpoint import atomic_json, business_lock, digest"
+        },
+        {
+          "line": 352,
+          "source": "return business_lock(self.directory, digest({'scope': 'round2-phase', 'offer_id': self.offer_id}))"
+        },
+        {
+          "line": 424,
+          "source": "with business_lock(self.root, self.lock_key):"
+        },
+        {
+          "line": 435,
+          "source": "with business_lock(self.root,self.lock_key):"
+        },
+        {
+          "line": 477,
+          "source": "with business_lock(self.root,self.lock_key):"
+        },
+        {
+          "line": 492,
+          "source": "with business_lock(self.root, self.lock_key):"
+        },
+        {
+          "line": 523,
+          "source": "with self.phase_lock(),business_lock(self.root,self.lock_key):"
+        },
+        {
+          "line": 579,
+          "source": "with business_lock(self.root, self.lock_key):"
+        },
+        {
+          "line": 602,
+          "source": "with business_lock(self.root, self.lock_key):"
+        },
+        {
+          "line": 616,
+          "source": "with business_lock(self.root, self.lock_key):"
+        },
+        {
+          "line": 647,
+          "source": "with business_lock(self.root,self.lock_key):"
+        },
+        {
+          "line": 670,
+          "source": "with business_lock(self.root, digest({'scope':'chat', 'business':dict(business)})):"
+        },
+        {
+          "line": 729,
+          "source": "with business_lock(self.root,self.lock_key):"
+        },
+        {
+          "line": 813,
+          "source": "with business_lock(self.root,self.lock_key):"
+        },
+        {
+          "line": 825,
+          "source": "with business_lock(self.root, self.lock_key):"
+        }
+      ]
+    },
+    {
+      "path": "skills/prepare-product-images/scripts/prepare_product_images.py",
+      "sha256_physical": "1685deff480cdd71aab7d8c4209dc6925cc67663b31b89b2761407d4f402242c",
+      "lines": [
+        {
+          "line": 2128,
+          "source": "from modules.sourcing.image_generation_checkpoint import ImageCheckpoint,business_lock,digest"
+        },
+        {
+          "line": 2139,
+          "source": "with business_lock(cp.root,cp.business_digest):"
+        },
+        {
+          "line": 2154,
+          "source": "from modules.sourcing.image_generation_checkpoint import atomic_json, business_lock, digest"
+        },
+        {
+          "line": 2175,
+          "source": "with business_lock(directory, digest({'scope':'round2-phase','offer_id':str(args.offer_id)})):"
+        }
+      ]
+    },
+    {
+      "path": "skills/prepare-product-images/scripts/run_automated_image_qa.py",
+      "sha256_physical": "369cd92a6f28b821ee0627378fe2386643faa997477e619d15cff3d94b475d7c",
+      "lines": [
+        {
+          "line": 319,
+          "source": "from modules.sourcing.image_generation_checkpoint import atomic_json, business_lock, digest"
+        },
+        {
+          "line": 333,
+          "source": "with business_lock(report_root,digest({'scope':'round2-phase','offer_id':offer_id})):"
+        }
+      ]
+    }
+  ],
+  "official_sources": [
+    {
+      "url": "https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/locking?view=msvc-170",
+      "contract": "One byte from current offset can be locked beyond EOF; LK_NBLCK fails immediately if held.",
+      "view": "MSVC 170",
+      "checked": "2026-09-05"
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/open-wopen?view=msvc-170",
+      "contract": "_O_APPEND moves the file pointer to EOF before each write.",
+      "view": "MSVC 170",
+      "checked": "2026-09-05"
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/fileio/locking-and-unlocking-byte-ranges-in-files",
+      "contract": "Exclusive locked bytes deny access through a second file handle, including the owning process."
+    }
+  ],
+  "T00_followup": {
+    "current_base_has_T00_caller": false,
+    "read_or_modified_T00_WIP": false,
+    "minimum_after_exact_T00_integration": [
+      "Run the actual T00 caller from the composed source with two subprocesses against one synthetic destination; only one enters/writes.",
+      "Use zero/one/two-byte persistent lock files; verify bounded timeout, crash release and same destination recovery without lock deletion.",
+      "Run the T00 check-only path against its fixture manifest and assert no writes, no installed junction access and no external activity."
+    ],
+    "not_verified_here": "T00 consumer is absent from exact C4 base; exact caller path/test node must be bound to its final integration commit."
+  },
+  "limitations": [
+    "Windows 10.0.22000 / Python 3.12.8 x64 actual execution; POSIX branch unchanged but not executed.",
+    "No production install, restart, desktop WebView/browser acceptance or whole-system safety claim.",
+    "Original C4 exception remains historical evidence; the risky initialization path is removed rather than declaring one retry a fix."
+  ],
+  "evidence": [
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\source-review.json",
+      "sha256": "205423d8c303c7c12520bbbfc7e5fae91869b600dc546d6afb16ae08e01f77a4"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\validation-summary.json",
+      "sha256": "50728e70a78b6097d11c460f7b3fd36248c44a2d0ff2e264fba1533f40369c45"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\original-evidence-preservation.json",
+      "sha256": "1a6d99726f3e0b3c9e4e6bc3835675b12a92d7ce26a65889d184041337fcf05a"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\base-image_generation_checkpoint.py.txt",
+      "sha256": "49732763147a3d5b73d176eba37fbd3185d5e5dc853b5a816e27cc9e9908bbbe"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\red4-test_business_lock_process.py.txt",
+      "sha256": "976951d7f55095729c56f7dab76516ed49a57a266e1e82786faf628c259809e4"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\red4.xml",
+      "sha256": "45f0febd5d8d4c84b72cd74b50d41a4c3dc5c335f32bb78cd83e3eb1aef9518d"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\green1.xml",
+      "sha256": "9f6311047e59aba40b4decf74c2f13991a066d206a0d8ef116111fec6632a9a9"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\lock-matrix.xml",
+      "sha256": "f949829fb6d68c42ee4b8544d074d274170ead02780f22784507a1dad3f0ef7a"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\lock-matrix-corrected.xml",
+      "sha256": "93d898ac55b2201bd21a32a98796686f856e33780ccaf29129f21a39e0693072"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\content.xml",
+      "sha256": "141d1aad2346f7908d1aa617d21530b1c0c0655813ce5d88ad074e7d43d16f0e"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\budget.xml",
+      "sha256": "139931f4ac592b04b35078dbd73ef739e239a84993727b7de106af304003701f"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\negative.xml",
+      "sha256": "0585a2d6837926ea42351b26efc3cd3a8999d896be47b292e15828de7b938b14"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\guard\\sitecustomize.py",
+      "sha256": "b2c47420d466b56d4591d721e5d96110155c1003634ff58decc5bea3b7537136"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\test_process.py",
+      "sha256": "da85994cfb3ca7105545522f32cd212bb3cca5b1cc559cdf82c5f080c608c1ac"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\run_tests.py",
+      "sha256": "73b68266b42df3e682db8d68a0d0820bf2b38ec0271880cc22aa4360ebf2c4d0"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\security\\lock-validation\\prepare_receipt.py",
+      "sha256": "499f279f2c01650eb2910eefc16578fc323bc5bc84bee872c3b0b99acdef378b"
+    }
+  ]
+}

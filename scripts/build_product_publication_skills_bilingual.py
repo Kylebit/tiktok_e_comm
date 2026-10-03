@@ -19,7 +19,7 @@ def _digest(data: bytes) -> str:
 
 
 def build() -> str:
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, bool]] = []
     for name in SKILLS:
         source_path = ROOT / "skills" / name / "SKILL.md"
         translation_path = ROOT / "docs" / "skill-translations" / f"{name}.zh-CN.md"
@@ -27,29 +27,33 @@ def build() -> str:
         translation = translation_path.read_text(encoding="utf-8")
         digest = _digest(source_path.read_bytes())
         marker = f"<!-- source_sha256: {digest} -->"
-        if marker not in translation:
+        current = marker in translation
+        if not current and not (
+            "历史译本" in translation and "当前英文 `SKILL.md`" in translation
+        ):
             raise RuntimeError(
-                f"stale Chinese translation for {name}: expected {marker}"
+                f"unmarked stale Chinese translation for {name}: expected {marker}"
             )
-        rows.append((name, digest, source.rstrip(), translation.rstrip()))
+        rows.append((name, digest, source.rstrip(), translation.rstrip(), current))
 
     output = [
         "# 商品发布 Skills 中英对照版",
         "",
-        "> **非执行权威。** 本文件仅供 Kyle 阅读。真实执行只使用仓库中的三份英文 `SKILL.md`；英文 `SKILL.md` 是唯一执行权威。本文件由构建脚本机械嵌入英文原文并附上人工维护的完整中文翻译，不包含 Skill frontmatter，也不会被 Skill 系统加载。",
+        "> **非执行权威。** 本文件仅供 Kyle 阅读。真实执行只使用仓库中的三份英文 `SKILL.md`；英文 `SKILL.md` 是唯一执行权威。本文件由构建脚本机械嵌入当前英文原文和人工维护的中文参考译文，不包含 Skill frontmatter，也不会被 Skill 系统加载。过期译文仅供追溯，不能指导当前执行。",
         "",
-        "同步契约：`product-publication-skills-bilingual/v1`。任一英文源文件变化后，如果对应中文翻译未更新源 SHA-256，构建与测试都会失败。",
+        "同步契约：`product-publication-skills-bilingual/v1`。任一英文源文件变化后，对应中文译文必须更新并绑定当前源 SHA-256，或明确标记为历史译本；未标记的过期译文会使构建与测试失败。",
         "",
-        "| Skill | 英文执行权威 | 中文翻译源 | SHA-256 |",
-        "|---|---|---|---|",
+        "| Skill | 英文执行权威 | 中文翻译源 | 英文 SHA-256 | 译文状态 |",
+        "|---|---|---|---|---|",
     ]
-    for name, digest, _source, _translation in rows:
+    for name, digest, _source, _translation, current in rows:
         output.append(
             f"| `{name}` | `skills/{name}/SKILL.md` | "
-            f"`skill-translations/{name}.zh-CN.md` | `{digest}` |"
+            f"`skill-translations/{name}.zh-CN.md` | `{digest}` | "
+            f"{'已同步' if current else '历史译本，勿用于执行'} |"
         )
 
-    for index, (name, digest, source, translation) in enumerate(rows, start=1):
+    for index, (name, digest, source, translation, current) in enumerate(rows, start=1):
         output.extend(
             [
                 "",
@@ -65,7 +69,10 @@ def build() -> str:
                 source,
                 "````",
                 "",
-                "## 中文完整翻译",
+                "## 中文参考译文",
+                "",
+                (f"`{name}` 中文译文已同步。" if current else
+                 f"**`{name}` 中文译文已过期：以下为历史译本，不得据此执行；请以本节当前英文 `SKILL.md` 原文为准。**"),
                 "",
                 translation,
             ]

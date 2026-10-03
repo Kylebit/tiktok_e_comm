@@ -10,13 +10,17 @@ identity and time window are then bound to the prepared command/proof.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from typing import Any
 
 
-PROMOTION_APPROVAL_SCHEMA = "approved-postpublish-promotion-policy/v1"
-PROMOTION_POLICY_VERSION = "oneclick-postpublish-promotion/v1"
+PROMOTION_APPROVAL_SCHEMA = "approved-postpublish-promotion-policy/v2"
+LEGACY_APPROVAL_SCHEMA = "approved-postpublish-promotion-policy/v1"
+PROMOTION_POLICY_VERSION = "oneclick-postpublish-promotion/v2"
+LEGACY_POLICY_VERSION = "oneclick-postpublish-promotion/v1"
+DISCOUNT_SOURCE = "immutable_target_pricing/v1"
 PROMOTION_SELECTION_POLICY = "unique_ongoing_direct_discount/v1"
 PROMOTION_ACTION_PREFIX = "promotion:"
 TIKTOK_PROMOTION_WRITE_CLASS = "tiktok:promotion:discount"
@@ -24,7 +28,7 @@ TIKTOK_PROMOTION_WRITE_CLASS = "tiktok:promotion:discount"
 TIKTOK_DISCOUNT_PERCENT = 32
 SHOPEE_DISCOUNT_PERCENT = 30
 
-_ELIGIBLE: dict[str, tuple[str, str, int]] = {
+_LEGACY_ELIGIBLE: dict[str, tuple[str, str, int]] = {
     "tiktok:LH_PH": ("tiktok", "PHP", TIKTOK_DISCOUNT_PERCENT),
     "tiktok:LH_MY": ("tiktok", "MYR", TIKTOK_DISCOUNT_PERCENT),
     "tiktok:LH_TH": ("tiktok", "THB", TIKTOK_DISCOUNT_PERCENT),
@@ -33,6 +37,23 @@ _ELIGIBLE: dict[str, tuple[str, str, int]] = {
     "shopee:MY": ("shopee", "MYR", SHOPEE_DISCOUNT_PERCENT),
     "shopee:TH": ("shopee", "THB", SHOPEE_DISCOUNT_PERCENT),
     "shopee:VN": ("shopee", "VND", SHOPEE_DISCOUNT_PERCENT),
+}
+
+_ELIGIBLE: dict[str, tuple[str, str, str]] = {
+    "tiktok:LH_PH": ("tiktok", "PHP", "tiktok_official"),
+    "tiktok:LH_MY": ("tiktok", "MYR", "tiktok_official"),
+    "tiktok:LH_TH": ("tiktok", "THB", "tiktok_official"),
+    "tiktok:LH_VN": ("tiktok", "VND", "tiktok_official"),
+    "tiktok:HB_PH": ("tiktok", "PHP", "miaoshou_browser"),
+    "tiktok:HB_MY": ("tiktok", "MYR", "miaoshou_browser"),
+    "tiktok:HB_TH": ("tiktok", "THB", "miaoshou_browser"),
+    "tiktok:HB_VN": ("tiktok", "VND", "miaoshou_browser"),
+    "tiktok:MX": ("tiktok", "MXN", "miaoshou_browser"),
+    "tiktok:GB": ("tiktok", "GBP", "miaoshou_browser"),
+    "shopee:PH": ("shopee", "PHP", "shopee_official"),
+    "shopee:MY": ("shopee", "MYR", "shopee_official"),
+    "shopee:TH": ("shopee", "THB", "shopee_official"),
+    "shopee:VN": ("shopee", "VND", "shopee_official"),
 }
 
 
@@ -103,13 +124,46 @@ def eligible_promotion_action_targets(
     ]
 
 
+def all_promotion_action_targets() -> tuple[str, ...]:
+    return tuple(
+        promotion_action_target(target) for target in sorted(_ELIGIBLE)
+    )
+
+
 def promotion_target_policy(action_target: str) -> dict[str, Any]:
     prerequisite = promotion_prerequisite_target(action_target)
     if prerequisite is None:
         raise PostpublishPromotionContractError(
             "promotion action target is invalid"
         )
-    channel, currency, discount = _ELIGIBLE[prerequisite]
+    channel, currency, execution_surface = _ELIGIBLE[prerequisite]
+    if channel == "tiktok":
+        region = (
+            prerequisite.rsplit("_", 1)[-1]
+            if "_" in prerequisite
+            else prerequisite.split(":", 1)[1]
+        )
+    else:
+        region = prerequisite.split(":", 1)[1]
+    return {
+        "target_label": action_target,
+        "prerequisite_target": prerequisite,
+        "channel": channel,
+        "region": region,
+        "currency": currency,
+        "discount_source": DISCOUNT_SOURCE,
+        "execution_surface": execution_surface,
+        "selection_policy": PROMOTION_SELECTION_POLICY,
+    }
+
+
+def _legacy_target_policy(action_target: str) -> dict[str, Any]:
+    prerequisite = promotion_prerequisite_target(action_target)
+    if prerequisite is None:
+        raise PostpublishPromotionContractError(
+            "promotion action target is invalid"
+        )
+    channel, currency, discount = _LEGACY_ELIGIBLE[prerequisite]
     region = (
         prerequisite.rsplit("_", 1)[-1]
         if channel == "tiktok"
@@ -126,15 +180,15 @@ def promotion_target_policy(action_target: str) -> dict[str, Any]:
     }
 
 
-def promotion_policy_digest() -> str:
+def promotion_policy_digest(*, legacy: bool = False) -> str:
     return _digest(
         {
-            "schema_version": PROMOTION_APPROVAL_SCHEMA,
-            "policy_version": PROMOTION_POLICY_VERSION,
+            "schema_version": LEGACY_APPROVAL_SCHEMA if legacy else PROMOTION_APPROVAL_SCHEMA,
+            "policy_version": LEGACY_POLICY_VERSION if legacy else PROMOTION_POLICY_VERSION,
             "selection_policy": PROMOTION_SELECTION_POLICY,
             "eligible": [
-                promotion_target_policy(promotion_action_target(target))
-                for target in sorted(_ELIGIBLE)
+                (_legacy_target_policy if legacy else promotion_target_policy)(promotion_action_target(target))
+                for target in sorted(_LEGACY_ELIGIBLE if legacy else _ELIGIBLE)
             ],
             "prepare_authority": "official_complete_activity_pagination",
             "success_authority": "official_activity_product_readback",
@@ -158,10 +212,7 @@ def build_approved_postpublish_promotion_policy(
         "policy_version": PROMOTION_POLICY_VERSION,
         "selection_policy": PROMOTION_SELECTION_POLICY,
         "policy_digest": promotion_policy_digest(),
-        "discounts": {
-            "shopee": SHOPEE_DISCOUNT_PERCENT,
-            "tiktok": TIKTOK_DISCOUNT_PERCENT,
-        },
+        "discounts": {"source": DISCOUNT_SOURCE},
         "approved_by": actor,
         "approval_reference": reference,
     }
@@ -197,16 +248,15 @@ def approved_postpublish_promotion_policy(
         for key in expected_keys
         if key != "approval_digest"
     }
+    legacy = approval.get("policy_version") == LEGACY_POLICY_VERSION
     if (
-        approval.get("schema_version") != PROMOTION_APPROVAL_SCHEMA
-        or approval.get("policy_version") != PROMOTION_POLICY_VERSION
+        approval.get("schema_version") != (LEGACY_APPROVAL_SCHEMA if legacy else PROMOTION_APPROVAL_SCHEMA)
+        or approval.get("policy_version") != (LEGACY_POLICY_VERSION if legacy else PROMOTION_POLICY_VERSION)
         or approval.get("selection_policy") != PROMOTION_SELECTION_POLICY
-        or approval.get("policy_digest") != promotion_policy_digest()
+        or approval.get("policy_digest") != promotion_policy_digest(legacy=legacy)
         or approval.get("discounts")
-        != {
-            "shopee": SHOPEE_DISCOUNT_PERCENT,
-            "tiktok": TIKTOK_DISCOUNT_PERCENT,
-        }
+        != ({"shopee": SHOPEE_DISCOUNT_PERCENT, "tiktok": TIKTOK_DISCOUNT_PERCENT}
+            if legacy else {"source": DISCOUNT_SOURCE})
         or approval.get("approved_by") != "Kyle"
         or _text(
             approval.get("approval_reference"),
@@ -230,8 +280,9 @@ def enabled_promotion_action_targets(
 
     if "approved_postpublish_promotion_policy" not in immutable_plan_payload:
         return []
-    approved_postpublish_promotion_policy(immutable_plan_payload)
-    return eligible_promotion_action_targets(storefront_targets)
+    approval = approved_postpublish_promotion_policy(immutable_plan_payload)
+    eligible = _LEGACY_ELIGIBLE if approval["policy_version"] == LEGACY_POLICY_VERSION else _ELIGIBLE
+    return [promotion_action_target(target) for target in storefront_targets if target in eligible]
 
 
 def approved_promotion_action_policy(
@@ -241,18 +292,24 @@ def approved_promotion_action_policy(
     approval = approved_postpublish_promotion_policy(
         immutable_plan_payload
     )
-    policy = promotion_target_policy(action_target)
+    legacy = approval["policy_version"] == LEGACY_POLICY_VERSION
+    if legacy and promotion_prerequisite_target(action_target) not in _LEGACY_ELIGIBLE:
+        raise PostpublishPromotionContractError("target is outside the frozen legacy approval")
+    policy = _legacy_target_policy(action_target) if legacy else promotion_target_policy(action_target)
+    if not legacy:
+        policy["discount_percent"] = _approved_target_discount_percent(
+            immutable_plan_payload, policy["prerequisite_target"], expected_currency=policy["currency"])
     return {
         "schema_version": "approved-postpublish-promotion-action-policy/v1",
         **policy,
-        "policy_version": PROMOTION_POLICY_VERSION,
+        "policy_version": approval["policy_version"],
         "policy_digest": approval["policy_digest"],
         "approval_reference": approval["approval_reference"],
         "approval_digest": approval["approval_digest"],
         "action_policy_digest": _digest(
             {
                 **policy,
-                "policy_version": PROMOTION_POLICY_VERSION,
+                "policy_version": approval["policy_version"],
                 "policy_digest": approval["policy_digest"],
                 "approval_reference": approval["approval_reference"],
                 "approval_digest": approval["approval_digest"],
@@ -261,8 +318,58 @@ def approved_promotion_action_policy(
     }
 
 
+
+def _approved_target_discount_percent(
+    payload: Mapping[str, Any],
+    target: str,
+    *,
+    expected_currency: str,
+) -> int:
+    pricing = payload.get("pricing")
+    selected = pricing.get("selected_targets") if isinstance(pricing, Mapping) else None
+    row = selected.get(target) if isinstance(selected, Mapping) else None
+    prices = row.get("store_prices") if isinstance(row, Mapping) else None
+    if (
+        not isinstance(prices, list)
+        or len(prices) != 1
+        or not isinstance(prices[0], Mapping)
+    ):
+        raise PostpublishPromotionContractError(
+            "exactly one immutable target pricing row is required"
+        )
+    price = prices[0]
+    try:
+        percent = Decimal(str(price.get("discount_reserve_pct")))
+        list_price = Decimal(str(price.get("list_price")))
+        sale_price = Decimal(str(price.get("sale_after_discount")))
+    except (InvalidOperation, TypeError, ValueError) as error:
+        raise PostpublishPromotionContractError(
+            "immutable discount pricing is invalid"
+        ) from error
+    if (
+        not percent.is_finite()
+        or percent != percent.to_integral_value()
+        or not (Decimal("0") < percent < Decimal("100"))
+        or not list_price.is_finite()
+        or list_price <= 0
+        or not sale_price.is_finite()
+        or sale_price <= 0
+        or str(price.get("currency") or "").upper() != expected_currency
+    ):
+        raise PostpublishPromotionContractError(
+            "immutable discount pricing is invalid"
+        )
+    expected_sale = list_price * (Decimal("1") - percent / Decimal("100"))
+    if abs(expected_sale - sale_price) > Decimal("0.005"):
+        raise PostpublishPromotionContractError(
+            "immutable sale price does not match discount reserve"
+        )
+    return int(percent)
+
 __all__ = [
     "PostpublishPromotionContractError",
+    "all_promotion_action_targets",
+    "DISCOUNT_SOURCE",
     "PROMOTION_ACTION_PREFIX",
     "PROMOTION_APPROVAL_SCHEMA",
     "PROMOTION_POLICY_VERSION",

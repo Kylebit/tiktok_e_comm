@@ -1,4 +1,4 @@
 interface:
   display_name: "发布已批准商品"
   short_description: "通过冻结快照独立发布 TikTok、Shopee 和 Ozon"
-  default_prompt: "Use $publish-approved-product with the exact approved offer_id and plan_id to start each requested Product Center frozen-v4 Runner independently, poll its durable report, and return only truthful four-state results."
+  default_prompt: "Use $publish-approved-product with the exact frozen offer_id and plan_id, obtain or revalidate the sole digest-bound FINAL_MARKETPLACE_PUBLISH receipt, run each approved target independently, and return only provider-readback-backed results without repeat approval prompts."

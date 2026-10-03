@@ -4,13 +4,19 @@ const TIMELINE = window.SUPPLY_CHAIN_TIMELINE;
 const TRANSPORT_HISTORY = window.SUPPLY_CHAIN_TRANSPORT_HISTORY;
 const NEW_REPLENISHMENT_PREPARATION_DAYS = 3;
 const NEW_REPLENISHMENT_DOMESTIC_WAREHOUSE_DAYS = 4;
-let activeRegion = "MY";
+const regionFromHash = () => {
+  const region = new URLSearchParams(location.hash.slice(1)).get("region");
+  return ["MY", "TH", "VN", "PH", "SUMMARY"].includes(region) ? region : "MY";
+};
+let activeRegion = regionFromHash();
 let calculated = [];
 let batch = {};
 const MANUAL_INPUT_KEY = "supply-chain-manual-logistics-v1";
-const INBOUND_ETA_KEY = "supply-chain-inbound-batch-timing-v3";
+const OVERRIDE_STORE = window.SUPPLY_CHAIN_OVERRIDES;
+const INBOUND_ETA_KEY = OVERRIDE_STORE.KEY;
+let inboundStorageError = "";
 let manualInputs = loadManualInputs();
-let inboundEtaOverrides = loadLocalObject(INBOUND_ETA_KEY);
+let inboundEtaOverrides = loadInboundOverrides();
 
 const number = value => Number(value || 0);
 const money = (value, digits = 0) => {
@@ -20,6 +26,23 @@ const money = (value, digits = 0) => {
 const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
 })[char]);
+const supplyImageSrc = image => {
+  const state = window.SUPPLY_CHAIN_AUDITED_STATE;
+  if (!state) return `./${image}`;
+  if (state.evidenceGrade !== "AUDITED_MANUAL_SNAPSHOT" || state.executionAuthority !== false ||
+      !/^[0-9a-f]{64}$/.test(state.version) || !/^assets\/[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp|gif)$/.test(image)) {
+    throw new Error("invalid historical image binding");
+  }
+  return `/supply-chain/audited/${state.version}/${image}`;
+};
+const shanghaiDate = value => {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return null;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(parsed);
+};
 
 function loadManualInputs() {
   return loadLocalObject(MANUAL_INPUT_KEY);
@@ -36,6 +59,11 @@ function loadLocalObject(key) {
 
 function saveManualInputs() {
   localStorage.setItem(MANUAL_INPUT_KEY, JSON.stringify(manualInputs));
+}
+
+function loadInboundOverrides() {
+  try { inboundStorageError = ""; return OVERRIDE_STORE.read(localStorage).values; }
+  catch (error) { inboundStorageError = error.message; return {}; }
 }
 
 const manualInputId = (region, sku) => `${region}:${sku}`;
@@ -63,10 +91,12 @@ function inboundBatchEvents(region, item) {
 
   const datedBatches = candidates.map(batch => {
     const override = inboundEtaOverrides[inboundEtaId(region, batch.batchId)];
-    const actualAnchorAt = override?.anchorAt || batch.anchorAt;
+    const currentOverride = OVERRIDE_STORE.current(override, {...batch, region}, DATA, INBOUND_PLAN);
+    const actualAnchorAt = currentOverride?.anchorAt || batch.anchorAt;
     const anchorAt = actualAnchorAt || batch.estimatedAnchorAt;
     const anchorDate = anchorAt ? anchorAt.slice(0, 10) : null;
-    const estimatedSellableDate = override?.estimatedSellableDate
+    const estimatedSellableDate = currentOverride?.estimatedSellableDate
+      || batch.estimatedSellableDate
       || (anchorDate ? TIMELINE.addDays(anchorDate, batch.transportDays) : null);
     return {
       ...batch,
@@ -75,7 +105,7 @@ function inboundBatchEvents(region, item) {
       inboundStatus: actualAnchorAt ? "INBOUND_CONFIRMED" : "NOT_YET_INBOUND",
       anchorDate,
       estimatedSellableDate,
-      etaOverride: override || null
+      etaOverride: currentOverride
     };
   });
   const quantitiesValid = datedBatches.length > 0 && datedBatches.every(
@@ -205,6 +235,11 @@ function calculateArrivalScenario({dailyVelocity, targetCoverageDays, effectiveL
     recommended: Math.max(0, arrivalTarget - projectedAtArrival),
     countedInbound: supplyProjection.countedInbound,
     pendingInbound: supplyProjection.pendingInbound,
+    localFulfilledUnits: supplyProjection.localFulfilledUnits,
+    crossBorderFallbackUnits: supplyProjection.crossBorderFallbackUnits,
+    crossBorderFallbackDays: supplyProjection.crossBorderFallbackDays,
+    firstLocalStockoutDate: supplyProjection.firstLocalStockoutDate,
+    localFulfillmentRate: supplyProjection.localFulfillmentRate,
     supplySteps: supplyProjection.steps,
     projectionMethod: supplyProjection.projectionMethod
   };
@@ -212,6 +247,11 @@ function calculateArrivalScenario({dailyVelocity, targetCoverageDays, effectiveL
 
 function calculateCountry(region) {
   const config = DATA.config[region];
+  const orderSnapshotDate = shanghaiDate(DATA.orderDemandCapturedAt);
+  const inventorySnapshotDate = config.inventoryEvidence?.capturedAt?.slice(0, 10) || null;
+  const inventoryDecisionState = orderSnapshotDate && inventorySnapshotDate === orderSnapshotDate
+    ? "READY"
+    : "BLOCKED_STALE_INVENTORY";
   const base = DATA.countries[region].map(item => {
     const manualInput = manualInputs[manualInputId(region, item.sku)];
     const effectiveItem = manualInput
@@ -290,6 +330,11 @@ function calculateCountry(region) {
           recommended: null,
           countedInbound: 0,
           pendingInbound: effectiveItem.inventory.inbound,
+          localFulfilledUnits: null,
+          crossBorderFallbackUnits: null,
+          crossBorderFallbackDays: null,
+          firstLocalStockoutDate: null,
+          localFulfillmentRate: null,
           supplySteps: [],
           projectionMethod: "BLOCKED_ORDER_DATA"
         };
@@ -320,7 +365,8 @@ function calculateCountry(region) {
       countedInbound: trendScenario.countedInbound,
       pendingInbound: trendScenario.pendingInbound,
       supplySteps: trendScenario.supplySteps,
-      projectionMethod: trendScenario.projectionMethod};
+      projectionMethod: trendScenario.projectionMethod,
+      inventoryDecisionState, orderSnapshotDate, inventorySnapshotDate};
   });
 
   const batchMetrics = (items, quantityField = "recommended") => {
@@ -439,20 +485,26 @@ function scenarioAuditHtml(item, scenario) {
     if (step.kind === "INBOUND") {
       return `<li><b>${shortDate(step.date)}</b> 批次 ${escapeHtml(step.batchId)} 到达 +${step.quantity}件；库存 ${step.stockBefore} → ${step.stockAfter}</li>`;
     }
-    const unmet = step.unmetDemand > 0
-      ? `；缺口 ${step.unmetDemand}（不形成负库存）`
+    const unmet = step.crossBorderFallbackDemand > 0
+      ? `；本土仓履约 ${step.localFulfilledDemand}，跨境直发兜底 ${step.crossBorderFallbackDemand}；自 ${step.localStockoutStartDate} 起切换，不按完全断货处理`
       : "";
     return `<li><b>${shortDate(step.fromDate)}→${shortDate(step.toDate)}</b> ${step.days}天需求 ceil(${velocity}×${step.days})=${step.demand}；库存 ${step.stockBefore} → ${step.stockAfter}${unmet}</li>`;
   }).join("");
-  return `<section class="scenario-audit"><h4>${escapeHtml(scenario.label)} · ${velocity}件/天</h4><ol><li>新补货提前期：3 + 4 + ${item.effectiveTransportDays} = <b>${item.effectiveLeadDays}天</b>；提前期需求 ceil(${velocity}×${item.effectiveLeadDays})=${scenario.leadDemand}</li><li>快照日 ${DATA.snapshotDate} 初始可用库存：<b>${item.inventory.available}件</b></li>${stepLines}<li>${item.targetCoverageDays}天目标：ceil(${velocity}×${item.targetCoverageDays})=<b>${scenario.arrivalTarget}</b></li><li>建议件数：max(0, ${scenario.arrivalTarget}−${scenario.projectedAtArrival})=<b>${scenario.recommended}</b></li></ol></section>`;
+  const fulfillmentRate = scenario.localFulfillmentRate === null
+    ? "—"
+    : `${(scenario.localFulfillmentRate * 100).toFixed(1)}%`;
+  const fallbackSummary = scenario.crossBorderFallbackUnits > 0
+    ? `<li class="fallback-risk"><b>本土仓不足不是完全断货：</b>预计 ${scenario.crossBorderFallbackUnits} 件改由跨境直发兜底，涉及 ${scenario.crossBorderFallbackDays} 个日历日，首次切换 ${scenario.firstLocalStockoutDate}；本土仓履约率 ${fulfillmentRate}。跨境转化折损率尚未批准，暂不伪造损失金额，也不改写建议件数。</li>`
+    : `<li><b>本土仓履约：</b>提前期内无需切换跨境直发，本土仓履约率 ${fulfillmentRate}。</li>`;
+  return `<section class="scenario-audit"><h4>${escapeHtml(scenario.label)} · ${velocity}件/天</h4><ol><li>新补货提前期：3 + 4 + ${item.effectiveTransportDays} = <b>${item.effectiveLeadDays}天</b>；提前期需求 ceil(${velocity}×${item.effectiveLeadDays})=${scenario.leadDemand}</li><li>快照日 ${DATA.snapshotDate} 初始可用库存：<b>${item.inventory.available}件</b></li>${stepLines}${fallbackSummary}<li>${item.targetCoverageDays}天目标：ceil(${velocity}×${item.targetCoverageDays})=<b>${scenario.arrivalTarget}</b></li><li>建议件数：max(0, ${scenario.arrivalTarget}−${scenario.projectedAtArrival})=<b>${scenario.recommended}</b></li></ol></section>`;
 }
 
 function projectionAuditHtml(item) {
-  const open = item.inventory.inbound > 0 ? " open" : "";
+  const open = "";
   return `<details class="calc-audit"${open}><summary>两套逐步计算 · ${item.projectionMethod}</summary><div class="scenario-audit-grid">${scenarioAuditHtml(item, item.demandScenarios.trend)}${scenarioAuditHtml(item, item.demandScenarios.recent30)}</div></details>`;
 }
 
-function rowHtml(item, config, region = activeRegion) {
+function detailedRowHtml(item, config, region = activeRegion) {
   const local = config.currencySymbol;
   const inventoryLabel = item.kind === "first_stock" ? "海外仓尚无" : config.warehouse;
   const shippingEvidence = item.channels.shopee.actualShippingFee === null ? "（Shopee运费未计）" : "";
@@ -495,16 +547,53 @@ function rowHtml(item, config, region = activeRegion) {
   const inboundTiming = item.inventory.inbound > 0
     ? `${inboundBatchLines || "<span>尚未绑定到完整批次明细</span>"}<span>新货到仓前计入<b>${item.countedInbound}</b></span>${item.inboundReconciled ? "" : `<span class="pending-data">批次 SKU 分摊未对平：${item.unmatchedInbound}件暂不计入供应</span>`}<a class="inbound-eta-button" href="./inbound-batches.html#region=${escapeHtml(region)}">前往批次时间确认页</a>`
     : "";
+  const trendFallback = item.demandScenarios.trend.crossBorderFallbackUnits;
+  const recent30Fallback = item.recent30Ready
+    ? item.demandScenarios.recent30.crossBorderFallbackUnits
+    : null;
+  const localRisk = trendFallback > 0 || recent30Fallback > 0
+    ? `<div class="fallback-risk-summary"><b>本土仓不足 → 跨境直发兜底</b><span>日期权重 ${trendFallback}件 / ${item.demandScenarios.trend.crossBorderFallbackDays}天${item.demandScenarios.trend.firstLocalStockoutDate ? `，首日 ${item.demandScenarios.trend.firstLocalStockoutDate}` : ""}</span><span>30日实绩 ${recent30Fallback ?? "—"}件${item.recent30Ready ? ` / ${item.demandScenarios.recent30.crossBorderFallbackDays}天` : ""}</span><em>不是完全断货；转化折损率待业务校准，当前不计损失金额。</em></div>`
+    : `<div class="local-coverage-ok">新货到达前无需切换跨境直发</div>`;
+  const staleInventoryBlocker = item.inventoryDecisionState === "READY"
+    ? ""
+    : `<span class="evidence-blocker">BLOCKED_STALE_INVENTORY</span><small class="reason">订单已刷新至 ${item.orderSnapshotDate || "未知"}，但雅仓库存仍是 ${item.inventorySnapshotDate || "未知"} 快照；建议数仅为条件测算，不可直接下单。</small>`;
   return `<tr>
-    <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div>${activeRegion === "SUMMARY" ? `<small class="region-badge">${escapeHtml(region)} · ${escapeHtml(config.name)}</small>` : ""}<strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
+    <td><div class="product-cell"><img src="${escapeHtml(supplyImageSrc(item.image))}" alt="SKU ${escapeHtml(item.sku)} 主图"><div>${activeRegion === "SUMMARY" ? `<small class="region-badge">${escapeHtml(region)} · ${escapeHtml(config.name)}</small>` : ""}<strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
     <td><div class="channel-stack">${channelBlock("TikTok", item.channels.tiktok, item.tiktokDemand)}${channelBlock("Shopee", item.channels.shopee, item.shopeeDemand)}<em>日期权重合并 ${item.dailyVelocity.toFixed(2)} 件/天${item.spikeProtection ? " · 短期爆量首批仅覆盖15天" : ""}</em><em class="actual-demand">30日完整订单 ${item.recent30Ready ? `${item.recent30Units}件 ÷ 30 = ${item.recent30DailyVelocity.toFixed(2)}件/天` : "不可用"}</em></div></td>
     <td><div class="inventory-grid"><span>库存<b>${item.inventory.stock}</b></span><span>可用<b>${item.inventory.available}</b></span><span>占用<b>${item.inventory.allocated}</b></span><span>冻结<b>${item.inventory.frozen}</b></span><span>在途<b>${item.inventory.inbound}</b></span><span>绑定<b>${inventoryLabel}</b></span>${inboundTiming}</div></td>
-    <td><div class="calc-lines"><span>本次新货预计可售 <b>${item.nextArrivalDate}</b></span><span>3天备货 + 4天到国内仓 + ${item.effectiveTransportDays}天海外运输</span><span>${item.transportPolicy.eligibleSamples}批历史样本 · ${item.transportPolicy.state}</span><div class="scenario-summary"><section><b>日期权重</b><span>${item.effectiveLeadDays}天需求 ${item.demandScenarios.trend.leadDemand}</span><span>到仓剩余 ${item.demandScenarios.trend.projectedAtArrival}</span><span>${item.targetCoverageDays}天目标 ${item.demandScenarios.trend.arrivalTarget}</span></section><section><b>30日实绩</b>${item.recent30Ready ? `<span>${item.effectiveLeadDays}天需求 ${item.demandScenarios.recent30.leadDemand}</span><span>到仓剩余 ${item.demandScenarios.recent30.projectedAtArrival}</span><span>${item.targetCoverageDays}天目标 ${item.demandScenarios.recent30.arrivalTarget}</span>` : "<span>完整订单事实不可用</span>"}</section></div>${projectionAuditHtml(item)}</div></td>
+    <td><div class="calc-lines"><span>本次新货预计可售 <b>${item.nextArrivalDate}</b></span><span>3天备货 + 4天到国内仓 + ${item.effectiveTransportDays}天海外运输</span><span>${item.transportPolicy.eligibleSamples}批历史样本 · ${item.transportPolicy.state}</span><div class="scenario-summary"><section><b>日期权重</b><span>${item.effectiveLeadDays}天需求 ${item.demandScenarios.trend.leadDemand}</span><span>到仓剩余 ${item.demandScenarios.trend.projectedAtArrival}</span><span>${item.targetCoverageDays}天目标 ${item.demandScenarios.trend.arrivalTarget}</span></section><section><b>30日实绩</b>${item.recent30Ready ? `<span>${item.effectiveLeadDays}天需求 ${item.demandScenarios.recent30.leadDemand}</span><span>到仓剩余 ${item.demandScenarios.recent30.projectedAtArrival}</span><span>${item.targetCoverageDays}天目标 ${item.demandScenarios.recent30.arrivalTarget}</span>` : "<span>完整订单事实不可用</span>"}</section></div>${localRisk}${projectionAuditHtml(item)}</div></td>
     <td class="recommend"><div class="recommend-dual"><span>日期权重<strong>${item.recommended}</strong><em>件</em></span><span>30日实绩<strong>${item.recent30Recommended ?? "—"}</strong><em>${item.recent30Recommended === null ? "" : "件"}</em></span></div><small>${volumeLabel}</small></td>
     <td><div class="economics-mini"><span>用户结算价 <b>${local}${item.customerPaymentLocal.toFixed(2)}</b></span><span>税费节省 ${Math.round(config.taxSavingRate * 100)}% <b class="gain">${money(item.taxSavingUnit, 2)}</b></span><span>跨境运费节省 20% <b class="gain">${money(item.shippingSavingUnit, 2)}</b></span><span>本土处理 + 头程 <b>${handlingLabel}</b></span><em>${benefitLabel} ${shippingEvidence}</em></div></td>
-    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.dataIncomplete ? `建议件数已生成；${missingFields}待补充，仅影响${affectedOutputs}展示。` : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料齐全，收益单独展示。" : item.status === "HOLD" ? "现货与按预计日期到达的在途已覆盖目标。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口成立；收益仅展示，不拦截补货建议。"}</small>${item.dataIncomplete || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-region="${escapeHtml(region)}" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
+    <td>${staleInventoryBlocker}<span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.dataIncomplete ? `建议件数已生成；${missingFields}待补充，仅影响${affectedOutputs}展示。` : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料齐全，收益单独展示。" : item.status === "HOLD" ? "现货与按预计日期到达的在途已覆盖目标。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口成立；收益仅展示，不拦截补货建议。"}</small>${item.dataIncomplete || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-region="${escapeHtml(region)}" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
   </tr>`;
 }
+
+
+function rowHtml(item, config, region = activeRegion) {
+  const detailId = `sku-detail-${region}-${item.sku}`;
+  const trend = item.demandScenarios.trend;
+  const actual = item.demandScenarios.recent30;
+  const missing = [!item.dimensionsReady && "尺寸", !item.weightReady && "重量", !item.costReady && "成本"].filter(Boolean).join("、");
+  const blocker = item.inventoryDecisionState !== "READY" ? "库存与订单日期不一致 · 条件测算" : "";
+  const risk = trend.crossBorderFallbackUnits > 0 || (item.recent30Ready && actual.crossBorderFallbackUnits > 0);
+  return `<tr class="sku-summary" data-sku="${escapeHtml(item.sku)}">
+    <td><div class="product-cell"><img src="${escapeHtml(supplyImageSrc(item.image))}" alt="SKU ${escapeHtml(item.sku)} 主图"><div><strong>${escapeHtml(item.sku)}${activeRegion === "SUMMARY" ? ` · ${escapeHtml(region)}` : ""}</strong><span>${escapeHtml(item.name)}</span></div></div></td>
+    <td><div class="compact-pair"><span>趋势 <b>${item.dailyVelocity.toFixed(2)}</b></span><span>30日 <b>${item.recent30Ready ? item.recent30DailyVelocity.toFixed(2) : "不可用"}</b></span></div>${!item.recent30Ready ? '<small class="pending-data">订单事实待补</small>' : ""}</td>
+    <td><b>${escapeHtml(config.warehouse)}</b><span class="compact-line">可用 ${item.inventory.available} · 在途 ${item.inventory.inbound}</span><small>到仓前计入 ${item.countedInbound}${!item.inboundReconciled ? ' · 分摊待核' : ''}</small></td>
+    <td><b>${escapeHtml(item.nextArrivalDate)}</b><small class="compact-line ${risk ? 'pending-data' : ''}">${risk ? `跨境兜底：趋势 ${trend.crossBorderFallbackUnits} / 30日 ${item.recent30Ready ? actual.crossBorderFallbackUnits : '—'} 件` : '到仓前本土供给覆盖'}</small></td>
+    <td><div class="compact-pair recommendation"><span>趋势 <b>${item.recommended}</b></span><span>30日 <b>${item.recent30Recommended ?? "—"}</b></span></div></td>
+    <td>${missing ? `<span class="pending-data">${missing}待补</span>` : `<span>单件 ${item.netUnit === null ? '待核' : money(item.netUnit, 2)}</span>`}<small class="compact-line">收益不阻断数量建议</small></td>
+    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span>${blocker ? `<small class="compact-line pending-data">${blocker}</small>` : ""}<button type="button" class="sku-detail-toggle" aria-expanded="false" aria-controls="${escapeHtml(detailId)}">事实与计算详情</button></td>
+  </tr><tr id="${escapeHtml(detailId)}" class="sku-detail-row" hidden><td colspan="7"><div class="sku-detail-content"><h4>${escapeHtml(region)} · ${escapeHtml(item.sku)} 完整事实与两套计算</h4><div class="table-wrap"><table class="detail-facts"><thead><tr><th>商品资料</th><th>需求事实</th><th>供应事实</th><th>两套计算</th><th>建议</th><th>收益</th><th>判断与补录</th></tr></thead><tbody>${detailedRowHtml(item, config, region)}</tbody></table></div></div></td></tr>`;
+}
+document.querySelector("#skuRows").addEventListener("click", event => {
+  const button = event.target.closest(".sku-detail-toggle");
+  if (!button) return;
+  const detail = document.getElementById(button.getAttribute("aria-controls"));
+  const expanded = button.getAttribute("aria-expanded") === "true";
+  button.setAttribute("aria-expanded", String(!expanded));
+  detail.hidden = expanded;
+});
 
 function renderRows() {
   const query = document.querySelector("#searchInput").value.trim().toLowerCase();
@@ -516,6 +605,10 @@ function renderRows() {
     );
     const filterMatch = filter === "all"
       || (filter === "RECENT30" && recent30Units > 0)
+      || (filter === "LOCAL_FALLBACK" && (
+        item.demandScenarios.trend.crossBorderFallbackUnits > 0
+        || number(item.demandScenarios.recent30.crossBorderFallbackUnits) > 0
+      ))
       || (filter === "MISSING_DATA" && item.dataIncomplete)
       || item.status === filter;
     return textMatch && filterMatch;
@@ -530,6 +623,38 @@ function renderRows() {
 
 function renderSummary() {
   const regions = ["MY", "TH", "VN", "PH"];
+  const activeInboundBatches = regions.flatMap(region => INBOUND_PLAN.regions[region].batches || []);
+  const inbound = activeInboundBatches.reduce((sum, batch) => sum + number(batch.totalUnits), 0);
+  const inboundReconciled = regions.every(region => {
+    const plan = INBOUND_PLAN.regions[region];
+    const batchSkuUnits = new Map();
+    let planUnits = 0;
+    for (const batch of plan.batches || []) {
+      if (!Number.isInteger(batch.totalUnits) || batch.totalUnits < 0 ||
+          !batch.skuQuantities || typeof batch.skuQuantities !== "object" ||
+          Array.isArray(batch.skuQuantities)) return false;
+      let batchUnits = 0;
+      for (const [sku, units] of Object.entries(batch.skuQuantities)) {
+        if (!sku || !Number.isInteger(units) || units < 0) return false;
+        batchUnits += units;
+        batchSkuUnits.set(sku, (batchSkuUnits.get(sku) || 0) + units);
+      }
+      if (batchUnits !== batch.totalUnits) return false;
+      planUnits += batch.totalUnits;
+    }
+    if (planUnits !== plan.totalUnits) return false;
+    let inventoryUnits = 0;
+    const inventorySkus = new Set();
+    for (const row of DATA.countries[region]) {
+      const units = row.inventory?.inbound;
+      if (!row.sku || inventorySkus.has(row.sku) || !Number.isInteger(units) || units < 0) return false;
+      inventorySkus.add(row.sku);
+      inventoryUnits += units;
+      if (units !== (batchSkuUnits.get(row.sku) || 0)) return false;
+      batchSkuUnits.delete(row.sku);
+    }
+    return planUnits === inventoryUnits && [...batchSkuUnits.values()].every(units => units === 0);
+  });
   calculated = regions.flatMap(region => calculateCountry(region).rows.map(item => ({
     ...item,
     region
@@ -563,7 +688,6 @@ function renderSummary() {
   const missingBenefitCount = calculated.filter(item => item.netTotal === null).length;
   const missingVolumeCount = calculated.filter(item => !item.dimensionsReady).length;
   const missingChargeableCount = calculated.filter(item => !item.dimensionsReady || !item.weightReady).length;
-  const inbound = calculated.reduce((sum, item) => sum + item.inventory.inbound, 0);
   const countryCounts = Object.fromEntries(regions.map(region => [
     region,
     calculated.filter(item => item.region === region).length
@@ -571,7 +695,7 @@ function renderSummary() {
   const replenishCount = calculated.filter(item => item.kind === "existing").length;
   const firstStockCount = calculated.length - replenishCount;
 
-  document.querySelector("#snapshotDate").textContent = DATA.snapshotDate;
+  document.querySelector("#snapshotDate").textContent = `库存 ${DATA.snapshotDate} · 订单 ${shanghaiDate(DATA.orderDemandCapturedAt) || "待刷新"} · 批次 ${shanghaiDate(INBOUND_PLAN.capturedAt) || "待刷新"}${inboundStorageError ? " · 本地确认读取失败，暂用已提交来源" : ""}`;
   document.querySelector("#countryEyebrow").textContent = "MY · TH · VN · PH · 建议数 > 10";
   document.querySelector("#countryName").textContent = "四国汇总：";
   document.querySelector("#heroDescription").textContent = "把马来西亚、泰国、越南和菲律宾分别按本国需求、本国仓库与本国交期完成计算，再集中展示建议备货数严格大于10件的 SKU；跨国库存和销量不会互相抵扣。";
@@ -599,7 +723,9 @@ function renderSummary() {
     : "四国当前没有建议备货数大于10件的 SKU。";
   document.querySelector("#warehouseLabel").textContent = "覆盖国家";
   document.querySelector("#inventoryUnits").textContent = "4 国";
-  document.querySelector("#inboundUnits").textContent = `${inbound.toLocaleString("zh-CN")} 件`;
+  document.querySelector("#inboundUnits").textContent = inboundReconciled
+    ? `${activeInboundBatches.length} 批 / ${inbound.toLocaleString("zh-CN")} 件`
+    : "批次在途待对账";
   document.querySelector("#demandWindow").textContent = "四国分国计算";
   document.querySelector("#decisionHeadline").textContent = `备 ${calculated.length} 款`;
   document.querySelector("#ledgerTitle").textContent = "四国建议备货数 >10 件汇总";
@@ -654,11 +780,14 @@ function renderCountry() {
   const spikeProtectedCount = calculated.filter(item => item.spikeProtection).length;
   const regionBatches = INBOUND_PLAN.regions[activeRegion].batches || [];
   const batchDateSummary = regionBatches.map(batch =>
-    `${batch.batchId} → ${(inboundEtaOverrides[inboundEtaId(activeRegion, batch.batchId)] || {}).estimatedSellableDate || batch.estimatedSellableDate || "待确认已入库时间"}`
+    `${batch.batchId} → ${OVERRIDE_STORE.current(inboundEtaOverrides[inboundEtaId(activeRegion, batch.batchId)], {...batch, region: activeRegion}, DATA, INBOUND_PLAN)?.estimatedSellableDate || batch.estimatedSellableDate || "待确认已入库时间"}`
   ).join("；");
   const unreconciledInbound = calculated.reduce((sum, item) => sum + item.unmatchedInbound, 0);
 
-  document.querySelector("#snapshotDate").textContent = DATA.snapshotDate;
+  const orderSnapshotDate = shanghaiDate(DATA.orderDemandCapturedAt);
+  const inventorySnapshotDate = config.inventoryEvidence?.capturedAt?.slice(0, 10) || null;
+  const inventoryFresh = orderSnapshotDate && orderSnapshotDate === inventorySnapshotDate;
+  document.querySelector("#snapshotDate").textContent = `库存 ${inventorySnapshotDate || "未知"} · 订单 ${orderSnapshotDate || "待刷新"} · 批次 ${shanghaiDate(INBOUND_PLAN.capturedAt) || "待刷新"}${inboundStorageError ? " · 本地确认读取失败，暂用已提交来源" : ""}`;
   document.querySelector("#countryEyebrow").textContent = `${activeRegion} · ${config.freightMode.toUpperCase()} · ${config.warehouse}`;
   document.querySelector("#countryName").textContent = config.name;
   const transportPolicy = TRANSPORT_HISTORY.regions[activeRegion];
@@ -666,7 +795,7 @@ function renderCountry() {
   const taxChip = config.taxSavingRate > 0
     ? `税费节省 = 用户结算价 × ${Math.round(config.taxSavingRate * 100)}%`
     : "税费优势尚未批准，按 0";
-  document.querySelector("#sourceChips").innerHTML = `<span>雅仓 ${existingCount} SKU</span><span>${config.demandCoverage}</span><span>${config.freightMode}</span><span>${taxChip}</span>`;
+  document.querySelector("#sourceChips").innerHTML = `<span>雅仓 ${existingCount} SKU · ${inventorySnapshotDate || "日期未知"}</span><span>${config.demandCoverage} · ${orderSnapshotDate || "日期未知"}</span><span>${config.freightMode}</span><span>${taxChip}</span>`;
   document.querySelector("#coverageLabel").textContent = `3天备货 + 4天到国内仓 + ${transportPolicy.effectiveTransportDays}天海外运输 · 两套需求共用在途分时点 · 常规${config.targetDays + config.safetyDays}天`;
   document.querySelector("#batchQty").textContent = `趋势 ${qty.toLocaleString("zh-CN")} · 30日 ${recent30Qty.toLocaleString("zh-CN")}`;
   document.querySelector("#batchSkuCount").textContent = `${approved.length} 款`;
@@ -714,6 +843,7 @@ function renderCountry() {
     ? `<article class="warn"><strong>Shopee 明细待映射</strong><p>完整结算已拉取，但 ${shopeeAudit.unmappedItemLines} 条商品明细无可审计 4 位 SKU 映射，已排除自动备货计算，未伪造销量。</p></article>`
     : "";
   document.querySelector("#evidenceGrid").innerHTML = `
+    <article class="${inventoryFresh ? "ok" : "warn"}"><strong>${inventoryFresh ? "订单与库存同日" : "BLOCKED_STALE_INVENTORY"}</strong><p>订单快照 ${orderSnapshotDate || "未知"}；雅仓库存快照 ${inventorySnapshotDate || "未知"}。${inventoryFresh ? "可作为同日数量决策证据。" : "库存与订单日期不一致或缺失；条件测算保留，取得当前库存和完整在途分页前不得直接下单。"}</p></article>
     <article class="${demandEvidenceClass}"><strong>${shopeeState ? "Shopee 需求暂未纳入" : "双平台需求已合并"}</strong><p>${demandEvidenceText}</p></article>
     <article class="${unreconciledInbound ? "warn" : "ok"}"><strong>在途按批次和时间隔离</strong><p>${config.warehouse} 当前可用 ${available} 件、在途 ${inbound} 件；${batchDateSummary || "当前无在途批次"}。日期按批次修改并同步影响该批次内全部 SKU。${unreconciledInbound ? `尚有 ${unreconciledInbound} 件聚合在途未与批次 SKU 数量对平，已暂不计入供应。` : "批次 SKU 数量已对平。"}</p></article>
     ${identityEvidence}
@@ -726,11 +856,21 @@ function renderCountry() {
   renderRows();
 }
 
-document.querySelectorAll(".country-tab").forEach(button => button.addEventListener("click", () => {
+function reflectRegionNavigation() {
+  document.querySelectorAll("nav button[data-region]").forEach(button => button.classList.toggle("active", button.dataset.region === activeRegion));
+  document.querySelector("nav a.page-link").href = `./inbound-batches.html#region=${activeRegion === "SUMMARY" ? "ALL" : activeRegion}`;
+}
+document.querySelectorAll("nav button[data-region]").forEach(button => button.addEventListener("click", () => {
   activeRegion = button.dataset.region;
-  document.querySelectorAll(".country-tab").forEach(item => item.classList.toggle("active", item === button));
+  location.hash = `region=${activeRegion}`;
+  reflectRegionNavigation();
   renderCountry();
 }));
+window.addEventListener("hashchange", () => {
+  const selected = regionFromHash();
+  if (selected === activeRegion) return;
+  activeRegion = selected; reflectRegionNavigation(); renderCountry();
+});
 document.querySelector("#searchInput").addEventListener("input", renderRows);
 document.querySelector("#statusFilter").addEventListener("change", renderRows);
 
@@ -806,8 +946,9 @@ document.querySelector("#clearManualInput").addEventListener("click", () => {
 });
 
 window.addEventListener("storage", event => {
-  if (event.key !== INBOUND_ETA_KEY) return;
-  inboundEtaOverrides = loadLocalObject(INBOUND_ETA_KEY);
+  if (![INBOUND_ETA_KEY, OVERRIDE_STORE.LEGACY_KEY].includes(event.key)) return;
+  inboundEtaOverrides = loadInboundOverrides();
   renderCountry();
 });
+reflectRegionNavigation();
 renderCountry();

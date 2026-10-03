@@ -113,6 +113,26 @@ def test_existing_global_image_convergence_uses_only_in_place_update_endpoints()
         },
         official_fact_reader=lambda _command, _context: {},
         mapping_lookup=lambda _sku: "51765420288",
+        merchant_get_transport=lambda path, _merchant_id, _token, _params: {
+            "error": "",
+            "response": {
+                "tier_variation": [
+                    {
+                        "name": "Color",
+                        "option_list": [
+                            {"option": "Blue", "image": {"image_id": "image-1"}}
+                        ],
+                    }
+                ],
+                "global_model": [
+                    {
+                        "global_model_id": 101,
+                        "global_model_sku": "0960",
+                        "tier_index": [0],
+                    }
+                ],
+            },
+        },
         merchant_post_transport=lambda path, _merchant_id, _token, body: calls.append(
             (path, body)
         ) or {"error": "", "response": {}},
@@ -467,6 +487,8 @@ def test_full_runtime_creates_models_persists_identity_and_officially_reads_back
                             "global_item_status": "NORMAL",
                             "global_item_name": item["global_item_name"],
                             "description": item["description"],
+                            "category_id": item["category_id"],
+                            "attribute_list": item["attribute_list"],
                             "weight": item["weight"],
                             "dimension": item["dimension"],
                             "image": {
@@ -518,11 +540,11 @@ def test_full_runtime_creates_models_persists_identity_and_officially_reads_back
             "authority": "SHOPEE_OFFICIAL",
             "candidates": [
                 {
-                    "id": "101",
-                    "name": "Wall Stickers",
+                    "id": "101944",
+                    "name": "Wall Stickers & Decals",
                     "path": [
                         {"id": "10", "name": "Home"},
-                        {"id": "101", "name": "Wall Stickers"},
+                        {"id": "101944", "name": "Wall Stickers & Decals"},
                     ],
                     "publishable": True,
                     "required_attributes": [],
@@ -630,3 +652,168 @@ def test_model_init_error_converges_when_official_readback_is_already_exact(tmp_
             ],
         },
     ) == {"0967": "366349471396"}
+
+
+def test_oversized_shopee_png_is_compressed_to_bounded_jpeg():
+    from io import BytesIO
+    from PIL import Image
+
+    source = BytesIO()
+    Image.effect_noise((512, 512), 100).convert("RGB").save(source, format="PNG")
+    payload = source.getvalue()
+    compressed, suffix = _compress_oversized_shopee_image(
+        payload, ".png", max_bytes=120_000
+    )
+
+    assert suffix == ".jpg"
+    assert compressed.startswith(b"\xff\xd8\xff")
+    assert len(compressed) <= 120_000
+
+
+def test_global_tier_image_provider_error_polls_readback_without_repeating_write():
+    posts = []
+    reads = []
+    old_tier = [
+        {
+            "name": "Style",
+            "option_list": [
+                {"option": "A", "image": {"image_id": "old-1"}},
+                {"option": "B", "image": {"image_id": "old-2"}},
+            ],
+        }
+    ]
+    new_tier = [
+        {
+            "name": "Style",
+            "option_list": [
+                {"option": "A", "image": {"image_id": "new-1"}},
+                {"option": "B", "image": {"image_id": "new-2"}},
+            ],
+        }
+    ]
+
+    def merchant_post(path, _merchant_id, _token, body):
+        posts.append((path, body))
+        return {"error": "product.error_param", "message": "accepted but stale"}
+
+    def merchant_get(path, _merchant_id, _token, _params):
+        reads.append(path)
+        tier = old_tier if len(reads) == 1 else new_tier
+        return {
+            "error": "",
+            "response": {
+                "tier_variation": tier,
+                "global_model": [
+                    {
+                        "global_model_id": 101,
+                        "global_model_sku": "0984",
+                        "tier_index": [0],
+                    },
+                    {
+                        "global_model_id": 102,
+                        "global_model_sku": "0985",
+                        "tier_index": [1],
+                    },
+                ],
+            },
+        }
+
+    waits = []
+    runtime = OfficialShopeeGlobalV4Runtime(
+        context_resolver=lambda _command: {
+            "merchant_id": 4970102,
+            "merchant_token": "redacted",
+            "shop_id": 1,
+            "shop_token": "redacted",
+        },
+        official_fact_reader=lambda _command, _context: {},
+        mapping_lookup=lambda _sku: "47216911151",
+        merchant_get_transport=merchant_get,
+        merchant_post_transport=merchant_post,
+        price_readback_wait=waits.append,
+    )
+    runtime.lookup_global_item_ids(
+        {
+            "models": [{"model_sku": "0984"}, {"model_sku": "0985"}],
+            "product": {"images": ["https://img.example/main.jpg"]},
+        }
+    )
+
+    receipt = runtime.update_existing_global_tier_variation(
+        "47216911151",
+        {
+            "variation_names": ["Style"],
+            "models": [
+                {
+                    "model_sku": "0984",
+                    "option_values": ["A"],
+                    "variant_image_id": "new-1",
+                },
+                {
+                    "model_sku": "0985",
+                    "option_values": ["B"],
+                    "variant_image_id": "new-2",
+                },
+            ],
+        },
+    )
+
+    assert receipt == UpdateReceipt(attempted_count=1, reconciled_by_readback=True)
+    assert len(posts) == 1
+    assert len(reads) == 2
+    assert waits == [1.0]
+
+
+def test_exact_floor_mat_selects_official_floor_mats_from_chinese_semantics():
+    selected = select_exact_official_category(
+        {"id": "product-semantic:bath-mat", "name": "地毯地垫 > 地垫"},
+        [
+            {
+                "id": "101159",
+                "name": "Floor Mats",
+                "path": [
+                    {"id": "100636", "name": "Home & Living"},
+                    {"id": "100711", "name": "Decoration"},
+                    {"id": "101159", "name": "Floor Mats"},
+                ],
+                "publishable": True,
+            },
+            {
+                "id": "101160",
+                "name": "Carpets & Rugs",
+                "path": [{"id": "101160", "name": "Carpets & Rugs"}],
+                "publishable": True,
+            },
+        ],
+    )
+
+    assert selected["id"] == "101159"
+
+
+def test_exact_wallpaper_singular_selects_official_combined_leaf():
+    selected = select_exact_official_category(
+        {"id": "600338", "name": "Wallpaper"},
+        [
+            {
+                "id": "101157",
+                "name": "Wallpapers & Wall Stickers",
+                "path": [
+                    {"id": "100636", "name": "Home & Living"},
+                    {"id": "100711", "name": "Decoration"},
+                    {"id": "101157", "name": "Wallpapers & Wall Stickers"},
+                ],
+                "publishable": True,
+            },
+            {
+                "id": "101186",
+                "name": "Industrial Adhesives & Tapes",
+                "path": [{"id": "101186", "name": "Industrial Adhesives & Tapes"}],
+                "publishable": True,
+            },
+        ],
+    )
+
+    assert selected["id"] == "101157"
+
+
+from modules.shopee.global_v4_live_runtime import _compress_oversized_shopee_image

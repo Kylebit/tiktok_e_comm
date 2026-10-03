@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.config import ROOT
-from core.http_retry import DEFAULT_SSL_CTX as SSL_CTX
-from core.http_retry import urlopen as urlopen_retry
+from core.resource_download import save_resource_image
 
 from modules.products import image_ai
 from modules.sourcing.copy_ai import generate_copy
@@ -115,14 +114,12 @@ def list_offers() -> list[dict]:
 
 
 def _download_url(url: str, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(
         url,
         headers={"User-Agent": UA, "Referer": "https://detail.1688.com/"},
         method="GET",
     )
-    with urlopen_retry(req, timeout=60, context=SSL_CTX) as resp:
-        dest.write_bytes(resp.read())
+    save_resource_image(req, dest, source="sourcing_image", timeout=60)
 
 
 def _safe_name(url: str, prefix: str, index: int) -> str:

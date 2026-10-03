@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.utils import parsedate_to_datetime
 from html import escape
 import json
+import re
 from typing import Any
 
 
@@ -22,7 +23,12 @@ def render_profit_report_html(report: Mapping[str, Any]) -> str:
     lines = [line for line in _list(report.get("order_lines")) if isinstance(line, Mapping)]
     fee_columns = _fee_columns(lines)
     warning_by_sku = {str(item.get("canonical_sku") or ""): item for item in warnings if isinstance(item, Mapping)}
-    buyer_cash_cny = sum((_buyer_cash_cny(line) for line in lines), Decimal("0"))
+    buyer_cash_cny = sum((_buyer_cash_cny(line) for line in lines), Decimal("0")) if lines else None
+    result_note = (
+        "无可计算事实；金额未知。" if not lines else
+        "部分数据诊断；合计仅覆盖可计算行，整期利润未知。" if issues else
+        "合计覆盖本次输入中的可计算已结算行。"
+    )
     local_fulfillment_cny = _decimal(totals.get("local_fulfillment_cost_cny")) or Decimal("0")
     external_costs_cny = _decimal(totals.get("external_costs_cny")) or Decimal("0")
     external_cost_label = (
@@ -54,6 +60,8 @@ def render_profit_report_html(report: Mapping[str, Any]) -> str:
             f"外部成本包括本土履约费 CNY {_money(local_fulfillment_cny)} 和其他未包含在净结算中的成本 "
             f"CNY {_money(other_external)}；平台已在净结算中扣除的费用不会重复扣除。"
         )
+    if not lines:
+        external_cost_note = "尚无可计算费用事实。"
     affiliate = _map(source.get("affiliate_marketing"))
     if platform == "SHOPEE" and affiliate:
         cards += _text_card(
@@ -83,7 +91,7 @@ def render_profit_report_html(report: Mapping[str, Any]) -> str:
 body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172126}}main{{margin:auto;padding:20px}}h1{{margin:4px 0}}.meta{{color:#64748b}}.cards{{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:10px;margin:16px 0}}.card,section{{background:#fff;border:1px solid #dfe6e9;border-radius:10px;padding:12px}}.card strong{{display:block;font-size:19px;margin-top:4px}}.status,.warning{{display:inline-block;padding:3px 8px;border-radius:999px;background:#fff3cd}}.warning{{background:#ffe4b5;color:#7c4700;font-size:11px}}.order-filter{{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:10px 0;padding:10px 12px;background:#fff;border:1px solid #dfe6e9;border-radius:10px}}.order-filter label{{display:flex;align-items:center;gap:6px}}.order-filter input,.order-filter button{{font:inherit;padding:5px 8px;border:1px solid #b8c4ca;border-radius:6px;background:#fff}}.order-filter button{{cursor:pointer}}.filter-summary{{font-weight:700}}.daily-order-counts{{display:flex;flex-wrap:wrap;gap:6px;width:100%}}.daily-order-count{{padding:3px 7px;border-radius:999px;background:#e8f4ff;color:#164e78;font-variant-numeric:tabular-nums}}.table-scroll-top{{overflow-x:auto;overflow-y:hidden;height:16px;margin-bottom:4px;background:#eef3f4;border:1px solid #dfe6e9;border-radius:7px}}.table-scroll-top>div{{height:1px}}.table{{overflow:auto;max-height:72vh;background:#fff;border:1px solid #dfe6e9;border-radius:10px}}table{{border-collapse:collapse;min-width:max-content;width:100%}}th,td{{padding:7px 9px;border-bottom:1px solid #edf1f2;text-align:left;vertical-align:top;white-space:nowrap}}th{{position:sticky;top:0;z-index:3;background:#eef3f4}}.sort-button{{border:0;padding:0;background:transparent;color:inherit;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}}.sort-button:focus-visible{{outline:2px solid #2563eb;outline-offset:3px;border-radius:2px}}tfoot td{{position:sticky;bottom:0;background:#e8f4ff;font-weight:700;border-top:2px solid #4b9bd8}}td.num{{text-align:right;font-variant-numeric:tabular-nums}}td.product{{white-space:normal;min-width:220px;max-width:300px}}tr.assumption{{background:#fffaf0}}tr.local-fulfillment{{background:#effaf1}}tr.negative{{background:#fff5f5}}img{{width:48px;height:48px;object-fit:cover;border-radius:7px;background:#eee}}code{{font-size:11px}}ul{{margin:6px 0;padding-left:20px}}@media(max-width:800px){{.cards{{grid-template-columns:1fr 1fr}}main{{padding:10px}}}}
 </style></head><body><main>
 <header><span class="status">{escape(_text(report.get('status')))}</span><h1>{escape(platform)} {escape(_text(report.get('period_kind')))} 订单级利润明细</h1><p class="meta">{escape(_text(period.get('start')))} 至 {escape(_text(period.get('end')))} · {escape(_text(report.get('calculation_kind')))} · {len(lines)} 个已结算订单行 · 页面金额统一显示两位小数，JSON 保留原始 Decimal 精度</p></header>
-<div class="cards">{cards}</div><p class="meta">{escape(external_cost_note)}</p>
+<p class="meta" data-role="result-scope">{escape(result_note)}</p><div class="cards">{cards}</div><p class="meta">{escape(external_cost_note)}</p>
 <section><h2>阻断性质量问题</h2><ul>{issue_html}</ul><h2>临时假设警告</h2><ul>{warning_html}</ul><p class="meta">report_id={escape(_text(report.get('report_id')))} · idempotency_key={escape(_text(report.get('idempotency_key')))}</p></section>
 <h2>订单明细（每项费用独立成列）</h2>
 <div class="order-filter" data-role="order-date-filter">
@@ -141,6 +149,11 @@ body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172
     if (!filterActive) {{
       wholePeriodTotals.forEach((html, cell) => {{ cell.innerHTML = html; }});
       if (totalLabel) totalLabel.textContent = '合计';
+      return;
+    }}
+    if (!visibleRows.length) {{
+      totalCells.forEach(cell => {{ cell.textContent = '—'; }});
+      if (totalLabel) totalLabel.textContent = '筛选无可计算行';
       return;
     }}
     const totals = new Map();
@@ -253,7 +266,7 @@ def _order_row(line, fee_columns, warning_by_sku, platform):
     identity = _map(line.get("identity")); product = _map(line.get("product")); settlement = _map(line.get("settlement"))
     cost = _map(line.get("cost")); ads = _map(line.get("advertising")); fx = _map(line.get("fx")); fulfillment = _map(line.get("fulfillment"))
     sku = _text(product.get("canonical_sku")); warning = warning_by_sku.get(sku)
-    image = _text(product.get("image_url")); image_html = f'<img src="{escape(image, quote=True)}" alt="商品主图" loading="lazy">' if image.lower().startswith("https://") else '<span class="meta">无主图</span>'
+    image = _safe_image_source(product.get("image_url")); image_html = f'<img src="{escape(image, quote=True)}" alt="商品主图" loading="lazy">' if image else '<span class="meta">无可离线显示主图</span>'
     margin = _margin(line)
     ams_local, ams_cny, ams_currency = _fee_value(line, AMS_COMMISSION_FEE_CODE)
     cells = [
@@ -384,6 +397,10 @@ def _footer(report, fee_columns, platform):
     total_keys[19] = "product_sales_local"
     total_keys[20] = "buyer_cash_local"
     total_keys[30] = "external_costs_cny"
+    if not lines:
+        for index, key in enumerate(total_keys):
+            if key:
+                cells[index] = "—"
     if platform in {"SHOPEE", "TIKTOK"}:
         cells.pop(3)
         total_keys.pop(3)
@@ -434,6 +451,13 @@ def _map(value): return value if isinstance(value, Mapping) else {}
 def _list(value): return value if isinstance(value, list) else []
 def _text(value): return str(value) if value not in (None, "") else "—"
 def _optional_text(value): return str(value) if value not in (None, "") else ""
+def _safe_image_source(value):
+    raw = _optional_text(value).strip()
+    if raw.lower().startswith("https://"):
+        return raw
+    if re.fullmatch(r"data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+", raw, re.IGNORECASE):
+        return raw
+    return ""
 def _display_time(value):
     raw = _optional_text(value).strip()
     if not raw:
@@ -486,9 +510,13 @@ def _fx_rate(value):
     number = _decimal(value)
     return f"{number.quantize(Decimal('0.00000001'), rounding=ROUND_HALF_UP):f}" if number is not None else "—"
 def _decimal(value):
-    if value is None or isinstance(value, bool) or str(value).strip() == "": return None
-    try: return Decimal(str(value))
-    except (InvalidOperation, ValueError): return None
+    if value is None or isinstance(value, bool) or str(value).strip() == "":
+        return None
+    try:
+        amount = Decimal(str(value))
+        return amount if amount.is_finite() else None
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def _decimal_string(value):

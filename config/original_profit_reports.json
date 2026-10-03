@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "files": {
+    "profit_reports_monthly/2026-07/index.html": {
+      "sha256": "1f5b2111aabcfe419142f5d83115cccb3b2d9cc5d38ef44c2ae0f5d4157851cf",
+      "size": 7658
+    },
+    "profit_reports_monthly/2026-07/shopee_MY_2026-07-01_2026-07-31.monthly-profit.html": {
+      "sha256": "8476ed8b333f0917c58635c3497a6bf630c1b66ce056bbbb8fc87727a2868dc1",
+      "size": 1511948
+    },
+    "profit_reports_monthly/2026-07/shopee_MY_2026-07-01_2026-07-31.monthly-profit.json": {
+      "sha256": "704e90edc10ef720ef75fdfac40f045f64c62bca72237a33c87d6ecc39105eee",
+      "size": 1949278
+    },
+    "profit_reports_monthly/2026-07/shopee_PH_2026-07-01_2026-07-31.monthly-profit.html": {
+      "sha256": "eb93ba795a02aaad5f4396cd0158ec2d9d2580207569d332f418fc34c4b2d242",
+      "size": 2702373
+    },
+    "profit_reports_monthly/2026-07/shopee_PH_2026-07-01_2026-07-31.monthly-profit.json": {
+      "sha256": "e1b9ba0fab441c964a8ba4608f0ee766f7572487846f807583a5e8c867bf3ff2",
+      "size": 3487184
+    },
+    "profit_reports_monthly/2026-07/shopee_TH_2026-07-01_2026-07-31.monthly-profit.html": {
+      "sha256": "e08e9af45a56fc6d872a3c6857aac3deb0401e3087062a95c16fceabc2b745b6",
+      "size": 15671757
+    },
+    "profit_reports_monthly/2026-07/shopee_TH_2026-07-01_2026-07-31.monthly-profit.json": {
+      "sha256": "1d28cde6575f4376488d75be7982d7595c8b402d218206a9a7f3871437b3abca",
+      "size": 20417984
+    },
+    "profit_reports_monthly/2026-07/shopee_VN_2026-07-01_2026-07-31.monthly-profit.html": {
+      "sha256": "ad0233547bea608aca952176d9054b5f1e5f7e97f024617bfef4e6f59231e895",
+      "size": 933470
+    },
+    "profit_reports_monthly/2026-07/shopee_VN_2026-07-01_2026-07-31.monthly-profit.json": {
+      "sha256": "af9af40bcb732c21280e08694b0e8dad816abb43739af483da710cfff37fc201",
+      "size": 1179402
+    },
+    "profit_reports_monthly/2026-07/tiktok_MY_2026-07-01_2026-07-31.monthly-profit.html": {
+      "sha256": "58c8ab8422e061f74eb4eb6b7878d8ba06020e4793d8f363fbea7c0071a32789",
+      "size": 5984360
+    },
+    "profit_reports_monthly/2026-07/tiktok_MY_2026-07-01_2026-07-31.monthly-profit.json": {
+      "sha256": "7b11cd9d09ed21f2a9f4ced2c58c1b7d23dcaff8708aa00d17d0d1a2cb1e6f47",
+      "size": 8226982
+    },
+    "profit_reports_monthly/2026-07/tiktok_PH_2026-07-01_2026-07-31.monthly-profit.html": {
+      "sha256": "5ece397e47e66f5f4b1490be80022dd7c55e2cac5b7e955c46c3e3ffef166b2a",
+      "size": 3400231
+    },
+    "profit_reports_monthly/2026-07/tiktok_PH_2026-07-01_2026-07-31.monthly-profit.json": {
+      "sha256": "8e215da2d8adaafe57841d55735fff772b0acf0b6f83ad7b4300c76b1f1ac76c",
+      "size": 4464840
+    },
+    "profit_reports_monthly/2026-07/tiktok_TH_2026-07-01_2026-07-31.monthly-profit.html": {
+      "sha256": "1878baab389e1fd982ee6f92248fe84d726c7a49c3e35f84056c47e2edc91da1",
+      "size": 17735359
+    },
+    "profit_reports_monthly/2026-07/tiktok_TH_2026-07-01_2026-07-31.monthly-profit.json": {
+      "sha256": "edccc2870b4c5040c1e1fbb33cc7ef2a969fec7efa45946e1d20385f021b8ba1",
+      "size": 23172214
+    },
+    "profit_reports_monthly/2026-07/tiktok_VN_2026-07-01_2026-07-31.monthly-profit.html": {
+      "sha256": "c27d660d917e468ad32180835e0f91828980c09e85ddf78370c2dd356b4ffc86",
+      "size": 2702359
+    },
+    "profit_reports_monthly/2026-07/tiktok_VN_2026-07-01_2026-07-31.monthly-profit.json": {
+      "sha256": "be636084af888025d7d7b5a723a8d2b00332cb285ea79e536ecc677eda4f40ba",
+      "size": 3761507
+    },
+    "settlement_evidence/2026-07-01_2026-07-31/shopee_TH/shopee_TH_2026-07-01_2026-07-31.settlement.html": {
+      "sha256": "57af7466b29e78776e48dfe42b800e33172efac6d11b2ad6a5565443e7cbbcc0",
+      "size": 6478428
+    },
+    "settlement_evidence/2026-07-01_2026-07-31/shopee_MY/shopee_MY_2026-07-01_2026-07-31.settlement.html": {
+      "sha256": "73656c5f61351cc1639840f87f4852cad5245c738366960cb8afd4e0caf13879",
+      "size": 546425
+    },
+    "settlement_evidence/2026-07-01_2026-07-31/shopee_PH/shopee_PH_2026-07-01_2026-07-31.settlement.html": {
+      "sha256": "92da2437ecfacf68afde3930eed9e030080a5229804faa49b6b6dbf725a5b08d",
+      "size": 997440
+    },
+    "settlement_evidence/2026-07-01_2026-07-31/shopee_VN/shopee_VN_2026-07-01_2026-07-31.settlement.html": {
+      "sha256": "308fb27218dbfad747dc4706872af92f26ca16726386cbd1216c2a28670765ec",
+      "size": 321593
+    }
+  }
+}

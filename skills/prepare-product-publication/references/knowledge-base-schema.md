@@ -50,6 +50,6 @@ a generic fallback.
 ## Image guidance
 
 Knowledge may recommend image count and roles such as cover, scale, use case,
-installation or care. It may not select which source positions require
-translation and may not decide that two store groups need different content.
-Those remain user decisions in the first review.
+installation or care. Translation positions and content-group splits must be
+bound to exact task scope, source evidence and governed defaults. An unresolved
+high-risk ambiguity remains a blocker; it does not create a routine R1 approval.

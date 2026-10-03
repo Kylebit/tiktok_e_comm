@@ -1336,3 +1336,11 @@ def test_generated_sdk_metadata_cannot_promote_an_endpoint():
         for path in subject.AUDITED_OFFICIAL_READ_ENDPOINTS
     )
     assert not hasattr(subject, "GENERATED_SDK_ENDPOINT_HINTS")
+
+
+def test_live_recommendation_path_lists_resolve_to_unique_leaf_ids():
+    assert subject._positive_unique_ids(
+        [[10, 101], [20, 202], [30, 101]],
+        "shopee_category_recommendation_invalid",
+        allow_empty=False,
+    ) == (101, 202)

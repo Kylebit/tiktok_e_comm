@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
+from dataclasses import asdict, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from hashlib import sha256
+import json
 from typing import Any
 
 from domains.data_operations.profit_settlement.audit import audit_profit_report
+from domains.data_operations.profit_settlement.knowledge_reference import profit_report_reference
 from domains.data_operations.profit_settlement.settlement_evidence_adapter import (
     AdaptedSettlementEvidence,
     adapt_settlement_evidence,
@@ -33,6 +37,8 @@ def build_weekly_evidence_bundle(
     seller_sku_by_ozon_sku: Mapping[str, str] | None = None,
     quantity_by_ozon_order_sku: Mapping[str, object] | None = None,
     cost_assumption_warnings: tuple[object, ...] = (),
+    cost_policy_issues: tuple[Mapping[str, str], ...] = (),
+    calculation_timezone: str | None = None,
     generated_at: datetime | None = None,
     code_version: str = "unknown",
     platforms: tuple[str, ...] | None = None,
@@ -64,6 +70,25 @@ def build_weekly_evidence_bundle(
             seller_sku_by_platform_sku=seller_sku_by_ozon_sku if platform == "ozon" else None,
             quantity_by_order_platform_sku=quantity_by_ozon_order_sku if platform == "ozon" else None,
         )
+        if calculation_timezone:
+            # Period selection must use the declared zone, not just relabel output.
+            zone = datetime.fromisoformat("2000-01-01T00:00:00" + calculation_timezone).tzinfo
+            if zone is None:
+                raise ValueError("calculation_timezone must be a UTC offset")
+            normalized_rows = []
+            for original in adapted.rows:
+                row = dict(original)
+                for field in ("settled_at", "occurred_at"):
+                    value = row.get(field)
+                    if not value:
+                        continue
+                    try:
+                        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                        row[field] = parsed.astimezone(zone).isoformat() if parsed.tzinfo else ""
+                    except ValueError:
+                        row[field] = ""
+                normalized_rows.append(row)
+            adapted = replace(adapted, rows=tuple(normalized_rows))
         bundle_issues.extend(_adapter_issue_payload(platform, issue) for issue in adapted.issues)
         report = _platform_report(
             platform,
@@ -89,12 +114,39 @@ def build_weekly_evidence_bundle(
             if str(getattr(warning, "canonical_sku", "")) in used_skus
         ]
         payload["assumption_warnings"] = report_warnings
+        catalog_issues = [asdict(item) if hasattr(item, "__dataclass_fields__") else dict(item)
+                          for item in getattr(catalog, "issues", ())]
+        used_identities = [dict(row.get("catalog_identity") or {}) for row in adapted.rows]
+        applicable_issues = [item for item in catalog_issues
+                             if (item.get("identity") and item["identity"] in used_identities)
+                             or (not item.get("identity") and item.get("record_id") in used_skus)]
+        input_issues = [*(_adapter_issue_payload(platform, issue) for issue in adapted.issues),
+                        *applicable_issues,
+                        *(dict(item) for item in cost_policy_issues if item.get("canonical_sku") in used_skus)]
+        payload["quality_issues"].extend(input_issues)
+        if input_issues:
+            payload["status"] = "needs_review"
+            payload["result_scope"] = "partial_diagnostic" if payload["order_lines"] else "no_calculated_facts"
+        payload["source"]["catalog_snapshot_id"] = str(getattr(catalog, "snapshot_id", ""))
+        payload["source"]["settlement_evidence"] = adapted.source
+        if calculation_timezone:
+            payload["period"]["timezone"] = calculation_timezone
+        # Consumer metadata changes the reviewed content, so it has its own identity.
+        engine_id = payload["idempotency_key"]
+        digest = sha256(json.dumps({"engine": engine_id, "source": payload["source"],
+                                   "period": payload["period"], "warnings": report_warnings,
+                                   "issues": payload["quality_issues"]}, sort_keys=True,
+                                  separators=(",", ":"), default=str).encode()).hexdigest()
+        payload["source"]["engine_idempotency_key"] = engine_id
+        payload["report_id"] = f"{platform}-profit-{digest[:16]}"
+        payload["idempotency_key"] = f"profit-evidence-consumer/v2:{digest}"
         first_audit = audit_profit_report(payload).payload()
         second_audit = audit_profit_report(payload).payload()
         reports[platform] = {
             "status": "ready" if adapted.status == "ready" and second_audit["status"] == "PASSED" else "needs_review",
             "adapter": adapted.payload(),
             "report": payload,
+            "knowledge_reference": profit_report_reference(payload),
             "audit_round_1": first_audit,
             "audit_round_2": second_audit,
         }
@@ -107,6 +159,9 @@ def build_weekly_evidence_bundle(
         "advertising": resolved_advertising,
         "cost_snapshot": costs.payload(),
         "fx_snapshot": fx.payload(),
+        "catalog_snapshot_id": str(getattr(catalog, "snapshot_id", "")),
+        "catalog_review": getattr(catalog, "review", {}),
+        "catalog_quality_issues": [asdict(item) if hasattr(item, "__dataclass_fields__") else dict(item) for item in getattr(catalog, "issues", ())],
         "reports": reports,
         "quality_issues": bundle_issues,
         "quality_issue_counts": dict(sorted(Counter(item["code"] for item in bundle_issues).items())),

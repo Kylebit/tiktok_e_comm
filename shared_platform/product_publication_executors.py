@@ -24,9 +24,10 @@ from domains.channel_operations.tiktok_v4_execution import (
 )
 from domains.channel_operations.tiktok_publisher import (
     sanitize_tiktok_provider_code,
+    sanitize_tiktok_provider_field_path,
     sanitize_tiktok_provider_reason,
 )
-from modules.ozon.approved_publication_v4 import build_ozon_v4_executor
+from modules.ozon.approved_publication_v4 import build_ozon_v4_executor, UpdateStocks, ReadbackStocks, PrepareStockUpdate
 from modules.shopee.skill_regions import (
     ShopeeRegionRuntime,
     dispatch_selected_regions,
@@ -38,11 +39,12 @@ from shared_platform.product_publication_runner import (
     PlatformExecutor,
     PublicationPlatformRequest,
 )
+from shared_platform.product_description_media import validate_description_media_preflight
 
 
 _PLATFORM_ORDER = ("TIKTOK", "SHOPEE", "OZON")
 _TARGET_STATUSES = frozenset({"PUBLISHED", "PROCESSING", "FAILED"})
-_TIKTOK_EVIDENCE_FIELDS = frozenset({"target_label", "status", "stage", "provider_code", "provider_reason", "request_attempted", "outcome_unknown", "external_write_count"})
+_TIKTOK_EVIDENCE_FIELDS = frozenset({"target_label", "status", "stage", "provider_code", "provider_field_path", "provider_reason", "request_attempted", "outcome_unknown", "external_write_count"})
 _TIKTOK_EVIDENCE_STAGES = frozenset({"IDENTITY", "PREPARATION", "PREFLIGHT", "SAVE", "PUBLISH", "READBACK", "EXECUTION"})
 
 CollectBoxContextResolver = Callable[
@@ -80,6 +82,11 @@ class OzonV4ExecutorDependencies:
     readback_variants: OzonReadback
     official_profile_resolver: OzonOfficialProfileResolver | None = None
     localized_copy_resolver: OzonLocalizedCopyResolver | None = None
+    update_stocks: UpdateStocks | None = None
+    readback_stocks: ReadbackStocks | None = None
+    prepare_stock_update: PrepareStockUpdate | None = None
+    catalog_account_resolver: Callable[[], Mapping[str, str]] | None = None
+    catalog_observer: Callable | None = None
 
 
 def _request_facts(
@@ -153,6 +160,81 @@ def _zero_write_failure(platform: str, labels: tuple[str, ...]) -> dict[str, obj
     )
 
 
+def _shopee_preparation_failure(
+    labels: tuple[str, ...],
+    *,
+    provider_code: str,
+    provider_reason: str,
+    provider_field_path: str,
+) -> dict[str, object]:
+    evidence = {
+        label: {
+            "target_label": label,
+            "status": "FAILED",
+            "stage": "PREPARATION",
+            "provider_code": provider_code,
+            "provider_field_path": provider_field_path,
+            "provider_reason": provider_reason,
+            "request_attempted": False,
+            "outcome_unknown": False,
+            "external_write_count": 0,
+        }
+        for label in labels
+    }
+    return _result(
+        "SHOPEE",
+        labels,
+        {label: "FAILED" for label in labels},
+        dispatch_attempted=False,
+        readback_completed=False,
+        external_write_count=0,
+        requires_human_action=True,
+        target_evidence=evidence,
+    )
+
+
+def _safe_shopee_preparation_failure(
+    labels: tuple[str, ...], error: BaseException
+) -> dict[str, object]:
+    message = str(error)
+    if "category" in message.casefold():
+        code, reason, field = (
+            "shopee_category_preparation_failed",
+            "Shopee category preparation failed before mutation",
+            "category",
+        )
+    elif any(word in message.casefold() for word in ("policy", "warehouse", "brand")):
+        code, reason, field = (
+            "shopee_policy_facts_drifted",
+            "Shopee policy facts failed validation before mutation",
+            "policy",
+        )
+    elif any(word in message.casefold() for word in ("token", "credential", "merchant identity")):
+        code, reason, field = (
+            "shopee_credential_preparation_failed",
+            "Shopee credential preparation failed before mutation",
+            "credential",
+        )
+    elif "mapping" in message.casefold():
+        code, reason, field = (
+            "shopee_mapping_preparation_failed",
+            "Shopee mapping preparation failed before mutation",
+            "mapping",
+        )
+    else:
+        code, reason, field = (
+            "shopee_preparation_failed",
+            "Shopee preparation failed before mutation",
+            "preparation",
+        )
+    return _shopee_preparation_failure(
+        labels,
+        provider_code=code,
+        provider_reason=reason,
+        provider_field_path=field,
+    )
+
+
 def _unknown_execution_failure(
     platform: str, labels: tuple[str, ...]
 ) -> dict[str, object]:
@@ -211,7 +293,11 @@ def _tiktok_result(
         statuses[label] = str(status)
         target_evidence[label] = _tiktok_evidence(row.get("evidence"), label, str(status))
         attempted.append(was_attempted)
-        write_counts.append(count)
+        # A legacy publisher receipt may retain its confirmed SAVE prefix while
+        # the following PUBLISH is unknown. Keep that useful target evidence;
+        # it cannot be presented as a complete count of platform mutations.
+        evidence = target_evidence[label]
+        write_counts.append(None if isinstance(evidence, Mapping) and evidence.get("outcome_unknown") is True else count)
         if was_attempted:
             readback_observed.append(row.get("readback_status") != "NOT_ATTEMPTED")
     return _result(
@@ -232,7 +318,10 @@ def _tiktok_result(
 def _tiktok_evidence(value: object, label: str, status: str) -> Mapping[str, object] | None:
     if value is None:
         return None
-    if not isinstance(value, Mapping) or set(value) != set(_TIKTOK_EVIDENCE_FIELDS):
+    legacy_fields = set(_TIKTOK_EVIDENCE_FIELDS) - {"provider_field_path"}
+    if not isinstance(value, Mapping) or (
+        set(value) != set(_TIKTOK_EVIDENCE_FIELDS) and set(value) != legacy_fields
+    ):
         raise ValueError("TikTok target evidence fields are invalid")
     if value.get("target_label") != label or value.get("status") != status:
         raise ValueError("TikTok target evidence identity conflicts")
@@ -242,11 +331,37 @@ def _tiktok_evidence(value: object, label: str, status: str) -> Mapping[str, obj
     attempted, unknown, count = value.get("request_attempted"), value.get("outcome_unknown"), value.get("external_write_count")
     if type(attempted) is not bool or type(unknown) is not bool or (count is not None and (type(count) is not int or count < 0)):
         raise ValueError("TikTok target evidence is invalid")
-    return {"target_label": label, "status": status, "stage": stage, "provider_code": sanitize_tiktok_provider_code(value.get("provider_code")), "provider_reason": sanitize_tiktok_provider_reason(value.get("provider_reason")), "request_attempted": attempted, "outcome_unknown": unknown, "external_write_count": count}
+    result = {"target_label": label, "status": status, "stage": stage, "provider_code": sanitize_tiktok_provider_code(value.get("provider_code")), "provider_reason": sanitize_tiktok_provider_reason(value.get("provider_reason")), "request_attempted": attempted, "outcome_unknown": unknown, "external_write_count": count}
+    field_path = sanitize_tiktok_provider_field_path(value.get("provider_field_path"))
+    if field_path:
+        result["provider_field_path"] = field_path
+    return result
 
 
-def _tiktok_failure_evidence(labels: tuple[str, ...], *, stage: str, provider_code: str, provider_reason: str, request_attempted: bool, outcome_unknown: bool, external_write_count: int | None) -> dict[str, Mapping[str, object]]:
-    return {label: {"target_label": label, "status": "FAILED", "stage": stage, "provider_code": provider_code, "provider_reason": provider_reason, "request_attempted": request_attempted, "outcome_unknown": outcome_unknown, "external_write_count": external_write_count} for label in labels}
+def _tiktok_failure_evidence(labels: tuple[str, ...], *, stage: str, provider_code: str, provider_reason: str, request_attempted: bool, outcome_unknown: bool, external_write_count: int | None, provider_field_path: str = "") -> dict[str, Mapping[str, object]]:
+    rows = {label: {"target_label": label, "status": "FAILED", "stage": stage, "provider_code": provider_code, "provider_reason": provider_reason, "request_attempted": request_attempted, "outcome_unknown": outcome_unknown, "external_write_count": external_write_count} for label in labels}
+    safe_path = sanitize_tiktok_provider_field_path(provider_field_path)
+    if safe_path:
+        for row in rows.values():
+            row["provider_field_path"] = safe_path
+    return rows
+
+
+def _tiktok_preparation_request_attempted(row: Mapping[str, object]) -> bool:
+    count = row.get("external_write_count")
+    writes = row.get("writes")
+    return (
+        count is None
+        or (type(count) is int and count > 0)
+        or (
+            isinstance(writes, list)
+            and any(
+                isinstance(write, Mapping)
+                and write.get("operation") != "IDENTITY_OBSERVED"
+                for write in writes
+            )
+        )
+    )
 
 
 def build_tiktok_v4_executor(
@@ -285,7 +400,11 @@ def build_tiktok_v4_executor(
     def execute(request: PublicationPlatformRequest) -> Mapping[str, Any]:
         labels, snapshot = _request_facts(request, platform="TIKTOK")
         preparation_write_count: int | None = 0
+        accepted_save_targets: tuple[str,...] = ()
+        execution_labels = labels
+        unprepared: dict[str, dict[str, object]] = {}
         try:
+            validate_description_media_preflight(snapshot,platform="TIKTOK",target_labels=labels)
             if draft_preparer is not None:
                 preparation = _verified_tiktok_preparation(
                     draft_preparer(request),
@@ -294,15 +413,52 @@ def build_tiktok_v4_executor(
                 )
                 contexts = preparation["collectbox_contexts"]
                 preparation_write_count = preparation["external_write_count"]
+                accepted_save_targets=tuple(row["target_label"] for row in preparation["targets"]
+                    if row.get("status")=="PREPARED" and row.get("reason_code")=="DRAFT_SAVED")
+                execution_labels = tuple(label for label in labels if label in accepted_save_targets)
+                for row in preparation["targets"]:
+                    label = row["target_label"]
+                    if label in execution_labels:
+                        continue
+                    unknown = row.get("status") == "UNKNOWN" or row.get("external_write_count") is None
+                    status = "PROCESSING" if unknown else "FAILED"
+                    count = row.get("external_write_count")
+                    unprepared[label] = {
+                        "target_label": label, "status": status,
+                        "dispatch_attempted": False, "readback_status": "NOT_ATTEMPTED",
+                        # The complete preparation count is added once below.
+                        "external_write_count": 0,
+                        "evidence": _tiktok_failure_evidence(
+                            (label,), stage="PREPARATION",
+                            provider_code=("tiktok_preparation_unknown" if unknown else row.get("provider_code") or "tiktok_preparation_failed"),
+                            provider_field_path=str(row.get("provider_field_path") or ""),
+                            provider_reason=str(row.get("provider_reason") or "Preparation did not produce an accepted SAVE; publish was not sent"),
+                            request_attempted=_tiktok_preparation_request_attempted(row),
+                            outcome_unknown=unknown, external_write_count=count,
+                        )[label],
+                    }
+                    unprepared[label]["evidence"]["status"] = status
+                contexts = {label: context for label, context in contexts.items() if label in execution_labels}
             else:
                 assert collectbox_context_resolver is not None
                 contexts = collectbox_context_resolver(request)
             if not isinstance(contexts, Mapping):
                 raise TypeError("TikTok durable contexts must be a mapping")
+            contexts = {
+                label: context
+                for label, context in contexts.items()
+                if label in execution_labels
+            }
+            if not execution_labels:
+                result = _tiktok_result({"targets": list(unprepared.values())}, labels=labels)
+                result["external_write_count"] = preparation_write_count
+                result["requires_human_action"] = True
+                return result
             plan = project_tiktok_v4_execution_plan(
                 snapshot,
                 collectbox_contexts=contexts,
                 category_resolver=category_resolver,
+                target_scope=execution_labels,
             )
         except Exception:
             if draft_preparer is not None:
@@ -323,12 +479,38 @@ def build_tiktok_v4_executor(
                 target_evidence=_tiktok_failure_evidence(labels, stage="PREPARATION", provider_code="tiktok_preparation_failed", provider_reason="TikTok local preparation failed", request_attempted=preparation_write_count is None or preparation_write_count > 0, outcome_unknown=preparation_write_count is None, external_write_count=preparation_write_count),
             )
         try:
+            execution_kwargs = {}
+            if request.write_budget_ledger is not None:
+                execution_kwargs["before_publish"] = lambda label: request.write_budget_ledger.reserve_target(label,"publish_target")
+            if accepted_save_targets:
+                execution_kwargs["accepted_save_targets"] = accepted_save_targets
             receipt = execute_tiktok_v4_plan(
                 plan,
                 publisher=publisher,
                 storefront_readback=storefront_readback,
+                **execution_kwargs,
             )
+            # Official TikTok rows are optional because the currently composed
+            # live dependency truthfully has no storefront GET.  When a future
+            # official reader supplies rows, the durable sink owns all local
+            # projection and rejects any identity that is not frozen here.
+            observations = [
+                row
+                for target in receipt.get("targets", [])
+                if isinstance(target, Mapping)
+                and target.get("status") == "PUBLISHED"
+                and isinstance(target.get("official_catalog_rows"), list)
+                for row in target["official_catalog_rows"]
+            ]
+            if observations:
+                from shared_platform.catalog_publication_sync import capture_readback
+
+                capture_readback(request, observations)
+            if unprepared:
+                receipt = {**receipt, "targets": [*receipt["targets"], *unprepared.values()]}
             result = _tiktok_result(receipt, labels=labels)
+            if unprepared:
+                result["requires_human_action"] = True
             publish_count = result["external_write_count"]
             result["external_write_count"] = (
                 preparation_write_count + publish_count
@@ -443,6 +625,40 @@ def _shopee_status(
     return "FAILED"
 
 
+def _shopee_provider_identity_bound(*rows: Mapping[str, object]) -> bool:
+    """Require an explicit safe provider identity, never a truthy placeholder."""
+
+    def valid(value: object) -> bool:
+        text = str(value or "").strip()
+        return bool(text) and text.isascii() and len(text) <= 255 and all(
+            character.isalnum() or character in "._:-" for character in text
+        )
+
+    for row in rows:
+        if any(
+            valid(row.get(key))
+            for key in (
+                "provider_task_id", "existing_item_id", "item_id", "model_id",
+                "global_item_id",
+            )
+        ):
+            return True
+        catalog_rows = row.get("official_catalog_rows")
+        if isinstance(catalog_rows, list):
+            for catalog_row in catalog_rows:
+                identity = (
+                    catalog_row.get("identity")
+                    if isinstance(catalog_row, Mapping)
+                    else None
+                )
+                if isinstance(identity, Mapping) and any(
+                    valid(identity.get(key))
+                    for key in ("product_id", "variant_id")
+                ):
+                    return True
+    return False
+
+
 def _shopee_result(
     dispatch: object,
     readback: object | None,
@@ -450,6 +666,7 @@ def _shopee_result(
     labels: tuple[str, ...],
     readback_completed: bool,
     prior_external_write_count: int | None = 0,
+    include_target_evidence: bool = False,
 ) -> dict[str, object]:
     dispatch_rows = _target_rows(dispatch, labels=labels)
     if readback_completed:
@@ -463,6 +680,7 @@ def _shopee_result(
         label: _shopee_status(dispatch_rows[label], readback_rows[label])
         for label in labels
     }
+    target_evidence: dict[str, Mapping[str, object]] = {}
     attempted: list[bool] = []
     accepted_count = 0
     unknown_write = False
@@ -497,6 +715,53 @@ def _shopee_result(
             else:
                 raise ValueError("Shopee readback write count is invalid")
         unknown_write = unknown_write or outcome == "UNKNOWN"
+        readback_row = readback_rows[label]
+        readback_outcome = str(readback_row.get("outcome") or "UNKNOWN").upper()
+        status = statuses[label]
+        provider_code = str(readback_row.get("provider_code") or row.get("provider_code") or "").strip()
+        if provider_code and (
+            not provider_code.isascii()
+            or any(not (character.isalnum() or character in "_-.:"
+                        ) for character in provider_code)
+        ):
+            provider_code = "shopee_provider_error"
+        if not provider_code:
+            provider_code = {
+                "PUBLISHED": "shopee_official_readback_verified",
+                "PROCESSING": "shopee_provider_processing",
+                "FAILED": "shopee_target_failed",
+            }[status]
+        provider_reason = {
+            "PUBLISHED": "Shopee official readback matched the approved target",
+            "PROCESSING": "Shopee accepted the target but final official readback is pending",
+            "FAILED": "Shopee target failed during dispatch or official readback",
+        }[status]
+        target_count = row_write_count
+        if readback_completed:
+            rb_count = readback_row.get("external_write_count", 0)
+            target_count = (
+                target_count + rb_count
+                if type(target_count) is int and type(rb_count) is int
+                else None
+            )
+        target_evidence[label] = {
+            "target_label": label,
+            "status": status,
+            "stage": "READBACK" if readback_completed else "DISPATCH",
+            "provider_code": provider_code[:80],
+            "provider_reason": provider_reason,
+            "request_attempted": bool(
+                row_attempted
+                or readback_row.get("attempted") is True
+                or target_count is None
+                or (type(target_count) is int and target_count > 0)
+            ),
+            "outcome_unknown": outcome == "UNKNOWN" or readback_outcome == "UNKNOWN",
+            "external_write_count": target_count,
+            "provider_identity_bound": _shopee_provider_identity_bound(
+                row, readback_row
+            ),
+        }
     return _result(
         "SHOPEE",
         labels,
@@ -508,6 +773,7 @@ def _shopee_result(
             if unknown_write or prior_external_write_count is None
             else prior_external_write_count + accepted_count
         ),
+        target_evidence=target_evidence if include_target_evidence else None,
     )
 
 
@@ -541,11 +807,29 @@ def build_shopee_region_executor(
 
     def execute(request: PublicationPlatformRequest) -> Mapping[str, Any]:
         labels, snapshot = _request_facts(request, platform="SHOPEE")
-        if tuple(selected_region_targets(snapshot)) != labels:
-            return _zero_write_failure("SHOPEE", labels)
+        checkpoint = None
+        if request.checkpoint_root is not None:
+            from shared_platform.shopee_publication_checkpoint import (
+                ShopeePublicationCheckpointStore,
+            )
+
+            checkpoint = ShopeePublicationCheckpointStore(
+                request.checkpoint_root, request
+            )
+        try:
+            validate_description_media_preflight(snapshot,platform="SHOPEE",target_labels=labels)
+            if tuple(selected_region_targets(snapshot,target_scope=labels)) != labels:
+                raise ValueError("Shopee selected target order conflicts")
+        except (TypeError, ValueError) as error:
+            return _safe_shopee_preparation_failure(labels, error)
+        regional_kwargs = {"target_scope":labels}
+        if checkpoint is not None:
+            regional_kwargs["on_target_result"] = checkpoint.record
+        if request.write_budget_ledger is not None:
+            regional_kwargs["before_mutation"] = lambda label,operation: request.write_budget_ledger.reserve_target(label,operation)
         try:
             global_item_id = global_item_id_resolver(request)
-        except Exception:
+        except Exception as error:
             try:
                 global_write_count = _shopee_resolver_write_count(
                     global_item_id_resolver, request
@@ -553,7 +837,7 @@ def build_shopee_region_executor(
             except Exception:
                 global_write_count = None
             if global_write_count == 0:
-                return _zero_write_failure("SHOPEE", labels)
+                return _safe_shopee_preparation_failure(labels, error)
             return _result(
                 "SHOPEE",
                 labels,
@@ -571,14 +855,26 @@ def build_shopee_region_executor(
             global_write_count = None
 
         try:
+            if request.catalog_sink is not None:
+                request.catalog_sink.prepare_shopee(request,global_item_id,runtime)
+        except Exception:
+            return _result('SHOPEE',labels,{label:'FAILED' for label in labels},dispatch_attempted=global_write_count!=0,readback_completed=False,external_write_count=global_write_count,requires_human_action=True)
+        try:
             dispatch = dispatch_selected_regions(
                 snapshot,
                 global_item_id=global_item_id,
                 runtime=runtime,
+                **regional_kwargs,
             )
             _target_rows(dispatch, labels=labels)
         except Exception:
             dispatch = _synthetic_unknown_shopee_dispatch(labels)
+
+        if request.catalog_sink is not None:
+            try:
+                request.catalog_sink.record_shopee_dispatch(request,dispatch)
+            except Exception:
+                request.catalog_sink.failures.append({'run_id':request.run_id,'code':'CATALOG_QUERY_IDENTITY_PERSISTENCE_FAILED'})
 
         # Readback runs after every entry into the dispatch boundary, including
         # an ambiguous transport outcome.  It is read-only and prevents unsafe
@@ -590,13 +886,19 @@ def build_shopee_region_executor(
                 global_item_id=global_item_id,
                 runtime=runtime,
                 poll_attempts=poll_attempts,
+                **regional_kwargs,
             )
+            from shared_platform.catalog_publication_sync import capture_readback
+            observations = [item for target in readback.get("targets", [])
+                            for item in target.get("official_catalog_rows", [])]
+            capture_readback(request, observations or [{"authority": "UNAVAILABLE", "verified": False}])
             return _shopee_result(
                 dispatch,
                 readback,
                 labels=labels,
                 readback_completed=True,
                 prior_external_write_count=global_write_count,
+                include_target_evidence=checkpoint is not None,
             )
         except Exception:
             return _shopee_result(
@@ -605,6 +907,7 @@ def build_shopee_region_executor(
                 labels=labels,
                 readback_completed=False,
                 prior_external_write_count=global_write_count,
+                include_target_evidence=checkpoint is not None,
             )
 
     return execute
@@ -659,6 +962,11 @@ def build_product_publication_platform_executors(
             readback_variants=ozon.readback_variants,
             official_profile_resolver=ozon.official_profile_resolver,
             localized_copy_resolver=ozon.localized_copy_resolver,
+            update_stocks=ozon.update_stocks,
+            readback_stocks=ozon.readback_stocks,
+            prepare_stock_update=ozon.prepare_stock_update,
+            catalog_account_resolver=ozon.catalog_account_resolver,
+            catalog_observer=ozon.catalog_observer,
         )
     return result
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "应用商品折扣"
+  short_description: "发布回读后，按冻结目标事实经现有账本执行折扣"
+  default_prompt: "Use $apply-product-discounts with the immutable approved plan and exact target publication readback. Inspect frozen percentages, run supported TikTok targets only through the existing governed OneClick action, keep UNKNOWN durable, and report pending Shopee/browser capability without using legacy direct writers."

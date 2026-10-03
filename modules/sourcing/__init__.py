@@ -7,19 +7,27 @@ in the current environment.
 
 from __future__ import annotations
 
-try:
-    from .drission_1688 import Drission1688
-except Exception:  # pragma: no cover - optional runtime dependency
-    Drission1688 = None
-
-try:
-    from .playwright_1688 import Playwright1688
-except Exception:  # pragma: no cover - optional runtime dependency
-    Playwright1688 = None
-
-try:
-    from .scrape_1688 import Scraper1688
-except Exception:  # pragma: no cover - optional runtime dependency
-    Scraper1688 = None
+from importlib import import_module
 
 __all__ = ["Drission1688", "Playwright1688", "Scraper1688"]
+_OPTIONAL_EXPORTS = {
+    "Drission1688": ".drission_1688",
+    "Playwright1688": ".playwright_1688",
+    "Scraper1688": ".scrape_1688",
+}
+
+
+def __getattr__(name):
+    module = _OPTIONAL_EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        value = getattr(import_module(module, __name__), name)
+    except Exception:  # optional runtime dependency, same public fallback
+        value = None
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

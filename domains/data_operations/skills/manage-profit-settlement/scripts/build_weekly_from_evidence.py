@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
 import json
@@ -33,7 +33,7 @@ from domains.data_operations.profit_settlement.shared_inputs import CostSnapshot
 from domains.data_operations.profit_settlement.weekly_evidence_bundle import build_weekly_evidence_bundle
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence-dir", required=True, type=Path)
     parser.add_argument("--project-root", required=True, type=Path)
@@ -42,6 +42,10 @@ def main() -> int:
     parser.add_argument("--end", required=True, type=date.fromisoformat)
     parser.add_argument("--platform", choices=("tiktok", "shopee", "ozon"))
     parser.add_argument("--site", help="site paired with --platform, for example MY")
+    fx_mode = parser.add_mutually_exclusive_group(required=True)
+    fx_mode.add_argument("--fx-input", type=Path, help="captured rates_cny/source/as_of JSON; no FX network read")
+    fx_mode.add_argument("--live-fx", action="store_true", help="explicitly request a live FX read")
+    parser.add_argument("--timezone", required=True, help="calculation UTC offset, e.g. +07:00")
     parser.add_argument("--policy-config", type=Path, default=Path(__file__).resolve().parents[1] / "report-policy.json", help="single JSON policy for advertising rates and platform local fulfillment fees")
     parser.add_argument("--ad-rate", help="global estimated advertising fraction; default 0.22")
     parser.add_argument("--tiktok-ad-rate", help="TikTok-only override, for example 0.18")
@@ -51,9 +55,15 @@ def main() -> int:
     parser.add_argument("--shopee-local-fulfillment-fee-cny", help="Shopee combined local shipping and warehouse cost per parent order in CNY; overrides policy config")
     parser.add_argument("--ozon-sku-map", type=Path)
     parser.add_argument("--allow-ozon-read-enrichment", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if bool(args.platform) != bool(args.site):
         parser.error("--platform and --site must be supplied together")
+    import re
+    if not re.fullmatch(r"[+-]\d{2}:\d{2}", args.timezone):
+        parser.error("--timezone must be an explicit UTC offset such as +07:00")
+    calculation_zone = datetime.fromisoformat("2000-01-01T00:00:00" + args.timezone).tzinfo
+    period_start = datetime.combine(args.start, time.min, calculation_zone)
+    period_end = datetime.combine(args.end + timedelta(days=1), time.min, calculation_zone)
 
     policy = _load_policy(args.policy_config)
     evidence = _load_evidence(
@@ -64,8 +74,14 @@ def main() -> int:
         site=args.site,
     )
     catalog = load_local_catalog(args.project_root / "data" / "shop.db")
-    live_fx = _live_fx()
-    fx = FxSnapshot.from_mapping(live_fx["rates"], source=live_fx["provider"], as_of=live_fx["as_of"])
+    if args.fx_input:
+        captured_fx = json.loads(args.fx_input.read_text(encoding="utf-8"))
+        fx = FxSnapshot.from_mapping(captured_fx.get("rates_cny") or {}, source=captured_fx.get("source") or "", as_of=captured_fx.get("as_of") or "", snapshot_id=captured_fx.get("snapshot_id"))
+        network_reads = []
+    else:
+        live_fx = _live_fx()
+        fx = FxSnapshot.from_mapping(live_fx["rates"], source=live_fx["provider"], as_of=live_fx["as_of"])
+        network_reads = [live_fx["provider"]]
     ozon_map = _load_mapping(args.ozon_sku_map)
     ozon_quantities = {}
     ozon_enrichment = {"status": "not_requested", "external_reads_performed": [], "external_writes_performed": []}
@@ -84,7 +100,7 @@ def main() -> int:
             quantity_by_order_platform_sku=ozon_quantities if platform == "ozon" else None,
         )
         required_skus.update(str(row.get("canonical_sku") or "") for row in preview.rows)
-    cost_policy = resolve_temporary_cost_policy(catalog, required_skus)
+    cost_policy = resolve_temporary_cost_policy(catalog, required_skus, period_start=period_start, period_end=period_end)
     resolved_costs = {
         sku: Decimal(str(value["unit_cost_cny"])) for sku, value in cost_policy.values.items()
     }
@@ -138,12 +154,17 @@ def main() -> int:
         seller_sku_by_ozon_sku=ozon_map,
         quantity_by_ozon_order_sku=ozon_quantities,
         cost_assumption_warnings=cost_policy.warnings,
+        cost_policy_issues=cost_policy.issues,
+        calculation_timezone=args.timezone,
         generated_at=datetime.now(timezone.utc),
         code_version="profit-settlement-v1-stage2",
         platforms=tuple(evidence),
     )
     catalog_issues = [_catalog_issue(item) for item in catalog.issues]
     bundle["catalog_quality_issues"] = catalog_issues
+    bundle["cost_policy"] = {"policy_version": cost_policy.policy_version, "snapshot_id": cost_policy.snapshot_id, "issues": list(cost_policy.issues), "calculation_interval": {"start_inclusive": period_start.isoformat(), "end_exclusive": period_end.isoformat()}}
+    bundle["input_mode"] = "captured" if args.fx_input and not args.allow_ozon_read_enrichment else "explicit_external_read"
+    bundle["network_reads_performed"] = [*network_reads, *ozon_enrichment["external_reads_performed"]]
     bundle["policy_config"] = {
         "schema_version": policy["schema_version"],
         "snapshot_id": policy["snapshot_id"],
@@ -155,7 +176,7 @@ def main() -> int:
     bundle["external_reads"] = [
         "settlement-evidence/v1 JSON artifacts",
         "shop.db via SQLite mode=ro",
-        live_fx["provider"],
+        "captured FX JSON" if args.fx_input else fx.source,
         *ozon_enrichment["external_reads_performed"],
     ]
     bundle["ozon_enrichment"] = ozon_enrichment

@@ -635,3 +635,402 @@ def test_dispatch_rejection_with_empty_readback_retains_dispatch_evidence() -> N
             },
         }
     ]
+
+
+def _governed_stock_snapshot() -> dict:
+    snapshot = _snapshot()
+    snapshot["product"]["stock_policy"] = {
+        "schema_version": "publication-default-stock/v1",
+        "quantity_per_sku": 200,
+        "scope": "EACH_SELECTED_SKU",
+        "source": "SYSTEM_GOVERNED_DEFAULT",
+        "frozen_at_round": "ROUND1",
+    }
+    return snapshot
+
+
+def test_ozon_projection_carries_the_round1_reviewed_stock_policy() -> None:
+    snapshot = _snapshot()
+    snapshot["product"]["stock_policy"] = {
+        "schema_version": "publication-default-stock/v1",
+        "quantity_per_sku": 200,
+        "scope": "EACH_SELECTED_SKU",
+        "source": "SYSTEM_GOVERNED_DEFAULT",
+        "frozen_at_round": "ROUND1",
+    }
+
+    variants = project_ozon_v4_variants(
+        snapshot,
+        target_labels=("ozon:RU",),
+    )
+
+    assert {row["stock_quantity"] for row in variants} == {200}
+    assert {row["stock_policy_schema_version"] for row in variants} == {
+        "publication-default-stock/v1"
+    }
+    assert {row["stock_policy_source"] for row in variants} == {
+        "SYSTEM_GOVERNED_DEFAULT"
+    }
+
+
+def test_governed_stock_requires_transports_before_any_provider_call() -> None:
+    calls: list[str] = []
+
+    result = execute_ozon_v4_publication(
+        _governed_stock_snapshot(),
+        target_labels=("ozon:RU",),
+        dispatch_variant=lambda _payload: calls.append("dispatch"),
+        readback_variants=lambda _ids: calls.append("readback"),
+    )
+
+    assert calls == []
+    assert result["targets"][0]["status"] == "FAILED"
+    assert result["targets"][0]["evidence"]["provider_code"] == (
+        "ozon_stock_transport_unavailable"
+    )
+    assert result["external_write_count"] == 0
+
+
+def test_existing_listing_with_exact_governed_stock_is_zero_write_published() -> None:
+    snapshot = _governed_stock_snapshot()
+    variants = project_ozon_v4_variants(snapshot, target_labels=("ozon:RU",))
+    stock_updates: list[object] = []
+
+    result = execute_ozon_v4_publication(
+        snapshot,
+        target_labels=("ozon:RU",),
+        dispatch_variant=lambda _payload: (_ for _ in ()).throw(
+            AssertionError("existing products must not be imported")
+        ),
+        readback_variants=lambda _ids: [
+            _published_item(row, item_id="item-" + row["offer_id"])
+            for row in variants
+        ],
+        update_stocks=lambda rows: stock_updates.append(rows),
+        readback_stocks=lambda _ids: [
+            {"offer_id": row["offer_id"], "stock": 200} for row in variants
+        ],
+        read_before_dispatch=True,
+    )
+
+    assert stock_updates == []
+    assert result["targets"][0]["status"] == "PUBLISHED"
+    assert result["targets"][0]["evidence"]["provider_code"] == (
+        "ozon_stock_verified"
+    )
+    assert result["external_write_count"] == 0
+
+
+def test_existing_listing_stock_mismatch_updates_once_and_requires_exact_readback() -> None:
+    snapshot = _governed_stock_snapshot()
+    variants = project_ozon_v4_variants(snapshot, target_labels=("ozon:RU",))
+    stock_updates: list[tuple[dict, ...]] = []
+    stock_reads = iter(
+        [
+            [{"offer_id": row["offer_id"], "stock": 0} for row in variants],
+            [{"offer_id": row["offer_id"], "stock": 200} for row in variants],
+        ]
+    )
+
+    result = execute_ozon_v4_publication(
+        snapshot,
+        target_labels=("ozon:RU",),
+        dispatch_variant=lambda _payload: (_ for _ in ()).throw(
+            AssertionError("existing products must not be imported")
+        ),
+        readback_variants=lambda _ids: [
+            _published_item(row, item_id="item-" + row["offer_id"])
+            for row in variants
+        ],
+        update_stocks=lambda rows: (
+            stock_updates.append(rows)
+            or OzonStockDispatchFact(outcome="ACCEPTED")
+        ),
+        readback_stocks=lambda _ids: next(stock_reads),
+        read_before_dispatch=True,
+    )
+
+    assert len(stock_updates) == 1
+    assert [row["stock"] for row in stock_updates[0]] == [200, 200, 200]
+    assert result["targets"][0]["status"] == "PUBLISHED"
+    assert result["external_write_count"] == 1
+
+
+def test_governed_stock_unknown_update_is_reconciled_without_retry() -> None:
+    snapshot = _governed_stock_snapshot()
+    variants = project_ozon_v4_variants(snapshot, target_labels=("ozon:RU",))
+    updates: list[tuple[dict, ...]] = []
+    stock_reads = iter(
+        [
+            [{"offer_id": row["offer_id"], "stock": 0} for row in variants],
+            [{"offer_id": row["offer_id"], "stock": 200} for row in variants],
+        ]
+    )
+
+    result = execute_ozon_v4_publication(
+        snapshot,
+        target_labels=("ozon:RU",),
+        dispatch_variant=lambda _payload: (_ for _ in ()).throw(
+            AssertionError("existing products must not be imported")
+        ),
+        readback_variants=lambda _ids: [
+            _published_item(row, item_id="item-" + row["offer_id"])
+            for row in variants
+        ],
+        update_stocks=lambda rows: (
+            updates.append(rows) or OzonStockDispatchFact(outcome="UNKNOWN")
+        ),
+        readback_stocks=lambda _ids: next(stock_reads),
+        read_before_dispatch=True,
+    )
+
+    assert len(updates) == 1
+    assert result["targets"][0]["status"] == "PUBLISHED"
+    assert result["external_write_count"] is None
+    assert result["requires_human_action"] is True
+
+
+def test_runner_executor_does_not_reimport_existing_terminal_variants() -> None:
+    snapshot = _snapshot()
+    projected = project_ozon_v4_variants(
+        snapshot,
+        target_labels=("ozon:RU",),
+    )
+    existing = [
+        {
+            **_published_item(variant, item_id="item-" + variant["offer_id"]),
+            "statuses": {
+                "status": "unmatched",
+                "status_failed": "offer_validated",
+                "validation_status": "fail",
+                "is_created": False,
+            },
+            "validation_errors": [
+                {
+                    "code": "ML_INCORRECT_VOLUME_WEIGHT",
+                    "field": "weight",
+                    "state": "offer_validated",
+                }
+            ],
+        }
+        for variant in projected
+    ]
+    submitted: list[dict] = []
+    executor = build_ozon_v4_executor(
+        dispatch_variant=lambda payload: submitted.append(payload),
+        readback_variants=lambda _ids: deepcopy(existing),
+    )
+
+    result = executor(
+        SimpleNamespace(
+            platform="OZON",
+            target_labels=("ozon:RU",),
+            snapshot=snapshot,
+        )
+    )
+
+    assert submitted == []
+    assert result["targets"][0]["status"] == "FAILED"
+    assert result["targets"][0]["evidence"]["provider_code"] == (
+        "ML_INCORRECT_VOLUME_WEIGHT"
+    )
+    assert result["dispatch_attempted"] is False
+    assert result["readback_completed"] is True
+    assert result["external_write_count"] == 0
+
+
+def test_approved_leaf_only_category_path_is_enriched_from_exact_official_tree() -> None:
+    snapshot = _snapshot()
+    category = snapshot["categories_by_target"]["ozon:RU"]["category"]
+    category["path"] = [
+        {"id": category["id"], "name": category["name"]}
+    ]
+
+    profile = {
+        "schema_version": "ozon-official-profile-resolution/v1",
+        "resolution": "EXACT",
+        "description_category_id": 17028913,
+        "category_name": "Fridge Magnets",
+        "category_path": [
+            {"id": "14500", "name": "Home"},
+            {"id": "17028913", "name": "Fridge Magnets"},
+        ],
+        "type_id": 93785,
+        "type_name": "Fridge Magnet",
+        "required_attributes": {
+            "brand": {
+                "attribute_id": 85,
+                "dictionary_value_id": 126745801,
+                "value": "No Brand",
+            },
+            "model_name": {"attribute_id": 9048},
+            "product_type": {
+                "attribute_id": 8229,
+                "dictionary_value_id": 93785,
+                "value": "Fridge Magnet",
+            },
+        },
+    }
+
+    variants = project_ozon_v4_variants(
+        snapshot,
+        target_labels=("ozon:RU",),
+        official_profile_resolver=lambda _snapshot: profile,
+        localized_copy_resolver=lambda value: {
+            "schema_version": "ozon-localized-copy/v1",
+            "source_snapshot_digest": value["snapshot_digest"],
+            "language": "ru",
+            "title": "Декоративный магнит на холодильник из смолы",
+            "description": "Декоративный магнит из синтетической смолы для холодильника.",
+        },
+    )
+
+    assert variants[0]["category"]["path"] == profile["category_path"]
+
+
+def test_localized_approved_leaf_name_can_follow_same_official_category_id() -> None:
+    snapshot = _snapshot()
+    category = snapshot["categories_by_target"]["ozon:RU"]["category"]
+    category["name"] = "Магниты на холодильник"
+    category["path"] = [
+        {"id": category["id"], "name": category["name"]}
+    ]
+    profile = {
+        "schema_version": "ozon-official-profile-resolution/v1",
+        "resolution": "EXACT",
+        "description_category_id": 17028913,
+        "category_name": "Fridge Magnets",
+        "category_path": [
+            {"id": "14500", "name": "Home"},
+            {"id": "17028913", "name": "Fridge Magnets"},
+        ],
+        "type_id": 93785,
+        "type_name": "Fridge Magnet",
+        "required_attributes": {
+            "brand": {
+                "attribute_id": 85,
+                "dictionary_value_id": 126745801,
+                "value": "No Brand",
+            },
+            "model_name": {"attribute_id": 9048},
+            "product_type": {
+                "attribute_id": 8229,
+                "dictionary_value_id": 93785,
+                "value": "Fridge Magnet",
+            },
+        },
+    }
+
+    variants = project_ozon_v4_variants(
+        snapshot,
+        target_labels=("ozon:RU",),
+        official_profile_resolver=lambda _snapshot: profile,
+        localized_copy_resolver=lambda value: {
+            "schema_version": "ozon-localized-copy/v1",
+            "source_snapshot_digest": value["snapshot_digest"],
+            "language": "ru",
+            "title": "Декоративный магнит на холодильник из смолы",
+            "description": "Декоративный магнит из синтетической смолы для холодильника.",
+        },
+    )
+
+    assert variants[0]["category"]["name"] == "Fridge Magnets"
+    assert variants[0]["category"]["path"] == profile["category_path"]
+
+
+def test_approved_category_with_conflicting_ancestor_is_not_enriched() -> None:
+    snapshot = _snapshot()
+    snapshot["categories_by_target"]["ozon:RU"]["category"]["path"][0] = {
+        "id": "99999",
+        "name": "Conflicting Parent",
+    }
+    profile = {
+        "schema_version": "ozon-official-profile-resolution/v1",
+        "resolution": "EXACT",
+        "description_category_id": 17028913,
+        "category_name": "Fridge Magnets",
+        "category_path": [
+            {"id": "14500", "name": "Home"},
+            {"id": "17028913", "name": "Fridge Magnets"},
+        ],
+        "type_id": 93785,
+        "type_name": "Fridge Magnet",
+        "required_attributes": {
+            "brand": {
+                "attribute_id": 85,
+                "dictionary_value_id": 126745801,
+                "value": "No Brand",
+            },
+            "model_name": {"attribute_id": 9048},
+            "product_type": {
+                "attribute_id": 8229,
+                "dictionary_value_id": 93785,
+                "value": "Fridge Magnet",
+            },
+        },
+    }
+
+    result = execute_ozon_v4_publication(
+        snapshot,
+        target_labels=("ozon:RU",),
+        official_profile_resolver=lambda _snapshot: profile,
+        localized_copy_resolver=lambda _snapshot: {},
+        dispatch_variant=lambda _payload: OzonDispatchFact(
+            outcome="ACCEPTED", task_id="must-not-dispatch"
+        ),
+        readback_variants=lambda _ids: [],
+    )
+
+    assert result["dispatch_attempted"] is False
+    assert result["external_write_count"] == 0
+
+
+def test_approved_combined_category_and_type_label_uses_exact_official_pair() -> None:
+    snapshot = _snapshot()
+    category = snapshot["categories_by_target"]["ozon:RU"]["category"]
+    category["id"] = "17027906"
+    category["name"] = (
+        "House & Garden > Decor & Interior > Interior Sticker"
+    )
+    category["path"] = [{"id": "17027906", "name": category["name"]}]
+    profile = {
+        "schema_version": "ozon-official-profile-resolution/v1",
+        "resolution": "EXACT",
+        "description_category_id": 17027906,
+        "category_name": "Decor & Interior",
+        "category_path": [
+            {"id": "17027494", "name": "House & Garden"},
+            {"id": "17027906", "name": "Decor & Interior"},
+        ],
+        "type_id": 91971,
+        "type_name": "Interior Sticker",
+        "required_attributes": {
+            "brand": {
+                "attribute_id": 85,
+                "dictionary_value_id": 126745801,
+                "value": "No Brand",
+            },
+            "model_name": {"attribute_id": 9048},
+            "product_type": {
+                "attribute_id": 8229,
+                "dictionary_value_id": 91971,
+                "value": "Interior Sticker",
+            },
+        },
+    }
+
+    variants = project_ozon_v4_variants(
+        snapshot,
+        target_labels=("ozon:RU",),
+        official_profile_resolver=lambda _snapshot: profile,
+    )
+
+    assert variants[0]["category"] == {
+        "id": "17027906",
+        "name": "Decor & Interior",
+        "path": profile["category_path"],
+    }
+    assert variants[0]["official_profile"]["type_id"] == 91971
+
+
+from modules.ozon.approved_publication_v4 import OzonStockDispatchFact, project_ozon_v4_variants

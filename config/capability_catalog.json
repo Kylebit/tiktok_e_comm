@@ -1,0 +1,1671 @@
+{
+  "schema": "orbit-capability-catalog/v1",
+  "baseline_logical_skills": 20,
+  "baseline_tool_groups": 19,
+  "skills": [
+    {
+      "id": "prepare-product-publication",
+      "kind": "skill",
+      "owner": "01；00维护合同",
+      "purpose": "商品发布第一轮事实、类目、文案、价格、图缺口准备",
+      "inputs": "一个精确 Offer ID、完整目标店铺列表；可选的来源图片处理与生成计划",
+      "outputs": "first-review.json：事实、类目、价格、文案和图片计划候选；缺项返回 DECISION_REQUIRED",
+      "side_effects": "第一轮零外部写入、零付费请求；必要时读取上游并保存本地准备报告，妙手同步归第三轮",
+      "aliases": [],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "source_path": "skills/prepare-product-publication",
+      "installable": true,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help prepare-product-publication",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "检查当前目录的 required_files 与完整 runtime；不读取个人旧配置或将历史批准套给新范围。",
+      "required_files": [
+        "skills/prepare-product-publication/agents/openai.yaml",
+        "skills/prepare-product-publication/references/decision-contract.md",
+        "skills/prepare-product-publication/references/knowledge-base-schema.md",
+        "skills/prepare-product-publication/references/miaoshou-baseline-sync.md",
+        "skills/prepare-product-publication/scripts/prepare_product_publication.py",
+        "skills/prepare-product-publication/scripts/test_prepare_product_publication.py",
+        "skills/prepare-product-publication/scripts/test_skill_architecture.py",
+        "skills/prepare-product-publication/SKILL.md"
+      ],
+      "file_digests": {
+        "skills/prepare-product-publication/agents/openai.yaml": "e61d1e37c6f48fb4546bbd67d30a783fab6940df60d5811e973008105aceaa29",
+        "skills/prepare-product-publication/references/decision-contract.md": "ed4e5070de2a7e301bf1e1c7da8112c55f0952cd726fb8b779b6708f19499727",
+        "skills/prepare-product-publication/references/knowledge-base-schema.md": "0eb87ceec083eee8ca92ae0d39c3884969539dc55ef63f6f64b79775d1f62194",
+        "skills/prepare-product-publication/references/miaoshou-baseline-sync.md": "5dd9a6ba3921ee0fcd86adb10bce793a13f7a3684dead437244148bf9ab15936",
+        "skills/prepare-product-publication/references/product-family-wall-sticker.json": "10bfa4a574889a3157d4cd42c3b4783abd915bb2bd6fd3038a81683f301bc1a9",
+        "skills/prepare-product-publication/references/product-family-wallpaper.json": "74bf4bf65beb14385f16dd849b2d4259d2867b6d4fff44e9985533c3863adc4a",
+        "skills/prepare-product-publication/scripts/prepare_product_publication.py": "82f6df5141637fcac5fb8c74e897bf25bfdf2c05c108a49bf8999ed8f20bd94b",
+        "skills/prepare-product-publication/scripts/read_tiktok_keyword_evidence.py": "400e0405d162296764259f220cd9c6454c2bc36559354c821380db79cbe77d42",
+        "skills/prepare-product-publication/scripts/test_prepare_product_publication.py": "9c43fd0acfae6450cccc1def1350b1f0fbda28c1b2e6b8d533bb6dfd6bd5dab7",
+        "skills/prepare-product-publication/scripts/test_skill_architecture.py": "e9f606240aed7980f0ec5a8d7d1642303480cf332677666efc2dbedd16160a84",
+        "skills/prepare-product-publication/SKILL.md": "33a7ce6bdc3873fec1740d062cc1740429922e9d8e593b9f8ad5fbb01e3ce04a"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "b4979f4c7ea852d0db0ab7f06009e349183dd3da8777291019b1534636e409dc",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "9870571a4d9e5770a67adbbe91bfae1e05032d7a2a8d0e3612c12ed0585b5148"
+      }
+    },
+    {
+      "id": "prepare-product-images",
+      "kind": "skill",
+      "owner": "02；03接收发布资产",
+      "purpose": "双品牌主图、角色补图、翻译、QA",
+      "inputs": "round1 snapshot、source digest、reuse/translation plan",
+      "outputs": "round2图片证据、generation checkpoints、automated-image-qa/v1",
+      "side_effects": "预检本地/读；生成和上传付费；不写ERP/商城",
+      "aliases": [],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "source_path": "skills/prepare-product-images",
+      "installable": true,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help prepare-product-images",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "按 paid-recovery 保留共享产品预算与旧计费；同范围有效授权直接复用，UNKNOWN 恢复已有任务，不重发。完整工程已包含两份 product-family 规则，执行前仍核对所需文件与冻结 R1 范围。",
+      "required_files": [
+        "skills/prepare-product-images/agents/openai.yaml",
+        "skills/prepare-product-images/references/historical-autopilot-policy.example.json",
+        "skills/prepare-product-images/references/paid-recovery.md",
+        "skills/prepare-product-images/scripts/prepare_product_images.py",
+        "skills/prepare-product-images/scripts/run_automated_image_qa.py",
+        "skills/prepare-product-images/SKILL.md",
+        "shared_platform/publication_paid_requests.py",
+        "modules/sourcing/image_generation_checkpoint.py",
+        "skills/prepare-product-images/scripts/prepare_product_images.py",
+        "skills/prepare-product-publication/references/product-family-wallpaper.json",
+        "skills/prepare-product-publication/references/product-family-wall-sticker.json"
+      ],
+      "file_digests": {
+        "skills/prepare-product-images/agents/openai.yaml": "690c065ff359b07d8da48b8dac658e0895d02bd9c3df404a829241d429e0bf72",
+        "skills/prepare-product-images/references/historical-autopilot-policy.example.json": "5e7c1b173e93f39e2cace18c7b93a055a79640c1d96b44b5607fe2c9a8ad60dd",
+        "skills/prepare-product-images/references/paid-recovery.md": "93954439607ec22eb57936f74d02144688390e0eab710d759350006f35370397",
+        "skills/prepare-product-images/scripts/prepare_product_images.py": "0ce18dbcba2be5fcf0ac41652b250a6c3379764b8301d245a923edb323e4e46b",
+        "skills/prepare-product-images/scripts/run_automated_image_qa.py": "e0e88d70cee736a1060dd75be7e87adf44514ec9c8d9f22b106ec509a38c57ca",
+        "skills/prepare-product-images/SKILL.md": "6226a80bf789c10a5f1fd4ad94d4a741a3e2935ac3dc56bc4bc4fa50cae80b24"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "479c09998d3961e10282907e23720d64ba16e1324fa000415e59bc548939c21a",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "b2acf8734ec04a0a7b4f82065b3c0090fc0957bd92b08a93cd86eb3f6dbf2160"
+      }
+    },
+    {
+      "id": "publish-approved-product",
+      "kind": "skill",
+      "owner": "03唯一外部写；00Runner/验收",
+      "purpose": "第三轮ERP基线同步、冻结候选、一次最终审批、多平台独立发布/回读",
+      "inputs": "round1/round2 snapshot、exact offer+plan+ordered targets、approval digest",
+      "outputs": "immutable publication-report/v3、target readback、closure",
+      "side_effects": "ERP基线由匹配政策允许；商城发布需绑定最终候选的既有或新增明确授权",
+      "aliases": [],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "source_path": "skills/publish-approved-product",
+      "installable": false,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help publish-approved-product",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "已组合业务源码；仍需完整 OrbitHive runtime、精确批准与目标级官方回读。完整 R3 不经 registry 安装，portable /6 只含可独立显示 help 的 loopback 关闭客户端，不含服务端、业务证据、配置、认证或执行器。个人安装差异以当前完整文件 manifest 为准，额外文件来源须逐项核验；缺 incident registry 或显式政策时不得声称最终候选可编译。",
+      "required_files": [
+        "skills/publish-approved-product/SKILL.md",
+        "skills/publish-approved-product/scripts/prepare_publication_execution.py",
+        "shared_platform/publication_autopilot.py",
+        "shared_platform/publication_r3_image_bridge.py",
+        "skills/publish-approved-product/references/incident-registry.json",
+        "config/product_publication_autopilot_policy.json"
+      ],
+      "file_digests": {
+        "skills/publish-approved-product/agents/openai.yaml": "da753be45c7f8ba35206d7a5a7bb4f73c415333982d6b477120a74963c394e4d",
+        "skills/publish-approved-product/references/closure.md": "056ebbec6e188a13895dd4d2319fdd34f72d366ffb6ff41d8db262effd61cf28",
+        "skills/publish-approved-product/references/incident-patterns.md": "11666390c420ebd42c0dc3d3a8bbf0d26baaa7de250c68ba94e3bef9086d7966",
+        "skills/publish-approved-product/references/incident-registry.json": "02dd1a6d011bbeaec400d5da3548296b2629dc57d246946f1150fd03ca8dca47",
+        "skills/publish-approved-product/references/ozon.md": "71e6a5b3cdc438f77e8efd2593e9237ac8480c65b33ea100299454f175d36212",
+        "skills/publish-approved-product/references/result-classification.md": "a62db6d437b94ca1be115f1f738321c4ec551c9a24484468f4d5496f6fcad3ef",
+        "skills/publish-approved-product/references/shopee.md": "b5c3c8afbac9b349ddfabd12d726386d3e33d39c4559e5ef866aa7249fb97da7",
+        "skills/publish-approved-product/references/SKILL.zh-CN.md": "6a4a2064c90a34bd300bea64b083afd0682eb6666090ceac6b8cf623f1efabbf",
+        "skills/publish-approved-product/references/tiktok.md": "f538ef1d5d224114d6dcac6abd81ca4a96ef4c5a3a30a5091100c3a9b52fcd22",
+        "skills/publish-approved-product/scripts/_classification.py": "98d6e559815ed1faa99ec2263dd64e3a53b8eb9cb13932c1694d10c70197fc28",
+        "skills/publish-approved-product/scripts/_common.py": "7d14a46b23f46964cb9c668be818384459b025886fb88d6470105234b26876dd",
+        "skills/publish-approved-product/scripts/_dispatch_cli.py": "fb799d9c9b24e4b214262ef35bba26365c506ff13b7c5e749fa0a17cb3768a0c",
+        "skills/publish-approved-product/scripts/_readback_cli.py": "32c26a3f229c6d314aaa564fe6b0b2a5a1450ed81d48ca2796dbf211071272a3",
+        "skills/publish-approved-product/scripts/build_shopee_existing_media_binding.py": "41563449365a7cbb7422c266f695dab568b7d87f6d3a5578c5401906ab1416d3",
+        "skills/publish-approved-product/scripts/close_product_publication.py": "5e233467f2795371fbebe111dafe3c832351cfb94c3adfd28e0f567731b7968e",
+        "skills/publish-approved-product/scripts/compile_release_candidate.py": "a294cd57daa848be59e3fa24e3e82bb631d28dd7f29285a05fe816eea88413f4",
+        "skills/publish-approved-product/scripts/dispatch_ozon.py": "ff6fe3e983186cb848e4553401f29ec3eb1e5799d78f7f0ecb3f6b20a408a5dd",
+        "skills/publish-approved-product/scripts/dispatch_shopee.py": "26aa8845be7ac250f23842f78bc68d6bb6936844ea7a99873a970476107f7e86",
+        "skills/publish-approved-product/scripts/dispatch_shopee_regions.py": "ee198c0901af34146c77f992ba043ba0073a9d884c0022132b7c3c1f0e00d213",
+        "skills/publish-approved-product/scripts/dispatch_tiktok.py": "05e34a341c170e5201a5d48f4e1b2c19a739e9d124b607b4e1327f1e09f39c88",
+        "skills/publish-approved-product/scripts/inspect_snapshot.py": "6fd23653db8f5dd4b03b52d185b781d911f5e96f2c42e0c8f16de69b69f2cc32",
+        "skills/publish-approved-product/scripts/prepare_publication_execution.py": "4ed116db6bd3c082574c83a814f685e08b3545cf55d63da7c1f339da3bae9145",
+        "skills/publish-approved-product/scripts/product_center_publication.py": "a7ddcdcf87a706476ef7d294afe088730dc9d180dbe0842cf936875b964f16f3",
+        "skills/publish-approved-product/scripts/publish_approved_product.py": "040f66edb2e4ff4cd7f131ac8f6a40555058c1c8828785973808cf641a4edf0e",
+        "skills/publish-approved-product/scripts/readback_ozon.py": "70b912b88b3a393ec10bd7a893076c2aa06561e2ae6e676209102e4cb7afbd03",
+        "skills/publish-approved-product/scripts/readback_shopee.py": "957403ea16fc1e287a117bfddd89971f4a3c588e9ff833e18b111e1a00280923",
+        "skills/publish-approved-product/scripts/readback_shopee_regions.py": "c39ac9638528808507628f4a5d242a5cfc314ebad7460235de59094e94d0cf26",
+        "skills/publish-approved-product/scripts/readback_tiktok.py": "b31b5df731001f2efc53f20a2bd939c70770acab9f56a98921f6efffb776f7da",
+        "skills/publish-approved-product/scripts/register_zero_write_reconciliation.py": "dfca32f954ac070adca79a174301b9821076d89723b1f442802d825c38219f49",
+        "skills/publish-approved-product/scripts/repair_tiktok_description_media.py": "e5f4de75da4eb8a9e1908d25b32337a4b79851a20c6b633e0d9077dd3a6df027",
+        "skills/publish-approved-product/scripts/test_product_center_publication.py": "7feab5d12858ca43b0f03730af7b699153ca0678a61f7498071861df499756ac",
+        "skills/publish-approved-product/scripts/test_publish_approved_product.py": "9b112f4573f09dd8e96abfc0315e16ee12272037699e9e2ef798633c0810ab75",
+        "skills/publish-approved-product/scripts/test_skill_architecture.py": "879393367d8403700e5c895289cd2cf5bdfd96909db0a2ce955834fce19d6e61",
+        "skills/publish-approved-product/SKILL.md": "9794b957794e1c60cde8fbaa97e6b13a25dbefaf693c8eccc6d634b6964bc36d"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "27704d22eaa689d6e3c0ff3a218e434507c3426ea37302cbbbae4501e940e5a4",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "65ca6c8ef71d312e12f266dd52e3b0569fdf47b579b65a986102a85e6e482976",
+        "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md",
+        "historical_pending_owner": "B4B"
+      }
+    },
+    {
+      "id": "apply-product-discounts",
+      "kind": "skill",
+      "owner": "03",
+      "purpose": "发布后加入精确店铺现有折扣活动；批量补齐",
+      "inputs": "发布回读、immutable价格或明确operator override、完整SKU和单一活动",
+      "outputs": "frozen discount plan、逐店折扣回读",
+      "side_effects": "读计划；授权后价格/活动外写；未知结果零自动重试",
+      "aliases": [],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "source_path": "skills/apply-product-discounts",
+      "installable": true,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help apply-product-discounts",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "已组合业务源码；仍需完整 OrbitHive runtime、精确批准与目标级官方回读。此 portable 包只提供目录，不带业务配置、认证或执行器。 canonical Skill 可显式安装；当前默认 writer 仅 LivelyHive TikTok SEA 四店。Shopee 与浏览器写入口未接通；旧 batch executor 已退役，不能用它旁路账本。",
+      "required_files": [
+        "skills/apply-product-discounts/SKILL.md"
+      ],
+      "file_digests": {
+        "skills/apply-product-discounts/agents/openai.yaml": "b62bb7be9a97f7ba4411a9c7d98bfacca3e37466e2d2676fdaa021f4e00a9845",
+        "skills/apply-product-discounts/references/miaoshou.md": "e527f96d27af8c0c76ae59bd9d2954dc15d17bd209f423521ff0c6372a940ed7",
+        "skills/apply-product-discounts/scripts/audit_existing_discount_evidence.py": "036799bad28ec69a7f852670f1b1bf75f91857e4da481aa1218572f6e4ebd976",
+        "skills/apply-product-discounts/scripts/build_batch_discount_plan.py": "072ef7d3049de5708f630d98a8b0adbd22d5285c72e909ac2a84257b6ef09d15",
+        "skills/apply-product-discounts/scripts/build_shopee_identity_recovery_plan.py": "1a4d90b551a1eefe7da676554162e3c29bb5d28aefeec7055ea00427d176ae8d",
+        "skills/apply-product-discounts/scripts/execute_official_discount_plan.py": "cb879fa59b3189e0e455c159a3b525e585b23c9d3f56f246625b0e9c11ec41fe",
+        "skills/apply-product-discounts/scripts/export_miaoshou_browser_batch.py": "564476a13ab982a9fa7a8f61bc2ed624de0d37f24775feb19c4c286104ddafca",
+        "skills/apply-product-discounts/scripts/inspect_discount_plan.py": "dab60f8c07dcaa790cae8da74d418789659044df629b40540b11ab94e341f8ed",
+        "skills/apply-product-discounts/scripts/inspect_shopee_model_identity.py": "3e5b0e6cede3ca21745e24d384e46d2b514387e64f469b5ff06b3ff9a9860588",
+        "skills/apply-product-discounts/scripts/recover_miaoshou_product_identity.py": "6b5f522b03df7b7a8722eb7d772844726afb6de24cb6a84d525ad427cce593fe",
+        "skills/apply-product-discounts/SKILL.md": "51826c598bea6f078ecf939d1a732a615c08680326a9c83871aa1e992ecc61e5"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "62f538b898f7278aa5962b48c41ee0c8d8a0753d9fb91a907e660ba80ceff677",
+        "preserved_file_digests": {
+          "agents/openai.yaml": "6513b7f37d933ccd39fba7746c692075170a5b68d9afc1341046945402ef7d12",
+          "references/miaoshou.md": "e527f96d27af8c0c76ae59bd9d2954dc15d17bd209f423521ff0c6372a940ed7",
+          "scripts/audit_existing_discount_evidence.py": "ec6bd63e6ce109fc928c9a5b18dc479d6bbde6f95f0ece43f3fe1efb14869e07",
+          "scripts/build_batch_discount_plan.py": "3e85f43288a532fb92a3a9237ff43ed87851c7465d302d18a837cb122445549b",
+          "scripts/build_shopee_identity_recovery_plan.py": "3308e86ce2f465b5cbaaaee5661b5536028a0c54522d67cd8873bc1699366323",
+          "scripts/execute_official_discount_plan.py": "e785e940d3a0e759e65c98bd9ec11297a5db7b02842160d97d378573b1892146",
+          "scripts/export_miaoshou_browser_batch.py": "81db391e19448c70d046914d7f1fa7f345b4ee558eb01e1630bab4eed369f483",
+          "scripts/inspect_discount_plan.py": "3f661a9a0f0ed57a4665e464eb98ad01486ac18108e1ee7f0de8e18a88599934",
+          "scripts/inspect_shopee_model_identity.py": "3e5b0e6cede3ca21745e24d384e46d2b514387e64f469b5ff06b3ff9a9860588",
+          "scripts/recover_miaoshou_product_identity.py": "e682e4ffc06a0612dc3908f4e105557ce44dd5733ba21c5577e3a74e5a9b13c6",
+          "SKILL.md": "8fca778b932b35cd7ae8ed9856759470c4c48ce3595d5bcff637304607c50829"
+        },
+        "source_kind": "r4-retained",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "471f43f347b3928dca44ec51cc07c988ef4811ccfb3bfab14d6049aee8ac2376",
+        "integration_evidence": "docs/audits/B00_B4B_DISCOUNT_INTEGRATION.md",
+        "historical_pending_owner": "B4B"
+      }
+    },
+    {
+      "id": "delist-products-by-sku",
+      "kind": "skill",
+      "owner": "03",
+      "purpose": "OrbitHive 既有租户的精确 SKU 可恢复下架",
+      "inputs": "原始SKU、店铺scope、完整product SKU集合、plan digest",
+      "outputs": "delist-plan.json、逐店停用/UNLIST/archive证据",
+      "side_effects": "plan是外部读取+本地报告；execute是可恢复外写；不永久删除",
+      "aliases": [],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "source_path": "skills/delist-products-by-sku",
+      "installable": true,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help delist-products-by-sku",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest",
+        "OrbitHive store registry and official clients; all is not a generic tenant scope"
+      ],
+      "python_dependencies": [],
+      "recovery": "检查当前目录的 required_files 与完整 runtime；不读取个人旧配置或将历史批准套给新范围。",
+      "required_files": [
+        "skills/delist-products-by-sku/agents/openai.yaml",
+        "skills/delist-products-by-sku/scripts/delist_products_by_sku.py",
+        "skills/delist-products-by-sku/SKILL.md"
+      ],
+      "file_digests": {
+        "skills/delist-products-by-sku/agents/openai.yaml": "590e0d78bd24d4f6e08708a7c919ad58d54a00e119dbe80f70d1415c4cb03284",
+        "skills/delist-products-by-sku/scripts/delist_products_by_sku.py": "073c03af75cb05c3e365920ad3903516ea8f7507ea45c2ae9db5194dd9d43b74",
+        "skills/delist-products-by-sku/SKILL.md": "512c1235621f47447e80d53d046c328e4bb5d3d8a78cce717f9ed665ff3ada20"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "a797f10b5a9550103f7b2ee0e7918104dfd2bfb6f5009dff28016a9224b39eab",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "37aa40b5108c2d6911d46772177b388709c46d5cc7eaa44f5251c2c69fb5267b"
+      }
+    },
+    {
+      "id": "use-lingshi-ai",
+      "kind": "skill",
+      "owner": "02；00通用客户端",
+      "purpose": "灵识模型/参数/价格/余额发现及受控文本/图片",
+      "inputs": "local config或LINGSHI_API_KEY/LK888_API_KEY；明确model、purpose、uploads",
+      "outputs": "preview、响应/任务id、用量/状态",
+      "side_effects": "发现只读；模型请求付费；素材上传另有gate",
+      "aliases": [],
+      "stage": "PORTABLE_OFFLINE_ENTRY",
+      "source_path": "skills/use-lingshi-ai",
+      "installable": true,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help use-lingshi-ai",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [
+        "requests"
+      ],
+      "recovery": "检查当前目录的 required_files 与完整 runtime；不读取个人旧配置或将历史批准套给新范围。",
+      "required_files": [
+        "skills/use-lingshi-ai/references/portable-entry.md",
+        "skills/use-lingshi-ai/references/provider-contract.md",
+        "skills/use-lingshi-ai/SKILL.md",
+        "modules/sourcing/lingshi_client.py"
+      ],
+      "file_digests": {
+        "skills/use-lingshi-ai/references/portable-entry.md": "31828f229a8d2fc130dbc090cde186e7969fd685ce305dcf0260b2bbf0021eb0",
+        "skills/use-lingshi-ai/references/provider-contract.md": "384da7b430a025a9aeba2355fd0ec313aaf37b6469219b266ba6fce79f11b98b",
+        "skills/use-lingshi-ai/SKILL.md": "3e776e1f270189b21a33f99c52983d43e8beb42fb6e50445b7d3c6c74b6f8161"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "b2c915831cbbc5d436a35940ec63ccb390f0e01792e6296a3dc8c7d655def730",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "6324507faab2b6bf9a0eb6af1f64d63496b7b4b433c35d00162af0ac82273605"
+      }
+    },
+    {
+      "id": "manage-seaya-replenishment",
+      "kind": "skill",
+      "owner": "04",
+      "purpose": "雅仓库存/在途与有效订单驱动补货",
+      "inputs": "exact inventory+batch identity、31日订单、country policy、结算经济证据",
+      "outputs": "InventorySnapshot、双场景补货台账、local dashboard",
+      "side_effects": "读平台；本地dashboard写；credential refresh需单列；不写雅仓",
+      "aliases": [],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "source_path": "domains/supply_chain_operations/skills/manage-seaya-replenishment",
+      "installable": true,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help manage-seaya-replenishment",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "检查当前目录的 required_files 与完整 runtime；不读取个人旧配置或将历史批准套给新范围。",
+      "required_files": [
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/agents/openai.yaml",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/dashboard-sync.json",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/decision-contract.md",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/apply_inventory_snapshot.py",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/apply_order_demand.py",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/apply_shopee_demand.py",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/install_local_skill.ps1",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/pull_order_demand.py",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/validate_inventory_snapshot.py",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/verify_dashboard_sync.py",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md"
+      ],
+      "file_digests": {
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/agents/openai.yaml": "627b10875c3b6ba901798de61ac09abbffc6604fe59b066e7eee122cc733e11c",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/audited-manual-snapshot.md": "3d02ed9ce93633c21deae459cbb1a0b838c75918d9edd810f545566f1319157f",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/captured-refresh.md": "4094496548f0a94ffbb4c6065cb4582a235345c0ecdd08f31931a17a525b80d8",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/dashboard-sync.json": "69c22c7361ba75ad8181ce68eeb8d0c3b97aa03e6b92e9054079519b82fde46e",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/decision-contract.md": "9eb5b2f52823184aa7dd29d26aa3b79042d9748409fbaac0f7b5747663812e7b",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/execution-readiness.md": "4c8d9e4af9abce5b666a27ee4b5ed0980798e24558629d7d081cee9f8bdedbaa",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/private-storage.md": "a0c11055dc08ebf9d029613f16c3b54b5e390cbc076dd25ba3222ca5c8da3c43",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/session-recovery.md": "fc0c49e2573cba40c24e087b3a4c4f8fcc1a690d0d46df0beb82b0bc5ae38716",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/apply_inventory_snapshot.py": "3fca676fbeaaeb4aef574a5dc8ce214141cac9fbc487c02cdbcdf1409cc476c4",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/apply_order_demand.py": "82373b243c43eede6f833cfc8e1b52924675d0e284a226e51b15a999724c503b",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/apply_shopee_demand.py": "6f2027a8734c377a17140c5657a573076ce2979c8ff493737a0213d3295a3ac9",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/captured_refresh.py": "9a88433d92a4464804043706c90bfac4b67601fc2fd0daf322dc9f47eb352ac0",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/extract_current_seed.py": "0721ffc746d53dcec75ebdcdfd949057a19e922cbdc1e1bce0d1e686dc5e8ed6",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/install_local_skill.ps1": "98f081e1338293196434224f76207035c0be52c50c38c792281502ff09e226d3",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/private_storage.py": "26ab52075881beacd819c233c101cdb049d0bffe85faf532225be2a7c1a94626",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/provision_private_directory.py": "0d3a213d5eb619070a7a84cef85f0606d71ba9f4686c2464dd952b9866a3ca03",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/pull_order_demand.py": "f715736fb1ed8a75ce8a9a36d115b0537f4c569c8bdb88c5e539db989fb50a4e",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/refresh_supply_chain.py": "845559dc56354a7d0bf2daf7e69b731c5be4d0280f012d38608a8ff3759262b7",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/seaya_capture.py": "6ddd1b12fe884db6c5a58e8f6d277ebaa6cf3b04acea86337f68fd3966551779",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/SEAYA_CAPTURE_CONTRACT.md": "3e1ae03d0bf7eba61f6198eab47ecf096ce6dc446c8f69e2dd751d586fa9707e",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/session_recovery.py": "bd0ad2a4b5bcdc82537e8ffc812d7d507aa98625d7f32125a7e3688f42b734cb",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/validate_inventory_snapshot.py": "f7fafa6a93ac936ca354458d478fedd93e7273c0c2d5f18bad6bd8fad43cb621",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/verify_dashboard_sync.py": "8483c34674db6cddd43ada52a960cdc0d4a484c085e138900c371103f4e953a5",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md": "33e20c172e39202baa760c71ba9e926d0eac8c6255984a8b66018ef59d097be6"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "c8682ac95e3f4bf7e9d315a646b3b8e0f33ee53ffe9c3e12770cc903f8335c64",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "ef7c74609a2cf69771714f1f3c301066f1b7f9698fdef05fec73e5847d32ccf2"
+      }
+    },
+    {
+      "id": "manage-profit-settlement",
+      "kind": "skill",
+      "owner": "05",
+      "purpose": "官方已结算利润、覆盖审计、月报归档",
+      "inputs": "platform/site/closed period、settlement、cost、live FX、ads evidence",
+      "outputs": "独立JSON/HTML利润、coverage、approved月报知识版本",
+      "side_effects": "外部读；刷新credential是单独写权限；月报确认本地immutable归档",
+      "aliases": [],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "source_path": "domains/data_operations/skills/manage-profit-settlement",
+      "installable": true,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help manage-profit-settlement",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "检查当前目录的 required_files 与完整 runtime；不读取个人旧配置或将历史批准套给新范围。",
+      "required_files": [
+        "domains/data_operations/skills/manage-profit-settlement/agents/openai.yaml",
+        "domains/data_operations/skills/manage-profit-settlement/references/platform-sources.md",
+        "domains/data_operations/skills/manage-profit-settlement/references/report-contract.md",
+        "domains/data_operations/skills/manage-profit-settlement/report-policy.json",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/audit_tiktok_settlement_coverage.py",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/build_shopee_monthly_from_evidence.py",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/build_tiktok_monthly_from_evidence.py",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/build_weekly_from_evidence.py",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/generate_local_weekly.py",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/profit_report.py",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/pull_settlement_evidence.py",
+        "domains/data_operations/skills/manage-profit-settlement/SKILL.md",
+        "domains/data_operations/skills/manage-profit-settlement/references/monthly-missing-cost.md",
+        "domains/data_operations/profit_settlement/frozen_monthly_fx.py",
+        "domains/data_operations/profit_settlement/monthly_missing_cost_scope.py",
+        "domains/data_operations/profit_settlement/historical_internal_costs.py"
+      ],
+      "file_digests": {
+        "domains/data_operations/skills/manage-profit-settlement/agents/openai.yaml": "42aa07b03497e91bd9acc17c04f470d9cd2660a4e688b7e5e071ed026b82aa4f",
+        "domains/data_operations/skills/manage-profit-settlement/references/captured-coverage-history.md": "94cda1f0ecf105c7fa11b84ca46eef7a057e4b2f51d2c1e77ab6dcb83e9d7c7a",
+        "domains/data_operations/skills/manage-profit-settlement/references/captured-review.md": "7dc3a5f1b2b0d6aa2cdf2028c8e3860e4bcfe7edde5a0879cbbb7bb9b5bb6058",
+        "domains/data_operations/skills/manage-profit-settlement/references/captured-sample-audit.md": "39fdbba00040c6bad7d9b1df5f4b325c2e6114e20df0333f7dc2ba51ccbfee04",
+        "domains/data_operations/skills/manage-profit-settlement/references/captured-sku-evidence.md": "63da2e9da3a2d7e33148ddc144d5ac3bb95402d2a6e7c1b1b1c8aab28fca2ae8",
+        "domains/data_operations/skills/manage-profit-settlement/references/captured-waterfall.md": "e249ecc0084abe0a70a85c386b2a4cdab8f4fb9829d0ecf5e8ef39ab82c48fff",
+        "domains/data_operations/skills/manage-profit-settlement/references/current-finance-regression.md": "a87fd7deb30ab0553704e717e4e9d95a6891b106b6e4ef90ea0836f00b3a8b70",
+        "domains/data_operations/skills/manage-profit-settlement/references/historical-report-recovery.md": "b0938af14e0958d8162ae51e923e120a974590ee6d532856229d4dd174d9d9c1",
+        "domains/data_operations/skills/manage-profit-settlement/references/monthly-missing-cost.md": "28bb10077e744101fd5393c537efc9d97946ab43b71bb084d96cb20b262376cf",
+        "domains/data_operations/skills/manage-profit-settlement/references/platform-sources.md": "1a1f597a3a712cca7f9965b823bf184287a094769c569ae8579825ba080a5880",
+        "domains/data_operations/skills/manage-profit-settlement/references/report-contract.md": "7be32074968ed022c94d7d5bdecef8d3a0d004bac0d008a2535c7e90e074e250",
+        "domains/data_operations/skills/manage-profit-settlement/report-policy.json": "076baa011645810db8ceb76308e3e03d8b90770e1243dd9159f7855adb21c4b2",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/audit_tiktok_settlement_coverage.py": "1670a608b1c4a9d1430ebd991c20691246b3ec6cb57635023588a8b5b4c71d2f",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/build_shopee_monthly_from_evidence.py": "8bbc800af0ca3b7830af336f54f7b487e30e1da29d0703788e25cfee9c702c55",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/build_tiktok_monthly_from_evidence.py": "e9dc81282fbceb22d51af46a65a662a40a3303ef672fd845e69f04f098bc7e41",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/build_weekly_from_evidence.py": "8fe0781495e71e746df6e842e0b3c660453af27486e968ccdf764e4bf1cbc6df",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/generate_local_weekly.py": "4f072838a507d4a7707fc7f6bb1fdca5661e3019b971aa5d59edb8cf06951c88",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/profit_report.py": "9874bd00ccb2e852808ea3ac9d2ee32369a7a081d384f34b64aedb01166fc427",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/pull_settlement_evidence.py": "89210449ce18346dbbd9537da6499221bb08aa878b220b8a73dce5f6ad9332fd",
+        "domains/data_operations/skills/manage-profit-settlement/scripts/render_historical_partial.py": "8a50b7f2a02f136078a75de6c586273cd2291a094f23d486b37ab85281958446",
+        "domains/data_operations/skills/manage-profit-settlement/SKILL.md": "9a6785156d13aca3f631408a243cd50cdb21845e1ae031e038885ce6d9cee51c"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "962c9b526ac5490d2b4fd7777f2d530e3ac83fef828d402ec751189bf2336d16",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "50488e054393013181dbaf9fa815f62bff8b640ade4f664a1d8b4202d3a212fa"
+      }
+    },
+    {
+      "id": "control-duoplus-cloud-phone",
+      "kind": "skill",
+      "owner": "建议00封装；03账号/业务操作",
+      "purpose": "预览并读取云手机设备与应用信息；按精确范围安装应用和恢复未知结果",
+      "inputs": "显式 runtime 与非秘密 profile、官方 origin 和进程环境键名；精确设备 ID，安装还需应用、版本及包名",
+      "outputs": "离线请求预览、脱敏设备与应用查询结果、持久安装记录及回读；包名存在不证明版本或某次未知安装成功",
+      "side_effects": "help/doctor/preview 仅本地检查；read 查询实际联网；execute install-app 在精确授权范围内安装，reconcile-install 只读恢复",
+      "aliases": [],
+      "stage": "PORTABLE_OFFLINE_ENTRY",
+      "source_path": "skills/control-duoplus-cloud-phone",
+      "installable": true,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help control-duoplus-cloud-phone",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "同一设备、应用与版本范围复用已有有效授权；SUBMITTING/UNKNOWN 保留原记录并查询 installed-apps，不自动重装。回读仅证明包名存在，版本与未知提交结果仍需区分。",
+      "required_files": [
+        "skills/control-duoplus-cloud-phone/agents/openai.yaml",
+        "skills/control-duoplus-cloud-phone/references/api.md",
+        "skills/control-duoplus-cloud-phone/SKILL.md",
+        "modules/tools/duoplus.py",
+        "modules/sourcing/image_generation_checkpoint.py"
+      ],
+      "file_digests": {
+        "skills/control-duoplus-cloud-phone/agents/openai.yaml": "253071517e87e1b3e7d54b202fc0b8e7f618d6559bdba04af5d5328a2aa4aa22",
+        "skills/control-duoplus-cloud-phone/references/api.md": "dff0e085741862a17f6257f6baa0c71a51dbcc581ce1be1b87a7334dca9558ad",
+        "skills/control-duoplus-cloud-phone/SKILL.md": "55898a8836ef54dc13dcc4e2c624bd4710446c68eaac107335af20178c93a217"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "15af8cf7d8ffcb722fa926e5f1396dc7d0543162df76cd21d67fd00c91fbb31f",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "8e2047ff5cc6b3b107dd1ca96a9469a5809bb2cf85f4014fceadbe49cbb9ad0b"
+      }
+    },
+    {
+      "id": "artifact-template-taobao",
+      "kind": "skill",
+      "owner": "02",
+      "purpose": "红金活动商品主图可复用模板",
+      "inputs": "artifact-template.json、保留PNG、真实商品内容",
+      "outputs": "生成图片与视觉QA",
+      "side_effects": "图片生成；不携带上架权；素材权限来自具体输入",
+      "aliases": [],
+      "stage": "HOST_IMAGEGEN_TEMPLATE",
+      "source_path": null,
+      "installable": false,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help artifact-template-taobao",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "通过宿主技能/插件发现取得完整外部依赖；目录未打包外部 cache，不声称已安装或在线健康。",
+      "required_files": [],
+      "file_digests": {},
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "f753204408549f80bef15ed6c98d9ff86f46a8d94ffba9a6ac8e60d136dea5c4",
+        "preserved_file_digests": {
+          "agents/openai.yaml": "4df48e8286488da9e1f4290935a50930d8d2d46b185f108a2a1671ddfb7e72c0",
+          "artifact-template.json": "668447b646d669e1613306c05362643cbcb359199439934811d06919d8679a0e",
+          "assets/preview.png": "8b462355d989f3fb7401fe73848793a4b93a6858b89e75853113cfbff44cbfb5",
+          "assets/reference.png": "8b462355d989f3fb7401fe73848793a4b93a6858b89e75853113cfbff44cbfb5",
+          "SKILL.md": "28996e81d4f9e8022d78efa7569d37dbc2cf17471cc5d4d42dd6c43a869af0b6"
+        },
+        "source_kind": "external-skill-retained",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    {
+      "id": "minimax-h3-video",
+      "kind": "skill",
+      "owner": "02生成；00runtime封装",
+      "purpose": "优云GPU上MiniMax H3视频自动启停/恢复",
+      "inputs": "独立compshare profile、runtime/deployment binding、prompt与帧/参考图参数",
+      "outputs": "本地MP4、manifest/prompt_id、停止状态、ffprobe证据",
+      "side_effects": "status/plan只读；创建GPU/上传/生成付费，生成后停机",
+      "aliases": [],
+      "stage": "EXTERNAL_PLUGIN",
+      "source_path": null,
+      "installable": false,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help minimax-h3-video",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "通过宿主技能/插件发现取得完整外部依赖；目录未打包外部 cache，不声称已安装或在线健康。",
+      "required_files": [],
+      "file_digests": {},
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "7ed4bdb09c7e4abb0b8ffd1d98b6a5df8035d1bbc91ff4d5e390e3eb65b8a8bd",
+        "preserved_file_digests": {
+          "agents/openai.yaml": "50a1527e9bdb5aa481c14533567f025276b9a297c2693a43b18b407c0141abe4",
+          "SKILL.md": "7c10068bd7dfd1d336db3f1d9ec8d0cbb187f89990a3a0d2f43ccf9600757409"
+        },
+        "source_kind": "external-skill-retained",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    {
+      "id": "miaoshou-erp-shop-query",
+      "kind": "skill",
+      "owner": "03（vendor内容仅参考）",
+      "purpose": "查询授权店铺",
+      "inputs": "platform/site",
+      "outputs": "shopId/serialNumber/auth状态",
+      "side_effects": "只读",
+      "aliases": [],
+      "stage": "REFERENCE_ONLY",
+      "source_path": "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query",
+      "installable": false,
+      "method": "read docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/SKILL.md (REFERENCE_ONLY; no direct vendor execution)",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "只读参考协议；vendor check 不构成批准，正式业务执行使用已审 R3 adapter/runner。",
+      "required_files": [
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/assets/icon.png",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/assets/icon.svg",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/references/api_reference.md",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/resources/config.json.example",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/scripts/shop_list.py",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/SKILL.md"
+      ],
+      "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/assets/icon.png": "9555e38ee18d8429cce025c5699290fd374de6e23ccba9bffbad87a05c54f450",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/assets/icon.svg": "9a021c68061cbc2da3db76dbc08450bda09f156f5dda75a74dc485f6393f998f",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/references/api_reference.md": "0e7dacbe38213f309555f895b8c6076a682465f884cf54612e9cef40cdbee9cd",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/resources/config.json.example": "b6419543de2c7b15e14da4ee2d7f0bc294ee945f7f3f6c251c96abbeeeb086e3",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/scripts/shop_list.py": "3cc11af273e5c6d89f8eba861c7815499a3eae806ebfe56c00fee065c84c06d9",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/SKILL.md": "d245ef06a447d2bd7df62832aba04da29f95b9565f7cd5c733e11f35e50301c0"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "67764dea527413dd8de8d4ab98d22485d50dfd0dd599ee2849a17c0bc271b81c",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "8ca6b5ee2efb7f63c821d404db0d41eed1be784179e94565a76c9b8d38556faf"
+      }
+    },
+    {
+      "id": "miaoshou-erp-source-import",
+      "kind": "skill",
+      "owner": "03（vendor内容仅参考）",
+      "purpose": "货源URL采集入公共箱",
+      "inputs": "完整URL集合、来源域",
+      "outputs": "sourceItemId/detailId映射",
+      "side_effects": "ERP创建写",
+      "aliases": [],
+      "stage": "REFERENCE_ONLY",
+      "source_path": "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import",
+      "installable": false,
+      "method": "read docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/SKILL.md (REFERENCE_ONLY; no direct vendor execution)",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "只读参考协议；vendor check 不构成批准，正式业务执行使用已审 R3 adapter/runner。",
+      "required_files": [
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/assets/icon.png",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/assets/icon.svg",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/references/api-spec.md",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/resources/config.json.example",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/SKILL.md"
+      ],
+      "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/assets/icon.png": "021ed3539540663ecb7049b5d9f42b519abefd2d968f9514046da78ddcddd4be",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/assets/icon.svg": "316a9bf15f18711a8036138ce2b9441c8c8f0b671e205f90becc566e1b715360",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/references/api-spec.md": "e59a8cfcf11670db075823a0adc1a45ee610f04e2fd818e764008977b9d21e1f",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/resources/config.json.example": "2d607f55246d95319ff4e5066bf9614c71796f0a7f45b9a643e8b16494e6c2ec",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/SKILL.md": "c5bfa888fc3f46ea2a84f36d87fc7cba50d40856f133c07d025fe6fc1957b3e7"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "0e706c9ddec407fa0b4f3a28b757cb1931bc2bcb0832de9e46f04c5a147e9fb1",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "8636969b3c0c2ef543bd376a27f7aa578c9d417190ae08c320ac3417c8640cef"
+      }
+    },
+    {
+      "id": "miaoshou-erp-product-claim",
+      "kind": "skill",
+      "owner": "03（vendor内容仅参考）",
+      "purpose": "公共箱认领到平台箱",
+      "inputs": "detailIds/platform",
+      "outputs": "platformCollectBoxDetailIdMap",
+      "side_effects": "detail只读；claim外写",
+      "aliases": [],
+      "stage": "REFERENCE_ONLY",
+      "source_path": "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim",
+      "installable": false,
+      "method": "read docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/SKILL.md (REFERENCE_ONLY; no direct vendor execution)",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "只读参考协议；vendor check 不构成批准，正式业务执行使用已审 R3 adapter/runner。",
+      "required_files": [
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/assets/icon.png",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/assets/icon.svg",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/references/api_reference.md",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/resources/config.json.example",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/scripts/claim_to_platform.py",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/SKILL.md"
+      ],
+      "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/assets/icon.png": "70aae0c5918ec80f91588063c61995f3425831fb848ef3fbf20ec73568364a62",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/assets/icon.svg": "106f851374421e6605f51290d4f105db84fd47e74ee83cc89da58a8d36919722",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/references/api_reference.md": "ea2a8f9ffdd9898d6b55a682c1e2f71ff1b46f03fd96034115b2171fb2ced1b3",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/resources/config.json.example": "b6419543de2c7b15e14da4ee2d7f0bc294ee945f7f3f6c251c96abbeeeb086e3",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/scripts/claim_to_platform.py": "6865168d67c29e1455e4c050255ebbd070a23cbaef79c4e78b8c63609346c6ed",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/SKILL.md": "4a47c5b23fc8704a033e538a55cc6ef16bc8c2f432366135e63fa9a4e202063d"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "bba76e5dfbc8e995b56905cc445fc07773eeac1c3b09e7b4a12b2eaa4235fed4",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "5bae968f95b6fa210ba21d358c6faf2ffa9554aa48406f8801da52a76409d984"
+      }
+    },
+    {
+      "id": "miaoshou-erp-common-collectbox-manage",
+      "kind": "skill",
+      "owner": "03（vendor内容仅参考）",
+      "purpose": "公共采集箱CRUD",
+      "inputs": "exact id、before/after payload",
+      "outputs": "当前detail、变更结果",
+      "side_effects": "query只读；create/edit写；delete破坏性",
+      "aliases": [],
+      "stage": "REFERENCE_ONLY",
+      "source_path": "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage",
+      "installable": false,
+      "method": "read docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/SKILL.md (REFERENCE_ONLY; no direct vendor execution)",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "只读参考协议；vendor check 不构成批准，正式业务执行使用已审 R3 adapter/runner。",
+      "required_files": [
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/assets/icon.png",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/assets/icon.svg",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/references/api_reference.md",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/resources/config.json.example",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/scripts/collectbox_crud.py",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/SKILL.md"
+      ],
+      "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/assets/icon.png": "f044b3cade55e090ae1fd35e634342ce718a62a8db1709650c0c99e7ae0177a9",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/assets/icon.svg": "b6243d24c0fe8c3d10157838166ab235439f635421fef4c2ad22552ae93b4b86",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/references/api_reference.md": "669738e21fdb0faf9738bf535dea59bcd908e5676aadea2fdeff7b8f9f04a218",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/resources/config.json.example": "b6419543de2c7b15e14da4ee2d7f0bc294ee945f7f3f6c251c96abbeeeb086e3",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/scripts/collectbox_crud.py": "c95d3527fee50f41c6bea1de7294b72e75b044ced5128b7234c10969ae05723f",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/SKILL.md": "9e406ecbe35854ca3348ab650fbe38fe69447292aaf56ea6c4206fdc93f91b2a"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "e2572d7070008c220d80b6cdea5e61cf79ffa275a75120302e67e02c3a0e045a",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "be656fb091f53a2313b475f6d4af5178479f87879c4e5909fdd406a91c22e592"
+      }
+    },
+    {
+      "id": "miaoshou-erp-tiktok-category-recommend",
+      "kind": "skill",
+      "owner": "03（vendor内容仅参考）",
+      "purpose": "类目/属性建议",
+      "inputs": "title/detailId/site/shop",
+      "outputs": "ranked category、缺失事实",
+      "side_effects": "provider读；若llm.endpoint配置，脚本会付费POST",
+      "aliases": [],
+      "stage": "REFERENCE_ONLY",
+      "source_path": "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend",
+      "installable": false,
+      "method": "read docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/SKILL.md (REFERENCE_ONLY; no direct vendor execution)",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "只读参考协议；vendor check 不构成批准，正式业务执行使用已审 R3 adapter/runner。",
+      "required_files": [
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/assets/icon.png",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/assets/icon.svg",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/resources/config.json.example",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/scripts/tiktok_category_match.py",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/SKILL.md"
+      ],
+      "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/assets/icon.png": "23b911ba26ccf69280d37d06f2ff2beefe2dfa02c3fd53802a70d8e5ab63bd98",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/assets/icon.svg": "7f40d26791c7e35459c64d718269c9382e2450ce2b1cfa410ce2875fb3eaa3dc",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/resources/config.json.example": "588525f8fb97d01de951d138b2f01b54f75d3c8e59f02bcea4978c58afb19d52",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/scripts/tiktok_category_match.py": "61869e81f703ca988051c4cdb0e082d39391bcb44f1884a19e239842762a939d",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/SKILL.md": "c1ace8e122270707e58fdab5ee50450cfdeb940aad5c98b2dd1e7b43367804d9"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "6880263c97af1b6654005fd2975de8c9108c8a9316723ffb5eba7566e334aa10",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "25027fbc64f1f5522c7c90bcc020c8edb107255ec3338362db425a31fef722b1"
+      }
+    },
+    {
+      "id": "miaoshou-erp-tiktok-product-edit",
+      "kind": "skill",
+      "owner": "03（vendor内容仅参考）",
+      "purpose": "TikTok采集箱查询/编辑",
+      "inputs": "detailId、site/shop mode、完整payload",
+      "outputs": "修改建议/保存返回",
+      "side_effects": "detail只读；save外写",
+      "aliases": [],
+      "stage": "REFERENCE_ONLY",
+      "source_path": "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit",
+      "installable": false,
+      "method": "read docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/SKILL.md (REFERENCE_ONLY; no direct vendor execution)",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "只读参考协议；vendor check 不构成批准，正式业务执行使用已审 R3 adapter/runner。",
+      "required_files": [
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/assets/icon.png",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/assets/icon.svg",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/references/api-spec.md",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/resources/config.json.example",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/scripts/tiktok_collectbox.py",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/SKILL.md"
+      ],
+      "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/assets/icon.png": "818ccfe147190266abb28e806f832c55f111e85a3a664f8a5839e17de839dabd",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/assets/icon.svg": "9e6b24f82c12abbc97612fd36c887eae15d320209eac3d76d34d2c985112b851",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/references/api-spec.md": "7a1a84e3ea2c6aedfcd72df1317fce14ff8b83db0d81dcb52d6af264056a5837",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/resources/config.json.example": "b6419543de2c7b15e14da4ee2d7f0bc294ee945f7f3f6c251c96abbeeeb086e3",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/scripts/tiktok_collectbox.py": "3ca510e094bdc00aa87a49303df9a02d20b6db05dc5690605a00d38ae757857a",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/SKILL.md": "9d5a1f23fc2b40626ebd23011bef4effc1d84e027cf0ba86ae36890865687b5d"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "877e8ce79a26dc10ee3c7a77251d31ef4f1f4e09dda5392b1acfbfc307e34c86",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "84bcb29c1c2d8647cf439192f7e6d1e29055897ebeff0d556fdd819e81fde415"
+      }
+    },
+    {
+      "id": "miaoshou-erp-tiktok-product-publish",
+      "kind": "skill",
+      "owner": "03（vendor内容仅参考）",
+      "purpose": "TikTok采集箱发布",
+      "inputs": "detailIds/shopIds、准备事实",
+      "outputs": "task submission、状态限制",
+      "side_effects": "claim/publish外写",
+      "aliases": [],
+      "stage": "REFERENCE_ONLY",
+      "source_path": "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish",
+      "installable": false,
+      "method": "read docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/SKILL.md (REFERENCE_ONLY; no direct vendor execution)",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "只读参考协议；vendor check 不构成批准，正式业务执行使用已审 R3 adapter/runner。",
+      "required_files": [
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/assets/icon.png",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/assets/icon.svg",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/references/api_reference.md",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/resources/config.json.example",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/scripts/tiktok_publish.py",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/SKILL.md"
+      ],
+      "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/assets/icon.png": "859593a9cc77607f23548a8a58e4be62ef70c354248c4f0103cabae3d2db0fe3",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/assets/icon.svg": "a0332051bd6980fe0af0943dafd210c31b8f16f4f825d2e9bac5050fabcb57cb",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/references/api_reference.md": "ac4019f6001a3514f120a5a8303e142ef47abd112aab062ce6515d28d9a1885f",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/resources/config.json.example": "b6419543de2c7b15e14da4ee2d7f0bc294ee945f7f3f6c251c96abbeeeb086e3",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/scripts/tiktok_publish.py": "4cb6fbee619821b85ed2f92ea783ff4b17077306d73fccc97a3bb6f0370791bd",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/SKILL.md": "452de4019465f30249e3ffa75e1c136bfd0a511c4424fc62f3e7a8aa8c596437"
+      },
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "a79cd325c130dacd4263e3238983eff5fd19a6316ba0743df15bdc742ae29567",
+        "preserved_file_digests": {},
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "0f655bf0a7c9db4c21dea31d828de2879a66c01fc4dd575462c5193ad6df5b07"
+      }
+    },
+    {
+      "id": "miaoshou-erp-tiktok-listing-optimize",
+      "kind": "skill",
+      "owner": "建议01+02",
+      "purpose": "listing诊断与字段优化提案",
+      "inputs": "产品/站点/成本/用户证据",
+      "outputs": "before/after字段建议与证据",
+      "side_effects": "只读提案，不保存发布",
+      "aliases": [],
+      "stage": "PRESERVED_DRAFT",
+      "source_path": null,
+      "installable": false,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help miaoshou-erp-tiktok-listing-optimize",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "通过宿主技能/插件发现取得完整外部依赖；目录未打包外部 cache，不声称已安装或在线健康。",
+      "required_files": [],
+      "file_digests": {},
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "079c511e68789daa5385e2b81669c2ec2b3dd8130a7ae27ab171d4e8a7ce362a",
+        "preserved_file_digests": {
+          "agents/openai.yaml": "c7a29cb8233d0637f1dc9f19f84b30ab9c3b3a5b6808512b971988b17c500a54",
+          "references/listing-optimization-framework.md": "5bd351d9df225f2173d2f7469f9b40300e3e0c679680c7f7c88eff4bc520bb89",
+          "SKILL.md": "9b621783a8942eaef8459ae86f73f9c6714aec0132e61c599f100fd881786ce2"
+        },
+        "source_kind": "external-skill-retained",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    {
+      "id": "miaoshou-erp-tiktok-compliance-protection",
+      "kind": "skill",
+      "owner": "建议01风险；03执行",
+      "purpose": "合规/IP/客户争议风险分类",
+      "inputs": "site/date/事实证据/目标",
+      "outputs": "risk register、证据缺口、handoff",
+      "side_effects": "只读诊断，不投诉/联系/发信/改商品",
+      "aliases": [],
+      "stage": "PRESERVED_DRAFT",
+      "source_path": null,
+      "installable": false,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help miaoshou-erp-tiktok-compliance-protection",
+      "dependencies": [
+        "explicit stable runtime root",
+        "complete source manifest"
+      ],
+      "python_dependencies": [],
+      "recovery": "通过宿主技能/插件发现取得完整外部依赖；目录未打包外部 cache，不声称已安装或在线健康。",
+      "required_files": [],
+      "file_digests": {},
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "4b6b62809fbaff1d3abf9d1c254dfa5133f668f7489e764150d7c263ff8305c5",
+        "preserved_file_digests": {
+          "agents/openai.yaml": "d500e01c534cad0e433cf7501b54c9e8549db393123d26317f8d49b2fc06cd7a",
+          "references/risk-triage.md": "bb5c957b616ddcc83dbafa7f0f7b43ab52e14749311eb7a7164e1a6861d33bc0",
+          "SKILL.md": "3e95dc52eec0426cf491a61a68c8697d5d51ee716a1cc9ec6e493ef28bc7bbe4"
+        },
+        "source_kind": "external-skill-retained",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    {
+      "id": "research-tikhub-reference",
+      "kind": "skill",
+      "owner": "content/tools",
+      "purpose": "TikHub 商品/视频参考查询与本地样本分析",
+      "inputs": "显式 profile、keyword、region、video_count 1–20；执行时既有两请求授权",
+      "outputs": "两份 raw 与 durable manifest，sample statistics；无素材复用权",
+      "side_effects": "preview/help/doctor 无网络；execute 两次可能计费 GET；不写商城",
+      "aliases": [],
+      "stage": "PORTABLE_OFFLINE_ENTRY",
+      "source_path": "skills/research-tikhub-reference",
+      "installable": true,
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help tikhub",
+      "dependencies": [
+        "explicit profile",
+        "TikHub process key for execution only"
+      ],
+      "python_dependencies": [],
+      "recovery": "同计划复用已完成 raw；UNKNOWN 保留占位并对账原 query/时间/用量，不重查。",
+      "file_digests": {
+        "skills/research-tikhub-reference/references/query-contract.md": "a7e305e190c8b8acf62c9d66a48dd5a83b968b29feaee866e4c82d9611843060",
+        "skills/research-tikhub-reference/SKILL.md": "9d5de2fc05c1ee7c62ba08ba60b69cf0f0285f2725e40d509170465a4a404413"
+      },
+      "required_files": [
+        "skills/research-tikhub-reference/references/query-contract.md",
+        "skills/research-tikhub-reference/SKILL.md",
+        "modules/tools/tikhub.py",
+        "modules/sourcing/image_generation_checkpoint.py"
+      ],
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "8b5efd88def68004515fbc87c3b4856311640a4d28c7c74d33f97c71bb23c737",
+        "source_kind": "T00-retained-C-script-adaptation",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "0b0390ac4d66c9ca491921e0f124f0ff1179674117aaf56e9799072eebb0fe87",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only"
+      }
+    }
+  ],
+  "tools": [
+    {
+      "kind": "project adapter",
+      "owner": "03；01商品/04需求/05财务读",
+      "purpose": "商品、仓库、订单、Finance、促销",
+      "inputs": "source snapshot/target/read query",
+      "outputs": "official response经domain投影",
+      "side_effects": "官方读与发布/改价/库存/折扣外写分开",
+      "id": "tiktok-shop",
+      "aliases": [
+        "TikTok Shop"
+      ],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "required_files": [
+        "modules/products/release_adapters.py",
+        "modules/tiktok/oneclick_promotion.py"
+      ],
+      "file_digests": {
+        "modules/products/release_adapters.py": "06d05082c52ac7e4f8de4dc4e978b6f1b68b324748a4f86f97262bb4104be64d",
+        "modules/tiktok/oneclick_promotion.py": "3a3867d19867f345889851068a2137789d1acb6f4b4f2e46a708ee9bd1317582"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "settings TikTok凭据+shop token/cipher+精确站点"
+      ],
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help tiktok-shop",
+      "recovery": "已组合业务源码；仍需完整 OrbitHive runtime、精确批准与目标级官方回读。此 portable 包只提供目录，不带业务配置、认证或执行器。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "31ad7a6f0781a62a9c09f1968cc4ca555eddc1f9027ef8102128d7fbc5550cdb",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "7bb149b41e4494f76e00be9679e6a143430fec0ccb040f6c772dd02982f1f146",
+        "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
+      }
+    },
+    {
+      "kind": "project adapter",
+      "owner": "05事实；03投放写",
+      "purpose": "广告模块占位诊断（未实现）",
+      "inputs": "当前无广告 API 消费合同；仅本地占位方法",
+      "outputs": "sync_daily_spend/show_report 打印待实现；不产出广告事实或投放结果",
+      "side_effects": "当前仅本地打印，无广告请求或投放写入",
+      "id": "tiktok-ads",
+      "aliases": [
+        "TikTok Ads / GMV Max"
+      ],
+      "stage": "STUB_NOT_IMPLEMENTED",
+      "required_files": [
+        "modules/ads/service.py"
+      ],
+      "file_digests": {
+        "modules/ads/service.py": "45dc76f04dd73f90d3d99ae7fde1a484bb303371735231bfe68a2e178dc99022"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "独立ads token/advertiser与商业授权"
+      ],
+      "method": "只读 modules/ads/service.py 中的占位实现；无可执行广告能力",
+      "recovery": "未来独立 Ads/GMV Max adapter 工作包建立实际接口、预算、授权和官方回读合同；文件存在不代表已实现。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "1fd7907d5d30364a70e764fc1da7b41c7920a3f620b52aaac893d8160dbc79e9",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "1fd7907d5d30364a70e764fc1da7b41c7920a3f620b52aaac893d8160dbc79e9"
+      }
+    },
+    {
+      "kind": "project adapter",
+      "owner": "03；04/05读取",
+      "purpose": "CNSC global/区域商品、订单、结算、折扣",
+      "inputs": "exact merchant/shop/region/model+snapshot",
+      "outputs": "global/region独立readback",
+      "side_effects": "读；ensure_*可能自动refresh并保存token；发布/折扣为外写",
+      "id": "shopee",
+      "aliases": [
+        "Shopee"
+      ],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "required_files": [
+        "modules/shopee/client.py",
+        "modules/shopee/auth.py",
+        "modules/shopee/config.py"
+      ],
+      "file_digests": {
+        "modules/shopee/auth.py": "3b9a3512a7aeed43e34683b638e598b4e3c08e15f115d4132f0718ab5ee811c5",
+        "modules/shopee/client.py": "79aa66e5f133dec74b6b214e589f33c4f171cce72a73f8eb0e3db0d97913d4b1",
+        "modules/shopee/config.py": "965d0ad9bad51227374666c03d22d789640263936d29bff16224739be62fddd1"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "partner id/key、test/live environment、merchant/shop token映射"
+      ],
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help shopee",
+      "recovery": "已组合业务源码；仍需完整 OrbitHive runtime、精确批准与目标级官方回读。此 portable 包只提供目录，不带业务配置、认证或执行器。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "6d558c11e85dade9b612049aa0ef21065f410c20e9f524dcfdbb9fbe4e45815a",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "9af4ecd21b4cb31ca7af47e680e76580490e18831aea340ecdc9c069f60ceeb3",
+        "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
+      }
+    },
+    {
+      "kind": "project adapter+embedded legacy",
+      "owner": "03；05结算读",
+      "purpose": "Ozon商品迁移、类目、价格、库存、结算",
+      "inputs": "offer/model SKU、category、frozen stock/price",
+      "outputs": "listing/warehouse stock readback、settlement",
+      "side_effects": "read与import/stock/price外写",
+      "id": "ozon",
+      "aliases": [
+        "Ozon"
+      ],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "required_files": [
+        "modules/ozon/config.py",
+        "modules/ozon/webapp_bridge.py",
+        "AGENTS.md"
+      ],
+      "file_digests": {
+        "AGENTS.md": "7349d2b6ca74f36862b983e57ef7dc2c749a5b1b9de9c854b5de303b6eec1f8d",
+        "modules/ozon/config.py": "9a04abe1165a7bbbcb3c28b203fc82069af9e5f33a12749bfeecb905c34924f4",
+        "modules/ozon/webapp_bridge.py": "70b5574ca702e8e400e6a6cfb0b43ea161f1f90327a40590179353a839f8ea01"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "ozon.client_id/api_key；configured data dir或embedded fallback"
+      ],
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help ozon",
+      "recovery": "已组合业务源码；仍需完整 OrbitHive runtime、精确批准与目标级官方回读。此 portable 包只提供目录，不带业务配置、认证或执行器。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "1623746f0f321e60effaa941f75eb319ae0fb8b7aa995af770deb542c82825fb",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "ce6370c01344b68463a53715d720bbd4fffff443045d73da2ab9296ab38ba035",
+        "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
+      }
+    },
+    {
+      "kind": "project adapter+vendor reference",
+      "owner": "03",
+      "purpose": "common collect、claim、site/shop drafts、发布；部分旧web支路",
+      "inputs": "exact common/detail/shop identity、payload",
+      "outputs": "绑定后的身份、readback checkpoint",
+      "side_effects": "官方POST也可能是读；claim/save/publish外写；Web私有接口需隔离",
+      "id": "miaoshou",
+      "aliases": [
+        "妙手 ERP OpenAPI / Web"
+      ],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "required_files": [
+        "modules/miaoshou/client.py"
+      ],
+      "file_digests": {
+        "modules/miaoshou/client.py": "d1ed9af1e8343a3bb23aa284d6dcd2de33b8db46b9b30b94a0dcb3f185f3ab6c"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "ignored miaoshou.local.json的app_id/app_secret；OpenAPI app权限；Web另有cookie配置"
+      ],
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help miaoshou",
+      "recovery": "已组合业务源码；仍需完整 OrbitHive runtime、精确批准与目标级官方回读。此 portable 包只提供目录，不带业务配置、认证或执行器。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "2b96c873a7e6cc53e450d87794fcfbca5a979a499f9ee8304095332c56b87fe7",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "28481a064516ca96343e93c1b507d6a1dfb4684e684675e3b85da67802b39de4",
+        "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
+      }
+    },
+    {
+      "kind": "browser/export+domain ingestion",
+      "owner": "04",
+      "purpose": "库存/在途/补货",
+      "inputs": "库存raw rows、在途details、订单aggregate",
+      "outputs": "InventorySnapshot、replenishment dashboard",
+      "side_effects": "浏览器/导出只读；local merge；未找到本审范围稳定Seaya API connector",
+      "id": "seaya",
+      "aliases": [
+        "Seaya / 雅仓"
+      ],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "required_files": [
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md"
+      ],
+      "file_digests": {
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md": "33e20c172e39202baa760c71ba9e926d0eac8c6255984a8b66018ef59d097be6"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "已登录页面或官方export；精确warehouse+SKU+batch"
+      ],
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help seaya",
+      "recovery": "读取具体业务 Skill/已审 adapter 合同；缺依赖时明确报告，不自动执行或借用个人旧配置。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "13d3c4ff6beb473959356059aaded3c7347fb92a70d060c30172b14418783277",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "041ca21345211c654aaf90af63d1c825110a81bf6f0bb5767fc5c96a140f7706"
+      }
+    },
+    {
+      "kind": "project adapter",
+      "owner": "01",
+      "purpose": "货源页面解析、缓存入选品流程",
+      "inputs": "offer id/product URL/HTML",
+      "outputs": "title/images/skus/attrs/source evidence",
+      "side_effects": "scrape外部读+本地缓存；妙手precollect另属ERP写",
+      "id": "source-1688",
+      "aliases": [
+        "1688 source scraping"
+      ],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "required_files": [
+        "modules/sourcing/scrape_1688.py",
+        "modules/sourcing/miaoshou_precollect.py"
+      ],
+      "file_digests": {
+        "modules/sourcing/miaoshou_precollect.py": "d2d4f70836f636e0fe49318883ad25faf1e79952172619b7b82f4f5fe895a4d6",
+        "modules/sourcing/scrape_1688.py": "e1345df385a1bfba901d7e519612f352d7d805fa1c35e66d328d7f30e17a3cc2"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "可访问商品详情页面/用户保存HTML；解析失败显式blocked"
+      ],
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help source-1688",
+      "recovery": "读取具体业务 Skill/已审 adapter 合同；缺依赖时明确报告，不自动执行或借用个人旧配置。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "25419d0ff7444ab55d45e6d49a38cb1c4229898f9a00ae61f5c113265e7bee07",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "7936c03a9fa88e0a236686914d68af5ef0a73275cf39a590e5c4b8ac5000a341"
+      }
+    },
+    {
+      "kind": "project adapter+skill",
+      "owner": "02；00 SDK",
+      "purpose": "模型发现、文字、图片、SSE agent chat",
+      "inputs": "preview+model/prompt/refs/params+authorization",
+      "outputs": "task id/usage/SSE content；丢弃thinking frames",
+      "side_effects": "发现读；生成付费；upload单独gate",
+      "id": "lingshi",
+      "aliases": [
+        "Lingshi AI"
+      ],
+      "stage": "PORTABLE_OFFLINE_ENTRY",
+      "required_files": [
+        "modules/sourcing/lingshi_client.py",
+        "modules/sourcing/lingshi_client.py"
+      ],
+      "file_digests": {
+        "modules/sourcing/lingshi_client.py": "00870d5abf2b401c96bed8cad67677b13e74a0bcf4cd51cefa17131fd26531b4"
+      },
+      "python_dependencies": [
+        "requests"
+      ],
+      "dependencies": [
+        "LINGSHI_API_KEY/LK888_API_KEY或lingshi.local.json；当前capability/pricing"
+      ],
+      "method": "preview lingshi media|image|chat|agent-chat --payload request.json",
+      "recovery": "通用 CLI 仅预览。真实 R2 付费复用现有 PaidRequestLedger/checkpoint/rework；SDK 单开关不替代预算。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "0c534857a0f65cedf17b29e6cda56e66780b9e7d9cc1b9e85ac40ac4dfa019eb",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "0c534857a0f65cedf17b29e6cda56e66780b9e7d9cc1b9e85ac40ac4dfa019eb"
+      }
+    },
+    {
+      "kind": "C残留脚本+Obsidian SOP",
+      "owner": "02调研；00包化",
+      "purpose": "TikTok商品/视频参考采集与样本分析",
+      "inputs": "keyword/region/video-count<=20/output-dir",
+      "outputs": "products.raw.json、videos.raw.json、manifest",
+      "side_effects": "GET数据查询可能计费；无商城写；媒体只有参考权",
+      "id": "tikhub",
+      "aliases": [
+        "TikHub"
+      ],
+      "stage": "PORTABLE_OFFLINE_ENTRY",
+      "required_files": [
+        "modules/tools/tikhub.py",
+        "modules/tools/provider_http.py",
+        "scripts/analyze_tikhub_market_snapshot.py"
+      ],
+      "file_digests": {
+        "modules/tools/provider_http.py": "dd194f4a3f29dc9c137b185681b3ff2e129870b9a6f6f22a4193196e4c87a906",
+        "modules/tools/tikhub.py": "328c69e5122cf2a315acef008296d7b290b26be39826d626281c987092aa310a",
+        "scripts/analyze_tikhub_market_snapshot.py": "c6a7865580e629bfee08a2720bd9ec7d96322f1e22ee4260eb3682d788d89f83"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "TikHub process environment key only at execute"
+      ],
+      "method": "preview|execute tikhub query --payload request.json",
+      "recovery": "同计划复用已完成 raw；UNKNOWN 保留占位并对账原 query/时间/用量，不重查。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "82483c3256ef301dc1b25294107e31ceabd13a18f5eef58cb9eda94e1e681c6e",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "82483c3256ef301dc1b25294107e31ceabd13a18f5eef58cb9eda94e1e681c6e"
+      }
+    },
+    {
+      "kind": "project adapter",
+      "owner": "02调研；00 transport",
+      "purpose": "竞品商品、新品榜、1688图搜",
+      "inputs": "tool enum+bounded payload；图搜仅public HTTPS",
+      "outputs": "preview/normalized intel",
+      "side_effects": "execute是付费POST；当前共享http retry可能重发",
+      "id": "linkfox",
+      "aliases": [
+        "LinkFox / EchoTik / DLD"
+      ],
+      "stage": "LEGACY_SDK_REQUIRES_REVIEW",
+      "required_files": [
+        "modules/sourcing/linkfox_client.py",
+        "modules/sourcing/linkfox_client.py",
+        "modules/sourcing/linkfox_client.py"
+      ],
+      "file_digests": {
+        "modules/sourcing/linkfox_client.py": "0a7cb126fee9315fa744e7dd42d90987e9ab938a7ed52f9b9f141553d19b2f55"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "LINKFOXAGENT_API_KEY（不是LINKFOX_API_KEY）；有界地区/页数"
+      ],
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help linkfox",
+      "recovery": "读取具体业务 Skill/已审 adapter 合同；缺依赖时明确报告，不自动执行或借用个人旧配置。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "b1e66b9f9889cb6a86cd45cb13fb913951ef5c273d92d122287b35d247e95cf0",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "b1e66b9f9889cb6a86cd45cb13fb913951ef5c273d92d122287b35d247e95cf0"
+      }
+    },
+    {
+      "kind": "显式 runtime Python 客户端",
+      "owner": "00封装；03业务操作",
+      "purpose": "设备列表、状态、apps list和安装",
+      "inputs": "明确 profile；查询分页或精确设备 ID，安装需设备、应用、版本、包名及已有授权引用",
+      "outputs": "离线请求预览、脱敏设备与应用查询结果、持久安装记录及回读；包名存在不证明版本或某次未知安装成功",
+      "side_effects": "help/doctor/preview 仅本地检查；read 查询实际联网；execute install-app 在精确授权范围内安装，reconcile-install 只读恢复",
+      "id": "duoplus",
+      "aliases": [
+        "DuoPlus"
+      ],
+      "stage": "PORTABLE_OFFLINE_ENTRY",
+      "required_files": [
+        "modules/tools/duoplus.py",
+        "modules/tools/provider_http.py"
+      ],
+      "file_digests": {
+        "modules/tools/duoplus.py": "79b0f9b578c1e50d8b12ba8b9e1daa58dba33c1f65e9adec5c06852ad1d9ef88",
+        "modules/tools/provider_http.py": "dd194f4a3f29dc9c137b185681b3ff2e129870b9a6f6f22a4193196e4c87a906"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "explicit official origin + selected process environment key"
+      ],
+      "method": "preview duoplus devices|info|status|apps|installed-apps|install-app; read duoplus devices|info|status|apps|installed-apps; execute duoplus install-app|reconcile-install",
+      "recovery": "恢复原 scope 的 installed-apps 回读；只证明 package present，版本不可核；UNKNOWN 不重复安装。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "70a928af83b3b74c5f82e0066c3c752a3cdd913251aee3ac322b71ee948a46d9",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "70a928af83b3b74c5f82e0066c3c752a3cdd913251aee3ac322b71ee948a46d9"
+      }
+    },
+    {
+      "kind": "independent plugin",
+      "owner": "02生成；00基础设施",
+      "purpose": "远程GPU视频、恢复与自动停机",
+      "inputs": "binding/config+prompt-file+frames/reference+size/time",
+      "outputs": "MP4、manifest、original prompt_id、stopped证明",
+      "side_effects": "plan/status读；GPU租赁/生成/上传付费",
+      "id": "minimax-h3",
+      "aliases": [
+        "MiniMax H3 / CompShare / ComfyUI"
+      ],
+      "stage": "HOST_DISCOVERY_REQUIRED",
+      "required_files": [],
+      "file_digests": {},
+      "python_dependencies": [],
+      "dependencies": [
+        "independent plugin",
+        "Node",
+        "compshare-cli profile",
+        "SSH",
+        "FFmpeg"
+      ],
+      "method": "Discover minimax-h3-cloud:minimax-h3-video in current Skill list; read its exact plugin runtime contract",
+      "recovery": "保留原 prompt_id/deployment binding 并按插件恢复和停机；不复制缓存或租户配置。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "source_kind": "external-or-retired",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    {
+      "kind": "legacy project adapter/showcase",
+      "owner": "02",
+      "purpose": "主图抠图、白底、场景与recipe试跑",
+      "inputs": "source image URL/local file+recipe",
+      "outputs": "本地图片、showcase manifest",
+      "side_effects": "上传/图片API可能付费；showcase全recipe循环",
+      "id": "photoroom",
+      "aliases": [
+        "Photoroom"
+      ],
+      "stage": "LEGACY_SDK_REQUIRES_REVIEW",
+      "required_files": [
+        "modules/products/image_ai.py",
+        "modules/sourcing/photoroom_showcase.py"
+      ],
+      "file_digests": {
+        "modules/products/image_ai.py": "7274c1a4b19f8111621afe062d400b0df46429adef3e275aadc6872c19985aed",
+        "modules/sourcing/photoroom_showcase.py": "5071bea8ae2d2bb5c55b37e7c28f0674d9b1d29bae3f36a46def1af5b145eddb"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "images.photoroom_api_key、sandbox/recipe配置"
+      ],
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help photoroom",
+      "recovery": "读取具体业务 Skill/已审 adapter 合同；缺依赖时明确报告，不自动执行或借用个人旧配置。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "c8b319ad839a6094dd4db729a98367a2d70903e1e81465d5fd691d7d4548386d",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "c8b319ad839a6094dd4db729a98367a2d70903e1e81465d5fd691d7d4548386d"
+      }
+    },
+    {
+      "kind": "legacy project adapter",
+      "owner": "01/02文案；00 SDK",
+      "purpose": "旧商品标题/翻译/货源文案",
+      "inputs": "messages/product facts",
+      "outputs": "文本/JSON copy",
+      "side_effects": "POST通常付费；共享retry且无runtime paid receipt",
+      "id": "legacy-llm",
+      "aliases": [
+        "DeepSeek / OpenAI-compatible legacy LLM"
+      ],
+      "stage": "LEGACY_SDK_REQUIRES_REVIEW",
+      "required_files": [
+        "core/llm.py",
+        "modules/sourcing/copy_ai.py"
+      ],
+      "file_digests": {
+        "core/llm.py": "23b7732a7d86963d92577ee2db42f91774dcf60fd5373a418783b3f85ace4fd3",
+        "modules/sourcing/copy_ai.py": "fcd40b302f4f0cafe53a81eb982732523191f1e69ea6d50033e67d714326f8b9"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "OPENAI_API_KEY或settings.ai.api_key；base_url/model"
+      ],
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help legacy-llm",
+      "recovery": "读取具体业务 Skill/已审 adapter 合同；缺依赖时明确报告，不自动执行或借用个人旧配置。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "114703b11d5dbc6571bdc0204eb220a15b2c747a5e01ad89ac397462976f7a8f",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "114703b11d5dbc6571bdc0204eb220a15b2c747a5e01ad89ac397462976f7a8f"
+      }
+    },
+    {
+      "kind": "retired local / remote pending",
+      "owner": "02下线；00收敛发布",
+      "purpose": "旧图片服务兼容代码与技能",
+      "inputs": "仅历史receipt/迁移证据",
+      "outputs": "退役对账",
+      "side_effects": "本轮零调用",
+      "id": "toapi",
+      "aliases": [
+        "ToAPI"
+      ],
+      "stage": "RETIRED",
+      "required_files": [],
+      "file_digests": {},
+      "python_dependencies": [],
+      "dependencies": [
+        "不供新任务使用"
+      ],
+      "method": "Historical receipt/provider reconciliation only",
+      "recovery": "不生成新 ToAPI 任务，不作 Lingshi fallback；保留旧 provider/task 原身份。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "source_kind": "external-or-retired",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    {
+      "kind": "project adapter",
+      "owner": "05",
+      "purpose": "利润/定价实时汇率快照",
+      "inputs": "currency/site/as-of",
+      "outputs": "immutable FX snapshot+provider/time",
+      "side_effects": "外部读；不写交易平台",
+      "id": "fx",
+      "aliases": [
+        "FX providers"
+      ],
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "required_files": [
+        "modules/sourcing/fx_rates.py"
+      ],
+      "file_digests": {
+        "modules/sourcing/fx_rates.py": "a24f4b3d34355a2a90716107cb7d62d0faf16ffb4455519e332542a726e88054"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "网络与当前FX来源"
+      ],
+      "method": "python R/scripts/orbit_tools.py --runtime-root R help fx",
+      "recovery": "读取具体业务 Skill/已审 adapter 合同；缺依赖时明确报告，不自动执行或借用个人旧配置。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "e2a0cb9c6e0e0d4d7d017a4c63d0476350ae1904407be633a50bb9bce64e272a",
+        "source_kind": "candidate",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "e2a0cb9c6e0e0d4d7d017a4c63d0476350ae1904407be633a50bb9bce64e272a"
+      }
+    },
+    {
+      "kind": "host connector/MCP/plugin",
+      "owner": "00宿主能力",
+      "purpose": "repo读取/PR、task/sidebar、Sites、文档、浏览器、ImageGen",
+      "inputs": "explicit source and review digest; synthetic or separately authorized local knowledge only",
+      "outputs": "immutable version-bound local snapshot and search matches with provenance",
+      "side_effects": "default local read only; explicit --write creates one new snapshot; no provider requests",
+      "id": "publication-knowledge",
+      "aliases": [
+        "商品发布知识快照"
+      ],
+      "stage": "PORTABLE_REVIEWED_SNAPSHOT_ENTRY",
+      "required_files": [
+        "modules/product_agent/__init__.py",
+        "modules/product_agent/knowledge.py",
+        "scripts/sync_product_publication_knowledge.py",
+        "shared_platform/capability_runtime.py",
+        "docs/knowledge/README.md"
+      ],
+      "file_digests": {
+        "docs/knowledge/README.md": "657aaaa6dcfc7b234bb1bf6eb942b60ce960bb09993761db73ee61f03d7de839",
+        "modules/product_agent/__init__.py": "c0b954b3084937eb11c950d8c0e3915c93d6eeea543d7429f490e5d036c7e6c8",
+        "modules/product_agent/knowledge.py": "864e6653ded7710229a3fd7564d5f01e4cd55bea8209d613b0ab9ff8d3e8af56",
+        "scripts/sync_product_publication_knowledge.py": "19aa38c907e8c5dc2e4ea236bfd932c2de352b3912f6813be4eed77690365283",
+        "shared_platform/capability_runtime.py": "19bcc6b31313527908c69b7f59ac59e7dba453f5ad449903a20454b61cd28ba2"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "Python >= 3.11",
+        "explicit local Vault and bounded reviewed manifest",
+        "pinned expected knowledge version",
+        "same-directory atomic hard-link for export"
+      ],
+      "method": "scripts/sync_product_publication_knowledge.py export-preview|inspect|parity with explicit runtime/project/profile",
+      "recovery": "需显式来源、有限核准清单与任务版本；不含 Vault、快照、shadow/runtime/store 或完整 product_agent。新知识版本不能替换旧任务。",
+      "source": {
+        "basis_commit": "7d6d7c82b953b1f8ea5cf5ddcd1d1ccdc27c05c3",
+        "source_kind": "accepted-K00-limited-knowledge",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "0a5cc43d215c1cc6ad213b003d3d17e5c378fe36c1ca628000cd2b3ba9f466ea",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only"
+      }
+    },
+    {
+      "id": "host-tools",
+      "aliases": [
+        "Codex/GitHub/Sites/文档工具"
+      ],
+      "stage": "HOST_DISCOVERY_REQUIRED",
+      "required_files": [],
+      "file_digests": {},
+      "python_dependencies": [],
+      "dependencies": [
+        "host-provided MCP/connector/Skill availability"
+      ],
+      "method": "Inspect current ALL_TOOLS names/descriptions or tool search; use typed available schema",
+      "recovery": "按宿主实际发现浏览器、文档、ImageGen 等；工具目录不证明账号权限。",
+      "source": {
+        "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+        "all_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "source_kind": "external-or-retired",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    {
+      "id": "publication-closure",
+      "aliases": [
+        "精确发布计划的本地关闭脚本（需要完整 runtime）"
+      ],
+      "purpose": "从 portable 副本离线查看关闭客户端帮助；连接经身份核验的完整 OrbitHive loopback 服务后，准备、记录或查询精确计划的本地关闭回执。",
+      "inputs": "help 无需服务；doctor/prepare/record/latest 须显式 --base-url 指向 loopback 服务及 --expected-root；prepare 使用 --input JSON，record 使用 --prepared JSON，latest 使用精确 --offer-id 与 --plan-id。",
+      "outputs": "离线 help；doctor 服务身份/依赖结果；prepare 的关闭预览；由服务端写入的不可变本地关闭回执；latest 同计划回读。",
+      "side_effects": "help 不联网；doctor/latest 只读 GET；prepare 是经服务端核验的本地预览；record 由服务端写入一份不可变本地回执。客户端不直接调用 provider。",
+      "stage": "WORKFLOW_RUNTIME_REQUIRED",
+      "required_files": [
+        "skills/publish-approved-product/scripts/close_product_publication.py",
+        "shared_platform/product_publication_closure.py"
+      ],
+      "file_digests": {
+        "shared_platform/product_publication_closure.py": "c9fb3fee9797b6512c57d0b14f12fe30ca21b86cb26aa37e1a4d845e5892e9c5",
+        "skills/publish-approved-product/scripts/close_product_publication.py": "5e233467f2795371fbebe111dafe3c832351cfb94c3adfd28e0f567731b7968e"
+      },
+      "python_dependencies": [],
+      "dependencies": [
+        "Python standard library; package minimum Python 3.11",
+        "explicit loopback service and exact expected runtime root for doctor/prepare/record/latest",
+        "complete OrbitHive runtime and exact local publication evidence for closure recording"
+      ],
+      "method": "python -I R/skills/publish-approved-product/scripts/close_product_publication.py --help",
+      "recovery": "portable 客户端可独立显示 help，但不自带服务或关闭权。先以 --base-url 和 --expected-root 核对服务身份及依赖；record 的传输或回包不明时不自动重试，保留预期 closure ID/digest，用同一 offer_id 与 plan_id 的 latest 只读对账。缺精确批准/发布证据时由服务端拒绝，不补造证据。",
+      "source": {
+        "basis_commit": "efecb016fc74f5c78c269d4272a9ed294edf91f4",
+        "source_kind": "accepted-T00-D-standalone-closure-client",
+        "composition_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+        "composed_file_digest": "26a0d68c100b19c1c108e95c0e1707bedf5dfa69279fe494642c8355da1e541c",
+        "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only"
+      }
+    }
+  ],
+  "source_basis_commit": "5eba1af96fd4f289bf995d2225dfb8a53a09c5d2",
+  "hash_format": "utf8-lf-text/raw-binary-sha256",
+  "excluded_from_capability_counts": [
+    "pytest artifacts",
+    "plugin cache backups and aliases",
+    "duplicate vendor documents"
+  ],
+  "composition_pending": [
+    {
+      "owner": "B4B",
+      "commit": null,
+      "components": [
+        "R3",
+        "discounts",
+        "publication_autopilot final",
+        "two product-family JSON rules"
+      ]
+    }
+  ],
+  "package_version": "orbit-portable-tools/6"
+}

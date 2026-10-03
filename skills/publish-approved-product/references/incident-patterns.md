@@ -15,6 +15,18 @@ current execution report only.
 
 ## Confirmed patterns
 
+- Deep preflight: `platform-preflight-report/v2` rejects deferred Shopee
+  category/required-attribute decisions, incomplete or duplicate Model-SKU
+  option-image bindings, and missing exact-store TikTok mainland-pickup
+  warehouse semantics before any provider mutation.
+- Final-review truth: the digest-bound candidate visibly distinguishes waiting,
+  approved and executed. After execution, immutable per-platform reports are
+  the primary ledger; an empty compatibility ReleaseRun must not imply that
+  nothing ran or permit a retry.
+- Stable processing: `PROCESSING` plus `readback_completed=true` is
+  `READBACK_ONLY`, not an active worker. Preserve it for later official GET
+  reconciliation and forbid repeated POST/start or unbounded waiting.
+
 - Production control path: a new approved offer must start only the three
   explicit Product Center frozen-v4 Runner endpoints with exact
   `offer_id + plan_id`, validate `product-publication-start/v1`, and poll the
@@ -39,6 +51,10 @@ current execution report only.
 - Platform isolation: `platform_scope` must create rows only for selected
   platforms. Pending rows for unselected platforms are forbidden because they
   create false completion dependencies.
+- Scoped recovery visibility: a target-only recovery may update only its exact
+  platform targets, but the product UI must render the server's newest
+  per-target aggregate across the complete approved target list. A successful
+  recovery report must never hide unresolved siblings from older runs.
 - TikTok fridge magnets: the exact official `cid=854536` (`冰箱贴`) was
   confirmed enabled for PH/MY/TH/VN/MX/GB only after an exact per-site tree
   check and exact-shop metadata validation. Revalidate those two facts for
@@ -80,9 +96,11 @@ current execution report only.
 - Shopee regional language: keep English on the verified CNSC Global master,
   but omit `item_name` and `description` from `create_publish_task`. Explicitly
   sending the English master disables destination copy derivation and creates
-  English TH/VN listings. Official readback accepts English for PH/MY, requires
-  Thai for TH and Vietnamese for VN, and repairs a wrong-language TH/VN item
-  in place before a second official readback; never create a duplicate.
+  wrong-language regional listings. Official readback accepts English only for
+  PH, requires Malay for MY, Thai for TH and Vietnamese for VN, and repairs a
+  wrong-language MY/TH/VN item in place before a second official readback;
+  never create a duplicate. Preserve the exact existing extended-description
+  image IDs atomically with any regional text repair.
 - Shopee category recommendation: choose one exact publishable official leaf
   from the frozen main-category semantic identity, then read only that leaf's
   attribute tree. A malformed unrelated recommendation must not erase a valid
@@ -104,6 +122,9 @@ current execution report only.
   `shopIdToWarehouseIdAndStockMap`. Reuse one exact existing binding or read
   that shop's official active/default warehouse; never invent stock or reuse a
   warehouse across shops.
+- TikTok MX/GB warehouse aliases are exact-shop facts: `中国仓库` is accepted
+  only for MX shop `16265910`, and `自有仓库` only for GB shop `10204699`.
+  Resolve current IDs at runtime and keep every other active warehouse at zero.
 - TikTok all-target preflight uses two explicit barriers. Before claim/create,
   every frozen target draft must be built and JSON-serialized; shared failure
   means zero provider mutations. After identities exist, every real SAVE body
@@ -131,6 +152,12 @@ current execution report only.
   delivery fields and omit all per-model dimensions; only a dedicated
   post-submit matcher may accept those confirmed omissions while retaining
   exact category, parent parcel, SKU, model price and model weight checks.
+- TikTok: an accepted v4 preparation SAVE is an optimistic-locking boundary.
+  Pass its exact target label into a dedicated post-save readback preflight;
+  when Miaoshou retains every approved core fact but normalizes display title,
+  sale-property name, notesText, delivery, size-chart type or per-SKU auxiliary
+  fields, publish without a second SAVE. Any core mismatch must instead prepare
+  at most one repair from the newly read `ossMd5`; never replay the stale SAVE.
 - Ozon: approved `table runner`/`table flag` copy is table-textile evidence and
   must win before a stale festive-decoration-to-sticker category mapping.
 - Ozon: the approved generic platform title must not be regenerated from

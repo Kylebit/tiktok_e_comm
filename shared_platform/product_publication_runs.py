@@ -31,6 +31,7 @@ _SAFE_RUN_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _HEX_DIGEST = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
 _FAILURE_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _EXECUTION_IDENTITY_FIELDS = frozenset({"skill_digest", "git_commit", "code_digest"})
+_OZON_EXECUTION_IDENTITY_FIELDS = frozenset({"ozon_account_id", "ozon_credentials_sha256"})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS product_publication_runs (
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS product_publication_runs (
     platform_scope_json TEXT NOT NULL,
     target_count INTEGER NOT NULL,
     execution_identity_json TEXT,
+    request_identity_json TEXT,
     state TEXT NOT NULL,
     final_report_id TEXT,
     failure_code TEXT,
@@ -141,7 +143,12 @@ def _sha256(value: object) -> str:
 
 
 def _execution_identity(value: object) -> dict[str, str]:
-    if not isinstance(value, Mapping) or set(value) != set(_EXECUTION_IDENTITY_FIELDS):
+    if not isinstance(value, Mapping):
+        raise ValueError("execution_identity fields are invalid")
+    fields = set(value)
+    if fields != set(_EXECUTION_IDENTITY_FIELDS) and fields != set(
+        _EXECUTION_IDENTITY_FIELDS | _OZON_EXECUTION_IDENTITY_FIELDS
+    ):
         raise ValueError("execution_identity fields are invalid")
     result = {name: _text(value[name], name, max_length=64) for name in _EXECUTION_IDENTITY_FIELDS}
     if not re.fullmatch(r"[0-9a-f]{40}", result["git_commit"]):
@@ -149,7 +156,115 @@ def _execution_identity(value: object) -> dict[str, str]:
     for name in ("skill_digest", "code_digest"):
         if not re.fullmatch(r"[0-9a-f]{64}", result[name]):
             raise ValueError(f"{name} is invalid")
+    if _OZON_EXECUTION_IDENTITY_FIELDS.issubset(fields):
+        account = _text(value["ozon_account_id"], "ozon_account_id", max_length=64)
+        digest = _text(value["ozon_credentials_sha256"], "ozon_credentials_sha256", max_length=64)
+        if not account.isdecimal() or int(account) <= 0:
+            raise ValueError("ozon_account_id is invalid")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("ozon_credentials_sha256 is invalid")
+        result.update(ozon_account_id=account, ozon_credentials_sha256=digest)
     return result
+
+
+def _request_identity(value: object | None) -> dict[str, str | None]:
+    if value is None:
+        return {"kind": "STANDARD", "authority_digest": None}
+    if not isinstance(value, Mapping):
+        raise ValueError("request_identity fields are invalid")
+    kind = value.get("kind")
+    authority = value.get("authority_digest")
+    if kind == 'TIKTOK_FIRST_COMPLETION_ZERO_WRITE_RETRY' and set(value) == {
+            'kind','authority_digest','manifest_digest','retry_of_run_id',
+            'source_report_digest','source_result_digest','source_manifest_digest'}:
+        retry = value['retry_of_run_id']
+        digests = {key: value[key] for key in value if key not in {'kind','retry_of_run_id'}}
+        if (type(retry) is not str or not _SAFE_RUN_PART.fullmatch(retry)
+                or any(type(v) is not str or not _HEX_DIGEST.fullmatch(v) for v in digests.values())):
+            raise ValueError('TikTok retry request identity is invalid')
+        return {'kind':kind,'retry_of_run_id':retry,**{k:'sha256:'+v.removeprefix('sha256:') for k,v in digests.items()}}
+    if kind == "TIKTOK_CONTINUATION" and set(value) == {
+            "kind", "authority_digest", "manifest_digest", "policy_digest"}:
+        digests = {name: value[name] for name in ("authority_digest", "manifest_digest", "policy_digest")}
+        if any(type(v) is not str or not _HEX_DIGEST.fullmatch(v) for v in digests.values()):
+            raise ValueError("TikTok continuation request identity is invalid")
+        return {"kind": kind, **{k: "sha256:" + v.removeprefix("sha256:") for k, v in digests.items()}}
+    if kind == "STANDARD" and authority is None and set(value) == {"kind", "authority_digest"}:
+        return {"kind": "STANDARD", "authority_digest": None}
+    if kind == "SHOPEE_RECOVERY" and set(value) == {"kind", "authority_digest"} \
+            and type(authority) is str and _HEX_DIGEST.fullmatch(authority):
+        return {"kind": kind, "authority_digest": "sha256:" + authority.removeprefix("sha256:")}
+    if kind == "SHOPEE_RECOVERY_CONTINUATION" and set(value) == {
+            "kind", "authority_digest", "predecessor_run_id",
+            "source_receipt_digest", "preflight_digest",
+            "evidence_relocation_digest"}:
+        predecessor = value.get("predecessor_run_id")
+        source_receipt = value.get("source_receipt_digest")
+        preflight = value.get("preflight_digest")
+        relocation = value.get("evidence_relocation_digest")
+        if (type(authority) is not str or not _HEX_DIGEST.fullmatch(authority)
+                or type(predecessor) is not str
+                or not _SAFE_RUN_PART.fullmatch(predecessor)
+                or type(source_receipt) is not str
+                or not _HEX_DIGEST.fullmatch(source_receipt)
+                or type(preflight) is not str
+                or not _HEX_DIGEST.fullmatch(preflight)
+                or type(relocation) is not str
+                or not _HEX_DIGEST.fullmatch(relocation)):
+            raise ValueError("request_identity is invalid")
+        return {
+            "kind": kind,
+            "authority_digest": "sha256:" + authority.removeprefix("sha256:"),
+            "predecessor_run_id": predecessor,
+            "source_receipt_digest": "sha256:" + source_receipt.removeprefix("sha256:"),
+            "preflight_digest": "sha256:" + preflight.removeprefix("sha256:"),
+            "evidence_relocation_digest": "sha256:" + relocation.removeprefix("sha256:"),
+        }
+    if kind == "SHOPEE_KNOWN_ZERO_CONTINUATION" and set(value) == {
+            "kind", "authority_digest", "predecessor_run_id",
+            "source_receipt_digest", "source_execution_manifest_digest",
+            "preflight_digest", "evidence_relocation_digest"}:
+        predecessor = value.get("predecessor_run_id")
+        digests = {
+            name: value.get(name)
+            for name in (
+                "authority_digest", "source_receipt_digest",
+                "source_execution_manifest_digest", "preflight_digest",
+                "evidence_relocation_digest",
+            )
+        }
+        if (
+            type(predecessor) is not str
+            or not _SAFE_RUN_PART.fullmatch(predecessor)
+            or any(
+                type(digest) is not str or not _HEX_DIGEST.fullmatch(digest)
+                for digest in digests.values()
+            )
+        ):
+            raise ValueError("request_identity is invalid")
+        return {
+            "kind": kind,
+            "predecessor_run_id": predecessor,
+            **{
+                name: "sha256:" + digest.removeprefix("sha256:")
+                for name, digest in digests.items()
+            },
+        }
+    if kind != "SHOPEE_RECOVERY_RETRY" or set(value) != {
+            "kind", "authority_digest", "reconciliation_receipt_digest", "retry_of_run_id"}:
+        raise ValueError("request_identity is invalid")
+    receipt = value.get("reconciliation_receipt_digest")
+    retry_of = value.get("retry_of_run_id")
+    if (type(authority) is not str or not _HEX_DIGEST.fullmatch(authority)
+            or type(receipt) is not str or not _HEX_DIGEST.fullmatch(receipt)
+            or type(retry_of) is not str or not _SAFE_RUN_PART.fullmatch(retry_of)):
+        raise ValueError("request_identity is invalid")
+    return {
+        "kind": kind,
+        "authority_digest": "sha256:" + authority.removeprefix("sha256:"),
+        "reconciliation_receipt_digest": "sha256:" + receipt.removeprefix("sha256:"),
+        "retry_of_run_id": retry_of,
+    }
 
 
 def _scope(value: object) -> tuple[str, ...]:
@@ -176,8 +291,9 @@ def _identity_payload(
     platform_scope: tuple[str, ...],
     target_count: int,
     execution_identity: Mapping[str, str],
+    request_identity: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "run_id": run_id,
         "report_id": report_id,
         "offer_id": offer_id,
@@ -189,6 +305,9 @@ def _identity_payload(
         "target_count": target_count,
         "execution_identity": dict(execution_identity),
     }
+    if request_identity is not None:
+        result["request_identity"] = dict(request_identity)
+    return result
 
 
 def _event_payload(
@@ -240,6 +359,8 @@ class ProductPublicationRunStore:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(product_publication_runs)")}
         if "execution_identity_json" not in columns:
             conn.execute("ALTER TABLE product_publication_runs ADD COLUMN execution_identity_json TEXT")
+        if "request_identity_json" not in columns:
+            conn.execute("ALTER TABLE product_publication_runs ADD COLUMN request_identity_json TEXT")
         event_columns = {row[1] for row in conn.execute("PRAGMA table_info(product_publication_run_events)")}
         if "run_identity_digest" not in event_columns:
             conn.execute("ALTER TABLE product_publication_run_events ADD COLUMN run_identity_digest TEXT")
@@ -295,6 +416,10 @@ class ProductPublicationRunStore:
         platform_scope: Sequence[str],
         target_count: int,
         execution_identity: Mapping[str, object] | None = None,
+        approved_request_guard=None,
+        admission_guard=None,
+        retry_of_run_id: str | None = None,
+        request_identity: Mapping[str, object] | None = None,
     ) -> StoredPublicationRun:
         safe_run_id = _run_id(run_id)
         safe_report_id = publication_report_id(safe_run_id)
@@ -309,6 +434,7 @@ class ProductPublicationRunStore:
             if execution_identity is None
             else execution_identity
         )
+        safe_request_identity = _request_identity(request_identity)
         identity = _identity_payload(
             run_id=safe_run_id,
             report_id=safe_report_id,
@@ -319,12 +445,36 @@ class ProductPublicationRunStore:
             platform_scope=safe_scope,
             target_count=safe_target_count,
             execution_identity=safe_execution_identity,
+            request_identity=safe_request_identity,
         )
         identity_digest = _digest(identity)
         now = _utc_now()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             self._ensure_schema(conn)
+            # Serialize the lookup and claim across independent server processes.
+            conn.execute("BEGIN IMMEDIATE")
+            if admission_guard is not None:
+                admission_guard()
+            if approved_request_guard is not None:
+                previous = conn.execute(
+                    "SELECT * FROM product_publication_runs WHERE offer_id = ? ORDER BY created_at DESC, run_id DESC",
+                    (safe_offer_id,),
+                ).fetchall()
+                for row in previous:
+                    prior = self._row_to_run(conn, row)
+                    if not set(prior["platform_scope"]).intersection(safe_scope):
+                        continue
+                    same = (
+                        prior["plan_id"] == safe_plan_id
+                        and prior["snapshot_digest"] == safe_digest
+                        and prior["platform_scope"] == list(safe_scope)
+                    )
+                    if (same and retry_of_run_id is None
+                            and prior.get("request_identity") == safe_request_identity):
+                        return StoredPublicationRun(run_id=prior["run_id"], report_id=prior["report_id"], state=prior["state"], created=False)
+                    if prior["run_id"] != safe_run_id:
+                        approved_request_guard(prior)
             existing = conn.execute(
                 "SELECT * FROM product_publication_runs WHERE run_id = ? OR report_id = ?",
                 (safe_run_id, safe_report_id),
@@ -345,9 +495,10 @@ class ProductPublicationRunStore:
                     run_id, report_id, offer_id, revision, plan_id,
                     snapshot_schema_version, snapshot_digest,
                     platform_scope_json, target_count, state,
-                    execution_identity_json, final_report_id, failure_code, identity_digest,
+                    execution_identity_json, request_identity_json,
+                    final_report_id, failure_code, identity_digest,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', ?, NULL, NULL, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', ?, ?, NULL, NULL, ?, ?, ?)
                 """,
                 (
                     safe_run_id,
@@ -360,6 +511,7 @@ class ProductPublicationRunStore:
                     _canonical_json(list(safe_scope)),
                     safe_target_count,
                     _canonical_json(safe_execution_identity),
+                    _canonical_json(safe_request_identity),
                     identity_digest,
                     now,
                     now,
@@ -446,11 +598,7 @@ class ProductPublicationRunStore:
                 run_identity_digest=row["identity_digest"],
             )
             conn.commit()
-            updated = conn.execute(
-                "SELECT * FROM product_publication_runs WHERE run_id = ?",
-                (safe_run_id,),
-            ).fetchone()
-            return self._row_to_run(conn, updated)
+            return self._read_runs(conn, "r.run_id = ?", (safe_run_id,))[0]
 
     def mark_running(self, *, run_id: str) -> dict[str, Any]:
         return self._transition(run_id=run_id, state="RUNNING")
@@ -465,7 +613,10 @@ class ProductPublicationRunStore:
             run_id=run_id, state="FAILED", failure_code=failure_code
         )
 
-    def _row_to_run(self, conn: sqlite3.Connection, row: sqlite3.Row | None) -> dict[str, Any] | None:
+    def _row_to_run(
+        self, conn: sqlite3.Connection,
+        row: sqlite3.Row | dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
         if row is None:
             return None
         try:
@@ -474,6 +625,11 @@ class ProductPublicationRunStore:
                 _execution_identity(json.loads(row["execution_identity_json"]))
                 if row["execution_identity_json"] is not None
                 else None
+            )
+            request_identity = (
+                _request_identity(json.loads(row["request_identity_json"]))
+                if row["request_identity_json"] is not None
+                else _request_identity(None)
             )
         except (TypeError, json.JSONDecodeError) as error:
             raise ProductPublicationRunIntegrityError("publication run scope is invalid") from error
@@ -487,6 +643,7 @@ class ProductPublicationRunStore:
             platform_scope=_scope(scope),
             target_count=_target_count(row["target_count"]),
             execution_identity=(execution_identity or {"skill_digest": "0" * 64, "git_commit": "0" * 40, "code_digest": "0" * 64}),
+            request_identity=(request_identity if row["request_identity_json"] is not None else None),
         )
         if execution_identity is None:
             legacy_identity = dict(identity)
@@ -496,10 +653,12 @@ class ProductPublicationRunStore:
             identity_matches = _digest(identity) == row["identity_digest"]
         if row["snapshot_schema_version"] != SNAPSHOT_SCHEMA_VERSION or not identity_matches:
             raise ProductPublicationRunIntegrityError("publication run identity digest does not match")
-        events = conn.execute(
-            "SELECT * FROM product_publication_run_events WHERE run_id = ? ORDER BY sequence",
-            (row["run_id"],),
-        ).fetchall()
+        events = row.get("_events") if isinstance(row, dict) else None
+        if events is None:
+            events = conn.execute(
+                "SELECT * FROM product_publication_run_events WHERE run_id = ? ORDER BY sequence",
+                (row["run_id"],),
+            ).fetchall()
         if not events or [event["sequence"] for event in events] != list(range(1, len(events) + 1)):
             raise ProductPublicationRunIntegrityError("publication run event sequence is invalid")
         for event in events:
@@ -530,6 +689,7 @@ class ProductPublicationRunStore:
             "schema_version": RUN_SCHEMA_VERSION,
             **identity,
             "execution_identity": execution_identity,
+            "request_identity": request_identity,
             "state": row["state"],
             "final_report_id": row["final_report_id"],
             "failure_code": row["failure_code"],
@@ -538,6 +698,53 @@ class ProductPublicationRunStore:
             "event_count": len(events),
         }
 
+    def _read_runs(
+        self, conn: sqlite3.Connection, where: str, parameters: tuple[str, ...],
+        *, order: str = "r.run_id",
+    ) -> list[dict[str, Any]]:
+        # One SELECT materializes both sides of the integrity check from one
+        # SQLite statement snapshot without holding a transaction across checks.
+        rows = conn.execute(
+            "SELECT r.*, e.run_id AS event_run_id, e.sequence AS event_sequence, "
+            "e.state AS event_state, e.final_report_id AS event_final_report_id, "
+            "e.failure_code AS event_failure_code, e.created_at AS event_created_at, "
+            "e.run_identity_digest AS event_run_identity_digest, "
+            "e.event_digest AS event_event_digest "
+            "FROM product_publication_runs AS r "
+            "LEFT JOIN product_publication_run_events AS e ON e.run_id = r.run_id "
+            f"WHERE {where} ORDER BY {order}, e.sequence",
+            parameters,
+        ).fetchall()
+        grouped: dict[str, tuple[sqlite3.Row, list[dict[str, Any]]]] = {}
+        for row in rows:
+            run_id = row["run_id"]
+            if run_id not in grouped:
+                grouped[run_id] = (row, [])
+            if row["event_sequence"] is not None:
+                grouped[run_id][1].append({
+                    key: row["event_" + key]
+                    for key in (
+                        "run_id", "sequence", "state", "final_report_id", "failure_code",
+                        "created_at", "run_identity_digest", "event_digest",
+                    )
+                })
+        return [
+            self._row_to_run(conn, {**dict(row), "_events": events})
+            for row, events in grouped.values()
+        ]
+
+    def list_runs_for_plan(self, *, offer_id: str, plan_id: str) -> list[dict[str, Any]]:
+        """Read existing async identities for stage projection without creating a database."""
+        safe_offer = _offer_id(offer_id)
+        safe_plan = _text(plan_id, 'plan_id')
+        if not self.path.is_file():
+            return []
+        with self._connect_readonly() as conn:
+            return self._read_runs(
+                conn, "r.offer_id = ? AND r.plan_id = ?", (safe_offer, safe_plan),
+                order="r.created_at DESC",
+            )
+
     def get_run(self, *, report_id: str, offer_id: str) -> dict[str, Any] | None:
         safe_report_id = _text(report_id, "report_id")
         safe_offer_id = _offer_id(offer_id)
@@ -545,11 +752,11 @@ class ProductPublicationRunStore:
             return None
         with self._connect_readonly() as conn:
             try:
-                row = conn.execute(
-                    "SELECT * FROM product_publication_runs WHERE report_id = ? AND offer_id = ?",
+                runs = self._read_runs(
+                    conn, "r.report_id = ? AND r.offer_id = ?",
                     (safe_report_id, safe_offer_id),
-                ).fetchone()
-                return self._row_to_run(conn, row)
+                )
+                return runs[0] if runs else None
             except sqlite3.OperationalError:
                 return None
 
@@ -559,16 +766,15 @@ class ProductPublicationRunStore:
             return None
         with self._connect_readonly() as conn:
             try:
-                row = conn.execute(
-                    "SELECT * FROM product_publication_runs WHERE run_id = ?",
-                    (safe_run_id,),
-                ).fetchone()
-                return self._row_to_run(conn, row)
+                runs = self._read_runs(conn, "r.run_id = ?", (safe_run_id,))
+                return runs[0] if runs else None
             except sqlite3.OperationalError:
                 return None
 
 
-def public_publication_run_status(run: Mapping[str, Any]) -> dict[str, Any]:
+def public_publication_run_status(
+    run: Mapping[str, Any], *, progress: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """Project a queued/running/failed run into the four-state UI contract."""
 
     state = run["state"]
@@ -617,6 +823,7 @@ def public_publication_run_status(run: Mapping[str, Any]) -> dict[str, Any]:
         "summary_digest": _digest(summary),
         "created_at": run["created_at"],
         "updated_at": run["updated_at"],
+        **({"progress": dict(progress)} if progress is not None else {}),
     }
 
 

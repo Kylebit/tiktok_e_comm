@@ -40,7 +40,7 @@ from modules.miaoshou.tiktok_v4_drafts import (
     TikTokV4DraftTransport,
     prepare_tiktok_v4_drafts,
 )
-from modules.ozon.approved_publication_v4 import OzonDispatchFact
+from modules.ozon.approved_publication_v4 import OzonDispatchFact, OzonStockDispatchFact, PreparedStockUpdate
 from modules.ozon.client import ozon_post
 from modules.shopee.client import merchant_get
 from modules.catalog.sku_key import parse_search_key
@@ -78,6 +78,9 @@ OZON_IMPORT_PATH = "/v3/product/import"
 OZON_READBACK_PATH = "/v3/product/info/list"
 OZON_ATTRIBUTES_READBACK_PATH = "/v4/product/info/attributes"
 OZON_DESCRIPTION_READBACK_PATH = "/v1/product/info/description"
+OZON_WAREHOUSE_LIST_PATH = "/v2/warehouse/list"
+OZON_STOCK_UPDATE_PATH = "/v2/products/stocks"
+OZON_STOCK_READBACK_PATH = "/v2/product/info/stocks-by-warehouse/fbs"
 OZON_CATEGORY_TREE_PATH = "/v1/description-category/tree"
 OZON_CATEGORY_ATTRIBUTES_PATH = "/v1/description-category/attribute"
 OZON_ATTRIBUTE_VALUES_SEARCH_PATH = (
@@ -100,6 +103,7 @@ _OZON_IMPORT_PROFILE_REGISTRY = {
     (17027926, 96376): "mug-coaster",
     (17028954, 95819): "wallpaper",
     (17027906, 91971): "interior-sticker",
+    (17027905, 93656): "sauna-mat",
 }
 
 ProviderPost = Callable[[str, dict[str, object]], Mapping[str, object]]
@@ -619,15 +623,22 @@ class TikTokV4DraftCheckpointStore:
             )
         checkpoint = self.load(request)
         events = list(checkpoint["events"])
-        events.append(
-            {
+        event = {
                 "target_label": target_label,
                 "operation": fact.operation,
                 "outcome": fact.outcome,
                 "detail_id": fact.detail_id,
                 "shop_id": fact.shop_id,
             }
-        )
+        if fact.outcome == "REJECTED":
+            event.update(
+                {
+                    "provider_code": fact.provider_code,
+                    "provider_field_path": fact.provider_field_path,
+                    "provider_reason": fact.provider_reason,
+                }
+            )
+        events.append(event)
         checkpoint["events"] = events
         checkpoint["external_write_count"] = self._write_count(events)
         self._write(request, checkpoint)
@@ -660,6 +671,9 @@ def _fact_from_event(
         str(event.get("outcome") or "UNKNOWN"),
         detail_id=event.get("detail_id"),
         shop_id=event.get("shop_id"),
+        provider_code=event.get("provider_code"),
+        provider_field_path=event.get("provider_field_path"),
+        provider_reason=event.get("provider_reason"),
     )
 
 
@@ -682,6 +696,10 @@ class _ResumableTikTokDraftTransport:
         events = self._store.target_events(self._request, label)
         claim_events = [row for row in events if row.get("operation") != "SAVE_DRAFT"]
         if claim_events:
+            if claim_events[-1].get("outcome") == "REJECTED":
+                return _fact_from_event(
+                    claim_events[-1], operation="CLAIM_OR_CREATE"
+                )
             if any(row.get("outcome") == "UNKNOWN" for row in claim_events):
                 identity = next(
                     (
@@ -735,6 +753,8 @@ class _ResumableTikTokDraftTransport:
             for row in self._store.target_events(self._request, label)
             if row.get("operation") == "SAVE_DRAFT"
         ]
+        if saves and saves[-1].get("outcome") == "REJECTED":
+            return {"checkpoint_event": deepcopy(dict(saves[-1]))}
         if any(row.get("outcome") == "UNKNOWN" for row in saves):
             return {"checkpoint_event": deepcopy(dict(saves[-1]))}
         accepted = [row for row in saves if row.get("outcome") == "ACCEPTED"]
@@ -789,6 +809,7 @@ class DurableTikTokV4DraftPreparer:
             snapshot,
             category_resolver=self._category_resolver,
             transport=resumable,
+            target_scope=tuple(getattr(request, "target_labels", ())),
         )
         checkpoint = self._store.load(request)
         receipt = deepcopy(dict(receipt))
@@ -1207,6 +1228,12 @@ class MiaoshouTikTokV4DraftTransportFactory:
         common_detail_id = body.get("common_detail_id")
         initial_detail_id = body.get("initial_platform_detail_id")
         target_detail_ids = body.get("platform_detail_ids_by_target")
+        approved_target_labels = {
+            row["target_label"]
+            for row in snapshot.get("publication_targets", [])
+            if isinstance(row, Mapping) and row.get("platform") == "tiktok"
+        }
+        requested_target_labels = set(getattr(request, "target_labels", ()))
         if (
             body.get("schema_version") != MIAOSHOU_TIKTOK_SEED_IDENTITY_SCHEMA
             or body.get("snapshot_digest") != snapshot.get("snapshot_digest")
@@ -1224,17 +1251,33 @@ class MiaoshouTikTokV4DraftTransportFactory:
             or not isinstance(target_detail_ids, Mapping)
             or any(
                 label not in EXPECTED_SHOP_ID_BY_TARGET
-                or label not in getattr(request, "target_labels", ())
+                or label not in approved_target_labels
                 or isinstance(detail_id, bool)
                 or not str(detail_id).isdigit()
                 or int(str(detail_id)) <= 0
                 for label, detail_id in target_detail_ids.items()
             )
+            or not requested_target_labels
+            or requested_target_labels - approved_target_labels
             or supplied != "sha256:" + _digest(body)
         ):
             raise LivePublicationDependencyError(
                 "TikTok v4 common-detail identity conflicts"
             )
+        ledger = getattr(request, "write_budget_ledger", None)
+        if ledger is None and getattr(request, "release_candidate", None) is not None:
+            raise LivePublicationDependencyError(
+                "approved TikTok request is missing its write budget ledger"
+            )
+
+        def before_mutation(target_label: str, operation: str) -> None:
+            if ledger is None:
+                return
+            if operation == "create_platform_draft":
+                ledger.reserve_shared(operation)
+            else:
+                ledger.reserve_target(target_label, operation)
+
         return MiaoshouOpenApiTikTokV4DraftTransport(
             common_detail_id=str(common_detail_id),
             initial_platform_detail_id=(
@@ -1243,9 +1286,11 @@ class MiaoshouTikTokV4DraftTransportFactory:
             platform_detail_ids_by_target={
                 str(label): str(detail_id)
                 for label, detail_id in target_detail_ids.items()
+                if label in requested_target_labels
             },
             post=self._post,
             fact_observer=observer,
+            before_mutation=before_mutation,
         )
 
 
@@ -1732,6 +1777,8 @@ class OfficialOzonFridgeMagnetProfileResolver:
     _WALLPAPER_TYPE_ID = 95819
     _WALL_STICKER_CATEGORY_ID = 17027906
     _WALL_STICKER_TYPE_ID = 91971
+    _BATH_MAT_CATEGORY_ID = 17027905
+    _BATH_MAT_TYPE_ID = 93656
     _SEMANTIC_ALIASES = frozenset(
         {
             "fridge magnet",
@@ -1769,6 +1816,53 @@ class OfficialOzonFridgeMagnetProfileResolver:
 
     @staticmethod
     def _profile_ids(snapshot: Mapping[str, Any]) -> tuple[int, int, str]:
+        target_categories = snapshot.get("categories_by_target")
+        ozon_target = (
+            target_categories.get("ozon:RU")
+            if isinstance(target_categories, Mapping)
+            else None
+        )
+        approved_category = (
+            ozon_target.get("category") if isinstance(ozon_target, Mapping) else None
+        )
+        approved_category_id = (
+            str(approved_category.get("id") or "").strip()
+            if isinstance(approved_category, Mapping)
+            else ""
+        )
+        approved_profiles = {
+            str(OfficialOzonFridgeMagnetProfileResolver._WALL_STICKER_CATEGORY_ID): (
+                OfficialOzonFridgeMagnetProfileResolver._WALL_STICKER_CATEGORY_ID,
+                OfficialOzonFridgeMagnetProfileResolver._WALL_STICKER_TYPE_ID,
+                "Interior Sticker",
+            ),
+            str(OfficialOzonFridgeMagnetProfileResolver._WALLPAPER_CATEGORY_ID): (
+                OfficialOzonFridgeMagnetProfileResolver._WALLPAPER_CATEGORY_ID,
+                OfficialOzonFridgeMagnetProfileResolver._WALLPAPER_TYPE_ID,
+                "Wallpaper",
+            ),
+            str(OfficialOzonFridgeMagnetProfileResolver._PLACEMAT_CATEGORY_ID): (
+                OfficialOzonFridgeMagnetProfileResolver._PLACEMAT_CATEGORY_ID,
+                OfficialOzonFridgeMagnetProfileResolver._PLACEMAT_TYPE_ID,
+                "Mug Coaster",
+            ),
+            str(OfficialOzonFridgeMagnetProfileResolver._CATEGORY_ID): (
+                OfficialOzonFridgeMagnetProfileResolver._CATEGORY_ID,
+                OfficialOzonFridgeMagnetProfileResolver._TYPE_ID,
+                "Fridge Magnet",
+            ),
+            str(OfficialOzonFridgeMagnetProfileResolver._BATH_MAT_CATEGORY_ID): (
+                OfficialOzonFridgeMagnetProfileResolver._BATH_MAT_CATEGORY_ID,
+                OfficialOzonFridgeMagnetProfileResolver._BATH_MAT_TYPE_ID,
+                "Sauna Mat",
+            ),
+        }
+        if approved_category_id:
+            if approved_category_id not in approved_profiles:
+                raise LivePublicationDependencyError(
+                    "frozen Ozon category has no enabled import profile"
+                )
+            return approved_profiles[approved_category_id]
         product = snapshot.get("product")
         category = product.get("main_category") if isinstance(product, Mapping) else None
         name = str(category.get("name") or "").strip() if isinstance(category, Mapping) else ""
@@ -2110,15 +2204,187 @@ class OfficialOzonV4Transport:
         *,
         post: OzonPost = ozon_post,
         import_item_builder: OzonImportItemBuilder | None = None,
+        account_id: str | None = None,
     ) -> None:
         if not callable(post):
             raise TypeError("Ozon transport must be callable")
         if import_item_builder is not None and not callable(import_item_builder):
             raise TypeError("Ozon import item builder must be callable")
         self._post = post
+        self._catalog_account = None
+        self._configured_account_id = account_id
         self._import_item_builder = (
             import_item_builder or build_ozon_import_item_from_frozen_variant
         )
+
+    def catalog_account(self):
+        from shared_platform.catalog_ozon_readback import account_identity
+        if self._catalog_account is None:
+            if self._post is ozon_post:
+                from modules.ozon.config import ozon_credentials
+                from modules.ozon.client import ozon_post_bound
+                cid,key=ozon_credentials()
+                if not cid or not key:raise ValueError('ozon_credential_account_unavailable')
+                self._post=lambda path,body:ozon_post_bound(path,body,client_id=str(cid),api_key=key)
+            else:cid=self._configured_account_id
+            self._catalog_account=account_identity({'account_id':str(cid or ''),'credential_ref':'ozon-config-account'})
+        return dict(self._catalog_account)
+
+    def catalog_observations(self, variants):
+        from shared_platform.catalog_ozon_readback import read_exact_offers, observations
+        account = self.catalog_account()
+        rows = read_exact_offers(tuple(v['offer_id'] for v in variants), self._post)
+        return observations(account, variants, rows)
+
+    def _eligible_warehouse_id(self) -> int:
+        response = self._post(OZON_WAREHOUSE_LIST_PATH, {})
+        if not isinstance(response, Mapping) or response.get("error"):
+            raise LivePublicationDependencyError("Ozon warehouse readback was rejected")
+        rows = response.get("warehouses")
+        if rows is None:
+            rows = response.get("result")
+        if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+            raise LivePublicationDependencyError("Ozon warehouse readback is malformed")
+        eligible = [
+            row
+            for row in rows
+            if str(row.get("status") or "").strip().casefold() in {"active", "created"}
+            and row.get("is_kgt") is False
+        ]
+        if len(eligible) != 1:
+            raise LivePublicationDependencyError(
+                "Ozon stock requires exactly one eligible non-KGT warehouse"
+            )
+        warehouse_id = eligible[0].get("warehouse_id")
+        if type(warehouse_id) is not int or warehouse_id <= 0:
+            raise LivePublicationDependencyError("Ozon warehouse identity is invalid")
+        return warehouse_id
+
+
+    def prepare_stock_update(self, updates: tuple[dict[str, Any], ...]) -> PreparedStockUpdate:
+        """Read the exact eligible warehouse and freeze one HTTP payload before reserve."""
+        if (
+            not isinstance(updates, tuple)
+            or not updates
+            or len(updates) > 100
+            or any(
+                not isinstance(row, Mapping)
+                or type(row.get("offer_id")) is not str
+                or not row["offer_id"].strip()
+                or type(row.get("stock")) is not int
+                or row["stock"] < 0
+                for row in updates
+            )
+        ):
+            raise LivePublicationDependencyError("Ozon stock update scope is invalid")
+        warehouse_id = self._eligible_warehouse_id()
+        requested_warehouses = {
+            row.get("warehouse_id")
+            for row in updates
+            if row.get("warehouse_id") is not None
+        }
+        if requested_warehouses and requested_warehouses != {warehouse_id}:
+            raise LivePublicationDependencyError(
+                "Ozon approved stock warehouse conflicts with official readback"
+            )
+        if len({row["offer_id"] for row in updates}) != len(updates):
+            raise LivePublicationDependencyError("Ozon stock update SKU identity is ambiguous")
+        payload = {
+            "stocks": [
+                {
+                    "offer_id": row["offer_id"],
+                    "stock": row["stock"],
+                    "warehouse_id": warehouse_id,
+                }
+                for row in updates
+            ]
+        }
+        return PreparedStockUpdate(warehouse_id=warehouse_id, submit=lambda: self._submit_stock_update(payload))
+
+    def update_stocks(self, updates: tuple[dict[str, Any], ...]) -> OzonStockDispatchFact:
+        try:
+            submit = self.prepare_stock_update(updates)
+        except Exception:
+            return OzonStockDispatchFact(outcome="PRE_SUBMIT_FAILED",
+                provider_code="ozon_stock_warehouse_unavailable",
+                provider_reason="Ozon exact stock warehouse is unavailable")
+        return submit.submit()
+
+    def _submit_stock_update(self, payload: dict[str, Any]) -> OzonStockDispatchFact:
+        try:
+            response = self._post(OZON_STOCK_UPDATE_PATH, payload)
+        except Exception as error:
+            if re.match(r"^Ozon HTTP (400|401|403|404|422):", str(error)):
+                return OzonStockDispatchFact(
+                    outcome="REJECTED",
+                    provider_code="ozon_stock_update_rejected",
+                    provider_reason="Ozon rejected the stock update",
+                )
+            return OzonStockDispatchFact(outcome="UNKNOWN")
+        if not isinstance(response, Mapping):
+            return OzonStockDispatchFact(outcome="UNKNOWN")
+        if response.get("error"):
+            return OzonStockDispatchFact(
+                outcome="REJECTED",
+                provider_code="ozon_stock_update_rejected",
+                provider_reason="Ozon rejected the stock update",
+            )
+        result = response.get("result")
+        if not isinstance(result, list) or any(not isinstance(row, Mapping) for row in result):
+            return OzonStockDispatchFact(outcome="UNKNOWN")
+        errors = [
+            error
+            for row in result
+            for error in (row.get("errors") or ())
+            if error
+        ]
+        if errors:
+            return OzonStockDispatchFact(
+                outcome="REJECTED",
+                provider_code="ozon_stock_update_rejected",
+                provider_reason="Ozon rejected one or more stock rows",
+            )
+        return OzonStockDispatchFact(outcome="ACCEPTED")
+
+
+    def readback_stocks(
+        self, offer_ids: tuple[str, ...]
+    ) -> list[Mapping[str, Any]]:
+        if (
+            not isinstance(offer_ids, tuple)
+            or not offer_ids
+            or len(offer_ids) != len(set(offer_ids))
+            or any(type(value) is not str or not value.strip() for value in offer_ids)
+        ):
+            raise LivePublicationDependencyError("Ozon stock readback scope is invalid")
+        warehouse_id = self._eligible_warehouse_id()
+        response = self._post(
+            OZON_STOCK_READBACK_PATH,
+            {"offer_id": list(offer_ids), "limit": 1000},
+        )
+        rows = response.get("result") if isinstance(response, Mapping) else None
+        if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+            raise LivePublicationDependencyError("Ozon stock readback is malformed")
+        normalized: list[Mapping[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            offer_id = str(row.get("offer_id") or "").strip()
+            if str(row.get("warehouse_id") or "") != str(warehouse_id):
+                continue
+            present = row.get("present")
+            if (
+                offer_id not in offer_ids
+                or offer_id in seen
+                or type(present) is not int
+                or present < 0
+            ):
+                raise LivePublicationDependencyError(
+                    "Ozon stock readback identity is ambiguous"
+                )
+            seen.add(offer_id)
+            normalized.append({"offer_id": offer_id, "stock": present, "warehouse_id": warehouse_id})
+        return normalized
+
 
     def dispatch_variant(self, variant: dict[str, Any]) -> OzonDispatchFact:
         try:
@@ -2403,10 +2669,36 @@ def build_live_ozon_dependencies(
 ) -> OzonV4ExecutorDependencies:
     """Build only Ozon dependencies; no other platform object is touched."""
 
-    live_transport = transport or OfficialOzonV4Transport()
+    if transport is None:
+        from modules.ozon.client import ozon_post_bound
+        from shared_platform.ozon_runtime_credentials import (
+            required_pinned_ozon_credentials,
+        )
+
+        pinned = required_pinned_ozon_credentials()
+
+        def pinned_post(path: str, body: Mapping[str, Any]) -> Mapping[str, Any]:
+            return ozon_post_bound(
+                path,
+                body,
+                client_id=pinned.account_id,
+                api_key=pinned.api_key,
+            )
+
+        live_transport = OfficialOzonV4Transport(
+            post=pinned_post,
+            account_id=pinned.account_id,
+        )
+    else:
+        live_transport = transport
     return OzonV4ExecutorDependencies(
         dispatch_variant=live_transport.dispatch_variant,
         readback_variants=live_transport.readback_variants,
+        catalog_account_resolver=getattr(live_transport,'catalog_account',None),
+        catalog_observer=getattr(live_transport,'catalog_observations',None),
+        update_stocks=getattr(live_transport,"update_stocks",None),
+        readback_stocks=getattr(live_transport,"readback_stocks",None),
+        prepare_stock_update=getattr(live_transport,"prepare_stock_update",None),
         official_profile_resolver=(
             official_profile_resolver or OfficialOzonFridgeMagnetProfileResolver()
         ),

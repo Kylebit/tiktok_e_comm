@@ -65,7 +65,7 @@ def test_merchant_mutation_post_sends_once_without_curl_fallback(monkeypatch, fa
         sends.append(request)
         raise failure
 
-    monkeypatch.setattr(http_retry.urllib.request, "urlopen", fail_once)
+    monkeypatch.setattr(http_retry, "_urlopen_once", fail_once)
     monkeypatch.setattr(
         http_retry,
         "_curl_urlopen",
@@ -95,7 +95,7 @@ def test_merchant_get_retains_transport_retry(monkeypatch):
             raise TimeoutError("timeout")
         return _Response({"error": "", "response": {}})
 
-    monkeypatch.setattr(http_retry.urllib.request, "urlopen", eventually_succeed)
+    monkeypatch.setattr(http_retry, "_urlopen_once", eventually_succeed)
     monkeypatch.setattr(http_retry.time, "sleep", lambda _seconds: None)
 
     assert shopee_client.merchant_get(
@@ -117,7 +117,7 @@ def test_shop_mutation_post_sends_once_without_curl_fallback(monkeypatch, failur
         sends.append(request)
         raise failure
 
-    monkeypatch.setattr(http_retry.urllib.request, "urlopen", fail_once)
+    monkeypatch.setattr(http_retry, "_urlopen_once", fail_once)
     monkeypatch.setattr(
         http_retry,
         "_curl_urlopen",
@@ -153,7 +153,7 @@ def test_image_upload_sends_once_without_curl_fallback(monkeypatch, tmp_path):
         sends.append(request)
         raise TimeoutError("timeout")
 
-    monkeypatch.setattr(http_retry.urllib.request, "urlopen", fail_once)
+    monkeypatch.setattr(http_retry, "_urlopen_once", fail_once)
     monkeypatch.setattr(
         http_retry,
         "_curl_urlopen",

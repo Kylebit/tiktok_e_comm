@@ -265,6 +265,69 @@ def test_platform_exception_is_target_local_and_later_platforms_still_run(tmp_pa
     assert "SECRET-TOKEN" not in report_file.read_text(encoding="utf-8")
 
 
+def test_approved_zero_reservation_executor_exception_is_structured_preparation_failure(
+    tmp_path, monkeypatch
+):
+    snapshot = _snapshot()
+    candidate = {
+        "candidate_digest": "a" * 64,
+        "write_budget": {
+            "TIKTOK": {"shared_maximum": 2, "per_target_maximum": 2}
+        },
+    }
+    monkeypatch.setattr(
+        "shared_platform.publication_autopilot.validate_release_candidate_for_execution",
+        lambda supplied, **_kwargs: supplied,
+    )
+    monkeypatch.setattr(
+        "shared_platform.publication_autopilot.validate_final_approval_receipt",
+        lambda _approval, _candidate, **_kwargs: {"approval_digest": "b" * 64},
+    )
+
+    def fail_before_reservation(_request):
+        raise RuntimeError("Bearer secret-token https://provider.example/private")
+
+    report_store = _report_store(tmp_path)
+    receipt = ProductPublicationRunner(
+        release_store=_SnapshotStore(snapshot), report_store=report_store
+    ).run(
+        run_id="run-pre-mutation-exception",
+        offer_id=snapshot["offer_id"],
+        plan_id=snapshot["plan_id"],
+        platform_scope=("TIKTOK",),
+        platform_executors={"TIKTOK": fail_before_reservation},
+        release_candidate=candidate,
+        final_approval={"approved": True},
+        execution_identity=_execution_identity(),
+    )
+
+    assert receipt.report["summary"]["evidence"] == {
+        "snapshot_verified": True,
+        "dispatch_attempted": False,
+        "readback_completed": False,
+        "external_write_count": 0,
+    }
+    assert receipt.report["mutation_budgets"][0]["attempts"]["total"] == 0
+    assert receipt.report["mutation_budgets"][0]["reservations"] == []
+    for row in receipt.report["targets"]:
+        assert row["evidence"] == {
+            "target_label": row["target_label"],
+            "status": "FAILED",
+            "stage": "PREPARATION",
+            "provider_code": "executor_preparation_failed",
+            "provider_field_path": "preparation",
+            "provider_reason": "Platform preparation failed before mutation",
+            "request_attempted": False,
+            "outcome_unknown": False,
+            "external_write_count": 0,
+        }
+    encoded = (report_store.reports_root / receipt.stored.report_path).read_text(
+        encoding="utf-8"
+    )
+    assert "secret-token" not in encoded
+    assert "provider.example" not in encoded
+
+
 def test_exact_replay_does_not_reinvoke_platform_and_scope_drift_fails_before_call(
     tmp_path,
 ):

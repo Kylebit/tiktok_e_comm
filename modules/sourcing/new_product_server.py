@@ -13,8 +13,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from core.config import ROOT
+from core.static_files import resolve_static_path
 
 WEB_DIR = ROOT / "web"
+from shared_platform.runtime_identity import capture_runtime_identity
+RUNTIME_IDENTITY = capture_runtime_identity("new_product", root=ROOT, web_root=WEB_DIR)
 STATIC_DIR = WEB_DIR / "static"
 DEFAULT_PORT = 8766
 IMAGE_CACHE_DIR = ROOT / "data" / "new_product_image_cache"
@@ -403,10 +406,14 @@ class NewProductHandler(BaseHTTPRequestHandler):
         if path in ("/", "/new-product", "/new-product.html"):
             return self._file(WEB_DIR / "new_product.html")
         if path.startswith("/static/"):
-            rel = path[len("/static/") :].strip("/")
-            return self._file(STATIC_DIR / rel)
+            asset = resolve_static_path(STATIC_DIR, path[len("/static/") :])
+            if asset is None:
+                return self.send_error(404)
+            return self._file(asset)
         if path == "/health":
-            return self._json(200, {"ok": True, "service": "new_product", "port_default": DEFAULT_PORT})
+            from shared_platform.runtime_identity import health_payload
+
+            return self._json(200, {**health_payload("new_product", root=ROOT, web_root=WEB_DIR, startup=RUNTIME_IDENTITY), "port_default": DEFAULT_PORT})
         if path == "/api/exchange-rates":
             q = parse_qs(parsed.query)
             force = (q.get("refresh") or q.get("force") or ["0"])[0].strip().lower() in (

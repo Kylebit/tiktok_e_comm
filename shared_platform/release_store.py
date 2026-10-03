@@ -8,8 +8,12 @@ store is side-effect free; schema creation only happens on a write.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+from copy import deepcopy
 import hashlib
 import json
+import os
 import sqlite3
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
@@ -18,8 +22,10 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT
+from shared_platform.publication_r3_image_bridge import TARGET_LOCALE
 from domains.product_operations import (
     APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
+    PUBLICATION_BUSINESS_SNAPSHOT_SCHEMA_VERSION,
     NEW_SOURCE_SKU_RESERVATION_SCHEMA_VERSION,
     SKU_LINEAGE_SCHEMA_VERSION,
     ModelSkuAssignment,
@@ -31,7 +37,24 @@ from domains.product_operations import (
 )
 
 
-DEFAULT_RELEASE_STORE_PATH = ROOT / "data" / "orbit_platform.db"
+RELEASE_STORE_PATH_ENV = "ORBIT_RELEASE_STORE_PATH"
+
+
+def configured_release_store_path(value: str | Path | None = None) -> Path:
+    """Resolve the selected release ledger without opening or creating it."""
+
+    selected = value
+    if selected is None:
+        selected = os.environ.get(RELEASE_STORE_PATH_ENV)
+    if selected is None or not str(selected).strip():
+        return (ROOT / "data" / "orbit_platform.db").resolve()
+    path = Path(selected).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"{RELEASE_STORE_PATH_ENV} must be an absolute path")
+    return path.resolve()
+
+
+DEFAULT_RELEASE_STORE_PATH = configured_release_store_path()
 
 # One common draft, ten TikTok stores/sites, four Shopee countries and Ozon RU.
 # A plan may select any non-empty subset, but cannot invent another adapter
@@ -104,7 +127,88 @@ class SkuReservationConflict(ReleaseStoreError):
     """The numeric last-four seller SKU is reserved by another active plan."""
 
 
-_SCHEMA = """
+@dataclass(frozen=True)
+class WorkerCategoryOrigin:
+    """Server-private task authority, never a category HTTP body field."""
+
+    task_id: str
+    request_id: str
+    purpose: str
+    release: dict
+    ui_request_digest: str
+
+
+_ROUND1_CATEGORY_REQUEST_SCHEMA = """
+CREATE TABLE IF NOT EXISTS round1_category_request_progress (
+ request_id TEXT PRIMARY KEY, purpose TEXT NOT NULL, attempted INTEGER NOT NULL,
+ completed INTEGER NOT NULL, stage TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS round1_category_progress_purpose_immutable
+BEFORE UPDATE ON round1_category_request_progress WHEN NEW.purpose != OLD.purpose OR NEW.request_id != OLD.request_id
+BEGIN SELECT RAISE(ABORT, 'immutable request purpose'); END;
+CREATE TABLE IF NOT EXISTS round1_category_options (
+ options_reference TEXT PRIMARY KEY, offer_id TEXT NOT NULL, record_json TEXT NOT NULL, record_digest TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS round1_category_options_no_update
+BEFORE UPDATE ON round1_category_options BEGIN SELECT RAISE(ABORT, 'immutable options'); END;
+CREATE TRIGGER IF NOT EXISTS round1_category_options_no_delete
+BEFORE DELETE ON round1_category_options BEGIN SELECT RAISE(ABORT, 'immutable options'); END;
+CREATE TABLE IF NOT EXISTS round1_category_capture_requests (
+ request_id TEXT PRIMARY KEY, offer_id TEXT NOT NULL, request_digest TEXT NOT NULL,
+ request_json TEXT NOT NULL, owner_instance TEXT NOT NULL, status TEXT NOT NULL,
+ observer_reference TEXT, code TEXT
+);
+CREATE TRIGGER IF NOT EXISTS round1_category_request_identity_immutable
+BEFORE UPDATE ON round1_category_capture_requests
+WHEN NEW.request_id != OLD.request_id OR NEW.offer_id != OLD.offer_id
+ OR NEW.request_digest != OLD.request_digest OR NEW.request_json != OLD.request_json
+ OR NEW.owner_instance != OLD.owner_instance
+BEGIN SELECT RAISE(ABORT, 'immutable capture identity'); END;
+CREATE TRIGGER IF NOT EXISTS round1_category_request_terminal_immutable
+BEFORE UPDATE ON round1_category_capture_requests WHEN OLD.status != 'IN_PROGRESS'
+BEGIN SELECT RAISE(ABORT, 'terminal capture request'); END;
+CREATE TRIGGER IF NOT EXISTS round1_category_request_no_delete
+BEFORE DELETE ON round1_category_capture_requests
+BEGIN SELECT RAISE(ABORT, 'append-only capture request'); END;
+CREATE TABLE IF NOT EXISTS round1_category_worker_origins (
+ request_id TEXT PRIMARY KEY REFERENCES round1_category_capture_requests(request_id),
+ task_id TEXT NOT NULL, purpose TEXT NOT NULL,
+ release_json TEXT NOT NULL, ui_request_digest TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS round1_category_worker_origin_no_update
+BEFORE UPDATE ON round1_category_worker_origins
+BEGIN SELECT RAISE(ABORT, 'immutable worker origin'); END;
+CREATE TRIGGER IF NOT EXISTS round1_category_worker_origin_no_delete
+BEFORE DELETE ON round1_category_worker_origins
+BEGIN SELECT RAISE(ABORT, 'append-only worker origin'); END;
+"""
+
+_ROUND1_CATEGORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS round1_category_observations (
+    observer_reference TEXT PRIMARY KEY,
+    offer_id TEXT NOT NULL,
+    product_revision INTEGER NOT NULL,
+    source_region TEXT NOT NULL,
+    account_digest TEXT NOT NULL,
+    input_digest TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    record_digest TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS round1_category_observation_no_update
+BEFORE UPDATE ON round1_category_observations BEGIN SELECT RAISE(ABORT, 'immutable category observation'); END;
+CREATE TRIGGER IF NOT EXISTS round1_category_observation_no_delete
+BEFORE DELETE ON round1_category_observations BEGIN SELECT RAISE(ABORT, 'immutable category observation'); END;
+CREATE TABLE IF NOT EXISTS round1_category_observation_invalidations (
+    observer_reference TEXT PRIMARY KEY REFERENCES round1_category_observations(observer_reference),
+    reason TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS round1_category_invalidation_no_update
+BEFORE UPDATE ON round1_category_observation_invalidations BEGIN SELECT RAISE(ABORT, 'immutable category invalidation'); END;
+CREATE TRIGGER IF NOT EXISTS round1_category_invalidation_no_delete
+BEFORE DELETE ON round1_category_observation_invalidations BEGIN SELECT RAISE(ABORT, 'immutable category invalidation'); END;
+"""
+
+_SCHEMA = _ROUND1_CATEGORY_SCHEMA + _ROUND1_CATEGORY_REQUEST_SCHEMA + """
 CREATE TABLE IF NOT EXISTS release_plans (
     plan_id TEXT PRIMARY KEY,
     product_id TEXT NOT NULL,
@@ -146,6 +250,84 @@ CREATE TABLE IF NOT EXISTS release_approvals (
 CREATE INDEX IF NOT EXISTS idx_release_approvals_status
     ON release_approvals(status, approved_at DESC);
 
+CREATE TABLE IF NOT EXISTS release_final_review_decisions (
+    decision_id TEXT PRIMARY KEY,
+    contract_schema_version TEXT NOT NULL CHECK (
+        contract_schema_version = 'publication-final-review-preview/v1'
+    ),
+    contract_json TEXT NOT NULL,
+    contract_digest TEXT NOT NULL UNIQUE,
+    offer_id TEXT NOT NULL,
+    product_revision INTEGER NOT NULL CHECK (product_revision >= 0),
+    seller_sku TEXT NOT NULL,
+    r1_snapshot_digest TEXT NOT NULL,
+    r2_identity_digest TEXT NOT NULL,
+    business_facts_digest TEXT NOT NULL,
+    ordered_targets_json TEXT NOT NULL,
+    ordered_targets_digest TEXT NOT NULL,
+    common_plan_id TEXT NOT NULL UNIQUE,
+    common_payload_digest TEXT NOT NULL,
+    confirmation_token_digest TEXT NOT NULL,
+    expected_write_scope_json TEXT NOT NULL,
+    expected_write_scope_digest TEXT NOT NULL,
+    approved_by TEXT NOT NULL CHECK (approved_by = 'Kyle'),
+    user_approved INTEGER NOT NULL CHECK (user_approved = 1),
+    status TEXT NOT NULL CHECK (status = 'RECORDED'),
+    approved_at TEXT NOT NULL,
+    FOREIGN KEY (common_plan_id) REFERENCES release_plans(plan_id)
+);
+CREATE INDEX IF NOT EXISTS idx_release_final_review_offer_revision
+    ON release_final_review_decisions(offer_id, product_revision, approved_at);
+CREATE TRIGGER IF NOT EXISTS trg_release_final_review_decision_no_update
+BEFORE UPDATE ON release_final_review_decisions
+BEGIN SELECT RAISE(ABORT, 'final review decisions are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS trg_release_final_review_decision_no_delete
+BEFORE DELETE ON release_final_review_decisions
+BEGIN SELECT RAISE(ABORT, 'final review decisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trg_release_final_review_decision_no_replace
+BEFORE INSERT ON release_final_review_decisions
+WHEN EXISTS (
+    SELECT 1 FROM release_final_review_decisions
+    WHERE decision_id = NEW.decision_id
+       OR contract_digest = NEW.contract_digest
+       OR common_plan_id = NEW.common_plan_id
+)
+BEGIN SELECT RAISE(ABORT, 'final review decisions cannot be replaced'); END;
+
+CREATE TABLE IF NOT EXISTS release_final_review_stage_authorizations (
+    authorization_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    stage TEXT NOT NULL CHECK (stage IN ('R3_COMMON', 'R3_MARKETPLACE')),
+    plan_id TEXT NOT NULL,
+    binding_json TEXT NOT NULL,
+    binding_digest TEXT NOT NULL,
+    provenance_json TEXT NOT NULL,
+    provenance_digest TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status = 'RECORDED_NOT_EXECUTABLE'),
+    execution_authority INTEGER NOT NULL CHECK (execution_authority = 0),
+    created_at TEXT NOT NULL,
+    UNIQUE (decision_id, stage),
+    UNIQUE (plan_id, stage),
+    FOREIGN KEY (decision_id)
+        REFERENCES release_final_review_decisions(decision_id),
+    FOREIGN KEY (plan_id) REFERENCES release_plans(plan_id)
+);
+CREATE TRIGGER IF NOT EXISTS trg_release_final_review_stage_no_update
+BEFORE UPDATE ON release_final_review_stage_authorizations
+BEGIN SELECT RAISE(ABORT, 'final review stage provenance is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS trg_release_final_review_stage_no_delete
+BEFORE DELETE ON release_final_review_stage_authorizations
+BEGIN SELECT RAISE(ABORT, 'final review stage provenance is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trg_release_final_review_stage_no_replace
+BEFORE INSERT ON release_final_review_stage_authorizations
+WHEN EXISTS (
+    SELECT 1 FROM release_final_review_stage_authorizations
+    WHERE authorization_id = NEW.authorization_id
+       OR (decision_id = NEW.decision_id AND stage = NEW.stage)
+       OR (plan_id = NEW.plan_id AND stage = NEW.stage)
+)
+BEGIN SELECT RAISE(ABORT, 'final review stage provenance cannot be replaced'); END;
+
 CREATE TABLE IF NOT EXISTS approved_publication_snapshots (
     plan_id TEXT NOT NULL,
     product_revision INTEGER NOT NULL,
@@ -169,6 +351,31 @@ CREATE TRIGGER IF NOT EXISTS trg_approved_publication_snapshot_append_only
 BEFORE DELETE ON approved_publication_snapshots
 BEGIN
     SELECT RAISE(ABORT, 'approved publication snapshots are append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS publication_business_snapshots (
+    plan_id TEXT NOT NULL,
+    product_revision INTEGER NOT NULL,
+    offer_id TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    snapshot_digest TEXT NOT NULL UNIQUE,
+    release_payload_digest TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (plan_id, product_revision),
+    FOREIGN KEY (plan_id) REFERENCES release_plans(plan_id)
+);
+CREATE INDEX IF NOT EXISTS idx_publication_business_snapshots_offer_revision
+    ON publication_business_snapshots(offer_id, product_revision, created_at DESC);
+CREATE TRIGGER IF NOT EXISTS trg_publication_business_snapshot_immutable
+BEFORE UPDATE ON publication_business_snapshots
+BEGIN
+    SELECT RAISE(ABORT, 'publication business snapshot is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_publication_business_snapshot_append_only
+BEFORE DELETE ON publication_business_snapshots
+BEGIN
+    SELECT RAISE(ABORT, 'publication business snapshots are append-only');
 END;
 
 CREATE TABLE IF NOT EXISTS release_runs (
@@ -654,6 +861,18 @@ def _sha256(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _public_submission_evidence(value):
+    if type(value) is dict and value.get('schema_version') == 'native-common-accepted-edit/v1':
+        wire = value.get('edit_wire') or {}
+        return {'schema_version':value['schema_version'], 'run_id':value.get('run_id'),
+            'target_label':value.get('target_label'), 'attempt':value.get('attempt'),
+            'submission_accepted':value.get('submission_accepted') is True,
+            'execution_authority':False, 'readback_verified':False,
+            'wire_sha256':wire.get('wire_sha256'), 'business_sha256':wire.get('business_sha256'),
+            'request_sha256':wire.get('request_sha256'), 'private_wire_retained':True}
+    return value
+
+
 def _legacy_unverified_submission(row: Mapping[str, Any]) -> dict[str, Any] | None:
     error = _text(row.get("error")).lower()
     external_id = _text(row.get("external_id"))
@@ -701,6 +920,11 @@ def _required_text(payload: Mapping[str, Any], field: str) -> str:
 def _sku_key(seller_sku: str) -> str:
     if not seller_sku.isdigit() or len(seller_sku) > 32:
         raise ValueError("seller_sku must contain 1-32 digits")
+    # Keep governed 99xxxx B-link identities in a distinct technical
+    # reservation namespace.  Ordinary catalog matching still uses the last
+    # four digits, so legacy/A-link behavior remains unchanged.
+    if len(seller_sku) == 6 and seller_sku.startswith("99"):
+        return seller_sku
     return seller_sku[-4:].zfill(4)
 
 
@@ -784,6 +1008,17 @@ def _validated_plan(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "approved publication snapshot schema declaration is invalid"
         )
+    business_snapshot_schema = plan.get(
+        "publication_business_snapshot_schema_version"
+    )
+    if (
+        business_snapshot_schema is not None
+        and business_snapshot_schema
+        != PUBLICATION_BUSINESS_SNAPSHOT_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            "publication business snapshot schema declaration is invalid"
+        )
     return plan
 
 
@@ -849,6 +1084,457 @@ def _approval_from_row(row: sqlite3.Row) -> dict[str, Any]:
         type(value) is int and value == 1
     )
     return approval
+
+
+def _strict_canonical_json(value: object) -> str:
+    """Canonical JSON for security-sensitive final-review records."""
+
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("final review contract must be canonical JSON") from error
+
+
+def _prefixed_sha256_bytes(value: bytes) -> str:
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _prefixed_sha256_json(value: object) -> str:
+    return _prefixed_sha256_bytes(_strict_canonical_json(value).encode("utf-8"))
+
+
+def _final_review_digest(value: object, *, field: str) -> str:
+    return "sha256:" + _sha256_text(value, field=field)
+
+
+def _final_review_contract(contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the persisted contract shape, without claiming external freshness.
+
+    This verifies only the self-contained final-review document.  The Store CAS
+    separately binds the COMMON fields to its own pending ReleasePlan.  A future
+    caller must rebuild this document under the product lock and recheck it again
+    before any external execution.
+    """
+
+    if not isinstance(contract, Mapping):
+        raise TypeError("final review contract must be a mapping")
+    contract_json = _strict_canonical_json(dict(contract))
+    document = json.loads(contract_json)
+    expected_document_fields = {
+        "schema_version",
+        "status",
+        "execution_authority",
+        "external_writes_performed",
+        "offer_id",
+        "seller_sku",
+        "product_revision",
+        "current_business_facts_digest",
+        "round1_snapshot_digest",
+        "round1_source_approval",
+        "r2_identity",
+        "r2_images",
+        "r2_target_image_routes",
+        "marketplace_targets",
+        "common",
+        "expected_write_scope",
+    }
+    if set(document) != expected_document_fields:
+        raise ValueError("final review contract fields are invalid")
+    if (
+        document.get("schema_version") != "publication-final-review-preview/v1"
+        or document.get("status") != "UNAPPROVED_PREVIEW"
+        or document.get("execution_authority") is not False
+        or document.get("external_writes_performed") != []
+    ):
+        raise ReleaseAuthorizationError(
+            "an inert publication-final-review-preview/v1 contract is required"
+        )
+    offer_id = _text(document.get("offer_id"))
+    seller_sku = _text(document.get("seller_sku"))
+    revision = document.get("product_revision")
+    if (
+        type(document.get("offer_id")) is not str
+        or not offer_id.isdigit()
+        or len(offer_id) > 32
+        or type(document.get("seller_sku")) is not str
+        or not seller_sku.isdigit()
+        or len(seller_sku) > 32
+        or type(revision) is not int
+        or revision < 0
+    ):
+        raise ValueError("final review offer, revision, or seller SKU is invalid")
+
+    r1_snapshot_digest = _final_review_digest(
+        document.get("round1_snapshot_digest"), field="R1 snapshot digest"
+    )
+    r1_source_approval = document.get("round1_source_approval")
+    if (
+        type(r1_source_approval) is not dict
+        or set(r1_source_approval) != {"actor", "authority", "human_approval"}
+        or type(r1_source_approval.get("human_approval")) is not bool
+        or (
+            r1_source_approval
+            not in (
+                {
+                    "actor": "Kyle",
+                    "authority": "EXPLICIT_CONVERSATION_APPROVAL",
+                    "human_approval": True,
+                },
+                {
+                    "actor": "product-publication-autopilot",
+                    "authority": "ACTIVE_AUTOPILOT_POLICY",
+                    "human_approval": False,
+                },
+            )
+        )
+    ):
+        raise ValueError("final review R1 source approval is invalid")
+
+    marketplace_targets = document.get("marketplace_targets")
+    if (
+        type(marketplace_targets) is not list
+        or not marketplace_targets
+        or any(type(label) is not str or label not in _TARGET_SET
+               or label == "miaoshou:COMMON" for label in marketplace_targets)
+        or len(set(marketplace_targets)) != len(marketplace_targets)
+    ):
+        raise ValueError("final review marketplace targets are invalid")
+
+    r2_identity = document.get("r2_identity")
+    images = document.get("r2_images")
+    routes = document.get("r2_target_image_routes")
+    r2_identity_fields = {
+        "schema_version",
+        "offer_id",
+        "round1_snapshot_digest",
+        "first_review_digest",
+        "generation_identity_digest",
+        "generation_digest",
+        "translation_plan_digest",
+        "translation_result_digest",
+        "qa_digest",
+        "artifact_digests",
+        "identity_digest",
+    }
+    if (
+        type(r2_identity) is not dict
+        or set(r2_identity) != r2_identity_fields
+        or r2_identity.get("schema_version") != "publication-r2-identity/v1"
+        or r2_identity.get("offer_id") != offer_id
+        or r2_identity.get("round1_snapshot_digest") != r1_snapshot_digest
+        or type(images) is not list
+        or not images
+        or type(routes) is not dict
+        or set(routes) != set(marketplace_targets)
+    ):
+        raise ValueError("final review R2 identity, images, or routes are invalid")
+    r2_identity_digest = _final_review_digest(
+        r2_identity.get("identity_digest"), field="r2 identity digest"
+    )
+    unsigned_r2_identity = dict(r2_identity)
+    unsigned_r2_identity.pop("identity_digest")
+    if r2_identity_digest != _prefixed_sha256_json(unsigned_r2_identity):
+        raise ValueError("final review R2 identity digest is not canonical")
+    for field in (
+        "first_review_digest",
+        "generation_identity_digest",
+        "generation_digest",
+        "translation_plan_digest",
+        "translation_result_digest",
+        "qa_digest",
+    ):
+        _final_review_digest(r2_identity.get(field), field=f"R2 {field}")
+
+    image_fields = {
+        "kind", "review_number", "brand_id", "role", "locale", "artifact_digest"
+    }
+    image_rows: list[dict[str, Any]] = []
+    image_digests: list[str] = []
+    for image in images:
+        if (
+            type(image) is not dict
+            or set(image) != image_fields
+            or image.get("kind") not in {"master", "localized"}
+            or type(image.get("review_number")) is not int
+            or image["review_number"] < 1
+            or type(image.get("brand_id")) is not str
+            or not image["brand_id"].strip()
+            or type(image.get("role")) is not str
+            or not image["role"].strip()
+            or (
+                image["kind"] == "master" and image.get("locale") is not None
+            )
+            or (
+                image["kind"] == "localized"
+                and (type(image.get("locale")) is not str or not image["locale"].strip())
+            )
+        ):
+            raise ValueError("final review image is invalid")
+        digest = _final_review_digest(
+            image.get("artifact_digest"), field="R2 image digest"
+        )
+        image_rows.append(image)
+        image_digests.append(digest)
+    if (
+        {image["kind"] for image in images} != {"master", "localized"}
+        or r2_identity.get("artifact_digests") != sorted(set(image_digests))
+    ):
+        raise ValueError("final review image coverage is invalid")
+
+    route_fields = {
+        "position",
+        "brand_id",
+        "role",
+        "artifact_digest",
+        "source_review_number",
+        "locale",
+    }
+    for target in marketplace_targets:
+        rows = routes.get(target)
+        if type(rows) is not list or not rows:
+            raise ValueError("final review image route is missing")
+        positions = []
+        for row in rows:
+            if (
+                type(row) is not dict
+                or set(row) != route_fields
+                or type(row.get("position")) is not int
+                or row["position"] < 1
+                or type(row.get("source_review_number")) is not int
+                or row["source_review_number"] < 1
+                or any(
+                    type(row.get(field)) is not str or not row[field].strip()
+                    for field in ("brand_id", "role", "locale")
+                )
+            ):
+                raise ValueError("final review image route is invalid")
+            if row["locale"] != TARGET_LOCALE[target]:
+                raise ValueError("final review route locale does not match target")
+            positions.append(row["position"])
+            digest = _final_review_digest(
+                row.get("artifact_digest"), field="R2 routed image digest"
+            )
+            candidates = [
+                image
+                for image in image_rows
+                if image["artifact_digest"] == digest
+                and image["review_number"] == row["source_review_number"]
+                and image["brand_id"] == row["brand_id"]
+                and image["role"] == row["role"]
+                and (
+                    image["kind"] == "master"
+                    or image["locale"] == row["locale"]
+                )
+            ]
+            if not candidates:
+                raise ValueError("final review route references an unknown image")
+        if positions != list(range(1, len(rows) + 1)):
+            raise ValueError("final review image route positions are invalid")
+
+    common = document.get("common")
+    if not isinstance(common, Mapping) or not isinstance(common.get("payload"), Mapping):
+        raise ValueError("final review COMMON binding is invalid")
+    if set(common) != {
+        "plan_id", "payload_digest", "confirmation_token_digest", "payload"
+    }:
+        raise ValueError("final review COMMON binding fields are invalid")
+    expected_plan = preview_release_plan(common["payload"])
+    plan_id = _text(common.get("plan_id"))
+    payload_digest = _sha256_text(
+        common.get("payload_digest"), field="COMMON payload digest"
+    )
+    confirmation_token_digest = _final_review_digest(
+        common.get("confirmation_token_digest"),
+        field="COMMON confirmation token digest",
+    )
+    expected_token_digest = _prefixed_sha256_bytes(
+        expected_plan["confirmation_token"].encode("utf-8")
+    )
+    if (
+        plan_id != expected_plan["plan_id"]
+        or payload_digest != expected_plan["payload_digest"]
+        or confirmation_token_digest != expected_token_digest
+        or common.get("payload") != expected_plan["payload"]
+        or common["payload"].get("product_id") != offer_id
+        or common["payload"].get("product_revision") != revision
+        or common["payload"].get("seller_sku") != seller_sku
+        or common["payload"].get("targets") != ["miaoshou:COMMON"]
+    ):
+        raise ValueError("final review COMMON plan is not canonical")
+    common_stage_binding = common["payload"].get("r3_stage_binding")
+    if (
+        type(common_stage_binding) is not dict
+        or set(common_stage_binding) != {
+            "schema_version",
+            "execution_scope",
+            "image_approval_scope",
+            "write_approval_source",
+            "round1_snapshot_digest",
+            "r2_identity",
+            "marketplace_targets",
+        }
+        or common_stage_binding.get("schema_version") != "r3-common-stage/v1"
+        or common_stage_binding.get("execution_scope") != ["miaoshou:COMMON"]
+        or common_stage_binding.get("image_approval_scope") != "ROUND2_IMAGES_ONLY"
+        or common_stage_binding.get("write_approval_source") != "ReleaseStore"
+        or common_stage_binding.get("marketplace_targets") != marketplace_targets
+        or common_stage_binding.get("round1_snapshot_digest") != r1_snapshot_digest
+        or common_stage_binding.get("r2_identity") != r2_identity
+    ):
+        raise ValueError("final review COMMON stage evidence binding is invalid")
+
+    expected_scope = [
+        {
+            "stage": "R3_COMMON",
+            "target": "miaoshou:COMMON",
+            "operation": "common_draft_sync",
+        },
+        *[
+            {
+                "stage": "R3_MARKETPLACE",
+                "target": target,
+                "operation": "target_publication",
+            }
+            for target in marketplace_targets
+        ],
+    ]
+    if document.get("expected_write_scope") != expected_scope:
+        raise ValueError("final review expected write scope is invalid")
+
+    return {
+        "document": document,
+        "contract_json": contract_json,
+        "contract_digest": _prefixed_sha256_bytes(contract_json.encode("utf-8")),
+        "offer_id": offer_id,
+        "product_revision": revision,
+        "seller_sku": seller_sku,
+        "r1_snapshot_digest": r1_snapshot_digest,
+        "r2_identity_digest": r2_identity_digest,
+        "business_facts_digest": _final_review_digest(
+            document.get("current_business_facts_digest"),
+            field="business facts digest",
+        ),
+        "marketplace_targets": marketplace_targets,
+        "ordered_targets_json": _strict_canonical_json(marketplace_targets),
+        "ordered_targets_digest": _prefixed_sha256_json(marketplace_targets),
+        "common_plan_id": plan_id,
+        "common_payload": expected_plan["payload"],
+        "common_payload_json": _strict_canonical_json(expected_plan["payload"]),
+        "common_payload_digest": payload_digest,
+        "confirmation_token_digest": confirmation_token_digest,
+        "expected_write_scope": expected_scope,
+        "expected_write_scope_json": _strict_canonical_json(expected_scope),
+        "expected_write_scope_digest": _prefixed_sha256_json(expected_scope),
+    }
+
+
+def _final_review_decision_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "decision_id": row["decision_id"],
+        "contract_schema_version": row["contract_schema_version"],
+        "contract": json.loads(row["contract_json"]),
+        "contract_digest": row["contract_digest"],
+        "offer_id": row["offer_id"],
+        "product_revision": row["product_revision"],
+        "seller_sku": row["seller_sku"],
+        "r1_snapshot_digest": row["r1_snapshot_digest"],
+        "r2_identity_digest": row["r2_identity_digest"],
+        "business_facts_digest": row["business_facts_digest"],
+        "marketplace_targets": json.loads(row["ordered_targets_json"]),
+        "ordered_targets_digest": row["ordered_targets_digest"],
+        "common_plan_id": row["common_plan_id"],
+        "common_payload_digest": row["common_payload_digest"],
+        "confirmation_token_digest": row["confirmation_token_digest"],
+        "expected_write_scope": json.loads(row["expected_write_scope_json"]),
+        "expected_write_scope_digest": row["expected_write_scope_digest"],
+        "approved_by": row["approved_by"],
+        "user_approved": row["user_approved"] == 1,
+        "status": row["status"],
+        "approved_at": row["approved_at"],
+        "execution_authority": False,
+    }
+
+
+def _final_review_stage_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "authorization_id": row["authorization_id"],
+        "decision_id": row["decision_id"],
+        "stage": row["stage"],
+        "plan_id": row["plan_id"],
+        "binding": json.loads(row["binding_json"]),
+        "binding_digest": row["binding_digest"],
+        "provenance": json.loads(row["provenance_json"]),
+        "provenance_digest": row["provenance_digest"],
+        "status": row["status"],
+        "execution_authority": row["execution_authority"] == 1,
+        "created_at": row["created_at"],
+    }
+
+
+def _validated_final_review_decision_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Recheck every redundant immutable column before returning a decision."""
+
+    decision = _final_review_decision_from_row(row)
+    normalized = _final_review_contract(decision["contract"])
+    expected_id = "final-review-decision:" + normalized["contract_digest"].split(":", 1)[1]
+    expected = {
+        "decision_id": expected_id,
+        "contract_schema_version": "publication-final-review-preview/v1",
+        "contract_digest": normalized["contract_digest"],
+        "offer_id": normalized["offer_id"],
+        "product_revision": normalized["product_revision"],
+        "seller_sku": normalized["seller_sku"],
+        "r1_snapshot_digest": normalized["r1_snapshot_digest"],
+        "r2_identity_digest": normalized["r2_identity_digest"],
+        "business_facts_digest": normalized["business_facts_digest"],
+        "marketplace_targets": normalized["marketplace_targets"],
+        "ordered_targets_digest": normalized["ordered_targets_digest"],
+        "common_plan_id": normalized["common_plan_id"],
+        "common_payload_digest": normalized["common_payload_digest"],
+        "confirmation_token_digest": normalized["confirmation_token_digest"],
+        "expected_write_scope": normalized["expected_write_scope"],
+        "expected_write_scope_digest": normalized["expected_write_scope_digest"],
+        "approved_by": "Kyle",
+        "user_approved": True,
+        "status": "RECORDED",
+        "execution_authority": False,
+    }
+    if any(decision.get(key) != value for key, value in expected.items()):
+        raise ImmutableReleaseError("stored final review decision failed integrity validation")
+    return decision
+
+
+def _validated_final_review_stage_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Recheck immutable stage provenance and its explicit lack of authority."""
+
+    stage = _final_review_stage_from_row(row)
+    if (
+        stage["authorization_id"]
+        != f"final-review-stage:{stage['decision_id']}:R3_COMMON"
+        or stage["stage"] != "R3_COMMON"
+        or stage["status"] != "RECORDED_NOT_EXECUTABLE"
+        or stage["execution_authority"] is not False
+        or stage["binding_digest"] != _prefixed_sha256_json(stage["binding"])
+        or stage["provenance_digest"] != _prefixed_sha256_json(stage["provenance"])
+        or stage["binding"].get("decision_id") != stage["decision_id"]
+        or stage["binding"].get("plan_id") != stage["plan_id"]
+        or stage["binding"].get("stage") != "R3_COMMON"
+        or stage["binding"].get("execution_authority") is not False
+        or stage["provenance"].get("source_decision_id") != stage["decision_id"]
+        or stage["provenance"].get("approved_by") != "Kyle"
+        or stage["provenance"].get("user_approved") is not True
+        or stage["provenance"].get("execution_authority") is not False
+    ):
+        raise ImmutableReleaseError(
+            "stored final review stage provenance failed integrity validation"
+        )
+    return stage
 
 
 def _validated_publication_snapshot_row(
@@ -969,6 +1655,113 @@ def _persist_publication_snapshot_in_transaction(
             plan["product_id"],
             APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
             snapshot.snapshot_digest,
+            plan["payload_digest"],
+            serialized,
+            now,
+        ),
+    )
+    return document
+
+
+def _validated_business_snapshot_row(
+    row: sqlite3.Row,
+    *,
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Rehydrate and bind one approval-neutral snapshot to its ReleasePlan."""
+
+    from domains.product_operations import validate_publication_business_snapshot
+
+    try:
+        document = json.loads(row["snapshot_json"])
+        snapshot = validate_publication_business_snapshot(document)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ImmutableReleaseError(
+            "stored publication business snapshot is invalid"
+        ) from error
+    if (
+        row["schema_version"] != PUBLICATION_BUSINESS_SNAPSHOT_SCHEMA_VERSION
+        or snapshot["schema_version"] != row["schema_version"]
+        or snapshot["business_snapshot_digest"] != row["snapshot_digest"]
+        or snapshot["plan_id"] != row["plan_id"]
+        or snapshot["offer_id"] != row["offer_id"]
+        or snapshot["product_revision"] != row["product_revision"]
+        or snapshot["bindings"]["release_payload_digest"]
+        != "sha256:" + row["release_payload_digest"]
+        or plan["plan_id"] != row["plan_id"]
+        or plan["product_id"] != row["offer_id"]
+        or plan["payload_digest"] != row["release_payload_digest"]
+        or plan["payload"].get("product_revision") != row["product_revision"]
+        or _canonical_json(snapshot) != row["snapshot_json"]
+    ):
+        raise ImmutableReleaseError(
+            "stored publication business snapshot identity drifted"
+        )
+    return snapshot
+
+
+def _persist_business_snapshot_in_transaction(
+    connection: sqlite3.Connection,
+    *,
+    plan_row: sqlite3.Row,
+    now: str,
+) -> dict[str, Any] | None:
+    """Persist declared business facts before approval in the plan transaction."""
+
+    from domains.product_operations import build_publication_business_snapshot
+
+    plan = _plan_from_row(plan_row)
+    declaration = plan["payload"].get(
+        "publication_business_snapshot_schema_version"
+    )
+    if declaration is None:
+        return None
+    if declaration != PUBLICATION_BUSINESS_SNAPSHOT_SCHEMA_VERSION:
+        raise ImmutableReleaseError(
+            "declared publication business snapshot schema is invalid"
+        )
+    document = build_publication_business_snapshot(plan["payload"])
+    serialized = _canonical_json(document)
+    revision = document["product_revision"]
+    existing = connection.execute(
+        """
+        SELECT * FROM publication_business_snapshots
+        WHERE plan_id = ? AND product_revision = ?
+        """,
+        (plan["plan_id"], revision),
+    ).fetchone()
+    if existing:
+        stored = _validated_business_snapshot_row(existing, plan=plan)
+        if stored != document:
+            raise ImmutableReleaseError(
+                "ReleasePlan already has a different publication business snapshot"
+            )
+        return stored
+    conflict = connection.execute(
+        """
+        SELECT plan_id, product_revision
+        FROM publication_business_snapshots
+        WHERE snapshot_digest = ?
+        """,
+        (document["business_snapshot_digest"],),
+    ).fetchone()
+    if conflict:
+        raise ImmutableReleaseError(
+            "publication business snapshot digest belongs to a different plan"
+        )
+    connection.execute(
+        """
+        INSERT INTO publication_business_snapshots (
+            plan_id, product_revision, offer_id, schema_version,
+            snapshot_digest, release_payload_digest, snapshot_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            plan["plan_id"],
+            revision,
+            plan["product_id"],
+            PUBLICATION_BUSINESS_SNAPSHOT_SCHEMA_VERSION,
+            document["business_snapshot_digest"],
             plan["payload_digest"],
             serialized,
             now,
@@ -1317,6 +2110,313 @@ class ReleaseStore:
     def __init__(self, path: str | Path = DEFAULT_RELEASE_STORE_PATH) -> None:
         self.path = Path(path)
 
+    def private_common_authority(self, *, private_root):
+        """Explicit private facade; never migrates or authorizes the default DB."""
+        from shared_platform.common_offer_authority_store import PrivateCommonAuthorityStore
+        return PrivateCommonAuthorityStore(self, private_root)
+
+    def private_final_decisions(self, *, private_root):
+        """Explicit private Windows-owner facade; no legacy approval bypass."""
+        from shared_platform.private_final_decision_store import PrivateFinalDecisionStore
+        return PrivateFinalDecisionStore(self.private_common_authority(private_root=private_root))
+
+    @contextmanager
+    def _round1_category_transaction(self, *, requests=False):
+        """Initialize only category records; never migrate unrelated release state."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = self._connect()
+        try:
+            connection.executescript(_ROUND1_CATEGORY_SCHEMA)
+            if requests:
+                connection.executescript(_ROUND1_CATEGORY_REQUEST_SCHEMA)
+            connection.execute('BEGIN IMMEDIATE')
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def persist_round1_category_observation(self, observation):
+        """Internal capture sink only; never exposed as arbitrary JSON ingestion."""
+        from shared_platform.round1_category_observations import validate_record
+        from shared_platform.round1_category_evidence import digest
+        row = validate_record(observation)
+        encoded = _canonical_json(row)
+        values = (row['observer_reference'], row['offer_id'], row['product_center_revision'],
+                  row['source_region'], row['account_identity_digest'], row['category_input_digest'], encoded, digest(row))
+        with self._round1_category_transaction() as connection:
+            existing = connection.execute('SELECT * FROM round1_category_observations WHERE observer_reference=?',
+                                          (row['observer_reference'],)).fetchone()
+            if existing is not None:
+                if tuple(existing) != values:
+                    raise ImmutableReleaseError('CATEGORY_OBSERVATION_CONFLICT')
+            else:
+                connection.execute('INSERT INTO round1_category_observations VALUES (?,?,?,?,?,?,?,?)', values)
+        return row
+
+    def category_capture_request(self, request_id, offer_id, instance):
+        if not self.path.is_file():
+            return None
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute('SELECT * FROM round1_category_capture_requests WHERE request_id=?', (request_id,)).fetchone()
+            except sqlite3.OperationalError as error:
+                if 'no such table' in str(error):
+                    return None
+                raise ImmutableReleaseError('CATEGORY_REQUEST_STORE_UNAVAILABLE') from None
+        if row is None:
+            return None
+        row = dict(row)
+        if row['offer_id'] != offer_id:
+            raise ImmutableReleaseError('CATEGORY_REQUEST_ID_CONFLICT')
+        from shared_platform.round1_category_evidence import digest
+        try:
+            payload = json.loads(row['request_json'])
+            if digest(payload) != row['request_digest'] or payload['offer_id'] != offer_id or payload['request_id'] != request_id:
+                raise ValueError()
+            if row['status'] not in {'IN_PROGRESS', 'SUCCEEDED', 'FAILED', 'UNKNOWN'}:
+                raise ValueError()
+            if (row['status']=='SUCCEEDED') != bool(row['observer_reference']):
+                raise ValueError()
+        except Exception:
+            raise ImmutableReleaseError('CATEGORY_REQUEST_RECORD_CORRUPT') from None
+        if row['status'] == 'IN_PROGRESS' and row['owner_instance'] != instance:
+            row['status'] = 'UNKNOWN'
+        return row
+
+    def category_request_progress(self, request_id):
+        if not self.path.is_file():return {'purpose':'CAPTURE','attempted':0,'completed':0,'stage':'NOT_STARTED'}
+        with self._connect_readonly() as connection:
+            try:row=connection.execute('SELECT * FROM round1_category_request_progress WHERE request_id=?',(request_id,)).fetchone()
+            except sqlite3.OperationalError as error:
+                if 'no such table' not in str(error):raise ImmutableReleaseError('CATEGORY_PROGRESS_UNAVAILABLE') from None
+                row=None
+        if row and (row['purpose'] not in {'CAPTURE','OPTIONS'} or not 0<=row['completed']<=row['attempted']):
+            raise ImmutableReleaseError('CATEGORY_PROGRESS_CORRUPT')
+        return dict(row) if row else {'purpose':'CAPTURE','attempted':None,'completed':None,'stage':'LEGACY_UNMEASURED'}
+
+    def record_category_get(self, request_id, phase, endpoint):
+        if phase not in {'STARTED','RECEIVED'} or endpoint not in {'/api/v2/global_product/category_recommend','/api/v2/global_product/get_category','/api/v2/global_product/get_attribute_tree'}:
+            raise ImmutableReleaseError('CATEGORY_PROGRESS_INVALID')
+        with self._round1_category_transaction(requests=True) as connection:
+            row=connection.execute('SELECT status FROM round1_category_capture_requests WHERE request_id=?',(request_id,)).fetchone()
+            if row is None or row['status']!='IN_PROGRESS':raise ImmutableReleaseError('CATEGORY_PROGRESS_STATE_INVALID')
+            progress=connection.execute('SELECT * FROM round1_category_request_progress WHERE request_id=?',(request_id,)).fetchone()
+            if progress is None or (phase=='RECEIVED' and (progress['completed']>=progress['attempted'] or progress['stage']!='STARTED:'+endpoint)):
+                raise ImmutableReleaseError('CATEGORY_PROGRESS_SEQUENCE_INVALID')
+            column='attempted' if phase=='STARTED' else 'completed'
+            connection.execute(f'UPDATE round1_category_request_progress SET {column}={column}+1,stage=? WHERE request_id=?',(phase+':'+endpoint,request_id))
+
+    def category_options_record(self, reference, offer_id):
+        from shared_platform.round1_category_observations import validate_options
+        from shared_platform.round1_category_evidence import digest,CategoryEvidenceError
+        if not self.path.is_file():raise CategoryEvidenceError('CATEGORY_OPTIONS_NOT_FOUND')
+        with self._connect_readonly() as connection:
+            try:row=connection.execute('SELECT * FROM round1_category_options WHERE options_reference=?',(reference,)).fetchone()
+            except sqlite3.OperationalError:row=None
+        if row is None:raise CategoryEvidenceError('CATEGORY_OPTIONS_NOT_FOUND')
+        record=validate_options(json.loads(row['record_json']))
+        if row['offer_id']!=offer_id or record['review_input']['offer_id']!=offer_id or record['options_reference']!=reference or digest(record)!=row['record_digest']:
+            raise CategoryEvidenceError('CATEGORY_OPTIONS_IDENTITY_MISMATCH')
+        return record
+
+    def category_worker_origin(self, request_id):
+        """Read an immutable origin without creating category tables or state."""
+        if not self.path.is_file():
+            return None
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    'SELECT origin.*,request.request_json,progress.purpose AS request_purpose '
+                    'FROM round1_category_worker_origins AS origin '
+                    'JOIN round1_category_capture_requests AS request USING(request_id) '
+                    'JOIN round1_category_request_progress AS progress USING(request_id) '
+                    'WHERE origin.request_id=?', (request_id,)).fetchone()
+            except sqlite3.OperationalError as error:
+                if 'no such table' in str(error):
+                    return None
+                raise ImmutableReleaseError('CATEGORY_WORKER_ORIGIN_UNAVAILABLE') from None
+        if row is None:
+            return None
+        try:
+            release = json.loads(row['release_json'])
+            payload = json.loads(row['request_json'])
+            if (not isinstance(release, dict) or _canonical_json(release) != row['release_json']
+                    or row['purpose'] != row['request_purpose']
+                    or row['request_id'] != payload['request_id']
+                    or row['ui_request_digest'] != payload['_ui_request_digest']):
+                raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise ImmutableReleaseError('CATEGORY_WORKER_ORIGIN_CORRUPT') from None
+        return {'request_id': row['request_id'], 'task_id': row['task_id'],
+                'purpose': row['purpose'], 'release': release,
+                'ui_request_digest': row['ui_request_digest']}
+
+    def begin_category_capture(self, payload, instance, *, purpose='CAPTURE', worker_origin=None):
+        from shared_platform.round1_category_evidence import digest
+        encoded = _canonical_json(payload); identity = digest(payload)
+        if purpose not in {'CAPTURE','OPTIONS'}:raise ValueError('CATEGORY_PURPOSE_INVALID')
+        origin_values = None
+        if worker_origin is not None:
+            if (type(worker_origin) is not WorkerCategoryOrigin
+                    or not isinstance(worker_origin.task_id, str)
+                    or not worker_origin.task_id.startswith('TASK-')
+                    or worker_origin.request_id != payload['request_id']
+                    or worker_origin.purpose != purpose
+                    or not isinstance(worker_origin.release, dict)
+                    or any(not isinstance(worker_origin.release.get(key), str)
+                           or not worker_origin.release[key] for key in
+                           ('code_version', 'environment', 'manifest_digest'))
+                    or worker_origin.ui_request_digest != payload.get('_ui_request_digest')
+                    or worker_origin.ui_request_digest != digest({
+                        key: value for key, value in payload.items()
+                        if key not in {'_ui_request_digest', 'category_id', 'selected_attributes'}})
+                    or not isinstance(instance, str) or not instance):
+                raise ValueError('CATEGORY_WORKER_ORIGIN_INVALID')
+            origin_values = (worker_origin.request_id, worker_origin.task_id,
+                             purpose, _canonical_json(worker_origin.release),
+                             worker_origin.ui_request_digest)
+        with self._round1_category_transaction(requests=True) as connection:
+            row = connection.execute('SELECT * FROM round1_category_capture_requests WHERE request_id=?', (payload['request_id'],)).fetchone()
+            prior_origin = connection.execute(
+                'SELECT * FROM round1_category_worker_origins WHERE request_id=?',
+                (payload['request_id'],)).fetchone()
+            if row is not None:
+                if row['request_digest'] != identity or row['request_json'] != encoded:
+                    raise ImmutableReleaseError('CATEGORY_REQUEST_ID_CONFLICT')
+                prior=connection.execute('SELECT purpose FROM round1_category_request_progress WHERE request_id=?',(payload['request_id'],)).fetchone()
+                if (prior['purpose'] if prior else 'CAPTURE')!=purpose:raise ImmutableReleaseError('CATEGORY_PURPOSE_CONFLICT')
+                if (origin_values is None and prior_origin is not None) or (
+                        origin_values is not None and
+                        (prior_origin is None or tuple(prior_origin) != origin_values)):
+                    raise ImmutableReleaseError('CATEGORY_WORKER_ORIGIN_CONFLICT')
+                return False
+            connection.execute('INSERT INTO round1_category_capture_requests VALUES (?,?,?,?,?,?,?,?)',
+                (payload['request_id'], payload['offer_id'], identity, encoded, instance, 'IN_PROGRESS', None, None))
+            connection.execute('INSERT INTO round1_category_request_progress VALUES (?,?,?,?,?)',(payload['request_id'],purpose,0,0,'PERSISTED'))
+            if origin_values is not None:
+                connection.execute('INSERT INTO round1_category_worker_origins VALUES (?,?,?,?,?)',
+                                   origin_values)
+        return True
+
+    def finish_category_capture(self, request_id, instance, *, observation=None, code=None, unknown=False, options=None):
+        from shared_platform.round1_category_observations import validate_record
+        from shared_platform.round1_category_evidence import digest
+        observed = validate_record(observation) if observation is not None else None
+        from shared_platform.round1_category_observations import validate_options
+        options=validate_options(options) if options is not None else None
+        with self._round1_category_transaction(requests=True) as connection:
+            request = connection.execute('SELECT * FROM round1_category_capture_requests WHERE request_id=?', (request_id,)).fetchone()
+            if request is None or request['owner_instance'] != instance or request['status'] != 'IN_PROGRESS':
+                raise ImmutableReleaseError('CATEGORY_REQUEST_STATE_CONFLICT')
+            reference = None
+            progress=connection.execute('SELECT purpose FROM round1_category_request_progress WHERE request_id=?',(request_id,)).fetchone()
+            purpose=progress['purpose'] if progress else 'CAPTURE'
+            if (options is not None and purpose!='OPTIONS') or (observed is not None and purpose!='CAPTURE'):
+                raise ImmutableReleaseError('CATEGORY_PURPOSE_CONFLICT')
+            if options is not None:
+                payload=json.loads(request['request_json'])
+                if (options['review_input']['offer_id']!=payload['offer_id'] or options['review_input']['product_center_revision']!=payload['product_center_revision']
+                        or options['source_region']!=payload['source_region'] or options['account_identity_digest']!=payload['account_identity_digest']
+                        or digest(dict(input_digest=options['input_digest'],account_identity_digest=options['account_identity_digest'],readiness='READY'))!=payload['context_digest']):
+                    raise ImmutableReleaseError('CATEGORY_OPTIONS_RESULT_MISMATCH')
+                reference=options['options_reference']
+                connection.execute('INSERT INTO round1_category_options VALUES (?,?,?,?)',(reference,payload['offer_id'],_canonical_json(options),digest(options)))
+            if observed is not None:
+                payload = json.loads(request['request_json'])
+                from shared_platform.round1_category_evidence import shopee_targets
+                if (observed['offer_id'] != payload['offer_id'] or observed['product_center_revision'] != payload['product_center_revision']
+                        or observed['requested_targets'] != shopee_targets({'target_selection':{'requested':payload['requested_targets']}}) or observed['source_region'] != payload['source_region']
+                        or observed['account_identity_digest'] != payload['account_identity_digest']
+                        or observed['category']['id'] != payload['category_id'] or observed['selected_attributes'] != payload['selected_attributes']
+                        or digest(dict(input_digest=observed['category_input_digest'],account_identity_digest=observed['account_identity_digest'],readiness='READY'))!=payload['context_digest']):
+                    raise ImmutableReleaseError('CATEGORY_REQUEST_RESULT_MISMATCH')
+                reference = observed['observer_reference']
+                values = (reference, observed['offer_id'], observed['product_center_revision'], observed['source_region'],
+                          observed['account_identity_digest'], observed['category_input_digest'], _canonical_json(observed), digest(observed))
+                existing = connection.execute('SELECT * FROM round1_category_observations WHERE observer_reference=?', (reference,)).fetchone()
+                if existing is not None and tuple(existing) != values:
+                    raise ImmutableReleaseError('CATEGORY_OBSERVATION_CONFLICT')
+                if existing is None:
+                    connection.execute('INSERT INTO round1_category_observations VALUES (?,?,?,?,?,?,?,?)', values)
+            connection.execute('UPDATE round1_category_capture_requests SET status=?,observer_reference=?,code=? WHERE request_id=?',
+                ('SUCCEEDED' if observed is not None or options is not None else 'UNKNOWN' if unknown else 'FAILED', reference, code, request_id))
+
+    def category_observation_index(self, *, offer_id, revision, input_digest, region):
+        """Exact input scope only; historical captures never establish login readiness."""
+        if not self.path.is_file():
+            return []
+        with self._connect_readonly() as connection:
+            try:
+                refs = connection.execute('SELECT observer_reference FROM round1_category_observations WHERE offer_id=? AND product_revision=? AND input_digest=? AND source_region=? ORDER BY observer_reference',
+                                          (offer_id, revision, input_digest, region)).fetchall()
+            except sqlite3.OperationalError as error:
+                if 'no such table' in str(error):
+                    return []
+                raise ImmutableReleaseError('CATEGORY_RECORD_UNAVAILABLE') from None
+        result = []
+        for row in refs:
+            try:
+                observed = self.round1_category_observation(row['observer_reference'])
+                result.append(dict(observer_reference=row['observer_reference'], status='REUSABLE',
+                    account_identity_digest=observed['account_identity_digest'], observed_at=observed['observed_at'], category=observed['category']))
+            except Exception as error:
+                status='INVALIDATED' if str(error)=='CATEGORY_OBSERVATION_INVALIDATED' else 'CORRUPT'
+                result.append(dict(observer_reference=row['observer_reference'], status=status))
+        return result
+
+    def round1_category_observation(self, reference, *, connection=None):
+        """Read an immutable record without initializing or refreshing any provider."""
+        import re
+        from shared_platform.round1_category_observations import validate_record
+        from shared_platform.round1_category_evidence import digest, CategoryEvidenceError
+        if type(reference) is not str or not re.fullmatch(r'category-observation:[A-Za-z0-9_-]{1,96}', reference):
+            raise CategoryEvidenceError('CATEGORY_REFERENCE_INVALID')
+        if not self.path.is_file():
+            return None
+        if connection is not None:
+            from contextlib import nullcontext
+            from shared_platform.r3_common_source_facts import NativeCommonSourceReader
+            NativeCommonSourceReader(self).validate_context(connection)
+            context = nullcontext(connection)
+        else:
+            context = self._connect_readonly()
+        with context as connection:
+            try:
+                invalidated = connection.execute('SELECT 1 FROM round1_category_observation_invalidations WHERE observer_reference=?', (reference,)).fetchone()
+                if invalidated:
+                    raise CategoryEvidenceError('CATEGORY_OBSERVATION_INVALIDATED')
+                stored = connection.execute('SELECT * FROM round1_category_observations WHERE observer_reference=?', (reference,)).fetchone()
+            except sqlite3.OperationalError as error:
+                if 'no such table' in str(error):
+                    return None
+                raise ImmutableReleaseError('CATEGORY_RECORD_UNAVAILABLE') from None
+        if stored is None:
+            return None
+        try:
+            row = validate_record(json.loads(stored['record_json']))
+            values = (row['observer_reference'], row['offer_id'], row['product_center_revision'],
+                      row['source_region'], row['account_identity_digest'], row['category_input_digest'],
+                      _canonical_json(row), digest(row))
+            if tuple(stored) != values:
+                raise ValueError()
+        except Exception:
+            raise ImmutableReleaseError('CATEGORY_RECORD_CORRUPT') from None
+        return row
+
+    def invalidate_round1_category_observation(self, reference, reason):
+        """Internal explicit revocation; never a guessed TTL or mutable record edit."""
+        if reason not in {'SOURCE_REVOKED', 'SUPERSEDED'}:
+            raise ValueError('CATEGORY_INVALIDATION_REASON_INVALID')
+        with self._round1_category_transaction() as connection:
+            existing = connection.execute('SELECT reason FROM round1_category_observation_invalidations WHERE observer_reference=?', (reference,)).fetchone()
+            if existing and existing['reason'] != reason:
+                raise ImmutableReleaseError('CATEGORY_INVALIDATION_CONFLICT')
+            if not existing:
+                connection.execute('INSERT INTO round1_category_observation_invalidations VALUES (?,?)', (reference, reason))
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
             self.path,
@@ -1325,6 +2425,7 @@ class ReleaseStore:
         )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA recursive_triggers=ON")
         connection.execute("PRAGMA busy_timeout=30000")
         return connection
 
@@ -1338,6 +2439,7 @@ class ReleaseStore:
         )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA recursive_triggers=ON")
         connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA query_only=ON")
         return connection
@@ -1631,11 +2733,15 @@ class ReleaseStore:
     def persist_channel_category_decision(
         self,
         serialized_record: object,
+        *,
+        expected_selection_digest: object | None = None,
     ) -> dict[str, Any]:
         """Append one immutable selection and make it current locally."""
 
         from shared_platform.channel_category_decisions import (
+            rehydrate_attribute_selection,
             rehydrate_category_decision,
+            serialize_attribute_selection,
             serialize_category_decision,
         )
 
@@ -1653,6 +2759,41 @@ class ReleaseStore:
         ).hexdigest()
         now = _utc_now()
         with self._transaction() as connection:
+            if expected_selection_digest is not None:
+                expected = _sha256_text(
+                    expected_selection_digest, field="expected_selection_digest"
+                )
+                intent_row = connection.execute(
+                    """
+                    SELECT selection.*
+                    FROM release_active_channel_category_attribute_selections AS active
+                    JOIN release_channel_category_attribute_selections AS selection
+                      ON selection.selection_digest = active.selection_digest
+                    WHERE active.product_id = ? AND active.product_revision = ?
+                      AND active.channel = ? AND active.mode = ?
+                    """,
+                    (decision["product_id"], decision["product_revision"],
+                     decision["channel"], decision["mode"]),
+                ).fetchone()
+                if intent_row is None:
+                    raise ImmutableReleaseError("attribute intent changed; recheck required")
+                intent = rehydrate_attribute_selection(intent_row["record_json"])
+                if (
+                    intent["selection_digest"] != expected
+                    or decision["attribute_selection_digest"] != expected
+                    or serialize_attribute_selection(intent) != intent_row["record_json"]
+                    or hashlib.sha256(intent_row["record_json"].encode("utf-8")).hexdigest()
+                    != intent_row["record_digest"]
+                    or any(intent[field] != intent_row[field] for field in (
+                        "selection_digest", "product_id", "product_revision",
+                        "channel", "mode", "context_digest", "options_digest",
+                        "category_identity_digest", "attribute_tree_digest", "approved_by",
+                    ))
+                    or any(intent[field] != decision[field] for field in (
+                        "product_id", "product_revision", "channel", "mode", "context_digest",
+                    ))
+                ):
+                    raise ImmutableReleaseError("attribute intent changed; recheck required")
             existing = connection.execute(
                 """
                 SELECT * FROM release_channel_category_decisions
@@ -2041,6 +3182,78 @@ class ReleaseStore:
         result["approved"] = approved
         return result
 
+    def _unreconciled_common_claim(self, connection, *, product_id, exclude_plan_id=None):
+        """A new COMMON identity cannot release an older claim on the same provider detail."""
+        rows = connection.execute('''
+            SELECT target.*, plan.payload_json AS claim_payload_json FROM release_target_runs AS target
+            JOIN release_runs AS run ON run.run_id = target.run_id
+            JOIN release_plans AS plan ON plan.plan_id = run.plan_id
+            WHERE plan.product_id = ? AND target.target_label = 'miaoshou:COMMON'
+              AND target.attempts > 0
+              AND (? IS NULL OR plan.plan_id != ?)
+        ''', (product_id, exclude_plan_id, exclude_plan_id)).fetchall()
+        for row in rows:
+            if row['status'] == 'SUCCEEDED':
+                receipt = connection.execute('''SELECT * FROM release_target_readbacks
+                    WHERE run_id = ? AND target_label = ?''', (row['run_id'], row['target_label'])).fetchone()
+                try:
+                    evidence = json.loads(receipt['evidence_json']) if receipt else {}
+                    payload = json.loads(row['claim_payload_json'])
+                    checks = evidence.get('checks')
+                    required = {'title', 'seller_sku', 'selected_sku_keys', 'selected_sku_numbers',
+                        'spec_labels', 'spec_label_binding', 'weight', 'dimensions', 'images',
+                        'description_notes', 'description_image_count', 'video_action', 'common_id',
+                        'source_identity', 'detail_binding', 'sku_logistics'} if payload.get('r3_stage_binding') else set()
+                    verified = (receipt is not None and evidence.get('verified') is True
+                        and str(row['external_id']) == str(product_id) and evidence.get('offer_id') == str(product_id)
+                        and bool(evidence.get('source')) and bool(receipt['verified_at'])
+                        and hashlib.sha256(receipt['evidence_json'].encode('utf-8')).hexdigest() == receipt['evidence_digest']
+                        and isinstance(checks, dict) and bool(checks) and required.issubset(checks)
+                        and all(value is True for value in checks.values())
+                        and evidence.get('image_count') == len(payload.get('images') or []))
+                except (ValueError, TypeError, AttributeError):
+                    verified = False
+                if not verified:
+                    return dict(row)
+                continue
+            events = connection.execute('''SELECT attempt, evidence_json, evidence_digest
+                FROM release_target_failure_events WHERE run_id = ? AND target_label = ?''',
+                (row['run_id'], row['target_label'])).fetchall()
+            uncertain = (row['status'] == 'RUNNING' or bool(row['external_id'])
+                or {event['attempt'] for event in events} != set(range(1, row['attempts'] + 1)))
+            for event in events:
+                try:
+                    evidence = json.loads(event['evidence_json'])
+                    proven_zero = (hashlib.sha256(event['evidence_json'].encode('utf-8')).hexdigest() == event['evidence_digest']
+                        and bool(evidence.get('source')) and evidence.get('request_attempted') is False
+                        and type(evidence.get('external_write_count')) is int and evidence['external_write_count'] == 0
+                        and evidence.get('external_writes_performed') == []
+                        and evidence.get('write_outcome') == 'not_dispatched')
+                except (ValueError, TypeError, AttributeError):
+                    proven_zero = False
+                uncertain = uncertain or not proven_zero
+            if uncertain:
+                return dict(row)
+        return None
+
+    def _require_reconciled_common_claims(self, connection, *, product_id, exclude_plan_id=None):
+        row = self._unreconciled_common_claim(connection, product_id=product_id, exclude_plan_id=exclude_plan_id)
+        if row:
+            raise ReleaseAuthorizationError(
+                f"COMMON_RECONCILIATION_REQUIRED: retain original run {row['run_id']} for product {product_id}")
+
+    def common_reconciliation_reference(self, product_id):
+        """Read the original unresolved provider-detail claim without reserving a successor."""
+        if not self.path.is_file():
+            return None
+        with self._connect_readonly() as connection:
+            row = self._unreconciled_common_claim(connection, product_id=_text(product_id))
+        if not row:
+            return None
+        run = self.get_run(row['run_id'])
+        return {'plan_id': run['plan_id'], 'run_id': row['run_id'], 'target_label': 'miaoshou:COMMON',
+            'status': row['status'], 'next_action': 'RECONCILE_EXISTING_RUN'}
+
     def create_plan(
         self,
         payload: Mapping[str, Any],
@@ -2076,9 +3289,17 @@ class ReleaseStore:
                         raise ImmutableReleaseError(
                             "plan_id already belongs to a different payload digest"
                         )
+                    _persist_business_snapshot_in_transaction(
+                        connection,
+                        plan_row=existing,
+                        now=existing["created_at"],
+                    )
                     result = _plan_from_row(existing)
                     result["created"] = False
                     return result
+
+                if plan.get('r3_stage_binding') and 'miaoshou:COMMON' in plan['targets']:
+                    self._require_reconciled_common_claims(connection, product_id=plan['product_id'], exclude_plan_id=plan_id)
 
                 predecessor = None
                 if predecessor_id:
@@ -2195,6 +3416,11 @@ class ReleaseStore:
                     "SELECT * FROM release_plans WHERE plan_id = ?",
                     (plan_id,),
                 ).fetchone()
+                _persist_business_snapshot_in_transaction(
+                    connection,
+                    plan_row=row,
+                    now=now,
+                )
                 result = _plan_from_row(row)
                 result["created"] = True
                 return result
@@ -2605,6 +3831,297 @@ class ReleaseStore:
                 ) from error
             raise
 
+    def create_and_approve_reviewed_successor(
+        self,
+        predecessor_plan_id: str,
+        *,
+        payload: Mapping[str, Any],
+        approved_by: str,
+        user_approved: bool,
+        expected_business_snapshot_digest: str,
+        expected_target_labels: Sequence[str],
+        expected_candidate_digest: str,
+        reviewed_candidate: Mapping[str, Any],
+        reviewed_candidate_path: str | Path,
+    ) -> dict[str, Any]:
+        """Atomically persist, approve and freeze an already-reviewed successor."""
+
+        if user_approved is not True:
+            raise ReleaseAuthorizationError("literal user_approved=True is required")
+        if _text(approved_by) != "Kyle":
+            raise ReleaseAuthorizationError("approved_by must be Kyle")
+        predecessor = self.get_plan(_text(predecessor_plan_id))
+        if predecessor is None:
+            raise ReleaseStoreError("predecessor release plan was not found")
+
+        plan = _validated_plan(payload)
+        plan_id = plan["plan_id"]
+        from shared_platform.publication_autopilot import _canonical_digest
+
+        candidate = deepcopy(dict(reviewed_candidate))
+        supplied_candidate_digest = _text(candidate.pop("candidate_digest", None))
+        if (
+            supplied_candidate_digest != _text(expected_candidate_digest)
+            or supplied_candidate_digest != _canonical_digest(candidate)
+        ):
+            raise ReleaseAuthorizationError("reviewed successor candidate digest drifted")
+        candidate["candidate_digest"] = supplied_candidate_digest
+        candidate_path = Path(reviewed_candidate_path)
+        try:
+            persisted_candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            raise ReleaseAuthorizationError(
+                "reviewed successor candidate is not durably persisted"
+            ) from None
+        if (
+            candidate_path.is_symlink()
+            or not candidate_path.is_file()
+            or candidate_path.stem != supplied_candidate_digest
+            or persisted_candidate != candidate
+        ):
+            raise ReleaseAuthorizationError(
+                "reviewed successor candidate persistence drifted"
+            )
+        if (
+            candidate.get("status") != "READY_FOR_FINAL_REVIEW"
+            or candidate.get("offer_id") != plan["product_id"]
+            or candidate.get("plan_id") != plan_id
+            or candidate.get("snapshot_digest")
+            != _text(expected_business_snapshot_digest)
+            or candidate.get("business_snapshot_digest")
+            != _text(expected_business_snapshot_digest)
+            or candidate.get("target_labels") != list(expected_target_labels)
+            or candidate.get("blockers") != []
+            or candidate.get("zero_write_simulation")
+            != {"blocker_count": 0, "completed": True, "external_write_count": 0}
+        ):
+            raise ReleaseAuthorizationError("reviewed successor candidate identity drifted")
+        if plan["targets"] != list(expected_target_labels):
+            raise ReleaseAuthorizationError("reviewed successor ordered targets drifted")
+        if predecessor["product_id"] != plan["product_id"]:
+            raise ReleaseStoreError("a successor plan must belong to the same product_id")
+        if predecessor["seller_sku"] != plan["seller_sku"]:
+            raise ReleaseStoreError("a successor plan must keep the same seller SKU")
+
+        from domains.product_operations import build_approved_publication_snapshot
+
+        preview = self.preview_plan(plan)
+        validation_time = "2000-01-01T00:00:00+00:00"
+        build_approved_publication_snapshot(
+            {
+                **preview,
+                "status": PLAN_APPROVED,
+                "approved_at": validation_time,
+                "approval": {
+                    "status": PLAN_APPROVED,
+                    "approved_by": "Kyle",
+                    "approved_at": validation_time,
+                    "user_approved": True,
+                    "plan_id": preview["plan_id"],
+                    "payload_digest": preview["payload_digest"],
+                },
+            }
+        )
+
+        encoded = _canonical_json(plan)
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        token = f"PUBLISH-{digest[:16].upper()}"
+
+        if predecessor["status"] == SUPERSEDED:
+            if predecessor.get("superseded_by_plan_id") != plan_id:
+                raise ReleaseAuthorizationError(
+                    "predecessor was superseded by a different release plan"
+                )
+            repeated = self.get_plan(plan_id)
+            repeated_snapshot = self.approved_publication_snapshot(
+                offer_id=plan["product_id"], plan_id=plan_id
+            )
+            if (
+                not repeated
+                or repeated.get("payload_digest") != digest
+                or repeated.get("targets") != list(expected_target_labels)
+                or repeated.get("status") != PLAN_APPROVED
+                or not isinstance(repeated.get("approval"), dict)
+                or repeated["approval"].get("approved_by") != "Kyle"
+                or repeated["approval"].get("payload_digest") != digest
+                or repeated["approval"].get("confirmation_token") != token
+                or repeated["approval"].get("status") != PLAN_APPROVED
+                or not repeated_snapshot
+            ):
+                raise ImmutableReleaseError("reviewed successor replay is incomplete")
+            from shared_platform.publication_autopilot import _business_snapshot_digest
+
+            if (
+                _business_snapshot_digest(repeated_snapshot)
+                != _text(expected_business_snapshot_digest)
+            ):
+                raise ImmutableReleaseError(
+                    "reviewed successor replay business snapshot drifted"
+                )
+            return {
+                "schema_version": "reviewed-successor-approval/v1",
+                "plan": repeated,
+                "approval": repeated["approval"],
+                "publication_snapshot": repeated_snapshot,
+                "created": False,
+            }
+        if predecessor["status"] != PLAN_APPROVED:
+            raise ReleaseAuthorizationError(
+                "reviewed successor requires an active approved predecessor"
+            )
+
+        targets_json = _canonical_json(plan["targets"])
+        sku_key = _sku_key(plan["seller_sku"])
+        now = _utc_now()
+
+        try:
+            with self._transaction() as connection:
+                predecessor_row = connection.execute(
+                    "SELECT * FROM release_plans WHERE plan_id = ?",
+                    (predecessor["plan_id"],),
+                ).fetchone()
+                existing = connection.execute(
+                    "SELECT * FROM release_plans WHERE plan_id = ?", (plan_id,)
+                ).fetchone()
+                created_plan = False
+                if existing:
+                    if existing["payload_digest"] != digest:
+                        raise ImmutableReleaseError(
+                            "plan_id already belongs to a different payload digest"
+                        )
+                    if existing["status"] == SUPERSEDED:
+                        raise ReleaseAuthorizationError(
+                            "a superseded reviewed successor cannot be approved"
+                        )
+                    raise ImmutableReleaseError(
+                        "existing reviewed successor is not atomically linked"
+                    )
+                else:
+                    if not predecessor_row or predecessor_row["status"] != PLAN_APPROVED:
+                        raise ReleaseAuthorizationError(
+                            "reviewed successor requires an active approved predecessor"
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO release_plans (
+                            plan_id, product_id, seller_sku, sku_key,
+                            product_package_id, content_package_id,
+                            target_labels_json, payload_json, payload_digest,
+                            confirmation_token, status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', ?)
+                        """,
+                        (
+                            plan_id, plan["product_id"], plan["seller_sku"], sku_key,
+                            plan["product_package_id"], plan["content_package_id"],
+                            targets_json, encoded, digest, token, now,
+                        ),
+                    )
+                    self._supersede_in_transaction(
+                        connection,
+                        predecessor["plan_id"],
+                        superseded_by_plan_id=plan_id,
+                        reason="replaced by an explicitly approved reviewed successor",
+                        now=now,
+                    )
+                    source_lineage = _insert_source_sku_lineage_in_transaction(
+                        connection, plan, now=now
+                    )
+                    active_legacy = connection.execute(
+                        "SELECT * FROM release_sku_reservations WHERE sku_key = ? AND status = 'ACTIVE'",
+                        (sku_key,),
+                    ).fetchone()
+                    if not active_legacy:
+                        connection.execute(
+                            """
+                            INSERT INTO release_sku_reservations (
+                                reservation_id, plan_id, product_id, seller_sku,
+                                sku_key, status, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+                            """,
+                            (
+                                f"sku-reservation:{plan_id}", plan_id,
+                                plan["product_id"], plan["seller_sku"], sku_key, now, now,
+                            ),
+                        )
+                    elif not source_lineage["inherited_existing_source"]:
+                        raise SkuReservationConflict(
+                            f"seller SKU key {sku_key} is already reserved"
+                        )
+                    existing = connection.execute(
+                        "SELECT * FROM release_plans WHERE plan_id = ?", (plan_id,)
+                    ).fetchone()
+                    created_plan = True
+
+                _persist_business_snapshot_in_transaction(
+                    connection, plan_row=existing, now=now
+                )
+                approval_row = connection.execute(
+                    "SELECT * FROM release_approvals WHERE plan_id = ?", (plan_id,)
+                ).fetchone()
+                created_approval = False
+                if approval_row:
+                    if (
+                        approval_row["payload_digest"] != digest
+                        or approval_row["confirmation_token"] != token
+                        or approval_row["approved_by"] != "Kyle"
+                        or approval_row["status"] != PLAN_APPROVED
+                    ):
+                        raise ImmutableReleaseError(
+                            "reviewed successor already has a different approval"
+                        )
+                else:
+                    approval_id = f"release-approval:{digest[:24]}"
+                    connection.execute(
+                        """
+                        INSERT INTO release_approvals (
+                            approval_id, plan_id, payload_digest, confirmation_token,
+                            approved_by, user_approved, status, approved_at
+                        ) VALUES (?, ?, ?, ?, 'Kyle', 1, 'APPROVED', ?)
+                        """,
+                        (approval_id, plan_id, digest, token, now),
+                    )
+                    connection.execute(
+                        "UPDATE release_plans SET status = 'APPROVED', approved_at = ? WHERE plan_id = ?",
+                        (now, plan_id),
+                    )
+                    approval_row = connection.execute(
+                        "SELECT * FROM release_approvals WHERE approval_id = ?", (approval_id,)
+                    ).fetchone()
+                    existing = connection.execute(
+                        "SELECT * FROM release_plans WHERE plan_id = ?", (plan_id,)
+                    ).fetchone()
+                    created_approval = True
+
+                snapshot = _persist_publication_snapshot_in_transaction(
+                    connection, plan_row=existing, approval_row=approval_row, now=now
+                )
+                if snapshot is None:
+                    raise ImmutableReleaseError(
+                        "reviewed successor did not freeze a v4 snapshot"
+                    )
+                from shared_platform.publication_autopilot import _business_snapshot_digest
+
+                if (
+                    _business_snapshot_digest(snapshot)
+                    != _text(expected_business_snapshot_digest)
+                ):
+                    raise ImmutableReleaseError(
+                        "reviewed successor business snapshot digest drifted"
+                    )
+                return {
+                    "schema_version": "reviewed-successor-approval/v1",
+                    "plan": _plan_from_row(existing),
+                    "approval": _approval_from_row(approval_row),
+                    "publication_snapshot": snapshot,
+                    "created": created_plan or created_approval,
+                }
+        except sqlite3.IntegrityError as error:
+            if "release_sku_reservations.sku_key" in str(error):
+                raise SkuReservationConflict(
+                    f"seller SKU key {sku_key} is already reserved"
+                ) from error
+            raise
+
     def create_category_correction_successor(
         self,
         predecessor_plan_id: str,
@@ -2757,6 +4274,69 @@ class ReleaseStore:
             plan=_plan_from_row(plan_row),
         )
 
+    def publication_business_snapshot(
+        self,
+        *,
+        offer_id: object,
+        plan_id: object | None = None,
+        business_snapshot_digest: object | None = None,
+    ) -> dict[str, Any] | None:
+        """Return one verified approval-neutral business snapshot."""
+
+        clean_offer_id = _text(offer_id)
+        clean_plan_id = _text(plan_id)
+        clean_digest = (
+            "sha256:"
+            + _sha256_text(
+                business_snapshot_digest,
+                field="business_snapshot_digest",
+            )
+            if business_snapshot_digest is not None
+            else ""
+        )
+        if not clean_offer_id:
+            raise ValueError("offer_id is required")
+        if bool(clean_plan_id) == bool(clean_digest):
+            raise ValueError(
+                "exactly one of plan_id or business_snapshot_digest is required"
+            )
+        if not self.path.is_file():
+            return None
+        clauses = ["snapshot.offer_id = ?"]
+        parameters: list[object] = [clean_offer_id]
+        if clean_plan_id:
+            clauses.append("snapshot.plan_id = ?")
+            parameters.append(clean_plan_id)
+        else:
+            clauses.append("snapshot.snapshot_digest = ?")
+            parameters.append(clean_digest)
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    f"""
+                    SELECT snapshot.*
+                    FROM publication_business_snapshots AS snapshot
+                    WHERE {' AND '.join(clauses)}
+                    """,
+                    tuple(parameters),
+                ).fetchone()
+                if not row:
+                    return None
+                plan_row = connection.execute(
+                    "SELECT * FROM release_plans WHERE plan_id = ?",
+                    (row["plan_id"],),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if not plan_row:
+            raise ImmutableReleaseError(
+                "publication business snapshot lost its ReleasePlan"
+            )
+        return _validated_business_snapshot_row(
+            row,
+            plan=_plan_from_row(plan_row),
+        )
+
     def publication_snapshot_projection(
         self,
         *,
@@ -2871,12 +4451,21 @@ class ReleaseStore:
         source_identity_digest: str,
         exclude_product_id: str | None = None,
     ) -> dict[str, Any]:
-        """Load immutable predecessor/reservation facts for SKU lineage."""
+        """Load matching predecessors and all active SKU ownership claims.
+
+        Keep predecessor-shaped reservations separate for the legacy resolver.
+        New-source finalization also needs claims owned by other sources.
+        """
 
         if not self.path.is_file():
-            return {"predecessor_records": [], "existing_reservations": []}
+            return {
+                "predecessor_records": [],
+                "existing_reservations": [],
+                "active_reservation_claims": [],
+            }
         predecessors: list[dict[str, Any]] = []
         reservations: list[dict[str, Any]] = []
+        active_claims: list[dict[str, Any]] = []
         with self._connect_readonly() as connection:
             try:
                 plan_rows = connection.execute(
@@ -2889,15 +4478,15 @@ class ReleaseStore:
                 reservation_rows = connection.execute(
                     """
                     SELECT * FROM release_source_sku_reservations
-                    WHERE source_identity_digest = ? AND status = 'ACTIVE'
+                    WHERE status = 'ACTIVE'
                     ORDER BY created_at, reservation_digest
                     """,
-                    (_text(source_identity_digest),),
                 ).fetchall()
             except sqlite3.OperationalError:
                 return {
                     "predecessor_records": [],
                     "existing_reservations": [],
+                    "active_reservation_claims": [],
                 }
         for row in plan_rows:
             if (
@@ -2961,6 +4550,7 @@ class ReleaseStore:
             )
         for row in reservation_rows:
             value = _source_sku_reservation_from_row(row)
+            active_claims.append(value)
             # A NEW_SOURCE ownership row is superseded atomically by the first
             # inherited reservation. Passing it to the 01 resolver would
             # incorrectly treat its different predecessor identity as an
@@ -2970,6 +4560,7 @@ class ReleaseStore:
         return {
             "predecessor_records": predecessors,
             "existing_reservations": reservations,
+            "active_reservation_claims": active_claims,
         }
 
     def predecessor_plan_for(self, successor_plan_id: str) -> dict[str, Any] | None:
@@ -3151,6 +4742,373 @@ class ReleaseStore:
             )
         return self.get_plan(rows[0]["plan_id"]) if rows else None
 
+    def get_final_review_decision(
+        self,
+        *,
+        decision_id: str | None = None,
+        contract_digest: str | None = None,
+        common_plan_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Read one immutable decision; this read confers no execution authority."""
+
+        selectors = {
+            "decision_id": _text(decision_id),
+            "contract_digest": _text(contract_digest),
+            "common_plan_id": _text(common_plan_id),
+        }
+        selected = [(key, value) for key, value in selectors.items() if value]
+        if len(selected) != 1:
+            raise ValueError("exactly one final review decision selector is required")
+        if not self.path.is_file():
+            return None
+        column, value = selected[0]
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    f"SELECT * FROM release_final_review_decisions WHERE {column} = ?",
+                    (value,),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        return _validated_final_review_decision_row(row) if row else None
+
+    def get_final_review_stage_authorization(
+        self,
+        *,
+        authorization_id: str | None = None,
+        decision_id: str | None = None,
+        plan_id: str | None = None,
+        stage: str = "R3_COMMON",
+    ) -> dict[str, Any] | None:
+        """Read provenance whose status is explicitly RECORDED_NOT_EXECUTABLE."""
+
+        selectors = {
+            "authorization_id": _text(authorization_id),
+            "decision_id": _text(decision_id),
+            "plan_id": _text(plan_id),
+        }
+        selected = [(key, value) for key, value in selectors.items() if value]
+        if len(selected) != 1:
+            raise ValueError("exactly one final review stage selector is required")
+        if _text(stage) != "R3_COMMON":
+            raise ValueError("package 1 records only R3_COMMON provenance")
+        if not self.path.is_file():
+            return None
+        column, value = selected[0]
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    f"""
+                    SELECT * FROM release_final_review_stage_authorizations
+                    WHERE {column} = ? AND stage = 'R3_COMMON'
+                    """,
+                    (value,),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        return _validated_final_review_stage_row(row) if row else None
+
+    def cas_final_review_decision(
+        self,
+        contract: Mapping[str, Any],
+        *,
+        approved_by: str,
+        user_approved: bool,
+    ) -> dict[str, Any]:
+        """Record Kyle's exact decision and inert COMMON provenance atomically.
+
+        This CAS validates only self-contained contract fields and facts already
+        persisted in this ReleaseStore.  It does not verify current R1, R2,
+        dashboard, provider, or marketplace state.  A future caller must rebuild
+        the contract while holding the product lock and recheck it immediately
+        before any execution.  This method leaves the plan pending and creates no
+        legacy approval, run, provider call, or execution authority.
+        """
+
+        if user_approved is not True:
+            raise ReleaseAuthorizationError("literal user_approved=True is required")
+        if type(approved_by) is not str or approved_by != "Kyle":
+            raise ReleaseAuthorizationError("approved_by must be Kyle")
+        normalized = _final_review_contract(contract)
+        decision_id = (
+            "final-review-decision:"
+            + normalized["contract_digest"].split(":", 1)[1]
+        )
+
+        with self._transaction() as connection:
+            plan = connection.execute(
+                "SELECT * FROM release_plans WHERE plan_id = ?",
+                (normalized["common_plan_id"],),
+            ).fetchone()
+            if not plan:
+                raise ReleaseStoreError("final review COMMON plan was not found")
+            decision_rows = connection.execute(
+                """
+                SELECT * FROM release_final_review_decisions
+                WHERE common_plan_id = ? OR contract_digest = ? OR decision_id = ?
+                """,
+                (
+                    normalized["common_plan_id"],
+                    normalized["contract_digest"],
+                    decision_id,
+                ),
+            ).fetchall()
+            if decision_rows:
+                if len(decision_rows) != 1:
+                    raise ImmutableReleaseError(
+                        "final review contract and COMMON plan belong to different decisions"
+                    )
+                decision = _validated_final_review_decision_row(decision_rows[0])
+                if (
+                    decision["decision_id"] != decision_id
+                    or decision["contract_digest"] != normalized["contract_digest"]
+                    or decision["common_plan_id"] != normalized["common_plan_id"]
+                ):
+                    raise ImmutableReleaseError(
+                        "COMMON plan already belongs to a different final review decision"
+                    )
+                stage_row = connection.execute(
+                    """
+                    SELECT * FROM release_final_review_stage_authorizations
+                    WHERE decision_id = ? AND stage = 'R3_COMMON'
+                    """,
+                    (decision_id,),
+                ).fetchone()
+                if not stage_row:
+                    raise ImmutableReleaseError(
+                        "final review decision is missing atomic COMMON provenance"
+                    )
+                stage_record = _validated_final_review_stage_row(stage_row)
+                if stage_record["plan_id"] != normalized["common_plan_id"]:
+                    raise ImmutableReleaseError(
+                        "final review COMMON provenance belongs to a different plan"
+                    )
+                return {
+                    "schema_version": "release-final-review-cas-receipt/v1",
+                    "created": False,
+                    "decision": decision,
+                    "derived_stage_authorization": stage_record,
+                    "plan_status": plan["status"],
+                    "legacy_approval_created": False,
+                    "execution_authority": False,
+                    "external_facts_verified": False,
+                    "caller_revalidation_required": True,
+                    "revalidation_note": (
+                        "Rebuild under the product lock and recheck R1, R2, dashboard, "
+                        "provider, and marketplace facts before execution."
+                    ),
+                }
+
+            approval = connection.execute(
+                "SELECT 1 FROM release_approvals WHERE plan_id = ?",
+                (plan["plan_id"],),
+            ).fetchone()
+            run = connection.execute(
+                "SELECT 1 FROM release_runs WHERE plan_id = ?",
+                (plan["plan_id"],),
+            ).fetchone()
+            stored_payload = json.loads(plan["payload_json"])
+            if (
+                plan["status"] != PLAN_PENDING_APPROVAL
+                or plan["superseded_by_plan_id"] is not None
+                or approval is not None
+                or run is not None
+                or plan["product_id"] != normalized["offer_id"]
+                or plan["seller_sku"] != normalized["seller_sku"]
+                or json.loads(plan["target_labels_json"]) != ["miaoshou:COMMON"]
+                or stored_payload != normalized["common_payload"]
+                or plan["payload_digest"] != normalized["common_payload_digest"]
+                or _prefixed_sha256_bytes(
+                    plan["confirmation_token"].encode("utf-8")
+                ) != normalized["confirmation_token_digest"]
+            ):
+                raise ReleaseAuthorizationError(
+                    "COMMON plan is not the exact unapproved pending plan in the contract"
+                )
+
+            # The named row alone is insufficient: an older pending plan may
+            # still exist after another plan for this Offer became current.
+            # Keep this read in the same BEGIN IMMEDIATE transaction as insert.
+            competing_plan = connection.execute(
+                """
+                SELECT plan_id FROM release_plans
+                WHERE product_id = ? AND plan_id != ?
+                  AND (status IS NULL OR status != 'SUPERSEDED')
+                LIMIT 1
+                """,
+                (normalized["offer_id"], plan["plan_id"]),
+            ).fetchone()
+            if competing_plan:
+                raise ReleaseAuthorizationError(
+                    "COMMON plan is not the sole active current plan for the Offer"
+                )
+            self._require_reconciled_common_claims(
+                connection,
+                product_id=normalized["offer_id"],
+                exclude_plan_id=plan["plan_id"],
+            )
+            unresolved_run = connection.execute(
+                """
+                SELECT run.run_id FROM release_runs AS run
+                JOIN release_plans AS prior ON prior.plan_id = run.plan_id
+                WHERE prior.product_id = ? AND prior.plan_id != ?
+                  AND (run.status IS NULL OR run.status NOT IN ('SUCCEEDED', 'SUPERSEDED'))
+                LIMIT 1
+                """,
+                (normalized["offer_id"], plan["plan_id"]),
+            ).fetchone()
+            if unresolved_run:
+                raise ReleaseAuthorizationError(
+                    "COMMON_RECONCILIATION_REQUIRED: another run for the Offer is unresolved"
+                )
+
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO release_final_review_decisions (
+                    decision_id, contract_schema_version, contract_json,
+                    contract_digest, offer_id, product_revision, seller_sku,
+                    r1_snapshot_digest, r2_identity_digest, business_facts_digest,
+                    ordered_targets_json, ordered_targets_digest, common_plan_id,
+                    common_payload_digest, confirmation_token_digest,
+                    expected_write_scope_json, expected_write_scope_digest,
+                    approved_by, user_approved, status, approved_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          'Kyle', 1, 'RECORDED', ?)
+                """,
+                (
+                    decision_id,
+                    "publication-final-review-preview/v1",
+                    normalized["contract_json"],
+                    normalized["contract_digest"],
+                    normalized["offer_id"],
+                    normalized["product_revision"],
+                    normalized["seller_sku"],
+                    normalized["r1_snapshot_digest"],
+                    normalized["r2_identity_digest"],
+                    normalized["business_facts_digest"],
+                    normalized["ordered_targets_json"],
+                    normalized["ordered_targets_digest"],
+                    normalized["common_plan_id"],
+                    normalized["common_payload_digest"],
+                    normalized["confirmation_token_digest"],
+                    normalized["expected_write_scope_json"],
+                    normalized["expected_write_scope_digest"],
+                    now,
+                ),
+            )
+            binding = {
+                "schema_version": "final-review-stage-binding/v1",
+                "stage": "R3_COMMON",
+                "decision_id": decision_id,
+                "decision_digest": normalized["contract_digest"],
+                "plan_id": normalized["common_plan_id"],
+                "payload_digest": normalized["common_payload_digest"],
+                "confirmation_token_digest": normalized["confirmation_token_digest"],
+                "marketplace_targets": normalized["marketplace_targets"],
+                "execution_scope": ["miaoshou:COMMON"],
+                "execution_authority": False,
+            }
+            provenance = {
+                "schema_version": "final-review-derived-provenance/v1",
+                "source_decision_id": decision_id,
+                "source_contract_digest": normalized["contract_digest"],
+                "approved_by": "Kyle",
+                "user_approved": True,
+                "approved_at": now,
+                "derivation": "same-transaction-common-provenance/v1",
+                "execution_authority": False,
+                "requires_future_gate": True,
+            }
+            authorization_id = f"final-review-stage:{decision_id}:R3_COMMON"
+            connection.execute(
+                """
+                INSERT INTO release_final_review_stage_authorizations (
+                    authorization_id, decision_id, stage, plan_id,
+                    binding_json, binding_digest, provenance_json,
+                    provenance_digest, status, execution_authority, created_at
+                ) VALUES (?, ?, 'R3_COMMON', ?, ?, ?, ?, ?,
+                          'RECORDED_NOT_EXECUTABLE', 0, ?)
+                """,
+                (
+                    authorization_id,
+                    decision_id,
+                    normalized["common_plan_id"],
+                    _strict_canonical_json(binding),
+                    _prefixed_sha256_json(binding),
+                    _strict_canonical_json(provenance),
+                    _prefixed_sha256_json(provenance),
+                    now,
+                ),
+            )
+            decision_row = connection.execute(
+                "SELECT * FROM release_final_review_decisions WHERE decision_id = ?",
+                (decision_id,),
+            ).fetchone()
+            stage_row = connection.execute(
+                """
+                SELECT * FROM release_final_review_stage_authorizations
+                WHERE authorization_id = ?
+                """,
+                (authorization_id,),
+            ).fetchone()
+            decision = _validated_final_review_decision_row(decision_row)
+            stage_record = _validated_final_review_stage_row(stage_row)
+            return {
+                "schema_version": "release-final-review-cas-receipt/v1",
+                "created": True,
+                "decision": decision,
+                "derived_stage_authorization": stage_record,
+                "plan_status": plan["status"],
+                "legacy_approval_created": False,
+                "execution_authority": False,
+                "external_facts_verified": False,
+                "caller_revalidation_required": True,
+                "revalidation_note": (
+                    "Rebuild under the product lock and recheck R1, R2, dashboard, "
+                    "provider, and marketplace facts before execution."
+                ),
+            }
+
+    @staticmethod
+    def _reject_final_review_legacy_authority(
+        connection: sqlite3.Connection, plan_id: str
+    ) -> None:
+        """An inert decision for this exact COMMON plan cannot enter legacy R3.
+
+        Call only inside the same write transaction as the legacy mutation so a
+        concurrent CAS and old approval serialize on SQLite's write lock.
+        """
+        from shared_platform.r3_native_final_approval import reject_synthetic_final_approval
+        reject_synthetic_final_approval(connection, plan_id)
+        # A native sole decision also requires its own current source recheck;
+        # a legacy approval token must not bypass that consumer. Old databases
+        # without the explicit native installation keep their original path.
+        from shared_platform.native_sole_final_execution import allows_native_run
+        native_execution = allows_native_run(connection, plan_id)
+        for table in (() if native_execution else ("native_sole_final_nonces", "native_sole_final_decisions")):
+            if connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone() and connection.execute(
+                f"SELECT 1 FROM {table} WHERE plan_id=?", (plan_id,)
+            ).fetchone():
+                raise ReleaseAuthorizationError("native sole final decision requires its source recheck")
+        recorded = connection.execute(
+            """
+            SELECT 1 FROM release_final_review_decisions
+            WHERE common_plan_id = ?
+            UNION ALL
+            SELECT 1 FROM release_final_review_stage_authorizations
+            WHERE plan_id = ? AND status = 'RECORDED_NOT_EXECUTABLE'
+            LIMIT 1
+            """,
+            (plan_id, plan_id),
+        ).fetchone()
+        if recorded:
+            raise ReleaseAuthorizationError(
+                "final review decision cannot authorize the legacy release path"
+            )
+
     def approve_plan(
         self,
         plan_id: str,
@@ -3171,107 +5129,142 @@ class ReleaseStore:
             ).fetchone()
             if not plan:
                 raise ReleaseStoreError("release plan was not found")
+            self._reject_final_review_legacy_authority(connection, plan["plan_id"])
             if plan["status"] == SUPERSEDED:
                 raise ReleaseAuthorizationError("a superseded plan cannot be approved")
             if _text(confirmation_token) != plan["confirmation_token"]:
                 raise ReleaseAuthorizationError(
                     "confirmation token does not match the immutable release plan"
                 )
-            existing = connection.execute(
-                "SELECT * FROM release_approvals WHERE plan_id = ?",
-                (plan["plan_id"],),
-            ).fetchone()
-            if existing:
-                if (
-                    existing["payload_digest"] != plan["payload_digest"]
-                    or existing["confirmation_token"] != plan["confirmation_token"]
-                    or existing["approved_by"] != "Kyle"
-                ):
-                    raise ImmutableReleaseError(
-                        "release plan already has a different approval"
-                    )
-                snapshot_projection = None
-                if json.loads(plan["payload_json"]).get(
-                    "approved_publication_snapshot_schema_version"
-                ) == APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION:
-                    snapshot_row = connection.execute(
-                        """
-                        SELECT * FROM approved_publication_snapshots
-                        WHERE plan_id = ?
-                        """,
-                        (plan["plan_id"],),
-                    ).fetchone()
-                    if not snapshot_row:
-                        raise ImmutableReleaseError(
-                            "declared v4 approval is missing its durable snapshot"
-                        )
-                    snapshot = _validated_publication_snapshot_row(
-                        snapshot_row,
-                        plan=_plan_from_row(plan),
-                    )
-                    snapshot_projection = {
-                        "schema_version": snapshot["schema_version"],
-                        "snapshot_digest": snapshot["snapshot_digest"],
-                        "product_revision": snapshot["product_revision"],
-                    }
-                return {
-                    **_approval_from_row(existing),
-                    "created": False,
-                    "publication_snapshot": snapshot_projection,
-                }
+            return self._persist_approved_plan_in_transaction(
+                connection, plan, logical_profile="Kyle")
 
-            now = _utc_now()
-            approval_id = f"release-approval:{plan['payload_digest'][:24]}"
-            connection.execute(
+    def _persist_approved_plan_in_transaction(self, connection, plan, *, logical_profile):
+        """Mechanical existing writer; admission belongs to its named callers.
+
+        The native caller must verify the SID/profile binding and consume its
+        exact decision in this same transaction before calling this helper.
+        """
+        if not connection.in_transaction or logical_profile != "Kyle":
+            raise ReleaseAuthorizationError("native logical profile/transaction is invalid")
+        existing = connection.execute(
+            "SELECT * FROM release_approvals WHERE plan_id = ?",
+            (plan["plan_id"],),
+        ).fetchone()
+        plan_document = _plan_from_row(plan)
+        business_snapshot = None
+        if plan_document["payload"].get(
+            "publication_business_snapshot_schema_version"
+        ) == PUBLICATION_BUSINESS_SNAPSHOT_SCHEMA_VERSION:
+            business_row = connection.execute(
                 """
-                INSERT INTO release_approvals (
-                    approval_id, plan_id, payload_digest, confirmation_token,
-                    approved_by, user_approved, status, approved_at
-                ) VALUES (?, ?, ?, ?, 'Kyle', 1, 'APPROVED', ?)
-                """,
-                (
-                    approval_id,
-                    plan["plan_id"],
-                    plan["payload_digest"],
-                    plan["confirmation_token"],
-                    now,
-                ),
-            )
-            connection.execute(
-                """
-                UPDATE release_plans
-                SET status = 'APPROVED', approved_at = ?
+                SELECT * FROM publication_business_snapshots
                 WHERE plan_id = ?
                 """,
-                (now, plan["plan_id"]),
-            )
-            row = connection.execute(
-                "SELECT * FROM release_approvals WHERE approval_id = ?",
-                (approval_id,),
-            ).fetchone()
-            approved_plan_row = connection.execute(
-                "SELECT * FROM release_plans WHERE plan_id = ?",
                 (plan["plan_id"],),
             ).fetchone()
-            snapshot = _persist_publication_snapshot_in_transaction(
-                connection,
-                plan_row=approved_plan_row,
-                approval_row=row,
-                now=now,
+            if not business_row:
+                raise ImmutableReleaseError(
+                    "declared business snapshot is missing before approval"
+                )
+            business_snapshot = _validated_business_snapshot_row(
+                business_row,
+                plan=plan_document,
             )
+        if existing:
+            if (
+                existing["payload_digest"] != plan["payload_digest"]
+                or existing["confirmation_token"] != plan["confirmation_token"]
+                or existing["approved_by"] != logical_profile
+            ):
+                raise ImmutableReleaseError(
+                    "release plan already has a different approval"
+                )
+            snapshot_projection = None
+            if json.loads(plan["payload_json"]).get(
+                "approved_publication_snapshot_schema_version"
+            ) == APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION:
+                snapshot_row = connection.execute(
+                    """
+                    SELECT * FROM approved_publication_snapshots
+                    WHERE plan_id = ?
+                    """,
+                    (plan["plan_id"],),
+                ).fetchone()
+                if not snapshot_row:
+                    raise ImmutableReleaseError(
+                        "declared v4 approval is missing its durable snapshot"
+                    )
+                snapshot = _validated_publication_snapshot_row(
+                    snapshot_row,
+                    plan=_plan_from_row(plan),
+                )
+                snapshot_projection = {
+                    "schema_version": snapshot["schema_version"],
+                    "snapshot_digest": snapshot["snapshot_digest"],
+                    "product_revision": snapshot["product_revision"],
+                }
             return {
-                **_approval_from_row(row),
-                "created": True,
-                "publication_snapshot": (
-                    {
-                        "schema_version": snapshot["schema_version"],
-                        "snapshot_digest": snapshot["snapshot_digest"],
-                        "product_revision": snapshot["product_revision"],
-                    }
-                    if snapshot is not None
-                    else None
-                ),
+                **_approval_from_row(existing),
+                "created": False,
+                "publication_snapshot": snapshot_projection,
+                "publication_business_snapshot": business_snapshot,
             }
+
+        now = _utc_now()
+        approval_id = f"release-approval:{plan['payload_digest'][:24]}"
+        connection.execute(
+            """
+            INSERT INTO release_approvals (
+                approval_id, plan_id, payload_digest, confirmation_token,
+                approved_by, user_approved, status, approved_at
+            ) VALUES (?, ?, ?, ?, ?, 1, 'APPROVED', ?)
+            """,
+            (
+                approval_id,
+                plan["plan_id"],
+                plan["payload_digest"],
+                plan["confirmation_token"],
+                logical_profile,
+                now,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE release_plans
+            SET status = 'APPROVED', approved_at = ?
+            WHERE plan_id = ?
+            """,
+            (now, plan["plan_id"]),
+        )
+        row = connection.execute(
+            "SELECT * FROM release_approvals WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+        approved_plan_row = connection.execute(
+            "SELECT * FROM release_plans WHERE plan_id = ?",
+            (plan["plan_id"],),
+        ).fetchone()
+        snapshot = _persist_publication_snapshot_in_transaction(
+            connection,
+            plan_row=approved_plan_row,
+            approval_row=row,
+            now=now,
+        )
+        return {
+            **_approval_from_row(row),
+            "created": True,
+            "publication_snapshot": (
+                {
+                    "schema_version": snapshot["schema_version"],
+                    "snapshot_digest": snapshot["snapshot_digest"],
+                    "product_revision": snapshot["product_revision"],
+                }
+                if snapshot is not None
+                else None
+            ),
+            "publication_business_snapshot": business_snapshot,
+        }
 
     def start_run(
         self,
@@ -3287,6 +5280,7 @@ class ReleaseStore:
             ).fetchone()
             if not plan:
                 raise ReleaseStoreError("release plan was not found")
+            self._reject_final_review_legacy_authority(connection, plan["plan_id"])
             if plan["status"] != PLAN_APPROVED:
                 raise ReleaseAuthorizationError(
                     "release plan requires an active Kyle approval"
@@ -3392,6 +5386,32 @@ class ReleaseStore:
                 ).fetchone()
             )
 
+    def _validated_common_observation(self, connection, row, evidence):
+        if 'native_common_observation' not in evidence:
+            return dict(evidence)
+        from modules.miaoshou.client import validate_common_observation_receipt
+        current = dict(evidence)
+        observation = current['native_common_observation']
+        run = connection.execute('SELECT * FROM release_runs WHERE run_id=?', (row['run_id'],)).fetchone()
+        plan = connection.execute('SELECT * FROM release_plans WHERE plan_id=?', (run['plan_id'],)).fetchone() if run else None
+        if (not plan or row['target_label'] != 'miaoshou:COMMON' or row['attempts'] < 1
+                or current.get('verified') is not True or current.get('offer_id') != plan['product_id']):
+            raise ImmutableReleaseError('COMMON_OBSERVATION_LINEAGE_INVALID')
+        validate_common_observation_receipt(observation, detail_id=plan['product_id'])
+        comparison = {k:v for k,v in current.items() if k not in ('native_common_observation','stored_common_lineage')}
+        comparison_digest = hashlib.sha256(_canonical_json(comparison).encode('utf-8')).hexdigest()
+        if observation['comparison_sha256'] != comparison_digest:
+            raise ImmutableReleaseError('COMMON_OBSERVATION_COMPARISON_CHANGED')
+        lineage = {'schema_version':'stored-common-observation-lineage/v1',
+            'plan_id':plan['plan_id'],'run_id':row['run_id'],'target_label':row['target_label'],
+            'attempt':row['attempts'],'offer_id':plan['product_id'],
+            'plan_payload_digest':plan['payload_digest'],'comparison_sha256':comparison_digest,
+            'execution_authority':False}
+        if 'stored_common_lineage' in current and current['stored_common_lineage'] != lineage:
+            raise ImmutableReleaseError('COMMON_OBSERVATION_LINEAGE_CHANGED')
+        current['stored_common_lineage'] = lineage
+        return current
+
     def record_target_success(
         self,
         run_id: str,
@@ -3413,6 +5433,10 @@ class ReleaseStore:
         )
         with self._transaction() as connection:
             row = self._target_for_update(connection, run_id, target_label)
+            if readback_evidence is not None and 'native_common_observation' in readback_evidence:
+                current = self._validated_common_observation(connection, row, readback_evidence)
+                evidence_json = _canonical_json(current)
+                evidence_digest = hashlib.sha256(evidence_json.encode('utf-8')).hexdigest()
             clean_external_id = _text(external_id) or None
             if row["status"] == TARGET_SUCCEEDED:
                 if (row["external_id"] or None) != clean_external_id:
@@ -3574,6 +5598,7 @@ class ReleaseStore:
                     "prior COMMON write evidence is not exact and truthful"
                 )
 
+            incoming = self._validated_common_observation(connection, row, incoming)
             merged = {
                 **incoming,
                 "schema_version": "miaoshou-common-reconciled/v1",
@@ -3584,6 +5609,11 @@ class ReleaseStore:
                 "reconciliation_external_writes_performed": [],
                 "external_writes_performed": prior_writes,
             }
+            if 'native_common_observation' in incoming:
+                from modules.products.release_adapters import bind_native_common_readback
+                merged = bind_native_common_readback(incoming, merged)
+                merged.pop('stored_common_lineage', None)
+                merged = self._validated_common_observation(connection, row, merged)
             evidence_json = _canonical_json(merged)
             evidence_digest = hashlib.sha256(
                 evidence_json.encode("utf-8")
@@ -3710,6 +5740,76 @@ class ReleaseStore:
                     (row["run_id"], row["target_label"]),
                 ).fetchone()
             )
+
+    def _record_native_submission_readback(self, proof):
+        """Close one accepted target after service-owned zero-write official READ.
+
+        Preserve the immutable submission and attempt, using existing readback
+        and physical status storage. No new enum, schema or human verification.
+        """
+        from shared_platform.native_sole_final_readback import _SubmissionReadback
+        from shared_platform.native_sole_final_execution import _ACTIVE, _NativeExecution
+        active = _ACTIVE.get()
+        if type(proof) is not _SubmissionReadback or type(active) is not _NativeExecution or active.store is not self:
+            raise ReleaseAuthorizationError('native submission source recheck is required')
+        evidence = json.loads(proof.evidence_json)
+        checks = evidence.get('checks') or {}
+        if (evidence.get('source') != 'official_tiktok_shop_api'
+                or evidence.get('verified') is not True
+                or evidence.get('external_writes_performed') != []
+                or not {'single_exact_sku','title','price','image_count','category','active'}.issubset(checks)
+                or any(value is not True for value in checks.values())):
+            raise ReleaseAuthorizationError('native submission official zero-write readback is required')
+        with self._transaction() as connection:
+            run = connection.execute('SELECT * FROM release_runs WHERE run_id=?', (proof.run_id,)).fetchone()
+            if run is None or run['plan_id'] != active.plan_id:
+                raise ReleaseAuthorizationError('native submission run identity changed')
+            self._reject_final_review_legacy_authority(connection, run['plan_id'])
+            target = self._target_for_update(connection, proof.run_id, proof.target_label)
+            submission = connection.execute('SELECT * FROM release_target_submissions WHERE run_id=? AND target_label=?',
+                (proof.run_id, proof.target_label)).fetchone()
+            if (submission is None or submission['status'] != TARGET_SUBMITTED_UNVERIFIED
+                    or submission['evidence_digest'] != proof.submission_digest
+                    or hashlib.sha256(submission['evidence_json'].encode('utf-8')).hexdigest() != proof.submission_digest
+                    or submission['external_id'] != proof.external_id
+                    or target['external_id'] != proof.external_id
+                    or target['idempotency_key'] != proof.idempotency_key or target['attempts'] != proof.attempt
+                    or proof.attempt < 1):
+                raise ReleaseAuthorizationError('native submission receipt or attempt changed')
+            plan = connection.execute('SELECT payload_json FROM release_plans WHERE plan_id=?', (run['plan_id'],)).fetchone()
+            payload = json.loads(plan['payload_json'])
+            from modules.products.release_adapters import SEA_SITES, SITE_COUNTRIES
+            channel, site = proof.target_label.split(':', 1)
+            if (proof.target_label not in payload['targets'] or not proof.target_label.startswith('tiktok:')
+                    or site not in SEA_SITES or evidence.get('region') != SITE_COUNTRIES[site]
+                    or evidence.get('seller_sku') != payload['seller_sku']):
+                raise ReleaseAuthorizationError('native submission frozen target changed')
+            merged = {**evidence, 'native_submission_readback': {
+                'decision_id': active.decision_id, 'plan_id': run['plan_id'],
+                'run_id': proof.run_id, 'target_label': proof.target_label,
+                'attempt': proof.attempt, 'idempotency_key': proof.idempotency_key,
+                'prior_submission_digest': proof.submission_digest,
+                'prior_external_id': proof.external_id}}
+            encoded = _canonical_json(merged)
+            digest = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+            old = connection.execute('SELECT evidence_digest FROM release_target_readbacks WHERE run_id=? AND target_label=?',
+                (proof.run_id, proof.target_label)).fetchone()
+            if target['status'] == TARGET_SUCCEEDED:
+                if old is None or old['evidence_digest'] != digest:
+                    raise ImmutableReleaseError('native submission already has different official readback')
+                return self._run_in_transaction(connection, proof.run_id)
+            self._require_active_run(connection, proof.run_id)
+            if target['status'] != TARGET_FAILED or old is not None:
+                raise ReleaseAuthorizationError('native submitted target physical state changed')
+            now = _utc_now()
+            connection.execute('INSERT INTO release_target_readbacks(run_id,target_label,evidence_json,evidence_digest,verified_at) VALUES(?,?,?,?,?)',
+                (proof.run_id, proof.target_label, encoded, digest, now))
+            changed = connection.execute("UPDATE release_target_runs SET status='SUCCEEDED',error=NULL,updated_at=?,completed_at=? WHERE run_id=? AND target_label=? AND status='FAILED' AND attempts=? AND idempotency_key=?",
+                (now, now, proof.run_id, proof.target_label, proof.attempt, proof.idempotency_key))
+            if changed.rowcount != 1:
+                raise ReleaseStoreError('native submission readback lost target CAS')
+            self._refresh_run_status(connection, proof.run_id, now=now)
+            return self._run_in_transaction(connection, proof.run_id)
 
     def record_target_submission(
         self,
@@ -6260,7 +8360,8 @@ class ReleaseStore:
         ).fetchone()
         if not row:
             raise ReleaseStoreError("release run was not found")
-        if row["plan_status"] != PLAN_APPROVED or row["status"] == SUPERSEDED:
+        self._reject_final_review_legacy_authority(connection, row["plan_id"])
+        if row["approval_id"] is None or row["plan_status"] != PLAN_APPROVED or row["status"] == SUPERSEDED:
             raise ReleaseAuthorizationError("release run belongs to a superseded plan")
         if row["status"] == RUN_SUCCEEDED:
             raise ReleaseStoreError("release run is already complete")
@@ -6344,7 +8445,7 @@ class ReleaseStore:
             submissions = {
                 row["target_label"]: {
                     "external_id": row["external_id"],
-                    "evidence": json.loads(row["evidence_json"]),
+                    "evidence": _public_submission_evidence(json.loads(row["evidence_json"])),
                     "evidence_digest": row["evidence_digest"],
                     "status": row["status"],
                     "submitted_at": row["submitted_at"],
@@ -6427,7 +8528,15 @@ class ReleaseStore:
                 submissions.get(row["target_label"])
                 or _legacy_unverified_submission(payload)
             )
-            if payload["submission"]:
+            if payload["submission"] and not (
+                payload['storage_status'] == TARGET_SUCCEEDED
+                and (((payload.get('readback') or {}).get('evidence') or {}).get('native_submission_readback')
+                     or (row['target_label'] == 'miaoshou:COMMON' and run['approval_id'] is None
+                         and run['technical_execution_state'] == 'CONFIRMED_WRITE'
+                         and (payload['submission'].get('evidence') or {}).get('schema_version') ==
+                             'native-common-accepted-edit/v1'
+                         and ((payload.get('readback') or {}).get('evidence') or {}).get('verified') is True))
+            ):
                 payload["status"] = payload["submission"]["status"]
             payload["repair"] = repairs.get(row["target_label"])
             if payload["repair"]:
@@ -6551,6 +8660,8 @@ class ReleaseStore:
             raise ImmutableReleaseError(
                 "release plan was already superseded by another successor"
             )
+        if json.loads(plan['payload_json']).get('r3_stage_binding'):
+            self._require_reconciled_common_claims(connection, product_id=plan['product_id'])
         running_target = connection.execute(
             """
             SELECT target.target_label

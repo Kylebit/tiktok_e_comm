@@ -1,42 +1,14 @@
-"""MX 确认单 CLI：approve / reject / show。"""
+"""已停用的历史 MX 工具；不创建审核卡或执行店铺动作。"""
 from __future__ import annotations
 
-import argparse
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from modules.miaoshou.mx_confirm import (
-    approve_confirm,
-    dispatch_confirm_card,
-    get_confirm,
-    reject_confirm,
-)
+RETIRED_ENTRY_CODE = "LEGACY_MX_ENTRY_RETIRED"
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="MX 上架确认单")
-    ap.add_argument("action", choices=["show", "approve", "reject"])
-    ap.add_argument("token")
-    args = ap.parse_args()
-
-    card = get_confirm(args.token)
-    if not card:
-        print(f"确认单不存在: {args.token}", file=sys.stderr)
-        return 1
-
-    if args.action == "show":
-        dispatch_confirm_card(card)
-        return 0
-    if args.action == "approve":
-        approve_confirm(args.token)
-        print(f"✓ 已确认 {card.match_key} ({args.token})")
-        return 0
-    reject_confirm(args.token)
-    print(f"✗ 已取消 {card.match_key} ({args.token})")
-    return 0
+    sys.stderr.write(RETIRED_ENTRY_CODE + ": 该历史工具已停用，请使用 Orbit 商品上架页面或当前上架 Skill\n")
+    return 2
 
 
 if __name__ == "__main__":

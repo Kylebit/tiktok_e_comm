@@ -1,0 +1,6 @@
+{
+  "schema_version": "publication-incident-registry/v1",
+  "template_only": true,
+  "note": "Intentionally invalid until the complete audited source registry is supplied. Do not replace history with an empty list or upgrade pending/deferred rows from schema success.",
+  "incidents": null
+}

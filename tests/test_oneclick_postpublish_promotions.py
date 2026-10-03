@@ -65,6 +65,8 @@ def _promotion_payload(targets=("miaoshou:COMMON", "tiktok:LH_PH")):
                     {
                         "target_key": "lh_ph",
                         "list_price": 200,
+                        "discount_reserve_pct": 32,
+                        "sale_after_discount": 136,
                         "currency": "PHP",
                     }
                 ]
@@ -215,7 +217,7 @@ def test_policy_is_plan_bound_deterministic_and_opt_in_only():
     assert enabled_promotion_action_targets(
         {"approved_postpublish_promotion_policy": policy},
         ["tiktok:LH_PH", "tiktok:MX", "tiktok:HB_PH", "ozon:RU"],
-    ) == ["promotion:tiktok:LH_PH"]
+    ) == ["promotion:tiktok:LH_PH", "promotion:tiktok:MX", "promotion:tiktok:HB_PH"]
     assert enabled_promotion_action_targets(
         {},
         ["tiktok:LH_PH"],
@@ -229,7 +231,8 @@ def test_policy_is_plan_bound_deterministic_and_opt_in_only():
 
 
 def test_server_binds_new_policy_and_ignores_client_injection():
-    dashboard = _dashboard()
+    from tests.test_approved_publication_snapshot_integration import _production_dashboard_with_exact_v4_inputs, _category_decision
+    dashboard = _production_dashboard_with_exact_v4_inputs()
     dashboard["publication_scope"]["selected_labels"] = [
         "miaoshou:COMMON",
         "tiktok:LH_PH",
@@ -239,6 +242,10 @@ def test_server_binds_new_policy_and_ignores_client_injection():
     )
     dashboard["omnichannel_preview"]["targets"][1]["site"] = "LH_PH"
     dashboard["listing_copy"]["candidates"][0]["site"] = "PH"
+    categories = dashboard["_approved_publication_snapshot_inputs"]["categories_by_target"]
+    categories.pop("tiktok:MX")
+    categories["tiktok:LH_PH"] = _category_decision("tiktok:LH_PH", category_id="600009", category_name="Festive Decorations")
+    dashboard["pricing_review"]["target_pricing"]["tiktok:LH_PH"]["sku_prices"][0]["currency"] = "PHP"
     dashboard["approved_postpublish_promotion_policy"] = {
         "client": "must-not-win"
     }
@@ -248,7 +255,7 @@ def test_server_binds_new_policy_and_ignores_client_injection():
     )
     assert blockers == []
     policy = approved_postpublish_promotion_policy(payload)
-    assert policy["discounts"]["tiktok"] == 32
+    assert policy["discounts"] == {"source": "immutable_target_pricing/v1"}
     assert "client" not in policy
     old_payload = _plan_payload(targets=["tiktok:LH_PH"])
     assert "approved_postpublish_promotion_policy" not in old_payload
@@ -767,13 +774,15 @@ def test_promotion_transport_unknown_is_consistent_across_terminal_ledgers(
     ] == [TIKTOK_PROMOTION_WRITE_CLASS, "UNKNOWN"]
 
 
-def test_promotion_targets_are_not_registered_in_direct_store_mvp():
+def test_promotion_targets_use_separate_governed_registration():
     registry = production_adapter_registry()
     assert set(registry) == {
         "miaoshou-direct-store/v1",
         "shopee_cnsc_publish",
+        "postpublish_promotion",
     }
     assert all(
         not target.startswith("promotion:")
         for target in registry["miaoshou-direct-store/v1"].target_labels
     )
+    assert len(registry["postpublish_promotion"].target_labels) == 14

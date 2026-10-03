@@ -175,7 +175,7 @@ remains an `outputs/EXPLICIT_ARTIFACT` child, now relative to `runtime_root`;
 consumer configuration and refresh profiles without `runtime_root` retain their
 project-relative behavior. This does not discover or copy another worktree.
 
-The native `operations_web_entry.py --config DEPLOYMENT.json` launcher consumes
+The native `operations_web_entry.py --deployment DEPLOYMENT.json --log ABSOLUTE_LOG` launcher consumes
 the explicit deployment field:
 
 ```json

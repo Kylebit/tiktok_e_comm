@@ -96,6 +96,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 - Bind every inbound event to one complete batch identity and one exact SKU quantity. A SKU may have multiple simultaneous inbound events with different dates.
 - Read every page of each inbound-batch detail. Repeated exact SKU rows may represent separate boxes; sum all eligible rows within that same complete batch before reconciling the SKU aggregate. Never stop at the first page.
 - Require the sum of exact batch-SKU quantities to equal the SKU's aggregate `inbound`. If a multi-batch allocation is missing, non-integer, or does not reconcile, fail closed: display the unmatched quantity but do not count it as supply. Never collapse it onto one SKU-level date.
+- When a complete current Seaya read proves zero pending-review, in-transit, waiting-for-inbound, and inbound-processing batches, replace the previous active-batch ledger with `NO_ACTIVE_BATCH` for every country. Preserve completed receipt identities and shelved times as reconciliation evidence; their quantities are already current stock and must not remain future inbound supply. Missing or partial status coverage cannot prove zero active batches.
 - When exactly one active inbound batch exists for a country, the SKU aggregate may be bound to that sole batch with explicit `SINGLE_ACTIVE_BATCH` lineage.
 - Allow a per-country + exact-batch manual expected-sellable-date override with an optional source note. The override applies to every SKU line in that batch, persists only in reversible browser `localStorage`, can be cleared, and never writes to Seaya or a database. Bind it to the current committed `estimated_sellable_confirmed_at` as `base_plan_confirmed_at` and require its `updated_at` to be strictly later; ignore stale local overrides from an older plan version.
 - Maintain batch ETA confirmation on the dedicated `dashboard/inbound-batches.html` page. Keep the SKU replenishment ledger read-only for ETA editing: show effective batch dates and link to the confirmation page instead of embedding per-row date controls.
@@ -116,7 +117,7 @@ python scripts/verify_dashboard_sync.py --update
 python scripts/verify_dashboard_sync.py --check
 ```
 
-3. Run `scripts/install_local_skill.ps1` to verify the linked installation still targets this canonical source.
+3. Verify the installed junction target read-only. Run `scripts/install_local_skill.ps1` only when the current work order includes installation for that exact source. An isolated source or documentation update must not repoint another verified worktree's junction.
 4. Commit the dashboard and skill changes together.
 
 Do not declare the feature complete when the sync check fails.
@@ -141,17 +142,23 @@ installation, capture apply and service activation are distinct authorized
 operations. An isolated platform change does not authorize repointing an
 installed Skill or activating a formal capture root.
 
-## Latest audited refresh evidence
+## Dated refresh evidence
 
-For the separately traced normalized 2026-09-30 historical display, see
-[audited-manual-snapshot.md](references/audited-manual-snapshot.md). Its engineering
-source binding is not a user business approval, provider page receipt or live
-refresh. Native import and immutable display remain explicitly opt-in; the
-existing captured COMPLETE path retains all its checks.
+Keep business facts separate from reusable code and policy. Read the
+[dated source lineage](references/decision-contract.md#dated-source-lineage)
+for the preserved D04 2026-09-30 manual snapshot and this checkout's older
+2026-09-02 bundled snapshot. Preserve both with their own source and clocks;
+the older bundled facts must not replace the newer D04 history or become
+current inventory defaults.
 
-- The latest committed refresh evidence is dated 2026-09-02 and is time-specific: 105 complete Seaya inventory rows, two active inbound batches totaling 1,780 units, and complete 31-day TikTok plus Shopee order snapshots for MY, TH, VN, and PH.
-- Active inbound reconciliation is exact: `THSL4038-60638` has 11 detail rows / 8 SKUs / 1,270 units and `PHPH4038-59553` has 13 detail rows / 11 SKUs / 510 units. Both latest vendor milestones were `2026-08-31 清关中`; neither batch is current stock. The user explicitly confirmed on 2026-09-01 that `THSL4038-60638` will arrive and be shelved in three days, so its batch-level expected-sellable date is 2026-09-04 and overrides the generic 15-day estimate. Do not reuse these quantities, milestones, or dates after a later refresh without re-reading every inventory and batch-detail page.
-- The current valid-order pull used 91 network reads and included TikTok orders MY 520 / TH 1,610 / VN 209 / PH 144 and Shopee orders MY 76 / TH 815 / VN 17 / PH 44. These counts are evidence for this refresh only, never a default demand value.
+For the traced normalized 2026-09-30 historical display, follow
+[audited-manual-snapshot.md](references/audited-manual-snapshot.md).
+`AUDITED_MANUAL_SNAPSHOT` validates engineering provenance only: provider page
+receipts, exact shop/account proof and a raw inbound list are missing, and
+settlement economics were not refreshed. Do not reconstruct captured pages or
+mark this history as captured COMPLETE, live readiness, user approval or
+execution authority. Native admission and runtime activation remain separately
+scoped operations; ordinary authorized documentation work adds no approval step.
 
 ## Preserve safety
 

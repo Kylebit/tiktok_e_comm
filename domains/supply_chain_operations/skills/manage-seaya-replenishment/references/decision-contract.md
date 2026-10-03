@@ -26,7 +26,28 @@ Current user-confirmed Seaya PH8807 mappings:
 | 770821 | 0821 | 2 |
 | 770822 | 0822 | 0 |
 
-The current committed inventory lineage is the 2026-09-02 logged-in, read-only Seaya snapshot: 105 complete raw rows (MY 31 / TH 42 / VN 15 / PH 17), with available quantities MY 2,011 / TH 3,075 / VN 523 / PH 28 and allocated quantities MY 5 / TH 25 / VN 1 / PH 0. Frozen quantity is zero in all four warehouses. The two active inbound batches remain exactly reconciled from every detail page: `THSL4038-60638` is 11 rows / 8 SKUs / 1,270 units and `PHPH4038-59553` is 13 rows / 11 SKUs / 510 units. This is time-specific evidence, never a reusable default.
+## Dated source lineage
+
+The selected checkout bundles a historical 2026-09-02 logged-in, read-only Seaya snapshot: 105 complete raw rows (MY 31 / TH 42 / VN 15 / PH 17), with available quantities MY 2,011 / TH 3,075 / VN 523 / PH 28 and allocated quantities MY 5 / TH 25 / VN 1 / PH 0. Frozen quantity is zero in all four warehouses. At that capture, the two active inbound batches were exactly reconciled from every detail page: `THSL4038-60638` is 11 rows / 8 SKUs / 1,270 units and `PHPH4038-59553` is 13 rows / 11 SKUs / 510 units. This is time-specific evidence, never a reusable default.
+
+The newer D04 2026-09-30 manual history remains in the separate source
+`D:/Users/Windows11/Desktop/Agent_PR/_codex_worktrees/04-supply-chain-ops`,
+branch `codex/supply-chain-ops`, commit
+`44ab16a6074186daa76cc8bc671da61c8552c160`. Its
+[preserved manual receipt](D:/Users/Windows11/Desktop/Agent_PR/_codex_worktrees/04-supply-chain-ops/domains/supply_chain_operations/dashboard/refresh-20260930-manual.md)
+binds the inventory clock `2026-09-30T02:18:17.989Z`, order clock
+`2026-09-30T02:02:34.255672+00:00`, and the dated zero-active-batch reconciliation.
+Preserve the original dashboard pair, receipt, local images and separately pinned
+ignored normalized inventory/orders at that source. Do not copy them into code
+defaults, replace them with the older bundled snapshot or advance their clocks.
+
+The [historical display admission contract](audited-manual-snapshot.md) supports
+this case as `AUDITED_MANUAL_SNAPSHOT`, with engineering source binding and
+`execution_authority=false`. Its missing provider page receipts, exact shop/account
+proof, raw inbound list and unrefreshed economics remain visible. SKU aggregates
+cannot reconstruct provider pagination or produce captured COMPLETE. Both dated
+snapshots are historical evidence; neither establishes current warehouse state.
+Valid orders retain quantity authority and settlement retains economics authority.
 
 ## Demand
 
@@ -109,6 +130,13 @@ Local-warehouse shortage is not equivalent to a total stockout when cross-border
 Every inbound event must retain a complete nonempty `batch_id`, quantity, complete country + SKU identity, nullable exact `reached_domestic_warehouse_at`, `inbound_status`, effective anchor, estimated sellable date, estimate policy, source capture time, and manual-confirmation lineage when present. The Seaya log event `已入库（Reach the domestic warehouse）` has priority. If absent, set `inbound_status=NOT_YET_INBOUND` and derive `estimated_anchor_at = created_at + 4 days` under the user-approved fallback; never serialize that estimate as actual inbound. An explicit user-confirmed country + batch arrival-and-shelving date may replace the formula estimate only when its date, confirmation time, source identity, and complete batch binding are persisted. One SKU may have multiple events when it belongs to multiple batches.
 
 For each country + SKU, `sum(batch_sku_quantity)` must equal the Seaya aggregate `inbound`. Batch identity and quantity must be exact built-in values; null, boolean, string, negative, masked, or clipped values are ineligible. If a multi-batch allocation is incomplete or does not reconcile, show the unmatched aggregate but count zero of it in projected supply. Never assign a multi-batch aggregate to one latest date. A sole active batch may consume the aggregate only with explicit `SINGLE_ACTIVE_BATCH` lineage.
+
+When a complete current read covers every pending-review, in-transit,
+waiting-for-inbound and inbound-processing status and proves zero active batches,
+replace the prior active ledger with `NO_ACTIVE_BATCH` for every country.
+Keep completed receipt identities and shelved times as reconciliation history;
+do not count their quantities again as future inbound after inventory includes
+them. Partial or missing status coverage cannot establish the zero-active result.
 
 Inbound detail pagination is part of completeness. Read every page and sum every exact-SKU box row within the same complete batch. The 2026-08-09 read-only Seaya audit reconciles all 3,350 TH8806 inbound units: `THML4038-58701` contains 13 SKUs / 2,100 units and `THSL4038-59557` contains 8 SKUs / 1,250 units. SKU 0021 is `200 + 600 = 800`; repeated box rows for 0017, 0015, 0021, and 0026 were summed within their exact batches.
 

@@ -22,6 +22,10 @@
 
 候选已接入 typed category/事实 child→父验 schema→固定 sidecars→原 R1 生产器，以及原 R2 图片／QA／本地化生产器。child 仍只读，观察不是准备回执；完整私有输出、原 session/attempt 和来源可保留对账，已有 UNKNOWN 不二派。原阶段完成证据齐全且下一确切 business 从未尝试时才允许首次接续。R2 必须绑定 service-owned 原 paid-history 根、同产品历史 usage／原 checkpoint／task／输出，缺绑定在 baseline/reserve 前拒绝；不能用新空 root 清零预算，旧 usage 格式兼容也不制造缺失的 business/attempt ownership。
 
+原生 R1 的 category/facts 两个新只读 child 使用 [native_readonly_invocation](../shared_platform/native_readonly_invocation.py) 的调用级隔离对象：新 attempt reserve 前分类普通本地 user/project TOML，并逐一禁用全部已发现 MCP；hooks/apps/plugins/multi_agent 关闭，notify 清空、web_search 禁用，使用 ephemeral。保留原 CODEX_HOME、完整环境及 model/provider/auth 路由，不写配置、不读 auth，不以空 MCP map 推断合并结果。只接受已实际核验控制参数的 CLI 字节 SHA256（当前 `37762753b554982eef1c109303d1be652b6397f1479e844794353a85650199c6`）；其他二进制、无效 MCP 名/结构、配置选择器及未知 managed/forced 层在启动前阻断，不按版本字符串或通用 `--disable` 语法自动放行。
+
+传输在实际 Popen 前重核同一对象的环境、配置内容/路径身份和 CLI 身份，并显式传原环境。已有 original attempt/retained receipt 仍按原读取恢复，当前配置变化不触发重新派发；尚未执行的新阶段仍必须经过隔离预检。此合同仅覆盖这两个实际 native R1 调用点，通用 prepare 的原始配置拒绝规则不变，monthly/images/paid/write child 未扩展。父服务原 options/capture 及本地 attempt/artifact 操作仍沿原合同；隔离不是六文件硬沙箱、云端工具缺席或零 auth/session bookkeeping 的证明，同用户并发替换在重核后到 CLI 读取之间仍有时序边界。正式服务是否采用需独立运行回执。
+
 技术 COMMON 仍先于唯一市场终审：原完整冻结 scope 可含确切 `miaoshou:COMMON` 与七市场，COMMON 单独技术绑定，市场候选按原规范目标顺序派生，不改原冻结文件或摘要。GET/readiness 不写计划；显式同任务、当前租约和受信来源准备才惰性持久 exact PENDING 计划，经原 cap／UNKNOWN／官方逐字段回读后准备完整终审候选。只有一次市场决定；每目标执行／回读继续核原冻结内容与同决定，接受或线程退出不算成功。
 
 上述为隔离候选源码合同，正式部署仍须当前具名 source/manifest、原 settings/任务账本/发布库/报告根、固定 executable、显式 schema 安装与回滚证明。独立 publication25、profit15、legacy21 的结果不能拼成统一验收；统一653曾因报告器容量在516个选中节点处中断，137未到，后继完整653/70仍需实际自然终态。正式安装、模型／价格／凭据可用性和外部商品结果未由此文证明。独立 exact 新 POST delisting 源码与 wire 守卫另包未运行，不据它声称本统一服务已接通第三模板，也不启旧任务或 token refresh。

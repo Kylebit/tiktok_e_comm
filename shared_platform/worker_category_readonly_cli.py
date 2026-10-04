@@ -67,11 +67,13 @@ if os.name == 'nt':
     _kernel32.CloseHandle.restype = wintypes.BOOL
 
 
-def _start_child(argv: list[str], cwd: Path) -> tuple[subprocess.Popen, Callable[[], None]]:
+def _start_child(argv: list[str], cwd: Path, *, invocation=None) -> tuple[subprocess.Popen, Callable[[], None]]:
     options = dict(cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                    stderr=subprocess.DEVNULL,
                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if os.name != 'nt':
+        if invocation is not None:
+            options['env'] = invocation.verify_launch(argv, cwd)
         process = subprocess.Popen(argv, start_new_session=True, **options)
         return process, lambda: os.killpg(process.pid, signal.SIGKILL)
 
@@ -87,6 +89,8 @@ def _start_child(argv: list[str], cwd: Path) -> tuple[subprocess.Popen, Callable
         if not _kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
             raise ctypes.WinError(ctypes.get_last_error())
         options['creationflags'] |= getattr(subprocess, 'CREATE_SUSPENDED', 0x00000004)
+        if invocation is not None:
+            options['env'] = invocation.verify_launch(argv, cwd)
         process = subprocess.Popen(argv, **options)
         if not _kernel32.AssignProcessToJobObject(job, int(process._handle)):
             raise ctypes.WinError(ctypes.get_last_error())
@@ -137,14 +141,20 @@ class ReadonlyCodexResult:
 
 
 def run_readonly_jsonl(argv: list[str], prompt: str, *, cwd: Path,
-                       timeout: int, max_stdout_bytes: int = MAX_JSONL_BYTES
+                       timeout: int, max_stdout_bytes: int = MAX_JSONL_BYTES, invocation=None
                        ) -> ReadonlyCodexResult:
     """Stream JSONL into a fixed size buffer; never grant a child file output."""
     if max_stdout_bytes < 1:
         raise ValueError('stdout limit must be positive')
     if not isinstance(prompt, str) or len(prompt.encode('utf-8')) > MAX_JSONL_BYTES:
         raise ValueError('R1 facts prompt exceeds input bound')
-    process, stop_tree = _start_child(argv, cwd)
+    if invocation is None:
+        process, stop_tree = _start_child(argv, cwd)
+    else:
+        from shared_platform.native_readonly_invocation import NativeReadonlyInvocation
+        if type(invocation) is not NativeReadonlyInvocation:
+            raise ValueError('readonly_native_verified_invocation_required')
+        process, stop_tree = _start_child(argv, cwd, invocation=invocation)
     captured = bytearray()
     overflow = threading.Event()
     read_error: list[BaseException] = []

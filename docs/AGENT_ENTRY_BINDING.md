@@ -1,5 +1,38 @@
 # Explicit Agent CLI binding
 
+## R1 captured-v2 input lineage
+
+The existing captured-v2 preparation entry writes `r1-input-lineage.json` beside
+its `first-review.json` and adds a digest-bound `input_lineage_manifest` reference
+to that packet. The original packet digest and frozen snapshot include this
+reference. `shared_platform/publication_rounds.py` verifies a referenced manifest
+when validating a review and when loading a downstream snapshot; it verifies
+the exact reviewed packet rather than accepting an arbitrary manifest body.
+
+The manifest records the selected source root/HEAD, private profile path/SHA256,
+the consumed role/root mapping, and only captured JSON files actually opened by
+that preparation. It contains paths, byte counts, identities and digests, never
+capture bodies, credentials or business values. Settings, catalog, release and
+report stores are path/role references only: their payloads are not hashed or
+proved by this manifest. Optional workbench and Lingshi metadata are not new
+consumer prerequisites. Explicit plan sidecars are recorded only if read, with
+their exact selected parent; there is no search or output-tree inventory.
+
+Capture tracking is active only around the captured-v2 consumer. It rejects
+linked/reparse paths, changed selected inputs, more than 64 opened JSON inputs,
+or an input larger than 1 MiB. Manifest reads are at most 128 KiB and profile
+reads at most 256 KiB. Validation checks the original selected profile digest,
+source HEAD/clean identity, role mapping, packet and input digests, and reports
+fixed `R1_LINEAGE_*` diagnostics. Source/profile/input changes require a new
+technical preparation; they do not create another human approval requirement.
+
+`inspect_review_lineage` explicitly returns `UNVERIFIED_LEGACY` for a packet
+without a manifest reference. Original v1/live and legacy business paths keep
+their existing behavior; absence is neither verified provenance nor a new
+whole-project blocker. A verified lineage is local technical consistency only.
+It does not establish capture producer truth/freshness, database contents,
+provider readback, paid authority, marketplace approval or business readiness.
+
 Agents may invoke `<SOURCE>/scripts/repo_bound_agent_entry.py` from any working directory
 using an absolute `--profile` path and one of `preparation`, `images`, `qa`, or
 `delist`. The script uses the selected complete Git root's original CLI. A

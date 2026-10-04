@@ -93,6 +93,7 @@ def test_v2_argv_root_and_binding_abbreviations_cannot_drift(v2,argv):
 def install_actual_r1_with_dashboard_stub(root, profile):
     for relative in (ENTRIES['preparation'],'scripts/repo_bound_agent_entry.py',
         'shared_platform/publication_rounds.py','shared_platform/publication_stock_policy.py',
+        'shared_platform/r1_input_lineage.py',
         'shared_platform/round1_category_evidence.py','domains/product_operations/sku_display_name.py'):
         target=root/relative; target.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(ROOT/relative,target)
@@ -102,10 +103,19 @@ def install_actual_r1_with_dashboard_stub(root, profile):
     stub.write_text("""R1_PATH_BINDING_CONTRACT = 'orbit-r1-paths/v2'
 import json
 from pathlib import Path
+import sys
+SAFETY_COUNTS = {'network':0,'sql':0}
+def deny_external(event, arguments):
+    if event in ('socket.connect','sqlite3.connect'):
+        kind = 'network' if event == 'socket.connect' else 'sql'
+        SAFETY_COUNTS[kind] += 1
+        raise RuntimeError('REAL_PROVIDER_OR_SQL_FORBIDDEN')
+sys.addaudithook(deny_external)
 def build_release_dashboard(*,offer_id,**paths):
     state=json.loads((Path(paths['state_dir'])/(offer_id+'.json')).read_text())
     assert state['offer_id']==offer_id
     trace={key:str(value) for key,value in paths.items()}
+    trace['synthetic_safety'] = SAFETY_COUNTS
     (Path(paths['data_root'])/'dashboard-paths.json').write_text(json.dumps(trace))
     return {'revision':state['_revision'],'review':{'selected_sites':['lh_my']},'source':state['source']}
 """)

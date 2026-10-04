@@ -9,6 +9,7 @@ deterministic failure instead of silently crossing the first-round boundary.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 import re
@@ -764,26 +765,39 @@ def main(argv: list[str] | None = None) -> int:
             raise PreparationError('ENTRY_OUTPUT_OUTSIDE_BOUND_ROOT')
         image_path = args.image_plan or (standard/'first-review-image-plan.json' if (standard/'first-review-image-plan.json').is_file() else None)
         candidate_path = args.candidate_plan or (standard/'first-review-candidate-plan.json' if (standard/'first-review-candidate-plan.json').is_file() else None)
-        image_plan = (
-            json.loads(image_path.read_text(encoding="utf-8"))
-            if image_path
-            else None
-        )
-        packet = prepare_offer(
-            offer_id=args.offer_id,
-            preview_builder=_captured_preview_builder(bound) if bound else None,
-            requested_targets=_parse_targets(args.targets),
-            execute_miaoshou=args.execute_miaoshou,
-            confirm_miaoshou_write=args.confirm_miaoshou_write,
-            skip_miaoshou=args.skip_miaoshou,
-            image_execution_plan=image_plan,
-            candidate_plan=json.loads(candidate_path.read_text(encoding='utf-8')) if candidate_path else None,
-            category_receipt=(_read_category_reference(args.category_review, args.offer_id, _parse_targets(args.targets), output_root)
-                              if not args.category_observation or args.category_review else None),
-            category_source_region=args.category_source_region,
-            category_observation=args.category_observation,
-            category_account_digest=args.category_account_digest,
-        )
+        lineage = None
+        if bound:
+            from shared_platform.r1_input_lineage import CapturedInputs
+            lineage = CapturedInputs(bound, args.offer_id,
+                sidecars=(image_path, candidate_path, args.category_review))
+        with lineage if lineage else nullcontext():
+            image_plan = (
+                json.loads(image_path.read_text(encoding="utf-8"))
+                if image_path
+                else None
+            )
+            packet = prepare_offer(
+                offer_id=args.offer_id,
+                preview_builder=_captured_preview_builder(bound) if bound else None,
+                requested_targets=_parse_targets(args.targets),
+                execute_miaoshou=args.execute_miaoshou,
+                confirm_miaoshou_write=args.confirm_miaoshou_write,
+                skip_miaoshou=args.skip_miaoshou,
+                image_execution_plan=image_plan,
+                candidate_plan=json.loads(candidate_path.read_text(encoding='utf-8')) if candidate_path else None,
+                category_receipt=(_read_category_reference(args.category_review, args.offer_id, _parse_targets(args.targets), output_root)
+                                  if not args.category_observation or args.category_review else None),
+                category_source_region=args.category_source_region,
+                category_observation=args.category_observation,
+                category_account_digest=args.category_account_digest,
+            )
+        output = args.output or _default_output_path(args.offer_id, output_root)
+        if lineage:
+            from shared_platform.r1_input_lineage import MANIFEST_NAME, _path
+            _path(output, missing=True)
+            manifest_path = _path(output.parent/MANIFEST_NAME, missing=True)
+            manifest = lineage.manifest(packet, output)
+            packet['input_lineage_manifest'] = {'file':MANIFEST_NAME, 'digest':manifest['manifest_digest']}
     except Exception as exc:
         error = {
             "schema": "publication-preparation-error/v1",
@@ -799,6 +813,8 @@ def main(argv: list[str] | None = None) -> int:
     output = args.output or _default_output_path(args.offer_id, output_root)
     if bound and not output.resolve().is_relative_to(output_root):
         raise PreparationError('ENTRY_OUTPUT_OUTSIDE_BOUND_ROOT')
+    if lineage:
+        _write_text_atomic(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     _write_text_atomic(output, rendered + "\n")
     print(rendered)
     return 0

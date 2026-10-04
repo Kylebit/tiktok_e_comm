@@ -127,6 +127,9 @@ def validate_round1_reviewable(
     """Prove every prerequisite before a first-round approval can be recorded."""
 
     review = deepcopy(dict(first_review))
+    if 'input_lineage_manifest' in review:
+        from shared_platform.r1_input_lineage import inspect_review_lineage
+        inspect_review_lineage(review, report_directory)
     if review.get("schema") != "publication-preparation-decision/v1":
         raise PublicationRoundContractError("first-review schema is invalid")
     if review.get("status") != "FIRST_REVIEW_READY":
@@ -336,6 +339,8 @@ def build_round1_snapshot(
     }
     if 'category_evidence_binding' in review:
         identity['fact_snapshot']['category_evidence_binding'] = deepcopy(review['category_evidence_binding'])
+    if 'input_lineage_manifest' in review:
+        identity['input_lineage_manifest'] = deepcopy(review['input_lineage_manifest'])
     identity["snapshot_digest"] = canonical_digest(identity)
     return identity
 
@@ -356,6 +361,10 @@ def load_round1_snapshot(offer_id: str, *, reports_root: Path | None = None) -> 
     unsigned.pop("snapshot_digest", None)
     if snapshot.get("schema_version") != ROUND1_SCHEMA or supplied != canonical_digest(unsigned):
         raise PublicationRoundContractError("round1 approved snapshot is invalid")
+    if 'input_lineage_manifest' in snapshot:
+        from shared_platform.r1_input_lineage import inspect_snapshot_lineage
+        directory = report_dir(offer_id, reports_root=reports_root)
+        inspect_snapshot_lineage(snapshot, directory)
     return snapshot
 
 

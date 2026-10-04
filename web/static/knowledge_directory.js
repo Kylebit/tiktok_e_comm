@@ -49,6 +49,7 @@ function renderIteration(data) {
       <div><dt>个人安装版</dt><dd>${installed.state==='PRESENT'?escape(installed.source_type)+' · 已发现':escape(identityLabel(row))}</dd></div>
       <div><dt>差异</dt><dd>${escape(comparison.status||'未核验')}${comparison.normalized_changed_count?' · 内容变化 '+comparison.normalized_changed_count+' 个文件':''}${comparison.missing_count?' · 缺少 '+comparison.missing_count+' 个文件':''}${comparison.extra_count?' · 多出 '+comparison.extra_count+' 个文件':''}</dd></div></dl>
       ${item.id==='manage-seaya-replenishment'&&comparison.status==='CONFLICT'?'<p class="knowledge-skill-supply-hold">供应链重复库存身份规则仍按工程严格 BLOCKED_INVENTORY；不自动选择旧个人版，也不合并历史库存快照。</p>':''}
+      <p>工程来源核对与个人整目录比较分别展示。薄路由差异也会计入比较，不代表其余脚本已同步或业务权限已就绪；未核验的差异仍须逐项核对。</p>
       <p>只读快照：${escape(identities.observed_at)}。完整逐文件摘要仅供本机 CLI 审计；页面不展示个人路径或链接目标。</p></section>`;
   }
   const guideSection = (title, items) => `<section><h3>${title}</h3><ul>${items.map(x=>`<li>${escape(x)}</li>`).join('')}</ul></section>`;
@@ -87,9 +88,10 @@ function renderIteration(data) {
     const changed = item.changed_files || [];
     const guide = guideOf(item);
     const identity=identityOf(item);
-    const identityReady=!coreSkillIds.has(item.id)||(identity?.project?.registry_verified===true&&['MATCH','RAW_DRIFT'].includes(identity?.comparison?.status));
-    const localCodeReady = catalog.tool_catalog?.state === 'VERIFIED_LOCAL_CODE_ONLY' && !missing.length && !changed.length && item.stage !== 'UNVERIFIED' && identityReady;
-    const executionState = identity?.comparison?.status==='CONFLICT' ? 'Skill 来源冲突，执行规则待核；业务执行保持阻断' : !identityReady ? 'Skill 版本身份待核；业务执行保持阻断' : item.stage === 'WORKFLOW_RUNTIME_REQUIRED' ? '需要完整业务工程和本次数据核验' : '须按该条目的条件逐项核验';
+    const projectIdentityReady=!coreSkillIds.has(item.id)||identity?.project?.registry_verified===true;
+    const identityReady=projectIdentityReady&&(!coreSkillIds.has(item.id)||['MATCH','RAW_DRIFT'].includes(identity?.comparison?.status));
+    const localCodeReady = catalog.tool_catalog?.state === 'VERIFIED_LOCAL_CODE_ONLY' && !missing.length && !changed.length && item.stage !== 'UNVERIFIED' && projectIdentityReady;
+    const executionState = identity?.comparison?.status==='CONFLICT' ? '个人 Skill 整目录存在差异，执行规则待核；业务执行保持阻断' : !identityReady ? 'Skill 版本身份待核；业务执行保持阻断' : item.stage === 'WORKFLOW_RUNTIME_REQUIRED' ? '需要完整业务工程和本次数据核验' : '须按该条目的条件逐项核验';
     detail.innerHTML = `<button type="button" class="knowledge-back secondary-button">返回工具列表</button>
       <div class="knowledge-detail-heading"><span>${escape(knowledgeGroupOf(item))}</span><h2 id="knowledgeDetailTitle" tabindex="-1">${escape(item.title)}</h2><p class="knowledge-condition">${escape(item.status || "状态未提供")}</p></div>
       <p class="knowledge-description">${escape(guide?.summary || item.description)}</p>

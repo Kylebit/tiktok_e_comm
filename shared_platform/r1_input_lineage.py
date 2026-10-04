@@ -148,6 +148,21 @@ def _role(path, roots):
     return max(selected, key=lambda pair: len(pair[1].parts))[0]
 
 
+def _capture_origin(path, roots):
+    """Only the exact upstream detail cache; missing receipts stay legacy."""
+    match = re.fullmatch(r'([0-9]{1,32})_miaoshou\.json',path.name)
+    if not match or path.parent != Path(roots['state_dir']):
+        return None
+    sidecar = _path(path.with_name(match[1]+'_capture-origin.json'), missing=True)
+    if not sidecar.exists():
+        return None
+    from shared_platform.source_capture_origin import inspect_detail_capture, CaptureOriginError
+    try:
+        return inspect_detail_capture(path,roots=roots)['reference']
+    except CaptureOriginError as error:
+        _fail('CAPTURE_ORIGIN_'+str(error).removeprefix('SOURCE_CAPTURE_ORIGIN_'))
+
+
 def _audit(event, args):
     capture = _active.get()
     if capture is not None and not capture.busy and event == 'open' and args:
@@ -216,6 +231,9 @@ class CapturedInputs:
             raw, identity = _read(path, MAX_INPUT_BYTES)
             row = {'path':key, 'role':role, 'bytes':len(raw),
                    'sha256':'sha256:'+hashlib.sha256(raw).hexdigest(), 'identity':identity}
+            origin = _capture_origin(path,self.roots)
+            if origin is not None:
+                row['capture_origin'] = origin
             if role == 'explicit_sidecar':
                 row['selected_parent'] = self.sidecars[key]
             if key in self.inputs and self.inputs[key] != row:
@@ -233,6 +251,8 @@ class CapturedInputs:
             raw, identity = _read(row['path'], MAX_INPUT_BYTES)
             if identity != row['identity'] or 'sha256:'+hashlib.sha256(raw).hexdigest() != row['sha256']:
                 _fail('INPUT_CHANGED')
+            if 'capture_origin' in row and _capture_origin(Path(row['path']),self.roots) != row['capture_origin']:
+                _fail('CAPTURE_ORIGIN_CHANGED')
         path = _path(packet_path, missing=True)
         if not path.is_relative_to(Path(self.roots['output_root'])):
             _fail('OUTPUT_OUTSIDE_ROOT')
@@ -281,9 +301,12 @@ def inspect_review_lineage(review, report_directory):
     if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_FILES:
         _fail('FILE_COUNT_LIMIT')
     seen = set()
+    origins = 0
+    legacy_caches = 0
     for row in rows:
-        if not isinstance(row, dict) or set(row) not in ({'path','role','bytes','sha256','identity'},
-                {'path','role','bytes','sha256','identity','selected_parent'}):
+        allowed_row = {'path','role','bytes','sha256','identity'}
+        if not isinstance(row, dict) or set(row) not in (allowed_row,
+                allowed_row|{'selected_parent'},allowed_row|{'capture_origin'}):
             _fail('INPUT_INVALID')
         path = _path(row['path'])
         if str(path) in seen:
@@ -298,10 +321,19 @@ def inspect_review_lineage(review, report_directory):
         if (row['bytes'] != len(raw) or row['sha256'] != 'sha256:'+hashlib.sha256(raw).hexdigest()
                 or row['identity'] != identity):
             _fail('INPUT_CHANGED')
+        if 'capture_origin' in row:
+            if _capture_origin(path,roots) != row['capture_origin']:
+                _fail('CAPTURE_ORIGIN_CHANGED')
+            origins += 1
+        elif re.fullmatch(r'[0-9]{1,32}_miaoshou\.json',path.name) and path.parent == Path(roots['state_dir']):
+            legacy_caches += 1
     if str(Path(roots['state_dir'])/(body['offer_id']+'.json')) not in seen:
         _fail('STATE_NOT_CONSUMED')
     return {'status':'VERIFIED_CAPTURED_V2', 'manifest_digest':supplied,
             'source_head':body['producer']['source_head'], 'profile_sha256':body['producer']['profile_sha256'],
+            'capture_origin_status':('VERIFIED_LOCAL_PRODUCER_OUTPUT' if origins and not legacy_caches else
+                'PARTIALLY_VERIFIED_LOCAL_PRODUCER_OUTPUT' if origins else 'UNVERIFIED_LEGACY'),
+            'verified_capture_origin_count':origins,
             'scope':body['scope']}
 
 

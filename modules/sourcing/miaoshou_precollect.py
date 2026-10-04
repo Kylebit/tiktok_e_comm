@@ -28,6 +28,7 @@ FETCH_PATH = "/open/v1/product/common_collect_box/common_collect_box/fetch_item"
 LIST_PATH = "/open/v1/product/common_collect_box/common_collect_box/get_common_collect_box_list"
 DETAIL_PATH = "/open/v1/product/common_collect_box/common_collect_box/get_common_collect_box_detail"
 BASE_URL = "https://openapi-erp.91miaoshou.com"
+SOURCE_CAPTURE_ORIGIN_CONTRACT = 'orbit-source-capture-origin/v1'
 CACHE_DIR = ROOT / "data" / "new_product_workbench"
 MAIN_REPO = Path(os.environ.get("TIKTOK_ECOMM_HOME") or r"C:\Users\Windows11\Desktop\Agent_PR\tiktok_e_comm")
 CONFIG_CANDIDATES = (
@@ -328,10 +329,19 @@ def import_common_collect_detail(
     *,
     post: Callable = post_open,
     state_key: str | None = None,
+    state_dir: Path | None = None,
+    origin_binding: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Import one Miaoshou common collect detail as a first-review source."""
     cid = int(str(common_id).strip())
     key = state_key or str(cid)
+    origin_writer = None
+    if state_dir is not None and origin_binding is None:
+        from shared_platform.source_capture_origin import CaptureOriginError
+        raise CaptureOriginError('SOURCE_CAPTURE_ORIGIN_BINDING_REQUIRED')
+    if origin_binding is not None:
+        from shared_platform.source_capture_origin import DetailCaptureWriter
+        origin_writer = DetailCaptureWriter(origin_binding, state_dir, __file__, key)
     resolved_cid = cid
     try:
         detail = _fetch_detail(cid, post=post)
@@ -380,8 +390,14 @@ def import_common_collect_detail(
         "published": False,
         "support_cod": True,
     }
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path(key).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if origin_writer is not None:
+        reference = origin_writer.write(payload)
+        # Keep the existing persisted cache payload unchanged. The caller gets
+        # the separate technical receipt, never a new provider/approval claim.
+        return key, {**payload, 'capture_origin_manifest':reference}
+    directory = Path(state_dir) if state_dir is not None else CACHE_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{key}_miaoshou.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return key, payload
 
 

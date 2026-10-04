@@ -535,6 +535,38 @@ class WorkbenchEngine:
         finally:
             conn.close()
 
+    def read_runtime_status(self):
+        """Inspect a stable ledger image without schema or lease maintenance.
+
+        Preview status is observational. The existing snapshot reader refuses
+        journals/path drift and never opens the source through SQLite.
+        """
+        import sqlite3
+        if not hasattr(sqlite3.Connection, 'deserialize'):
+            raise ReceiptSnapshotUnavailable('SQLite deserialize is unavailable')
+        image = _receipt_database_image(self.store.path)
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.deserialize(image)
+            conn.execute('PRAGMA query_only=ON')
+            live = [dict(row) for row in conn.execute(
+                'SELECT * FROM workbench_executors WHERE expires>?', (self.clock(),))
+                if json.loads(row['version_json']) == self.release]
+            templates = sorted({template for row in live for template in json.loads(row['templates_json'])})
+            guard = conn.execute("SELECT COUNT(*) AS unresolved, "
+                                 "COALESCE(SUM(CASE WHEN owner_task_id IS NULL THEN 1 ELSE 0 END),0) AS unattached "
+                                 "FROM workbench_domain_operations WHERE state<>'completed'").fetchone()
+            locked = conn.execute("SELECT COUNT(*) FROM workbench_domain_locks AS l "
+                                  "JOIN workbench_domain_operations AS o ON o.operation_id=l.operation_id "
+                                  "WHERE o.state<>'completed'").fetchone()[0]
+            return {'executor': {'connected': bool(live), 'templates': templates},
+                    'domain_guard': {'unresolved_operation_count': guard['unresolved'],
+                                     'unattached_operation_count': guard['unattached'],
+                                     'locked_resource_count': locked}}
+        finally:
+            conn.close()
+
     def dashboard(self):
         with self.transaction() as conn:
             self._expire(conn)

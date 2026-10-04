@@ -1,5 +1,63 @@
 # Explicit Agent CLI binding
 
+## Opt-in COMMON detail output origin
+
+Only `modules.sourcing.miaoshou_precollect.import_common_collect_detail` has
+the optional `orbit-source-capture-origin/v1` producer contract. The existing
+controlled direct-call API can select the current Work Order's exact clean
+source/HEAD and captured-v2 role roots before its already authorized read
+transport runs. The binding contract does not add a transport, select credentials,
+or grant permission to collect; the selected transport performs the existing
+detail read. Load these modules from that selected complete source;
+the writer rejects a different loaded producer/helper root, dirty source, or
+HEAD drift before transport and rechecks source before each local write.
+
+```python
+# Run only inside an existing task with its authorized COMMON read transport.
+# Import these modules from the exact source selected by that task's Work Order.
+from pathlib import Path
+from scripts.repo_bound_agent_entry import check_binding
+from modules.sourcing.miaoshou_precollect import import_common_collect_detail
+from shared_platform.source_capture_origin import ROLE_ROOTS, inspect_detail_capture
+
+bound = check_binding(absolute_captured_v2_profile, 'preparation')
+binding = {'source_root': bound['source_root'],
+           'expected_source_head': bound['source_head'],
+           **{name: bound[name] for name in ROLE_ROOTS}}
+key, result = import_common_collect_detail(
+    exact_common_detail_id, post=existing_authorized_common_read_transport,
+    state_key=exact_offer_id, state_dir=Path(bound['state_dir']),
+    origin_binding=binding)
+proof = inspect_detail_capture(
+    Path(bound['state_dir']) / (key + '_miaoshou.json'),
+    roots=binding, reference=result['capture_origin_manifest'])
+```
+
+The producer writes its existing `{offer}_miaoshou.json` payload unchanged and
+a sibling `{offer}_capture-origin.json`. The returned payload includes the
+sidecar reference; that reference is not added to the persisted cache body.
+The sidecar records source/HEAD, four explicit role roots and only the actual
+detail-cache path, byte count, file identity and SHA256. `data_root`,
+`source_outputs_root` and `content_outputs_root` are declared role bindings,
+not claims that this producer wrote or verified files there. No credentials,
+merchant payload, or invented complete `{offer}.json` state is included.
+
+Captured-v2 R1 uses the same role roots, consumes the exact detail cache, and
+freezes a verified sidecar reference into its existing input-lineage manifest.
+Its consumer rechecks the cache, reference, role mapping and live clean producer
+source. Missing complete state still stops R1. A frozen reference cannot silently
+downgrade when its sidecar disappears or is replaced. An old writer may overwrite
+the cache, but does not delete the existing sidecar; the stale proof then rejects.
+If a producer write fails after the cache write, an old receipt may remain stale;
+inspect the exact local files before resuming rather than treating it as success.
+
+This is an unsigned local output-consistency receipt. It does not authenticate
+provider truth, freshness, credentials, current authority or marketplace state.
+Legacy inputs without a sidecar stay `UNVERIFIED_LEGACY`; no backfill occurs.
+Existing default workbench/server callers, `refresh_precollect`, manual intake,
+native/common producers and other captures have not adopted this opt-in contract.
+No real collection or complete business readiness is established by this package.
+
 ## R1 captured-v2 input lineage
 
 The existing captured-v2 preparation entry writes `r1-input-lineage.json` beside

@@ -68,7 +68,16 @@ def handle(handler, *, method, runtime):
         return True
     if path == '/api/orbit/operations-runtime' and method == 'GET':
         value = runtime.profile.public()
-        dashboard = runtime.engine.dashboard()
+        if runtime.profile.environment == 'preview':
+            from shared_platform.workbench_engine import ReceiptSnapshotUnavailable
+            try:
+                dashboard = runtime.engine.read_runtime_status()
+            except (ReceiptSnapshotUnavailable, OSError, KeyError, ValueError, sqlite3.Error):
+                handler._json(503, {'ok': False, 'code': 'READONLY_RUNTIME_SNAPSHOT_UNAVAILABLE',
+                                    'error': 'A stable read-only operations snapshot is unavailable.'})
+                return True
+        else:
+            dashboard = runtime.engine.dashboard()
         executor = dashboard['executor']
         enabled = getattr(runtime, 'worker_enabled', False)
         dispatcher = runtime.worker.status()

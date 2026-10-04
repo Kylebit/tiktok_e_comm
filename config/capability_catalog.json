@@ -51,7 +51,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "8944ee8a1f216d5d39d112521abce38cb717daabfe519dea3b5f40916552fff5"
       }
     },
@@ -101,7 +101,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "b8aaf4c2a0eabb55b92ee76fcc45762ad8fe5c1d84199c813a836d8536138497"
       }
     },
@@ -174,7 +174,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "65ca6c8ef71d312e12f266dd52e3b0569fdf47b579b65a986102a85e6e482976",
         "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md",
         "historical_pending_owner": "B4B"
@@ -233,7 +233,7 @@
         },
         "source_kind": "r4-retained",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "471f43f347b3928dca44ec51cc07c988ef4811ccfb3bfab14d6049aee8ac2376",
         "integration_evidence": "docs/audits/B00_B4B_DISCOUNT_INTEGRATION.md",
         "historical_pending_owner": "B4B"
@@ -275,7 +275,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "42fe6f13bae0b08fccebeb357f289ba1e6abcda721aa79da5ef25fee40a48884"
       }
     },
@@ -317,7 +317,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "6324507faab2b6bf9a0eb6af1f64d63496b7b4b433c35d00162af0ac82273605"
       }
     },
@@ -385,7 +385,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "18e4e842805202b5403c0df1bd4ad62d49fa56389c66c76b5c33441d1ab3cc55"
       }
     },
@@ -455,7 +455,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "50488e054393013181dbaf9fa815f62bff8b640ade4f664a1d8b4202d3a212fa"
       }
     },
@@ -496,7 +496,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "8e2047ff5cc6b3b107dd1ca96a9469a5809bb2cf85f4014fceadbe49cbb9ad0b"
       }
     },
@@ -533,7 +533,7 @@
         },
         "source_kind": "external-skill-retained",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -567,7 +567,7 @@
         },
         "source_kind": "external-skill-retained",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -609,7 +609,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "423ddca2a81da4f81588c21d757774093501325776b4d8b51859ec4b341d5027"
       }
     },
@@ -649,7 +649,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "ce12bf46a720895be0aa603ac44e6c5bb033e446ff1190dd69120b57c2e58639"
       }
     },
@@ -691,7 +691,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "3d072774812ecc6bc18a7a446060caf7d509654cd1c2af6f6bf2951d132c726f"
       }
     },
@@ -733,7 +733,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "e12df6d10e5a82a9f7b9b5f183e6279be6d21b47cdf283bd8023789c235996e4"
       }
     },
@@ -773,7 +773,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "41d782f11b1e09bc69f0b513a208aa8832453bb869723a5770c051138f48fb18"
       }
     },
@@ -815,7 +815,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "2c454ae236385c99745f00b334554ae3a8aa24e35b4903ec7adbdfe52d6cd569"
       }
     },
@@ -857,7 +857,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "91f9264421192e312e6102a744f294f3eff53e849107b299c3a44307f4cbeabe"
       }
     },
@@ -892,7 +892,7 @@
         },
         "source_kind": "external-skill-retained",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -927,7 +927,7 @@
         },
         "source_kind": "external-skill-retained",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -964,7 +964,7 @@
         "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
         "all_file_digest": "8b5efd88def68004515fbc87c3b4856311640a4d28c7c74d33f97c71bb23c737",
         "source_kind": "T00-retained-C-script-adaptation",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "0b0390ac4d66c9ca491921e0f124f0ff1179674117aaf56e9799072eebb0fe87",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only"
       }
@@ -1002,7 +1002,7 @@
         "all_file_digest": "31ad7a6f0781a62a9c09f1968cc4ca555eddc1f9027ef8102128d7fbc5550cdb",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "7bb149b41e4494f76e00be9679e6a143430fec0ccb040f6c772dd02982f1f146",
         "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
       }
@@ -1036,7 +1036,7 @@
         "all_file_digest": "1fd7907d5d30364a70e764fc1da7b41c7920a3f620b52aaac893d8160dbc79e9",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "1fd7907d5d30364a70e764fc1da7b41c7920a3f620b52aaac893d8160dbc79e9"
       }
     },
@@ -1073,7 +1073,7 @@
         "all_file_digest": "6d558c11e85dade9b612049aa0ef21065f410c20e9f524dcfdbb9fbe4e45815a",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "9af4ecd21b4cb31ca7af47e680e76580490e18831aea340ecdc9c069f60ceeb3",
         "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
       }
@@ -1111,7 +1111,7 @@
         "all_file_digest": "1623746f0f321e60effaa941f75eb319ae0fb8b7aa995af770deb542c82825fb",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "d260d6f7c131c33e13c62eb6950c772d66cdec7e3f3f1ef4ff04e4e0ffd49dcc",
         "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
       }
@@ -1145,7 +1145,7 @@
         "all_file_digest": "2b96c873a7e6cc53e450d87794fcfbca5a979a499f9ee8304095332c56b87fe7",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "28481a064516ca96343e93c1b507d6a1dfb4684e684675e3b85da67802b39de4",
         "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
       }
@@ -1179,7 +1179,7 @@
         "all_file_digest": "13d3c4ff6beb473959356059aaded3c7347fb92a70d060c30172b14418783277",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "e68e9a9449248d3b2ac8b9f205e61b3c8c594d6f95c1b1dd5e15d280d6086cce"
       }
     },
@@ -1200,7 +1200,7 @@
         "modules/sourcing/miaoshou_precollect.py"
       ],
       "file_digests": {
-        "modules/sourcing/miaoshou_precollect.py": "d2d4f70836f636e0fe49318883ad25faf1e79952172619b7b82f4f5fe895a4d6",
+        "modules/sourcing/miaoshou_precollect.py": "befed207a01427a3a2fa369056dc84858936b1e0b975a556a3d54596330a4d71",
         "modules/sourcing/scrape_1688.py": "e1345df385a1bfba901d7e519612f352d7d805fa1c35e66d328d7f30e17a3cc2"
       },
       "python_dependencies": [],
@@ -1214,8 +1214,8 @@
         "all_file_digest": "25419d0ff7444ab55d45e6d49a38cb1c4229898f9a00ae61f5c113265e7bee07",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
-        "composed_file_digest": "7936c03a9fa88e0a236686914d68af5ef0a73275cf39a590e5c4b8ac5000a341"
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
+        "composed_file_digest": "9212ea42599c1e22390d0bc9861c33c2af7c5eae05a32635132fce8baf2c544b"
       }
     },
     {
@@ -1250,7 +1250,7 @@
         "all_file_digest": "0c534857a0f65cedf17b29e6cda56e66780b9e7d9cc1b9e85ac40ac4dfa019eb",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "0c534857a0f65cedf17b29e6cda56e66780b9e7d9cc1b9e85ac40ac4dfa019eb"
       }
     },
@@ -1287,7 +1287,7 @@
         "all_file_digest": "82483c3256ef301dc1b25294107e31ceabd13a18f5eef58cb9eda94e1e681c6e",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "82483c3256ef301dc1b25294107e31ceabd13a18f5eef58cb9eda94e1e681c6e"
       }
     },
@@ -1322,7 +1322,7 @@
         "all_file_digest": "b1e66b9f9889cb6a86cd45cb13fb913951ef5c273d92d122287b35d247e95cf0",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "b1e66b9f9889cb6a86cd45cb13fb913951ef5c273d92d122287b35d247e95cf0"
       }
     },
@@ -1357,7 +1357,7 @@
         "all_file_digest": "70a928af83b3b74c5f82e0066c3c752a3cdd913251aee3ac322b71ee948a46d9",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "70a928af83b3b74c5f82e0066c3c752a3cdd913251aee3ac322b71ee948a46d9"
       }
     },
@@ -1390,7 +1390,7 @@
         "all_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "source_kind": "external-or-retired",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -1425,7 +1425,7 @@
         "all_file_digest": "c8b319ad839a6094dd4db729a98367a2d70903e1e81465d5fd691d7d4548386d",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "c8b319ad839a6094dd4db729a98367a2d70903e1e81465d5fd691d7d4548386d"
       }
     },
@@ -1460,7 +1460,7 @@
         "all_file_digest": "114703b11d5dbc6571bdc0204eb220a15b2c747a5e01ad89ac397462976f7a8f",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "114703b11d5dbc6571bdc0204eb220a15b2c747a5e01ad89ac397462976f7a8f"
       }
     },
@@ -1489,7 +1489,7 @@
         "all_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "source_kind": "external-or-retired",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -1522,7 +1522,7 @@
         "all_file_digest": "e2a0cb9c6e0e0d4d7d017a4c63d0476350ae1904407be633a50bb9bce64e272a",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "e2a0cb9c6e0e0d4d7d017a4c63d0476350ae1904407be633a50bb9bce64e272a"
       }
     },
@@ -1564,7 +1564,7 @@
       "source": {
         "basis_commit": "7d6d7c82b953b1f8ea5cf5ddcd1d1ccdc27c05c3",
         "source_kind": "accepted-K00-limited-knowledge",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "0a5cc43d215c1cc6ad213b003d3d17e5c378fe36c1ca628000cd2b3ba9f466ea",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only"
       }
@@ -1588,7 +1588,7 @@
         "all_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "source_kind": "external-or-retired",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -1621,13 +1621,13 @@
       "source": {
         "basis_commit": "efecb016fc74f5c78c269d4272a9ed294edf91f4",
         "source_kind": "accepted-T00-D-standalone-closure-client",
-        "composition_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+        "composition_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
         "composed_file_digest": "26a0d68c100b19c1c108e95c0e1707bedf5dfa69279fe494642c8355da1e541c",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only"
       }
     }
   ],
-  "source_basis_commit": "dbe5d4657437a4bfa7e9c6f95351cfed759ec648",
+  "source_basis_commit": "3218dde11542f92da7fb01c4566333184a05a6f4",
   "hash_format": "utf8-lf-text/raw-binary-sha256",
   "excluded_from_capability_counts": [
     "pytest artifacts",

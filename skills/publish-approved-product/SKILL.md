@@ -39,15 +39,18 @@ Product Center boundary before publication; a missing or stale technical fact
 may block execution, but the same unchanged decision must not be requested
 again on another page, in a conversation, or for another platform.
 
-At canonical `248a0403`, the legacy marketplace approval POST still accepts
-caller-declared approval fields and does not verify a Windows user or a trusted
-envelope. Treat business execution as HOLD under the current `identity_only`
-runtime gate. Do not submit approval through that POST or turn on business
-execution based on this Skill change. A future implementation must prove the
-protected channel, server-side user verification, fresh exact review binding,
-durable receipt, and fail-closed rejection of ordinary browser POSTs before
-the gate can be reconsidered. Recheck the live service identity and gate just
-before any business action; a source commit or a local test is not deployment.
+At historical canonical `248a0403`, the legacy marketplace approval POST accepted
+caller-declared approval fields without verifying a Windows user or a trusted
+envelope; business execution was HOLD under that release's `identity_only` gate.
+This historical observation does not select the current task's source or runtime.
+Use the current Work Order and fresh runtime identity to verify the actual approval
+path and execution gate. A legacy caller-declared path without a verified protected
+channel remains unusable for approval; require server-side user verification, fresh
+exact review binding, a durable receipt and rejection of ordinary browser POSTs.
+If the selected runtime is still identity-only or business execution is unverified,
+keep dependent marketplace execution blocked and continue independent authorized
+work. This Skill change cannot enable the gate or grant approval. Recheck the actual
+service before any business action; a source commit or local test is not deployment.
 
 ## One final-review gate
 
@@ -453,24 +456,34 @@ platform references retain the detailed evidence.
 
 ## Canonical Skill parity
 
-Treat the repository directory `skills/publish-approved-product` as the only
-canonical Skill source. Check the installed copy before use:
+Use `skills/publish-approved-product` in the current Work Order's verified complete
+repository as the execution source. A personal thin routing installation may retain
+older reference scripts and intentionally different instructions; read the selected
+repository's English Skill and run its actual entry, never those personal scripts.
+Whole installed-package parity is not a prerequisite for this routing scenario and
+does not require installing the complete Skill set. Mixed loaded scripts or source
+versions still fail; a routing note cannot override source/runtime identity guards.
+
+When the Work Order instead selects a full installed Skill package, check its
+complete manifest from the selected repository; the sync tool remains fail-closed:
 
 ```powershell
 .venv\Scripts\python.exe scripts\sync_product_publication_skills.py --check
 ```
 
-If review authorizes installation, run it explicitly and then check again:
+Only when the task explicitly authorizes full-package installation, run it and
+then check again:
 
 ```powershell
 .venv\Scripts\python.exe scripts\sync_product_publication_skills.py --install
 .venv\Scripts\python.exe scripts\sync_product_publication_skills.py --check
 ```
 
-Never install implicitly during publication, test execution, or Skill
-validation. A parity mismatch is a deployment/configuration failure; do not
-silently mix canonical instructions with installed scripts from another
-digest.
+Never install implicitly during publication, test execution or Skill validation.
+A mismatch blocks use of the selected full installed package; preserve its exact
+differences rather than declaring parity successful. It does not block separately
+bound execution from the verified repository. Never execute scripts or apply
+source instructions from another digest as though they belonged to that source.
 
 ## TikTok category decision
 

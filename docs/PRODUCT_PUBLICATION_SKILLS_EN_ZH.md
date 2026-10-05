@@ -6,15 +6,15 @@
 
 | Skill | 英文执行权威 | 中文翻译源 | 英文 SHA-256 | 译文状态 |
 |---|---|---|---|---|
-| `prepare-product-publication` | `skills/prepare-product-publication/SKILL.md` | `skill-translations/prepare-product-publication.zh-CN.md` | `c8e6c658ad91a46fcede506ab3b63946770221f74a72ac056b355e12e63754b5` | 历史译本，勿用于执行 |
-| `prepare-product-images` | `skills/prepare-product-images/SKILL.md` | `skill-translations/prepare-product-images.zh-CN.md` | `99bb0fadf37fc9cda1f2e1e241578854afa84aead4829ee4cf47bc4766a27ab6` | 历史译本，勿用于执行 |
-| `publish-approved-product` | `skills/publish-approved-product/SKILL.md` | `skill-translations/publish-approved-product.zh-CN.md` | `d2b7abac43c4c04fe248a62c1c9159d8c25b12aaa9827d706a1b891cf3990b42` | 历史译本，勿用于执行 |
+| `prepare-product-publication` | `skills/prepare-product-publication/SKILL.md` | `skill-translations/prepare-product-publication.zh-CN.md` | `473e41b19acb638829bd7b9774df5ffc2e31387155043b146b0b458d7556faf0` | 历史译本，勿用于执行 |
+| `prepare-product-images` | `skills/prepare-product-images/SKILL.md` | `skill-translations/prepare-product-images.zh-CN.md` | `d25cd9ccc3bc53fdb3684c8c9ada3c0944cbe3720c9a1adac3445b4341eb73d4` | 历史译本，勿用于执行 |
+| `publish-approved-product` | `skills/publish-approved-product/SKILL.md` | `skill-translations/publish-approved-product.zh-CN.md` | `f359cc04f5de0fe18934d1bfef201decadaef373d10e57cef70d4d750bb54bf0` | 历史译本，勿用于执行 |
 
 ---
 
 # 1. `prepare-product-publication`
 
-源 SHA-256：`c8e6c658ad91a46fcede506ab3b63946770221f74a72ac056b355e12e63754b5`
+源 SHA-256：`473e41b19acb638829bd7b9774df5ffc2e31387155043b146b0b458d7556faf0`
 
 ## English source (verbatim)
 
@@ -25,6 +25,19 @@ description: "Prepare an auditable round-1 candidate for one Product Center Offe
 ---
 
 # Prepare Product Publication
+
+## Explicit source binding
+
+For a direct Agent CLI, select a complete Git source and explicit settings/data/
+report profile as described in `docs/AGENT_ENTRY_BINDING.md` in that source.
+Run `<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry preparation --check-binding`,
+then pass the existing arguments after `--`. A personal physical Skill copy is
+not a source root. Version 1 preserves source-relative data/reports and rejects
+independent roots. Version 2 supports R1 existing captured inputs with explicit
+state, data, source capture, content metadata and report paths. Missing captured
+state is BLOCKED; this mode never imports a server or collects upstream inputs.
+Its Lingshi path is metadata discovery only. Other v2 entries are unsupported.
+A binding check grants no business authority and does not prove facts ready.
 
 ## Existing-product takeover
 
@@ -76,7 +89,8 @@ Ozon from TikTok, or all stores from an Offer ID.
 Run:
 
 ```powershell
-.venv\Scripts\python.exe skills\prepare-product-publication\scripts\prepare_product_publication.py --offer-id <OFFER_ID> --targets <COMMA_SEPARATED_TARGETS>
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry preparation --check-binding
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry preparation -- --offer-id <OFFER_ID> --targets <COMMA_SEPARATED_TARGETS>
 ```
 
 When image work is in scope, create one explicit
@@ -110,8 +124,11 @@ rejects a missing or changed policy. Never map the legacy
 `stock_per_model_sku` field to this policy or silently rewrite an approved
 snapshot; a different quantity needs a separately reviewed contract.
 
-If no local workbench exists, the client may perform the existing upstream
+Only the original entry and Version 1 retain the existing bootstrap contract:
+if no local workbench exists, the client may perform the existing upstream
 read and a local workbench-state write once. These are not provider mutations.
+Version 2 requires existing captured state; if it is missing, stop with
+`R1_CAPTURED_STATE_MISSING` without reading upstream or creating state.
 If requested targets are missing, return `DECISION_REQUIRED`; never silently
 restore defaults.
 
@@ -288,7 +305,7 @@ R1 保留输入商品发布中心预览中的逐 SKU 包裹事实和价格计算
 
 # 2. `prepare-product-images`
 
-源 SHA-256：`99bb0fadf37fc9cda1f2e1e241578854afa84aead4829ee4cf47bc4766a27ab6`
+源 SHA-256：`d25cd9ccc3bc53fdb3684c8c9ada3c0944cbe3720c9a1adac3445b4341eb73d4`
 
 ## English source (verbatim)
 
@@ -300,12 +317,59 @@ description: Consume an immutable round-1 technical snapshot and prepare auditab
 
 # Prepare Product Images
 
+For a direct Agent CLI, use the explicitly selected complete source's
+`<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images --check-binding`
+(`--entry qa` for automated QA), then pass the original arguments after `--`.
+See that source's `docs/AGENT_ENTRY_BINDING.md`: version 1 preserves source-relative
+config/data/reports and rejects independent roots. Personal physical copies do
+not establish source identity; the check does not grant paid or business authority.
+Version 2 supports R1 captured-input preparation and the narrowly bound QA
+`qa-existing-assessment` and images `images-captured-status` modes. Paid image
+phases and provider/model QA remain unsupported by v2; an explicit Lingshi
+discovery path does not propagate their paths.
+For captured image status use `config/agent_entry.images-status-v2.example.json`.
+It accepts only canonical `--offer-id`, consumes existing state, retained R1,
+generation and optional translation reports, and writes only the original direct
+CLI producer's phase lock; its result is stdout. Missing/invalid captures stop
+before creating a lock. It does not bootstrap state, read checkpoint/paid history,
+resolve embedded artifact paths, query providers or initialize a paid ledger.
+The declared producer lock mapping has the same limited proof as QA below;
+native/custom producers and unproven mapping reject. Preserve existing UNKNOWN
+reports: this projection is not provider reconciliation or execution readiness.
+For existing-assessment QA use `config/agent_entry.qa-assessment-v2.example.json`
+from the selected source. It requires separate captured state, retained R1 and
+R2 input reports, the existing assessment, QA output and the original direct
+CLI producer's phase lock. The checker verifies only that declared source/lock
+relationship; native/custom runtime producers and unverified mappings stop.
+It does not prove captured report lineage or current actor state. Missing inputs
+stop before a lock or output write. This mode writes the original phase lock,
+normalized assessment, signed QA receipt and possible superseded signed attempt
+archives; it does not call a provider or initialize a paid ledger.
+
 Before resuming an existing product, use the selected project's commit-bound
 `scripts/publication_takeover.py` as described in
 `docs/PUBLICATION_SOURCE_CONTRACT.md`. Preserve prior paid receipts and QA;
 the read-only result never starts a new task or converts generated assets to keep.
 
-Use `scripts/prepare_product_images.py` for R2 and `scripts/run_automated_image_qa.py` for visual QA. Keep the frozen R1 product, brand, target and source identities intact. Read [the local budget and recovery contract](references/paid-recovery.md) before handling unknown results, legacy records or technical drift.
+The internal CLIs are `scripts/prepare_product_images.py` for R2 and
+`scripts/run_automated_image_qa.py` for visual QA. Direct Agent execution uses
+the selected source wrapper, with the original phase arguments after `--`:
+
+```powershell
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images --check-binding
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images -- --offer-id <OFFER_ID>
+# Captured status has its own narrow v2 profile; no paid/translation/rework flags.
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_STATUS_PROFILE> --entry images --check-binding
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_STATUS_PROFILE> --entry images -- --offer-id <OFFER_ID>
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry qa --check-binding
+# Provider/model QA below requires the original v1 layout and existing authority.
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry qa -- --offer-id <OFFER_ID> --model <APPROVED_MODEL> --paid-policy <EXISTING_POLICY>
+# Captured QA uses its own v2 assessment profile and the exact declared file.
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_ASSESSMENT_PROFILE> --entry qa --check-binding
+<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_ASSESSMENT_PROFILE> --entry qa -- --offer-id <OFFER_ID> --assessment <ABSOLUTE_CAPTURED_ASSESSMENT>
+```
+
+Keep the frozen R1 product, brand, target and source identities intact. Read [the local budget and recovery contract](references/paid-recovery.md) before handling unknown results, legacy records or technical drift.
 
 ## Authority and inputs
 
@@ -317,9 +381,18 @@ The bundled `historical-autopilot-policy.example.json` is inactive source eviden
 
 ## Execute one phase
 
-1. Run with only `--offer-id` to inspect local status. Help/status do not call paid providers. Legacy UI consumers without the existing R1/budget bridge return `PAID_CONTEXT_REQUIRED` or `LEGACY_R2_BRIDGE_REQUIRED` before a provider call.
+The generation/model-QA phase commands below retain the original v1 or
+governed native contract. The v2 captured-status profile only enables step 1
+when state/R1/generation captures already exist; missing captures stop without
+upstream reads or state creation. Other phases are not enabled by that profile
+or the v2 assessment profile.
+The v2 assessment profile accepts only canonical `--offer-id` and `--assessment`; model,
+paid-policy, upload, rework and alternate root/profile flags reject. Its existing
+assessment branch does not consume a separate master-QA input field.
+
+1. Run with only `--offer-id` to inspect local status. Help/status do not call paid providers; status can write its local business lock. Legacy UI consumers without the existing R1/budget bridge return `PAID_CONTEXT_REQUIRED` or `LEGACY_R2_BRIDGE_REQUIRED` before a provider call.
 2. Validate the frozen brand roles and reuse plan. With applicable paid authority, run `--execute-brand-generation --paid-policy <existing-policy>`. Complete source bytes and frozen facts bind the technical plan and each checkpoint. Continue through automated master-image QA; a rendered review is an audit artifact, not a human gate.
-3. Run `run_automated_image_qa.py --offer-id <id> --model <approved-model> --paid-policy <existing-policy>` for master QA. Retain raw replies, exact artifact digests and the QA receipt. Passed QA belongs only to those artifacts and that R1 snapshot.
+3. Run the wrapper with `--entry qa -- --offer-id <id> --model <approved-model> --paid-policy <existing-policy>` for master QA after binding checks. Retain raw replies, exact artifact digests and the QA receipt. Passed QA belongs only to those artifacts and that R1 snapshot.
 4. Freeze the policy-selected numbered-image scope with `--approve-translation-images <numbers> --dimension-only-images <numbers-or-none>`. The CLI defaults to the governed technical actor `orbit-product-publication-default-v1`; an explicit `--approved-by Kyle` is blocked because this command has no independent conversation-receipt binding. Existing Kyle plans retain their original bytes and digest as historical evidence, but cannot authorize new R2 paid execution without independently verifiable provenance. This runtime currently has no trusted historical approval registry or automatic successor migration, so affected products remain blocked for new paid translation work. These plans do not grant final marketplace approval. An existing plan with different scope or authority is preserved and requires an explicit successor rather than an in-place rewrite. Route locales within frozen R1 targets; dimension-only images create no translation tasks.
 5. With matching paid authority, run `--execute-paid --paid-policy <existing-policy>`. OCR, text translation and localized image generation share the product ledger with masters and QA. Empty OCR regions are reused without a paid model request.
 6. Run localized QA using the exact passed master QA receipt and current localized artifacts. Preserve failures in factual alignment, OCR language or duplication as blockers or bounded rework evidence. Passed artifacts flow to R3 candidate compilation without an intermediate approval prompt.
@@ -409,7 +482,7 @@ R2 不写妙手、ReleaseStore、ReleasePlan、平台草稿或发布。R3 通过
 
 # 3. `publish-approved-product`
 
-源 SHA-256：`d2b7abac43c4c04fe248a62c1c9159d8c25b12aaa9827d706a1b891cf3990b42`
+源 SHA-256：`f359cc04f5de0fe18934d1bfef201decadaef373d10e57cef70d4d750bb54bf0`
 
 ## English source (verbatim)
 
@@ -455,15 +528,18 @@ Product Center boundary before publication; a missing or stale technical fact
 may block execution, but the same unchanged decision must not be requested
 again on another page, in a conversation, or for another platform.
 
-At canonical `248a0403`, the legacy marketplace approval POST still accepts
-caller-declared approval fields and does not verify a Windows user or a trusted
-envelope. Treat business execution as HOLD under the current `identity_only`
-runtime gate. Do not submit approval through that POST or turn on business
-execution based on this Skill change. A future implementation must prove the
-protected channel, server-side user verification, fresh exact review binding,
-durable receipt, and fail-closed rejection of ordinary browser POSTs before
-the gate can be reconsidered. Recheck the live service identity and gate just
-before any business action; a source commit or a local test is not deployment.
+At historical canonical `248a0403`, the legacy marketplace approval POST accepted
+caller-declared approval fields without verifying a Windows user or a trusted
+envelope; business execution was HOLD under that release's `identity_only` gate.
+This historical observation does not select the current task's source or runtime.
+Use the current Work Order and fresh runtime identity to verify the actual approval
+path and execution gate. A legacy caller-declared path without a verified protected
+channel remains unusable for approval; require server-side user verification, fresh
+exact review binding, a durable receipt and rejection of ordinary browser POSTs.
+If the selected runtime is still identity-only or business execution is unverified,
+keep dependent marketplace execution blocked and continue independent authorized
+work. This Skill change cannot enable the gate or grant approval. Recheck the actual
+service before any business action; a source commit or local test is not deployment.
 
 ## One final-review gate
 
@@ -869,24 +945,34 @@ platform references retain the detailed evidence.
 
 ## Canonical Skill parity
 
-Treat the repository directory `skills/publish-approved-product` as the only
-canonical Skill source. Check the installed copy before use:
+Use `skills/publish-approved-product` in the current Work Order's verified complete
+repository as the execution source. A personal thin routing installation may retain
+older reference scripts and intentionally different instructions; read the selected
+repository's English Skill and run its actual entry, never those personal scripts.
+Whole installed-package parity is not a prerequisite for this routing scenario and
+does not require installing the complete Skill set. Mixed loaded scripts or source
+versions still fail; a routing note cannot override source/runtime identity guards.
+
+When the Work Order instead selects a full installed Skill package, check its
+complete manifest from the selected repository; the sync tool remains fail-closed:
 
 ```powershell
 .venv\Scripts\python.exe scripts\sync_product_publication_skills.py --check
 ```
 
-If review authorizes installation, run it explicitly and then check again:
+Only when the task explicitly authorizes full-package installation, run it and
+then check again:
 
 ```powershell
 .venv\Scripts\python.exe scripts\sync_product_publication_skills.py --install
 .venv\Scripts\python.exe scripts\sync_product_publication_skills.py --check
 ```
 
-Never install implicitly during publication, test execution, or Skill
-validation. A parity mismatch is a deployment/configuration failure; do not
-silently mix canonical instructions with installed scripts from another
-digest.
+Never install implicitly during publication, test execution or Skill validation.
+A mismatch blocks use of the selected full installed package; preserve its exact
+differences rather than declaring parity successful. It does not block separately
+bound execution from the verified repository. Never execute scripts or apply
+source instructions from another digest as though they belonged to that source.
 
 ## TikTok category decision
 

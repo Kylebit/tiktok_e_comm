@@ -545,6 +545,9 @@ def _ui_frozen_candidate(store,offer,*,before_append=False):
 def verify_completed_gallery_current(task,profile,original,*,connection,owner_sid,key,events,historical=False):
     """Return the original gallery/API record, retaining its original version."""
     if not historical:
+        partial=connection.execute('SELECT detail_json FROM workbench_events WHERE task_id=? AND event_type=? ORDER BY id',
+            (task['task_id'],COMBINED_COMPLETION_EVENT)).fetchall()
+        if partial:return _verify_combined_completion_source(task,profile,original,connection=connection,owner_sid=owner_sid,key=key,events=events,rows=partial)
         regional=connection.execute('SELECT detail_json FROM workbench_events WHERE task_id=? AND event_type=? ORDER BY id',
             (task['task_id'],SHOPEE_REGIONAL_EVENT)).fetchall()
         if regional:return _verify_shopee_regional_source(task,profile,original,connection=connection,owner_sid=owner_sid,key=key,events=events,rows=regional)
@@ -1703,7 +1706,7 @@ def _shopee_regional_history(store,task_id,frozen,request,run_preimage,proof_ref
         tiktok_saved_publish_continuation_digest=sha256(adoption._bytes(saved)).hexdigest())
 
 
-def _verify_shopee_regional_source(task,profile,original,*,connection,owner_sid,key,events,rows):
+def _verify_shopee_regional_source(task,profile,original,*,connection,owner_sid,key,events,rows,historical=False):
     if len(rows)!=1:_fail('SHOPEE_REGIONAL_SOURCE_SINGLE_EVENT_REQUIRED')
     record=_signed(json.loads(rows[0][0]),key=key,schema=SHOPEE_REGIONAL_SCHEMA,owner_sid=owner_sid)
     if record.get('purpose')!=SHOPEE_REGIONAL_PURPOSE:_fail('SHOPEE_REGIONAL_SOURCE_PURPOSE_REQUIRED')
@@ -1715,11 +1718,12 @@ def _verify_shopee_regional_source(task,profile,original,*,connection,owner_sid,
         or record.get('original_adoption_digest')!=sha256(adoption._bytes(original)).hexdigest()
         or record.get('previous_tiktok_activation_digest')!=json.loads(previous[0][0])['record_digest']
         or record.get('scope_digest')!=old['scope_digest'] or record.get('frozen_candidate')!=old['frozen_candidate']
-        or record.get('source_segments')!=_shopee_regional_segments(profile,old['source_segments']['correction']['new_version'],record['source_segments']['mechanism']['new_version'])
+        or record.get('source_segments')!=(_historical_shopee_regional_segments(profile,old['source_segments']['correction']['new_version'],record['source_segments']) if historical else
+            _shopee_regional_segments(profile,old['source_segments']['correction']['new_version'],record['source_segments']['mechanism']['new_version']))
         or record.get('history')!=_shopee_regional_history(default_release_store(),task['task_id'],old['frozen_candidate'],record['technical_request'],record['run_preimage'],record['shopee_regional_continuation_ref'],record['tiktok_saved_publish_continuation_ref'],old)
         or record.get('shopee_regional_continuation_digest')!=record['history']['shopee_regional_continuation_digest']
         or record.get('tiktok_saved_publish_continuation_digest')!=record['history']['tiktok_saved_publish_continuation_digest']
-        or task.get('version')!=_version(profile) or record.get('external_write_count')!=0 or record.get('marketplace_approval') is not False):
+        or (not historical and task.get('version')!=_version(profile)) or record.get('external_write_count')!=0 or record.get('marketplace_approval') is not False):
         _fail('SHOPEE_REGIONAL_SOURCE_SIGNED_BINDING_CHANGED')
     return prior
 
@@ -1758,6 +1762,185 @@ def continue_shopee_regional_source(engine,profile,store,*,task_id,expected_adop
             or db.execute("SELECT 1 FROM workbench_domain_operations WHERE owner_task_id=? AND state='inflight'",(task_id,)).fetchone()
             or _shopee_regional_history(store,task_id,old['frozen_candidate'],technical_request,run_preimage,shopee_regional_continuation_ref,tiktok_saved_publish_continuation_ref,old,before_append=True)!=history):_fail('SHOPEE_REGIONAL_SOURCE_CAS_CHANGED')
         engine._event(db,task_id,SHOPEE_REGIONAL_EVENT,dict(record_json=raw.decode(),record_digest=sha256(raw).hexdigest(),signature=hmac.new(key,raw,'sha256').hexdigest()))
+        db.execute('UPDATE workbench_execution SET version_json=? WHERE task_id=?',(adoption._bytes(_version(profile)).decode(),task_id))
+    return record
+
+
+COMBINED_COMPLETION_EVENT='source_code_approved_native_ozon_two_card_stock_and_shopee_frozen_completion_continuation'
+COMBINED_COMPLETION_SCHEMA='agent-prepared-approved-native-ozon-stock-shopee-frozen-completion-source/v1'
+COMBINED_COMPLETION_PURPOSE='ORIGINAL_APPROVED_OZON_TWO_CARD_STOCK_AND_SHOPEE_EXISTING_ITEM_FROZEN_PROJECTION_COMPLETION_AND_LISTING'
+COMBINED_COMPLETION_MECHANISM_FILES=frozenset({'shared_platform/agent_prepared_source_successor.py',
+    'scripts/continue_agent_prepared_source.py','tests/test_native_ozon_shopee_existing_items_source.py'})
+COMBINED_COMPLETION_FILES=frozenset({'shared_platform/native_ozon_three_card_media_recovery.py',
+    'modules/ozon/approved_publication_v4.py','shared_platform/native_sole_final_service.py',
+    'shared_platform/release_store.py','modules/products/server.py','tests/test_b0431_ozon_media_recovery.py',
+    'shared_platform/shopee_publication_checkpoint.py','tests/test_shopee_publication_checkpoint.py',
+    'shared_platform/native_shopee_regional_continuation.py','tests/test_b0431_shopee_regional_continuation.py'})
+
+
+def _historical_shopee_regional_segments(profile,old_version,segments):
+    mechanism=segments['mechanism'];regional=segments['regional']
+    if (mechanism['old_version']!=old_version or regional['old_version']!=mechanism['new_version']
+        or not SHOPEE_REGIONAL_MECHANISM_FILES-{'tests/test_native_shopee_regional_source.py'}<=set(mechanism['changed_files'])
+        or not {name for name in SHOPEE_REGIONAL_FILES if not name.startswith('tests/')}<=set(regional['changed_files'])):
+        _fail('COMBINED_COMPLETION_SOURCE_ORIGINAL_SEGMENTS_REQUIRED')
+    verify_historical_source(profile.root,mechanism,allowed_files=SHOPEE_REGIONAL_MECHANISM_FILES)
+    verify_historical_source(profile.root,regional,allowed_files=SHOPEE_REGIONAL_FILES)
+    return segments
+
+
+def _combined_completion_segments(profile,old_version,mechanism_version):
+    names=subprocess.check_output(['git','-C',str(profile.root),'diff','--name-only',old_version['code_version'],mechanism_version['code_version']],text=True).splitlines()
+    if (not COMBINED_COMPLETION_MECHANISM_FILES-{'tests/test_native_ozon_shopee_existing_items_source.py'}<=set(names)
+        or not set(names)<=COMBINED_COMPLETION_MECHANISM_FILES):_fail('COMBINED_COMPLETION_SOURCE_EXACT_MECHANISM_REQUIRED')
+    mechanism=dict(old_version=old_version,new_version=mechanism_version,
+        changed_files={name:sha256((Path(profile.root)/name).read_bytes()).hexdigest() for name in names})
+    verify_historical_source(profile.root,mechanism,allowed_files=COMBINED_COMPLETION_MECHANISM_FILES)
+    execution=source_evidence(profile,mechanism_version,allowed_files=COMBINED_COMPLETION_FILES,
+        required_changed_file='shared_platform/native_ozon_three_card_media_recovery.py')
+    if not {name for name in COMBINED_COMPLETION_FILES if not name.startswith('tests/')}<=set(execution['changed_files']):
+        _fail('COMBINED_COMPLETION_SOURCE_EXACT_FILES_REQUIRED')
+    return dict(mechanism=mechanism,execution=execution)
+
+
+def _combined_completion_proofs(request,ref,shopee_ref):
+    from shared_platform.native_ozon_three_card_media_recovery import read_two_card_stock_proof
+    from shared_platform.native_shopee_regional_continuation import read_existing_item_completion_proof
+    intent=_r1_reader_pin(request)
+    if intent.get('ozon_two_card_stock_ref')!=ref or intent.get('shopee_existing_item_completion_ref')!=shopee_ref:_fail('COMBINED_COMPLETION_SOURCE_EXACT_PROOF_REQUIRED')
+    return read_two_card_stock_proof(ref),read_existing_item_completion_proof(shopee_ref)
+
+
+def _combined_completion_history(store,task_id,frozen,request,run_preimage,proof_ref,shopee_ref,old,*,before_append=False):
+    """Original stock and exact frozen projection completion/listing; no new content."""
+    intent=_r1_reader_pin(request);image=_r1_reader_pin(run_preimage);proof,shopee=_combined_completion_proofs(request,proof_ref,shopee_ref)
+    if (intent.get('schema')!='original-approved-ozon-stock-shopee-frozen-completion-source-request/v1'
+        or intent.get('task_id')!=task_id or intent.get('offer_id')!=proof['offer_id']
+        or any(intent.get(k)!=frozen[v] for k,v in (('plan_id','plan_id'),('candidate_digest','candidate_digest'),('payload_digest','payload_digest'),('review_digest','native_review_digest')))
+        or intent.get('decision_id')!='native-final-decision:'+frozen['native_review_digest'].removeprefix('sha256:')
+        or intent.get('original_run_id')!=image['run']['run_id'] or image['run']['plan_id']!=frozen['plan_id']
+        or intent.get('source_head')!=image.get('source_head') or intent['source_head']!=old['source_segments']['regional']['new_version']['code_version']
+        or any(doc.get('retained_ref')!=run_preimage for doc in (proof,shopee))
+        or intent.get('limits')!=dict(source_event_max=1,original_shared_maximum=4,batch_stock_maximum=1,
+            shopee_shared_maximum=10,shopee_per_target_maximum=9,new_shopee_shared_writes=0,
+            shopee_operation_maxima=shopee['operation_maxima'])
+        or intent.get('append_requires_all_mutations_idle') is not True or image.get('all_targets_idle') is not True
+        or intent.get('preserve_all_original_content_effects_and_history') is not True
+        or any(intent.get(k) is not True for k in ('restore_original_frozen_copy','restore_original_eight_description_images'))
+        or any(intent.get(k) is not False for k in ('new_marketplace_approval','new_business_budget','new_product_import','new_ozon_media','new_image_upload',
+            'declare_all_three_success','new_shopee_create','new_shopee_shared_write','new_shopee_content'))
+        or any(doc.get(k)!=v for doc in (proof,shopee) for k,v in dict(task_id=task_id,offer_id=intent['offer_id'],plan_id=frozen['plan_id'],run_id=image['run']['run_id'],
+            decision_id=intent['decision_id'],candidate_digest=frozen['candidate_digest'],snapshot_digest=intent.get('snapshot_digest'),base_source_head=image['source_head']).items())):
+        _fail('COMBINED_COMPLETION_SOURCE_EXACT_HISTORY_PINS_REQUIRED')
+    targets={r['target_label']:r for r in image['release_target_runs']}
+    if (set(targets)!=set(frozen['ordered_targets'])
+        or any(r['status'] not in {'PENDING','FAILED','SUCCEEDED','VERIFIED','SUBMITTED'} for r in targets.values())):
+        _fail('COMBINED_COMPLETION_SOURCE_IDLE_TARGETS_REQUIRED')
+    reserved={(r['scope_key'],r['sequence']):r for r in image['native_final_budget_reservations']}
+    dispatched={(r['scope_key'],r['sequence']) for r in image['native_final_budget_dispatches']}
+    outcomes={(r['scope_key'],r['sequence']) for r in image['native_final_budget_outcomes']}
+    prior=_r1_reader_pin(old['run_preimage']);prior_reserved={(r['scope_key'],r['sequence']):r for r in prior['native_final_budget_reservations']}
+    known_not_sent=set(prior_reserved)-{(r['scope_key'],r['sequence']) for r in prior['native_final_budget_dispatches']}
+    if (not dispatched<=set(reserved) or dispatched!=outcomes
+        or not set(reserved)-dispatched<=known_not_sent
+        or any(reserved[k]!=prior_reserved[k] for k in set(reserved)-dispatched)
+        or any(r['outcome'] not in {'ACCEPTED','REJECTED'} for r in image['native_final_budget_outcomes'])):
+        _fail('COMBINED_COMPLETION_SOURCE_UNRECONCILED_MUTATION')
+    media=[{r['grant_id'] for r in image[table]} for table in STOCK_CATEGORY_MEDIA_TABLES[:4]]
+    if not all(value==media[0] for value in media):_fail('COMBINED_COMPLETION_SOURCE_UNRECONCILED_MEDIA')
+    for platform in ('tiktok','shopee'):
+        checkpoint=image[platform+'_checkpoint'];ref=image[platform+'_checkpoint_ref'];raw=Path(ref['path']).read_bytes();current=json.loads(raw)
+        if platform=='shopee':
+            if current!=checkpoint:_fail('COMBINED_COMPLETION_SOURCE_GLOBAL_CHECKPOINT_CHANGED')
+        else:
+            body={k:v for k,v in current.items() if k!='checkpoint_digest'}
+            if (current.get('checkpoint_digest')!='sha256:'+sha256(adoption._bytes(body)).hexdigest()
+                or any(current.get(k)!=checkpoint[k] for k in ('schema_version','run_id','offer_id','product_revision','snapshot_digest'))
+                or current.get('events',[])[:len(checkpoint['events'])]!=checkpoint['events']):_fail('COMBINED_COMPLETION_SOURCE_TIKTOK_CHECKPOINT_PREFIX_CHANGED')
+        if before_append and (sha256(raw).hexdigest()!=ref['sha256'] or current!=checkpoint):_fail('COMBINED_COMPLETION_SOURCE_CHECKPOINT_CAS_CHANGED')
+    with store._connect_readonly() as db:
+        db.execute('BEGIN')
+        row=db.execute('SELECT * FROM release_runs WHERE run_id=?',(image['run']['run_id'],)).fetchone()
+        fixed=('run_id','plan_id','approval_id','created_at','technical_admission_json','technical_admission_digest','technical_execution_state')
+        if row is None or any(row[k]!=image['run'][k] for k in fixed) or (before_append and dict(row)!=image['run']):_fail('COMBINED_COMPLETION_SOURCE_ORIGINAL_RUN_CHANGED')
+        for table in ('release_target_runs','release_target_submissions','release_target_readbacks','release_target_failure_events'):
+            current=[dict(r) for r in db.execute('SELECT * FROM '+table+' WHERE run_id=?',(image['run']['run_id'],))];rows=image[table]
+            if before_append:
+                if sorted(adoption._bytes(r) for r in current)!=sorted(adoption._bytes(r) for r in rows):_fail('COMBINED_COMPLETION_SOURCE_HISTORY_CAS_CHANGED')
+            elif table=='release_target_runs':
+                current={r['target_label']:r for r in current}
+                if set(current)!=set(targets) or any(current[r['target_label']]['attempts']<r['attempts'] or any(current[r['target_label']][k]!=r[k] for k in ('run_id','idempotency_key','created_at')) for r in rows):_fail('COMBINED_COMPLETION_SOURCE_ORIGINAL_TARGET_CHANGED')
+            elif table=='release_target_submissions':
+                fields=('run_id','target_label','external_id','evidence_json','evidence_digest','submitted_at')
+                if any(not any(all(r[k]==v[k] for k in fields) for r in current) for v in rows):_fail('COMBINED_COMPLETION_SOURCE_ORIGINAL_SUBMISSION_CHANGED')
+            elif not {adoption._bytes(r) for r in rows}<={adoption._bytes(r) for r in current}:_fail('COMBINED_COMPLETION_SOURCE_PRIOR_EVIDENCE_CHANGED')
+        for table in ('native_final_budget_scopes','native_final_budget_reservations','native_final_budget_dispatches','native_final_budget_outcomes'):
+            query=('SELECT * FROM '+table+' WHERE plan_id=?' if table.endswith('_scopes') else 'SELECT b.* FROM '+table+' b JOIN native_final_budget_scopes s USING(scope_key) WHERE s.plan_id=?')
+            current={adoption._bytes(dict(r)) for r in db.execute(query,(frozen['plan_id'],))};rows={adoption._bytes(r) for r in image[table]}
+            if not rows<=current or (before_append and rows!=current):_fail('COMBINED_COMPLETION_SOURCE_PRIOR_BUDGET_CHANGED')
+        for table in STOCK_CATEGORY_MEDIA_TABLES:
+            query=('SELECT * FROM '+table+' WHERE run_id=?' if table.endswith('_grants') else 'SELECT b.* FROM '+table+' b JOIN native_ozon_media_grants g USING(grant_id) WHERE g.run_id=?')
+            current={adoption._bytes(dict(r)) for r in db.execute(query,(image['run']['run_id'],))};rows={adoption._bytes(r) for r in image[table]}
+            if not rows<=current or (before_append and rows!=current):_fail('COMBINED_COMPLETION_SOURCE_PRIOR_MEDIA_CHANGED')
+    return dict(original_run_id=image['run']['run_id'],history_digest=sha256(adoption._bytes(image)).hexdigest(),
+        ozon_two_card_stock_digest=sha256(adoption._bytes(proof)).hexdigest(),
+        shopee_existing_item_completion_digest=sha256(adoption._bytes(shopee)).hexdigest())
+
+
+def _verify_combined_completion_source(task,profile,original,*,connection,owner_sid,key,events,rows):
+    if len(rows)!=1:_fail('COMBINED_COMPLETION_SOURCE_SINGLE_EVENT_REQUIRED')
+    record=_signed(json.loads(rows[0][0]),key=key,schema=COMBINED_COMPLETION_SCHEMA,owner_sid=owner_sid)
+    if record.get('purpose')!=COMBINED_COMPLETION_PURPOSE:_fail('COMBINED_COMPLETION_SOURCE_PURPOSE_REQUIRED')
+    previous=connection.execute('SELECT detail_json FROM workbench_events WHERE task_id=? AND event_type=? ORDER BY id',(task['task_id'],SHOPEE_REGIONAL_EVENT)).fetchall()
+    prior=_verify_shopee_regional_source(task,profile,original,connection=connection,owner_sid=owner_sid,key=key,events=events,rows=previous,historical=True)
+    old=_signed(json.loads(previous[0][0]),key=key,schema=SHOPEE_REGIONAL_SCHEMA,owner_sid=owner_sid)
+    from shared_platform.release_store import default_release_store
+    if (record.get('task_id')!=task['task_id'] or record.get('offer_id')!=original['offer_id']
+        or record.get('original_adoption_digest')!=sha256(adoption._bytes(original)).hexdigest()
+        or record.get('previous_regional_source_digest')!=json.loads(previous[0][0])['record_digest']
+        or record.get('scope_digest')!=old['scope_digest'] or record.get('frozen_candidate')!=old['frozen_candidate']
+        or record.get('source_segments')!=_combined_completion_segments(profile,old['source_segments']['regional']['new_version'],record['source_segments']['mechanism']['new_version'])
+        or record.get('history')!=_combined_completion_history(default_release_store(),task['task_id'],old['frozen_candidate'],record['technical_request'],record['run_preimage'],record['ozon_two_card_stock_ref'],record['shopee_existing_item_completion_ref'],old)
+        or record.get('ozon_two_card_stock_digest')!=record['history']['ozon_two_card_stock_digest']
+        or record.get('shopee_existing_item_completion_digest')!=record['history']['shopee_existing_item_completion_digest']
+        or task.get('version')!=_version(profile) or record.get('external_write_count')!=0 or record.get('marketplace_approval') is not False):
+        _fail('COMBINED_COMPLETION_SOURCE_SIGNED_BINDING_CHANGED')
+    return prior
+
+
+def continue_combined_completion_source(engine,profile,store,*,task_id,expected_adoption_digest,actor_reader,
+    mechanism_head,mechanism_manifest,technical_request,run_preimage,ozon_two_card_stock_ref,shopee_existing_item_completion_ref):
+    from shared_platform.r3_native_final_approval import read_native_actor_identity
+    sid,key=adoption._owner_key(profile);actor=read_native_actor_identity(actor_reader)
+    if actor.get('identity_verified') is not True or actor.get('trust_mode')!='SAME_WINDOWS_USER' or actor.get('owner_sid')!=sid:_fail('SOURCE_SUCCESSOR_TRUSTED_SAME_USER_REQUIRED')
+    with engine.transaction() as db:
+        before=dict(engine._row(db,task_id));task=engine._project(db,before)
+        row=db.execute('SELECT * FROM agent_prepared_publication_adoptions WHERE task_id=?',(task_id,)).fetchone()
+        original=_signed(row,key=key,schema=adoption.SCHEMA,owner_sid=sid)
+        if row['record_digest']!=expected_adoption_digest:_fail('SOURCE_SUCCESSOR_ORIGINAL_ADOPTION_REQUIRED')
+        if db.execute('SELECT 1 FROM workbench_events WHERE task_id=? AND event_type=?',(task_id,COMBINED_COMPLETION_EVENT)).fetchone():_fail('COMBINED_COMPLETION_SOURCE_SINGLE_EVENT_REQUIRED')
+        events=db.execute('SELECT detail_json FROM workbench_events WHERE task_id=? AND event_type=? ORDER BY id',(task_id,GALLERY_EVENT)).fetchall()
+        previous=db.execute('SELECT detail_json FROM workbench_events WHERE task_id=? AND event_type=? ORDER BY id',(task_id,SHOPEE_REGIONAL_EVENT)).fetchall()
+        _verify_shopee_regional_source(task,profile,original,connection=db,owner_sid=sid,key=key,events=events,rows=previous,historical=True)
+        old=_signed(json.loads(previous[0][0]),key=key,schema=SHOPEE_REGIONAL_SCHEMA,owner_sid=sid)
+        oldevents=[tuple(r) for r in db.execute('SELECT * FROM workbench_events WHERE task_id=? ORDER BY id',(task_id,))]
+    version=old['source_segments']['regional']['new_version']
+    if (json.loads(before['version_json'])!=version or before['state']!='reconciliation_required' or before['step_index']!=2
+        or any(before[k] is not None for k in ('worker','lease_token','lease_until')) or before['external_started']):_fail('COMBINED_COMPLETION_SOURCE_IDLE_REQUIRED')
+    segments=_combined_completion_segments(profile,version,dict(code_version=mechanism_head,environment='stable',manifest_digest=mechanism_manifest))
+    history=_combined_completion_history(store,task_id,old['frozen_candidate'],technical_request,run_preimage,ozon_two_card_stock_ref,shopee_existing_item_completion_ref,old,before_append=True)
+    record=dict(schema_version=COMBINED_COMPLETION_SCHEMA,purpose=COMBINED_COMPLETION_PURPOSE,task_id=task_id,offer_id=original['offer_id'],owner_sid=sid,
+        continued_at=datetime.now(timezone.utc).isoformat(),original_adoption_digest=expected_adoption_digest,previous_regional_source_digest=json.loads(previous[0][0])['record_digest'],
+        scope_digest=old['scope_digest'],source_segments=segments,frozen_candidate=old['frozen_candidate'],history=history,
+        technical_request=technical_request,run_preimage=run_preimage,ozon_two_card_stock_ref=ozon_two_card_stock_ref,
+        ozon_two_card_stock_digest=history['ozon_two_card_stock_digest'],shopee_existing_item_completion_ref=shopee_existing_item_completion_ref,
+        shopee_existing_item_completion_digest=history['shopee_existing_item_completion_digest'],external_write_count=0,marketplace_approval=False)
+    raw=adoption._bytes(record)
+    with engine.transaction() as db:
+        if (dict(engine._row(db,task_id))!=before or [tuple(r) for r in db.execute('SELECT * FROM workbench_events WHERE task_id=? ORDER BY id',(task_id,))]!=oldevents
+            or db.execute("SELECT 1 FROM workbench_domain_operations WHERE owner_task_id=? AND state='inflight'",(task_id,)).fetchone()
+            or _combined_completion_history(store,task_id,old['frozen_candidate'],technical_request,run_preimage,ozon_two_card_stock_ref,shopee_existing_item_completion_ref,old,before_append=True)!=history):_fail('COMBINED_COMPLETION_SOURCE_CAS_CHANGED')
+        engine._event(db,task_id,COMBINED_COMPLETION_EVENT,dict(record_json=raw.decode(),record_digest=sha256(raw).hexdigest(),signature=hmac.new(key,raw,'sha256').hexdigest()))
         db.execute('UPDATE workbench_execution SET version_json=? WHERE task_id=?',(adoption._bytes(_version(profile)).decode(),task_id))
     return record
 

@@ -14358,7 +14358,8 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                 or durable_target.get("status")
                 in {"SUCCEEDED", "MANUALLY_VERIFIED"}
                 or (durable_target.get('status') == 'SUBMITTED_UNVERIFIED'
-                    and recovery_action_by_label.get(label, {}).get('action_kind') != 'NATIVE_OZON_THREE_CARD_STOCK_CONTINUATION')
+                    and recovery_action_by_label.get(label, {}).get('action_kind') not in {
+                        'NATIVE_OZON_THREE_CARD_STOCK_CONTINUATION','NATIVE_OZON_TWO_CARD_PARTIAL_STOCK'})
                 or (
                     recovery_action_by_label.get(label, {}).get("runnable")
                     is not True
@@ -14416,8 +14417,9 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                 None,
             )
             if not current_target or (current_target.get("status") != "PENDING" and not (
-                recovery_action_by_label.get(label, {}).get('action_kind') == 'NATIVE_OZON_THREE_CARD_STOCK_CONTINUATION'
-                and current_target.get('storage_status') == 'PENDING' and current_target.get('attempts') == 1)):
+                current_target.get('storage_status') == 'PENDING' and (
+                    (recovery_action_by_label.get(label, {}).get('action_kind') == 'NATIVE_OZON_THREE_CARD_STOCK_CONTINUATION' and current_target.get('attempts') == 1)
+                    or (recovery_action_by_label.get(label, {}).get('action_kind') == 'NATIVE_OZON_TWO_CARD_PARTIAL_STOCK' and current_target.get('attempts') == 2)))):
                 continue
             plan_target = target_by_label.get(label) or {}
             registration = registry.get(str(plan_target.get("adapter") or ""))

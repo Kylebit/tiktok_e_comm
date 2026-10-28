@@ -968,6 +968,7 @@ def execute_ozon_v4_publication(
     before_stock_update: Callable[[tuple[dict[str, Any], ...]], object] | None = None,
     read_before_dispatch: bool = False,
     after_projection: Callable[[tuple[dict[str, Any], ...]], object] | None = None,
+    partial_stock_selection: Callable | None = None,
 ) -> dict[str, Any]:
     """Dispatch all variants, then always perform one authoritative readback.
 
@@ -1063,6 +1064,28 @@ def execute_ozon_v4_publication(
                 )
             if unexpected:
                 statuses.append("FAILED")
+            if partial_stock_selection is not None:
+                selected = partial_stock_selection(variants, tuple(existing_items), tuple(statuses))
+                if selected is not None:
+                    reads = []
+                    def scoped_stock_read(ids):
+                        value = readback_stocks(ids);reads.append(deepcopy(value));return value
+                    stock_result = _complete_governed_stock(variants=selected,update_stocks=update_stocks,
+                        readback_stocks=scoped_stock_read,prepare_stock_update=prepare_stock_update,
+                        before_stock_update=before_stock_update,prior_external_write_count=0,prior_dispatch_attempted=False)
+                    verified = stock_result['targets'][0]['status'] == 'PUBLISHED'
+                    value = _result('FAILED',dispatch_attempted=stock_result['dispatch_attempted'],
+                        readback_completed=stock_result['readback_completed'],external_write_count=stock_result['external_write_count'],
+                        requires_human_action=True,stage='STOCK_READBACK',
+                        provider_code='ozon_two_card_stock_verified_one_blocked' if verified else 'ozon_two_card_stock_pending_one_blocked',
+                        provider_reason='Original duplicate card remains blocked; stock result applies only to the two original eligible cards')
+                    value['targets'][0]['evidence']['partial_stock'] = dict(schema='ozon-two-eligible-card-stock-partial/v1',
+                        selected_offers=[r['offer_id'] for r in selected],blocked_offer='2000431',
+                        blocked_code='SPU_ALREADY_EXISTS_IN_ANOTHER_ACCOUNT',stock_verified=verified,
+                        all_three_success=False,stock_result=stock_result,stock_readbacks=reads,
+                        cards=[dict(offer_id=r['offer_id'],status='BLOCKED_DUPLICATE' if r['offer_id']=='2000431' else
+                            ('STOCK_VERIFIED' if verified else 'STOCK_UNVERIFIED')) for r in variants])
+                    return value
             if all(status == "PUBLISHED" for status in statuses):
                 if stock_required:
                     return _complete_governed_stock(
@@ -1328,6 +1351,7 @@ def build_ozon_v4_executor(
             ),
             read_before_dispatch=True,
             after_projection=projected_facts,
+            partial_stock_selection=getattr(getattr(request,'write_budget_ledger',None),'partial_stock_selection',None),
         )
         if sink is not None and result['targets'][0]['status']=='PUBLISHED':
             try:

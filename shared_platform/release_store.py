@@ -8568,6 +8568,12 @@ class ReleaseStore:
                          and ((payload.get('readback') or {}).get('evidence') or {}).get('verified') is True))
             ):
                 payload["status"] = payload["submission"]["status"]
+            if run_id == 'release-run:25e66f7250d31cbb39ff8d0e' and row['target_label'] == 'ozon:RU':
+                from shared_platform.native_ozon_three_card_media_recovery import partial_stock_projection
+                partial_stock = partial_stock_projection(connection, run_id, payload)
+                if partial_stock is not None:
+                    payload['status'] = TARGET_FAILED
+                    payload['partial_stock_result'] = partial_stock
             payload["repair"] = repairs.get(row["target_label"])
             if payload["repair"]:
                 if (

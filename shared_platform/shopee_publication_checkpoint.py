@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from copy import deepcopy
 from pathlib import Path
@@ -16,6 +17,16 @@ _SAFE_LABEL = re.compile(r"^shopee:[A-Z]{2}$")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
 _SAFE_CODE = re.compile(r"^[A-Za-z0-9_.:-]{0,80}$")
 _STAGES = frozenset({"DISPATCH", "READBACK"})
+
+
+def _io_path(path: Path) -> Path:
+    """Keep logical scope paths intact; use Windows extended paths only for I/O."""
+    if os.name != 'nt':return path
+    value = str(path.absolute())
+    prefix = chr(92) * 2 + '?' + chr(92)
+    if value.startswith(prefix):return path
+    if value.startswith(chr(92) * 2):value = 'UNC' + chr(92) + value[2:]
+    return Path(prefix + value)
 
 
 def _canonical(value: object) -> str:
@@ -32,7 +43,7 @@ def _scoped_path(run_root: Path, labels: Sequence[str]) -> Path:
 
 
 def _read_checkpoint(path: Path) -> dict[str, Any]:
-    body = json.loads(path.read_text(encoding="utf-8"))
+    body = json.loads(_io_path(path).read_text(encoding="utf-8"))
     supplied = body.pop("checkpoint_digest", None)
     if supplied != _digest(body):
         raise ValueError("Shopee checkpoint identity or digest conflicts")
@@ -131,8 +142,8 @@ class ShopeePublicationCheckpointStore:
         return body
 
     def load(self) -> dict[str, Any]:
-        path = self.path if self.path.is_file() else self.legacy_path
-        if not path.is_file():
+        path = self.path if _io_path(self.path).is_file() else self.legacy_path
+        if not _io_path(path).is_file():
             return self._initial()
         body = _read_checkpoint(path)
         if any(body.get(key) != value for key, value in self.identity.items() if key != "target_labels"):
@@ -196,14 +207,14 @@ class ShopeePublicationCheckpointStore:
             "external_write_count": count,
         }]
         body["checkpoint_digest"] = _digest(body)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        _io_path(self.path.parent).mkdir(parents=True, exist_ok=True)
         temp = self.path.with_name(f".{self.path.name}.{uuid4().hex}.tmp")
         try:
-            temp.write_text(_canonical(body) + "\n", encoding="utf-8")
-            temp.replace(self.path)
+            _io_path(temp).write_text(_canonical(body) + "\n", encoding="utf-8")
+            _io_path(temp).replace(_io_path(self.path))
         finally:
-            if temp.exists():
-                temp.unlink()
+            if _io_path(temp).exists():
+                _io_path(temp).unlink()
 
     def public_progress(self) -> dict[str, Any]:
         body = self.load()
@@ -243,14 +254,14 @@ def public_shopee_progress_for_run(
         / str(run.get("revision") or "") / str(run.get("run_id") or "")
     )
     legacy = run_root / "shopee-publication-checkpoint.json"
-    scoped = sorted(run_root.glob("shopee-publication-checkpoint.*.json"))
-    if not legacy.is_file() and not scoped:
+    scoped = sorted(run_root / path.name for path in _io_path(run_root).glob("shopee-publication-checkpoint.*.json"))
+    if not _io_path(legacy).is_file() and not scoped:
         return None
     targets: dict[str, Any] = {}
     labels: list[str] = []
     events: list[Mapping[str, object]] = []
     scoped_labels: set[str] = set()
-    for path in ([legacy] if legacy.is_file() else []) + scoped:
+    for path in ([legacy] if _io_path(legacy).is_file() else []) + scoped:
         part = _read_checkpoint(path)
         if any(part.get(key) != run.get(key) for key in ("run_id", "report_id", "offer_id", "revision", "plan_id")) or part.get("snapshot_digest") != run.get("snapshot_digest"):
             raise ValueError("Shopee checkpoint run identity conflicts")

@@ -83,6 +83,17 @@ def main(argv=None):
     p.add_argument('--shopee-regional-proof-sha256')
     p.add_argument('--tiktok-saved-publish-proof',type=Path)
     p.add_argument('--tiktok-saved-publish-proof-sha256')
+    p.add_argument('--approved-ozon-stock-shopee-frozen-completion-continuation',action='store_true',help='Bind original Ozon stock and exact frozen Shopee copy/description projection completion then listing; no new content, budget or create')
+    p.add_argument('--completion-mechanism-head')
+    p.add_argument('--completion-mechanism-manifest')
+    p.add_argument('--completion-technical-request',type=Path)
+    p.add_argument('--completion-technical-request-sha256')
+    p.add_argument('--completion-run-preimage',type=Path)
+    p.add_argument('--completion-run-preimage-sha256')
+    p.add_argument('--ozon-two-card-proof',type=Path)
+    p.add_argument('--ozon-two-card-proof-sha256')
+    p.add_argument('--shopee-existing-item-completion-proof',type=Path)
+    p.add_argument('--shopee-existing-item-completion-proof-sha256')
     p.add_argument('--initialize-common-correction-schema',action='store_true',help='Explicit correction-ledger schema maintenance')
     args=p.parse_args(argv);config=json.loads(args.deployment.read_text(encoding='utf-8-sig'))
     if args.api_only and (not args.completed_common_variant_image_projection or config.get('agent_prepared_api_target_scope') is None):
@@ -120,7 +131,12 @@ def main(argv=None):
         args.shopee_regional_proof,args.shopee_regional_proof_sha256,args.tiktok_saved_publish_proof,args.tiktok_saved_publish_proof_sha256)
     if (args.approved_shopee_regional_tiktok_saved_publish_continuation and not all(regional_args)) or (not args.approved_shopee_regional_tiktok_saved_publish_continuation and any(regional_args)):
         raise ValueError('SHOPEE_REGIONAL_SOURCE_EXACT_HISTORY_PINS_REQUIRED')
-    if (sum((args.common_create_successor,args.common_create_correction,args.common_baseline_successor,args.common_baseline_lock_fix,args.common_colormap_correction,args.completed_common_gallery_compatibility,args.completed_common_variant_image_projection,args.native_final_image_ui_compatibility,args.approved_native_r1_reader_compatibility,args.approved_platform_preparation_compatibility,args.native_tiktok_ozon_recovery_compatibility,args.approved_stock_category_continuation,args.approved_tiktok_locale_draft_correction,args.approved_tiktok_activation_connection_fix,args.approved_shopee_regional_tiktok_saved_publish_continuation))>1
+    two_card_args=(args.completion_mechanism_head,args.completion_mechanism_manifest,args.completion_technical_request,
+        args.completion_technical_request_sha256,args.completion_run_preimage,args.completion_run_preimage_sha256,
+        args.ozon_two_card_proof,args.ozon_two_card_proof_sha256,args.shopee_existing_item_completion_proof,args.shopee_existing_item_completion_proof_sha256)
+    if (args.approved_ozon_stock_shopee_frozen_completion_continuation and not all(two_card_args)) or (not args.approved_ozon_stock_shopee_frozen_completion_continuation and any(two_card_args)):
+        raise ValueError('COMBINED_COMPLETION_SOURCE_EXACT_HISTORY_PINS_REQUIRED')
+    if (sum((args.common_create_successor,args.common_create_correction,args.common_baseline_successor,args.common_baseline_lock_fix,args.common_colormap_correction,args.completed_common_gallery_compatibility,args.completed_common_variant_image_projection,args.native_final_image_ui_compatibility,args.approved_native_r1_reader_compatibility,args.approved_platform_preparation_compatibility,args.native_tiktok_ozon_recovery_compatibility,args.approved_stock_category_continuation,args.approved_tiktok_locale_draft_correction,args.approved_tiktok_activation_connection_fix,args.approved_shopee_regional_tiktok_saved_publish_continuation,args.approved_ozon_stock_shopee_frozen_completion_continuation))>1
         or args.initialize_common_correction_schema and not args.common_create_correction):
         raise ValueError('SOURCE_SUCCESSOR_EXACT_SOURCE_ACTION_REQUIRED')
     from scripts.stable_runtime_bootstrap import prebind_release_store,prebind_workbench_store,configure_stable_runtime
@@ -155,7 +171,15 @@ def main(argv=None):
         actor_reader=NativeWindowsActorProfileReader(actor,actor.grant_same_user()))
     if args.initialize_common_successor_schema and not args.common_create_successor:
         raise ValueError('SOURCE_SUCCESSOR_EXPLICIT_V2_REQUIRED')
-    if args.approved_shopee_regional_tiktok_saved_publish_continuation:
+    if args.approved_ozon_stock_shopee_frozen_completion_continuation:
+        from shared_platform.agent_prepared_source_successor import continue_combined_completion_source
+        record=continue_combined_completion_source(engine,profile,default_release_store(),mechanism_head=args.completion_mechanism_head,
+            mechanism_manifest=args.completion_mechanism_manifest,
+            technical_request=dict(path=str(args.completion_technical_request),sha256=args.completion_technical_request_sha256),
+            run_preimage=dict(path=str(args.completion_run_preimage),sha256=args.completion_run_preimage_sha256),
+            ozon_two_card_stock_ref=dict(path=str(args.ozon_two_card_proof),sha256=args.ozon_two_card_proof_sha256),
+            shopee_existing_item_completion_ref=dict(path=str(args.shopee_existing_item_completion_proof),sha256=args.shopee_existing_item_completion_proof_sha256),**kwargs)
+    elif args.approved_shopee_regional_tiktok_saved_publish_continuation:
         from shared_platform.agent_prepared_source_successor import continue_shopee_regional_source
         record=continue_shopee_regional_source(engine,profile,default_release_store(),mechanism_head=args.shopee_regional_mechanism_head,
             mechanism_manifest=args.shopee_regional_mechanism_manifest,

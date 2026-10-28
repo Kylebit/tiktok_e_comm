@@ -767,7 +767,8 @@ class NativeSoleFinalService:
                 market_run=self.store._run_in_transaction(db,run_row['run_id']) if run_row else None
                 result_rows=[]
                 for target in (market_run or {}).get('targets') or []:
-                    evidence=target.get('readback') or target.get('submission') or target.get('failure') or {}
+                    partial_stock=target.get('partial_stock_result')
+                    evidence=partial_stock or target.get('readback') or target.get('submission') or target.get('failure') or {}
                     state=target['status']
                     # A durable SUCCEEDED row only exists after the original
                     # target readback validator. Submissions remain unverified.
@@ -776,7 +777,7 @@ class NativeSoleFinalService:
                         'request_attempted':target['attempts']>0,
                         'official_success':state=='SUCCEEDED' and bool(target.get('readback')),
                         'readback_completed':state=='SUCCEEDED' and bool(target.get('readback')),
-                         'outcome_unknown':state in {'RUNNING','RECONCILIATION_REQUIRED'} or (
+                         'outcome_unknown':partial_stock['outcome_unknown'] if partial_stock else state in {'RUNNING','RECONCILIATION_REQUIRED'} or (
                              state=='FAILED' and target['attempts']>0
                              and not server._generic_tiktok_safe_retry_target(target)),
                         'readback':evidence})

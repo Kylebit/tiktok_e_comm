@@ -1,4 +1,7 @@
 import json
+import hashlib
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +12,37 @@ from shared_platform.shopee_publication_checkpoint import (
     ShopeePublicationCheckpointStore,
     public_shopee_progress_for_run,
 )
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Actual Windows path compatibility regression')
+def test_captured_PH_existing_dispatch_long_path_keeps_identical_journal(tmp_path):
+    value=os.environ.get('ORBIT_B0431_SH_PATH_CONTRAST')
+    if not value:pytest.skip('explicit private captured contrast not supplied')
+    proof=Path(value)
+    raw=proof.read_bytes()
+    assert hashlib.sha256(raw).hexdigest()=='c0df7afb23104d335fd2953c0e0849e011d25f97021dde4f409abe19aeeb1259'
+    captured=json.loads(raw);row=captured['direct_original_dispatch']['targets'][0]
+    assert row['existing_item_id']=='47970054181' and row['attempted'] is False and row['external_write_count']==0
+    request=SimpleNamespace(run_id='native-files-24c3e512eb40b27ee4b58b72a18171caf87359e8c2099676920970900eaab939',
+        report_id='native-report-24c3e512eb40b27ee4b58b72a18171caf87359e8c2099676920970900eaab939',target_labels=('shopee:PH',),
+        snapshot=dict(offer_id='8412287877065586543',product_revision=6,
+            plan_id='r3-marketplace:8412287877065586543:07707b4b7901ca9b97b08acd',
+            snapshot_digest='sha256:8eecd1c0b7beadcaddc7a8655f25b5f9e981729c4cb44e33dbd5aac17eaaa3de'))
+    long_root=tmp_path/'long'
+    while len(str(long_root))<170:long_root=long_root/'retained-checkpoint-scope'
+    short=ShopeePublicationCheckpointStore(tmp_path/'short',request)
+    long=ShopeePublicationCheckpointStore(long_root,request)
+    assert len(str(long.path))>260
+    short.record('DISPATCH',row);long.record('DISPATCH',row)
+    assert short.load()==long.load()
+    loaded=ShopeePublicationCheckpointStore(long_root,request)
+    assert loaded.path==long.path and loaded.identity==long.identity
+    assert loaded.public_progress()['targets'][0]['provider_identity_bound'] is True
+    run={**loaded.identity,'revision':6,'platform_scope':['SHOPEE']}
+    assert public_shopee_progress_for_run(long_root,run)==loaded.public_progress()
+    loaded.record('READBACK',dict(target_label='shopee:PH',attempted=False,accepted=True,outcome='PROCESSING',item_id='47970054181',external_write_count=0))
+    assert loaded.load()['events'][:1]==short.load()['events']
+    assert loaded.load()['targets']['shopee:PH']['provider_item_id']=='47970054181'
 
 
 def _request(root):

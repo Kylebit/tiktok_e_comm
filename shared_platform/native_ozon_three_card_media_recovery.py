@@ -24,6 +24,10 @@ ACCOUNT = '4953064'
 PRODUCTS = {'2000431': 6760984630, '2000432': 6760985024, '2000433': 6760985460}
 TASKS = (5906902718, 5906902998, 5906903305)
 TARGET = 'ozon:RU'
+PARTIAL_EVENT = 'source_code_approved_native_ozon_two_card_stock_and_shopee_frozen_completion_continuation'
+PARTIAL_OFFERS = ('2000432', '2000433')
+PARTIAL_WAREHOUSE = 1020005018928780
+TERMINAL_SHA = '627fec2e75acfe1a2bdcd886ecb272c677e230b17fe82a5474460325cbd455af'
 IMPORT = '/v1/product/pictures/import'
 INFO = '/v2/product/pictures/info'
 _TITLE_SCOPE = ContextVar('native_ozon_three_card_media_title_scope', default=None)
@@ -67,6 +71,77 @@ def read_media3_decision(ref):
             and row.get('mutation_attempts') == 1 and _sha(_json(body)) == row.get('request_canonical_sha256'),
             'EXACT_FROZEN_MEDIA_REQUEST_REQUIRED')
     return doc
+
+
+def _stock_rows(image):
+    scopes = {r['scope_key'] for r in image['native_final_budget_scopes'] if r['platform'] == 'OZON'}
+    dispatches = {(r['scope_key'], r['sequence']): r for r in image['native_final_budget_dispatches']}
+    outcomes = {(r['scope_key'], r['sequence']): r for r in image['native_final_budget_outcomes']}
+    return [{**{k:r[k] for k in ('sequence','target_label','budget_scope','operation','attempt_count')},
+        'request_digest': dispatches.get((r['scope_key'], r['sequence']), {}).get('request_digest'),
+        'outcome': outcomes.get((r['scope_key'], r['sequence']), {}).get('outcome',r['initial_outcome'])}
+        for r in sorted(image['native_final_budget_reservations'], key=lambda r: r['sequence']) if r['scope_key'] in scopes]
+
+
+def _two_stock_body():
+    return {'stocks': [dict(offer_id=offer, stock=200, warehouse_id=PARTIAL_WAREHOUSE) for offer in PARTIAL_OFFERS]}
+
+
+def _exact_duplicate(item):
+    errors = item.get('validation_errors', item.get('errors')) or []
+    return any(row.get('code') == 'SPU_ALREADY_EXISTS_IN_ANOTHER_ACCOUNT'
+        and {'name': 'Duplicates', 'value': '2000432 - 4953064'} in (row.get('texts') or {}).get('params', []) for row in errors)
+
+
+def read_two_card_stock_proof(ref):
+    """Original stock command subset; this pure reader creates no ledger/grant."""
+    doc = json.loads(_read_reference(ref))
+    expected = dict(schema='native-ozon-two-eligible-card-stock-technical-authority/v1', status='ROOT_TECHNICAL_EXECUTION_APPROVED',
+        task_id='TASK-20261023-001', offer_id='8412287877065586543', plan_id=PLAN, run_id=RUN, decision_id=DECISION,
+        candidate_digest='c5eacc9725ecefa012af02c6d4f5130c6098c9bedab65e2159357a708c73a5cc',
+        snapshot_digest=SNAPSHOT, account_id=ACCOUNT, products=PRODUCTS, selected_offers=list(PARTIAL_OFFERS),
+        blocked_offer='2000431', stock_per_selected=200, warehouse_id=PARTIAL_WAREHOUSE, original_shared_maximum=4,
+        original_accepted_imports=3, remaining_stock_batches=1, new_import=False, new_media=False, new_budget=False,
+        new_human_review=False, full_three_card_success=False, stock_body=_two_stock_body())
+    need(all(type(doc.get(k)) is type(v) and doc[k] == v for k, v in expected.items()), 'EXACT_TWO_CARD_STOCK_PROOF_REQUIRED')
+    image = json.loads(_read_reference(doc['retained_ref']))
+    need(doc.get('base_source_head') == '8734a3a957811d4352f081cb3d82b741a6e67c45'
+        and image.get('source_head') == doc['base_source_head'], 'EXACT_PARTIAL_SOURCE_REQUIRED')
+    target = next(r for r in image['release_target_runs'] if r['target_label'] == TARGET)
+    rows = _stock_rows(image);failures = [r for r in image['release_target_failure_events'] if r['target_label'] == TARGET]
+    need((target['run_id'], target['status'], target['attempts']) == (RUN, 'FAILED', 2)
+        and len(failures) == 1 and failures[0]['attempt'] == 2 and _sha(failures[0]['evidence_json']) == failures[0]['evidence_digest'],
+        'ORIGINAL_FAILED2_REQUIRED')
+    need(len(rows) == 3 and all(r['operation'] == 'import_variant' and r['attempt_count'] == 1 and r['budget_scope'] == 'shared'
+        and r['outcome'] == 'ACCEPTED' and r['request_digest'] for r in rows), 'THREE_IMPORTS_UNUSED_STOCK_SLOT_REQUIRED')
+    scope = next(r for r in image['native_final_budget_scopes'] if r['platform'] == 'OZON')
+    binding = json.loads(scope['binding_json'])
+    need(binding['shared_maximum'] == 4 and binding['per_target_maximum'] == 0 and binding['decision_id'] == DECISION
+        and binding['snapshot_digest'] == SNAPSHOT and _sha(scope['binding_json']) == scope['binding_sha256'], 'ORIGINAL_SHARED4_REQUIRED')
+    terminal = doc['official_terminal_ref'];need(terminal.get('sha256') == TERMINAL_SHA, 'ORIGINAL_DUPLICATE_EVIDENCE_REQUIRED')
+    items = json.loads(_read_reference(terminal))['items'];by_offer = {r['offer_id']: r for r in items}
+    need(len(items) == 3 and set(by_offer) == set(PRODUCTS) and all(by_offer[k]['id'] == v for k, v in PRODUCTS.items())
+        and _exact_duplicate(by_offer['2000431']) and all(by_offer[k]['errors'] == []
+            and by_offer[k]['statuses']['moderate_status'] == 'approved' and by_offer[k]['statuses']['validation_status'] == 'success'
+            and not by_offer[k]['statuses']['status_failed'] for k in PARTIAL_OFFERS), 'EXACT_DUPLICATE_AND_TWO_APPROVED_REQUIRED')
+    return doc
+
+
+def _partial_material(ref, doc):
+    return dict(ref=ref, doc=doc, digest=_sha(_json(doc)), image=json.loads(_read_reference(doc['retained_ref'])))
+
+
+def _partial_event(bound, task):
+    with sqlite3.connect(bound.engine.store.path.resolve().as_uri() + '?mode=ro', uri=True) as db:
+        db.execute('PRAGMA query_only=ON')
+        rows = db.execute('SELECT detail_json FROM workbench_events WHERE task_id=? AND event_type=?', (task['task_id'], PARTIAL_EVENT)).fetchall()
+    if not rows:return None
+    need(len(rows) == 1, 'SINGLE_PARTIAL_SOURCE_EVENT_REQUIRED')
+    envelope = json.loads(rows[0][0]);raw = envelope.get('record_json')
+    need(type(raw) is str and _sha(raw) == envelope.get('record_digest'), 'PARTIAL_SIGNED_ENVELOPE_REQUIRED')
+    record = json.loads(raw);ref = record['ozon_two_card_stock_ref'];doc = read_two_card_stock_proof(ref)
+    need(record['ozon_two_card_stock_digest'] == _sha(_json(doc)), 'PARTIAL_SIGNED_PROOF_CHANGED')
+    return _partial_material(ref, doc)
 
 
 def _context(active):
@@ -118,11 +193,12 @@ def _context(active):
             and {k: v for k, v in stored.items() if k not in {'original_target_preimage', 'original_failure_rows', 'original_submission_rows'}} == body,
             'PERSISTED_GRANT_CHANGED')
         body = stored
-    return dict(active=active, body=body, grant_id=_sha(_json(body)), snapshot=snapshot,
+    return dict(active=active, body=body, grant_id=_sha(_json(body)), snapshot=snapshot, partial=_partial_event(bound, task),
         root=active.runtime.supervisor.root / 'native-ozon-three-card-media' / _sha(_json(body)))
 
 
 def _original(db, ctx, *, state='FAILED', attempt=1, stock_allowed=False):
+    if ctx.get('partial'):return _partial_original(db, ctx, state=state, attempt=attempt, stock_allowed=stock_allowed)
     active = ctx['active'];receipt = active.service._decision(db, DECISION, owner_sid=active.owner_sid)
     need(receipt['snapshot_digest'] == SNAPSHOT, 'ORIGINAL_APPROVAL_CHANGED')
     run = db.execute('SELECT * FROM release_runs WHERE run_id=?', (RUN,)).fetchone()
@@ -165,6 +241,39 @@ def _original(db, ctx, *, state='FAILED', attempt=1, stock_allowed=False):
     for table in ('release_target_readbacks', 'release_target_repairs'):
         need(db.execute('SELECT 1 FROM '+table+' WHERE run_id=? AND target_label=?', (RUN, TARGET)).fetchone() is None,
             'EXISTING_RESULT_NO_REPLAY')
+    return target
+
+
+def _partial_original(db, ctx, *, state, attempt, stock_allowed=False):
+    image = ctx['partial']['image'];active = ctx['active']
+    receipt = active.service._decision(db, DECISION, owner_sid=active.owner_sid)
+    run = db.execute('SELECT * FROM release_runs WHERE run_id=?', (RUN,)).fetchone()
+    need(receipt['snapshot_digest'] == SNAPSHOT and run and run['plan_id'] == PLAN
+        and run['approval_id'] == receipt['release_approval_id'] and run['status'] not in {'SUCCEEDED','SUPERSEDED'}, 'PARTIAL_APPROVAL_CHANGED')
+    frozen = db.execute('SELECT snapshot_json FROM approved_publication_snapshots WHERE plan_id=?', (PLAN,)).fetchone()
+    need(frozen and _sha(frozen[0]) == SNAPSHOT_RAW_SHA, 'PARTIAL_FROZEN_SNAPSHOT_CHANGED')
+    target = db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?', (RUN, TARGET)).fetchone()
+    old = next(r for r in image['release_target_runs'] if r['target_label'] == TARGET)
+    need(target and (target['status'], target['attempts']) == (state, attempt) and attempt in (2, 3)
+        and all(target[k] == old[k] for k in ('run_id', 'target_label', 'idempotency_key', 'created_at', 'external_id')), 'PARTIAL_ORIGINAL_TARGET_CHANGED')
+    failures = [r for r in image['release_target_failure_events'] if r['target_label'] == TARGET]
+    need([dict(r) for r in db.execute('SELECT * FROM release_target_failure_events WHERE run_id=? AND target_label=? ORDER BY attempt', (RUN, TARGET))] == failures,
+        'PARTIAL_FAILURE2_CHANGED')
+    for table in ('native_ozon_media_grants', 'native_ozon_media_attempts', 'native_ozon_media_dispatches',
+                  'native_ozon_media_outcomes', 'native_ozon_media_verifications', 'native_ozon_media_starts'):
+        current = [dict(r) for r in db.execute('SELECT * FROM '+table+' WHERE grant_id=?', (ctx['grant_id'],))]
+        need(current == [r for r in image[table] if r['grant_id'] == ctx['grant_id']] and len(current) == 1, 'PARTIAL_MEDIA_HISTORY_CHANGED')
+    old_scope = next(r for r in image['native_final_budget_scopes'] if r['platform'] == 'OZON')
+    scope = db.execute('SELECT * FROM native_final_budget_scopes WHERE scope_key=?', (old_scope['scope_key'],)).fetchone()
+    need(scope and dict(scope) == old_scope, 'PARTIAL_ORIGINAL_BUDGET_CHANGED')
+    from shared_platform.native_known_rejected_save_repair import _base_rows
+    current = _base_rows(db, scope['scope_key'], TARGET);old_rows = _stock_rows(image)
+    need(current[:3] == old_rows and len(current) in ((3, 4) if stock_allowed else (3,)), 'PARTIAL_ONLY_ONE_ORIGINAL_STOCK_SLOT')
+    if len(current) == 4:
+        need(current[3]['operation'] == 'update_stock' and current[3]['budget_scope'] == 'shared' and current[3]['attempt_count'] == 1,
+            'PARTIAL_ORIGINAL_STOCK_ONLY')
+    submissions = [dict(r) for r in db.execute('SELECT * FROM release_target_submissions WHERE run_id=? AND target_label=?', (RUN, TARGET))]
+    need(submissions == [r for r in image['release_target_submissions'] if r['target_label'] == TARGET], 'PARTIAL_IMPORT_SUBMISSION_CHANGED')
     return target
 
 
@@ -330,6 +439,17 @@ def intake_verification(active, proof_ref):
 def activate_failed_targets(active):
     if getattr(active, 'plan_id', None) != PLAN or getattr(active, 'decision_id', None) != DECISION:return ()
     ctx = _context(active)
+    if ctx.get('partial'):
+        with active.store._transaction() as db:
+            active.store._require_active_run(db, RUN)
+            row = db.execute('SELECT status,attempts FROM release_target_runs WHERE run_id=? AND target_label=?', (RUN, TARGET)).fetchone()
+            if tuple(row) not in {('FAILED', 2), ('PENDING', 2)}:return ()
+            _original(db, ctx, state=row['status'], attempt=2)
+            need(_verified(db, ctx) is not None, 'PARTIAL_ORIGINAL_GALLERIES_UNVERIFIED')
+            if row['status'] == 'FAILED':
+                changed = db.execute("UPDATE release_target_runs SET status='PENDING',completed_at=NULL WHERE run_id=? AND target_label=? AND status='FAILED' AND attempts=2", (RUN, TARGET))
+                need(changed.rowcount == 1, 'PARTIAL_FAILED2_CAS_CHANGED')
+        return (TARGET,)
     target = next(row for row in active.store.get_run(RUN)['targets'] if row['target_label'] == TARGET)
     state = target.get('storage_status', target['status'])
     if (state, target['attempts']) not in {('FAILED', 1), ('PENDING', 1)}:return ()
@@ -357,6 +477,13 @@ def activate_failed_targets(active):
 def recovery_actions(active, run, actions):
     if getattr(active, 'plan_id', None) != PLAN:return actions
     ctx = _context(active)
+    if ctx.get('partial'):
+        with active.store._connect_readonly() as db:
+            row = db.execute('SELECT status,attempts FROM release_target_runs WHERE run_id=? AND target_label=?', (RUN, TARGET)).fetchone()
+            if not row or tuple(row) != ('PENDING', 2):return actions
+            _original(db, ctx, state='PENDING', attempt=2)
+        return [{**row, 'runnable':True, 'action_kind':'NATIVE_OZON_TWO_CARD_PARTIAL_STOCK',
+            'reason_code':'original_two_eligible_cards_original_one_stock_slot_0431_stays_blocked'} if row.get('target_label') == TARGET else row for row in actions]
     with active.store._connect_readonly() as db:
         row = db.execute('SELECT status,attempts FROM release_target_runs WHERE run_id=? AND target_label=?', (RUN, TARGET)).fetchone()
         if not row or tuple(row) != ('PENDING', 1):return actions
@@ -370,11 +497,14 @@ def recovery_actions(active, run, actions):
 class _StockOnlyLedger:
     def __init__(self, ctx, base):
         self.ctx, self.base, self.raw_post = ctx, base, None
+        self.current_duplicate = None
     def __getattr__(self, key):return getattr(self.base, key)
     def _check(self):
-        need(_context(self.ctx['active'])['grant_id'] == self.ctx['grant_id'], 'CURRENT_SOURCE_OR_GRANT_CHANGED')
+        current = _context(self.ctx['active'])
+        need(current['grant_id'] == self.ctx['grant_id'] and (not self.ctx.get('partial') or
+            (current.get('partial') or {}).get('digest') == self.ctx['partial']['digest']), 'CURRENT_SOURCE_OR_GRANT_CHANGED')
         with self.base._connect(readonly=True) as db:
-            _original(db, self.ctx, state='RUNNING', attempt=2, stock_allowed=True)
+            _original(db, self.ctx, state='RUNNING', attempt=3 if self.ctx.get('partial') else 2, stock_allowed=True)
             verified = _verified(db, self.ctx)
             need(verified is not None, 'ALL_THREE_GALLERIES_VERIFIED_REQUIRED')
         return verified
@@ -389,7 +519,8 @@ class _StockOnlyLedger:
     def reserve_target(self, *args, **kwargs):need(False, 'ORIGINAL_TARGET_MAXIMUM_ZERO')
     def _stock_body(self, body):
         stocks = body.get('stocks') if type(body) is dict else None
-        need(type(stocks) is list and len(stocks) == 3 and {row.get('offer_id') for row in stocks} == set(PRODUCTS)
+        offers = PARTIAL_OFFERS if self.ctx.get('partial') else PRODUCTS
+        need(type(stocks) is list and len(stocks) == len(offers) and {row.get('offer_id') for row in stocks} == set(offers)
             and all(set(row) == {'offer_id', 'stock', 'warehouse_id'} and type(row['stock']) is int and row['stock'] == 200
                 and type(row['warehouse_id']) is int and row['warehouse_id'] > 0 for row in stocks)
             and len({row['warehouse_id'] for row in stocks}) == 1, 'EXACT_ORIGINAL_THREE_STOCK200_REQUIRED')
@@ -406,17 +537,40 @@ class _StockOnlyLedger:
         return self.base.complete_reserved(operation, outcome)
     def _absolute_stock_admission(self, offer_ids, warehouse_id, updates):
         self._check()
-        need(set(offer_ids) == set(PRODUCTS) and len(offer_ids) == 3
+        offers = PARTIAL_OFFERS if self.ctx.get('partial') else PRODUCTS
+        need(set(offer_ids) == set(offers) and len(offer_ids) == len(offers)
             and type(warehouse_id) is int, 'EXACT_ORIGINAL_ABSOLUTE_STOCK_SCOPE')
         body = {'stocks': [{**row, 'warehouse_id': row.get('warehouse_id', warehouse_id)} for row in updates]}
         need(self._stock_body(body) == warehouse_id, 'FROZEN_STOCK_WAREHOUSE_REQUIRED')
         with self.base._connect(readonly=True) as db:
-            _original(db, self.ctx, state='RUNNING', attempt=2, stock_allowed=False)
+            _original(db, self.ctx, state='RUNNING', attempt=3 if self.ctx.get('partial') else 2, stock_allowed=False)
         return warehouse_id
+    def partial_stock_selection(self, variants, existing_items, statuses):
+        if not self.ctx.get('partial'):return None
+        self._check();by_offer = {r['offer_id']:r for r in existing_items}
+        need(len(existing_items) == 3 and set(by_offer) == set(PRODUCTS) and all(by_offer[k].get('id') == v for k,v in PRODUCTS.items())
+            and self.current_duplicate is not None, 'PARTIAL_CURRENT_DUPLICATE_OR_IDENTITY_CHANGED')
+        status = {r['offer_id']:s for r,s in zip(variants,statuses)}
+        need(status.get('2000431') == 'FAILED' and all(status.get(k) == 'PUBLISHED' for k in PARTIAL_OFFERS),
+            'PARTIAL_TWO_CONTENT_READBACKS_REQUIRED')
+        return tuple(r for r in variants if r['offer_id'] in PARTIAL_OFFERS)
     def wrap_post(self, post, *, provider):
         need(provider == 'ozon' and callable(post), 'BOUND_OZON_TRANSPORT_REQUIRED')
         self.raw_post = post
-        wrapped = _DurableLedger.wrap_post(self, post, provider=provider)
+        def current_read(endpoint,body,*args,**kwargs):
+            value = post(endpoint,body,*args,**kwargs)
+            if self.ctx.get('partial') and endpoint == '/v3/product/info/list':
+                self.current_duplicate = None
+                need(not args and not kwargs and body == dict(offer_id=list(PRODUCTS),limit=1000,visibility='ALL'), 'PARTIAL_CURRENT_EXACT_READ_SCOPE_REQUIRED')
+                items = value.get('items') if type(value) is dict else None
+                by_offer = {r.get('offer_id'):r for r in items} if type(items) is list else {}
+                need(type(items) is list and len(items)==3 and set(by_offer)==set(PRODUCTS)
+                    and all(by_offer[k].get('id')==v for k,v in PRODUCTS.items()) and _exact_duplicate(by_offer['2000431'])
+                    and all(not by_offer[k].get('errors') for k in PARTIAL_OFFERS), 'PARTIAL_CURRENT_DUPLICATE_OR_IDENTITY_CHANGED')
+                self.current_duplicate = dict(offer_id='2000431',product_id=PRODUCTS['2000431'],
+                    code='SPU_ALREADY_EXISTS_IN_ANOTHER_ACCOUNT',duplicate_offer='2000432',account_id=ACCOUNT,response_sha256=_sha(_json(value)))
+            return value
+        wrapped = _DurableLedger.wrap_post(self, current_read, provider=provider)
         wrapped._ozon_absolute_stock_admission = self._absolute_stock_admission
         return wrapped
     def snapshot(self):
@@ -429,7 +583,7 @@ def for_active(active, base):
     if getattr(active, 'plan_id', None) != PLAN or base.platform != 'OZON' or base.target_label != TARGET:return base
     ctx = _context(active)
     with base._connect(readonly=True) as db:
-        _original(db, ctx, state='RUNNING', attempt=2, stock_allowed=True)
+        _original(db, ctx, state='RUNNING', attempt=3 if ctx.get('partial') else 2, stock_allowed=True)
         need(_verified(db, ctx) is not None, 'COMPLETE_VERIFICATION_REQUIRED')
         need(db.execute('SELECT 1 FROM native_ozon_media_starts WHERE grant_id=?', (ctx['grant_id'],)).fetchone(),
             'ORIGINAL_START_REQUIRED')
@@ -461,6 +615,21 @@ def retain_original_reference(active, result, ledger=None):
         need(receipt['snapshot_digest'] == SNAPSHOT and row and row['external_id'] == reference
             and _sha(row['evidence_json']) == row['evidence_digest'], 'ORIGINAL_IMPORT_RECEIPTS_CHANGED')
     evidence = deepcopy(result.readback_evidence or {})
+    if type(ledger) is _StockOnlyLedger and ledger.ctx.get('partial'):
+        ledger._check()
+        canonical = evidence.get('canonical_platform_result') or {}
+        targets = canonical.get('targets') or []
+        partial = (targets[0].get('evidence') or {}).get('partial_stock') if len(targets) == 1 else None
+        if partial is not None:
+            need(not result.succeeded and not result.readback_verified and targets[0].get('status') == 'FAILED'
+                and partial.get('selected_offers') == list(PARTIAL_OFFERS) and partial.get('blocked_offer') == '2000431'
+                and partial.get('all_three_success') is False, 'PARTIAL_MUST_KEEP_AGGREGATE_FAILED')
+            prior = next(r for r in ledger.ctx['partial']['image']['release_target_failure_events'] if r['target_label'] == TARGET)
+            evidence['native_ozon_two_card_stock'] = dict(schema='native-ozon-two-card-stock-result/v1', plan_id=PLAN,
+                run_id=RUN, decision_id=DECISION, snapshot_digest=SNAPSHOT, target_label=TARGET, attempt=3,
+                prior_failure_digest=prior['evidence_digest'], prior_submission_digest=row['evidence_digest'],
+                grant_id=ledger.ctx['grant_id'], proof_ref=ledger.ctx['partial']['ref'],
+                proof_digest=ledger.ctx['partial']['digest'], stock_body=_two_stock_body(), current_duplicate=ledger.current_duplicate)
     if result.succeeded and result.readback_verified:
         need(type(ledger) is _StockOnlyLedger, 'PROTECTED_STOCK_RESULT_REQUIRED')
         ledger._check()
@@ -488,9 +657,64 @@ def has_pending_work(store, decision_id, operations):
     if len(rows) != 1:return False
     ref = json.loads(json.loads(rows[0][0])['record_json']).get('ozon_media3_decision_ref')
     read_media3_decision(ref)
+    partial = _partial_event(bound, task)
     with store._connect_readonly() as db:
         row = db.execute('SELECT status,attempts FROM release_target_runs WHERE run_id=? AND target_label=?', (RUN, TARGET)).fetchone()
-        return bool(row and tuple(row) in {('FAILED', 1), ('PENDING', 1)})
+        allowed = {('FAILED', 2), ('PENDING', 2)} if partial else {('FAILED', 1), ('PENDING', 1)}
+        if not row or tuple(row) not in allowed:return False
+        if partial:
+            scope = next(r for r in partial['image']['native_final_budget_scopes'] if r['platform'] == 'OZON')
+            from shared_platform.native_known_rejected_save_repair import _base_rows
+            return _base_rows(db, scope['scope_key'], TARGET) == _stock_rows(partial['image'])
+        return True
+
+
+def partial_stock_projection(db, run_id, target):
+    """Same-connection, read-only projection; never grants a mutation or retry."""
+    if run_id != RUN or target.get('target_label') != TARGET or target.get('storage_status') != 'FAILED' or target.get('attempts') != 3:
+        return None
+    failures = target.get('failure_events') or []
+    if len(failures) != 2 or [r['attempt'] for r in failures] != [2, 3]:return None
+    latest = failures[-1];evidence = latest.get('evidence') or {}
+    marker = evidence.get('native_ozon_two_card_stock') or {}
+    if marker.get('schema') != 'native-ozon-two-card-stock-result/v1':return None
+    expected = dict(plan_id=PLAN,run_id=RUN,decision_id=DECISION,snapshot_digest=SNAPSHOT,target_label=TARGET,
+        attempt=3,prior_failure_digest=failures[0]['evidence_digest'],stock_body=_two_stock_body())
+    need(all(marker.get(k) == v for k,v in expected.items()), 'PARTIAL_RESULT_IDENTITY_CHANGED')
+    submission = target.get('submission') or {}
+    need(submission.get('evidence_digest') == marker.get('prior_submission_digest')
+        and submission.get('external_id') == ','.join('ozon:import-task:'+str(task) for task in TASKS), 'PARTIAL_IMPORT_RECEIPTS_CHANGED')
+    canonical = evidence.get('canonical_platform_result') or {};rows = canonical.get('targets') or []
+    need(len(rows) == 1 and rows[0].get('target_label') == TARGET and rows[0].get('status') == 'FAILED', 'PARTIAL_AGGREGATE_MUST_STAY_FAILED')
+    partial = (rows[0].get('evidence') or {}).get('partial_stock') or {}
+    need(partial.get('schema') == 'ozon-two-eligible-card-stock-partial/v1' and partial.get('selected_offers') == list(PARTIAL_OFFERS)
+        and partial.get('blocked_offer') == '2000431' and partial.get('blocked_code') == 'SPU_ALREADY_EXISTS_IN_ANOTHER_ACCOUNT'
+        and partial.get('all_three_success') is False, 'PARTIAL_RESULT_SCOPE_CHANGED')
+    scope = db.execute("SELECT * FROM native_final_budget_scopes WHERE plan_id=? AND platform='OZON'", (PLAN,)).fetchone()
+    need(scope and _sha(scope['binding_json']) == scope['binding_sha256'], 'PARTIAL_RESULT_BUDGET_REQUIRED')
+    binding = json.loads(scope['binding_json'])
+    need(binding['decision_id'] == DECISION and binding['snapshot_digest'] == SNAPSHOT
+        and binding['shared_maximum'] == 4 and binding['per_target_maximum'] == 0, 'PARTIAL_RESULT_ORIGINAL_CAP_REQUIRED')
+    from shared_platform.native_known_rejected_save_repair import _base_rows
+    ledger = _base_rows(db,scope['scope_key'],TARGET)
+    need(len(ledger) in (3,4) and all(r['operation']=='import_variant' and r['outcome']=='ACCEPTED' for r in ledger[:3]), 'PARTIAL_RESULT_IMPORT_PREFIX_CHANGED')
+    if len(ledger) == 4:
+        from shared_platform.native_final_mutation_budget import _request_sha
+        stock = ledger[3]
+        need(stock['operation']=='update_stock' and stock['budget_scope']=='shared' and stock['attempt_count']==1
+            and stock['request_digest'] in (None,_request_sha('update_stock',('/v2/products/stocks',_two_stock_body()),{})), 'PARTIAL_RESULT_ONLY_EXACT_TWO_STOCK')
+    if partial.get('stock_verified') is True:
+        from modules.ozon.approved_publication_v4 import _exact_stock_readback
+        reads = partial.get('stock_readbacks') or []
+        need(reads and _exact_stock_readback(reads[-1],variants=tuple(dict(offer_id=k,stock_quantity=200) for k in PARTIAL_OFFERS))
+            and all(type(r.get('warehouse_id')) is int and r['warehouse_id']==PARTIAL_WAREHOUSE for r in reads[-1])
+            and (len(ledger)==3 or ledger[3]['outcome']=='ACCEPTED'), 'PARTIAL_EXACT_TWO_OFFICIAL_STOCK_READBACK_REQUIRED')
+    return dict(schema='native-ozon-two-card-stock-partial-projection/v1', status='FAILED', partial=True,
+        all_three_success=False,stock_verified=partial.get('stock_verified') is True,
+        outcome_unknown=evidence.get('outcome_unknown') is True,selected_offers=list(PARTIAL_OFFERS),
+        blocked_offer='2000431',blocked_code=partial['blocked_code'],cards=partial['cards'],
+        stock_readbacks=partial.get('stock_readbacks') or [],proof_ref=marker.get('proof_ref'),
+        proof_digest=marker.get('proof_digest'),original_failure_digest=marker['prior_failure_digest'])
 
 
 def read_pictures_once(active):

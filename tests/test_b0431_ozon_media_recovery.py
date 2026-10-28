@@ -10,12 +10,193 @@ import os
 from pathlib import Path
 import socket
 import sqlite3
+import shutil
+import hashlib
 from types import SimpleNamespace
 
 import pytest
 
 from shared_platform import native_ozon_three_card_media_recovery as media
 from shared_platform.native_final_mutation_budget import SCHEMA_SQL, _DurableLedger, _json, _sha
+
+
+@pytest.fixture
+def two_cards(tmp_path, monkeypatch):
+    """Whole captured DB; only installation/actor/current-source are fixtures."""
+    root = Path(os.environ.get('ORBIT_B0431_TWO_CARD_INPUTS', ''))
+    if not (root/'ORIGINAL_RELEASE_STORE_FULL.private.db').is_file():pytest.skip('explicit private captured clone not supplied')
+    source = root/'ORIGINAL_RELEASE_STORE_FULL.private.db'
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == 'c551c511e5e2afc72046bab72bae73360b85bcb38814e5a620c05181d9493ea9'
+    shutil.copy2(source,tmp_path/'whole-private-clone.db')
+    from shared_platform.release_store import ReleaseStore
+    from shared_platform.native_sole_final_decision import NativeSoleFinalDecisionService
+    from shared_platform.native_sole_final_execution import _NativeExecution,_ACTIVE
+    store = ReleaseStore(tmp_path/'whole-private-clone.db')
+    image = json.loads((root/'CURRENT_IDLE_ORIGINAL_RUN_SHOPEE_REGIONAL_PREIMAGE.private.json').read_text(encoding='utf-8'))
+    # Source 8734 does not exist in this earlier retained DB capture. This one
+    # fixture field stages the new pure proof; genuine source/HMAC is NOT tested.
+    image['source_head'] = '8734a3a957811d4352f081cb3d82b741a6e67c45'
+    with store._connect_readonly() as db:
+        grant = dict(db.execute('SELECT * FROM native_ozon_media_grants WHERE run_id=?',(media.RUN,)).fetchone())
+        decision = dict(db.execute('SELECT * FROM native_sole_final_decisions WHERE decision_id=?',(media.DECISION,)).fetchone())
+        raw = db.execute('SELECT snapshot_json FROM approved_publication_snapshots WHERE plan_id=?',(media.PLAN,)).fetchone()[0]
+    assert _sha(raw) == media.SNAPSHOT_RAW_SHA
+    active = object.__new__(_NativeExecution)
+    active.store,active.service = store,NativeSoleFinalDecisionService(store,lambda:{})
+    active.plan_id,active.decision_id,active.owner_sid = media.PLAN,media.DECISION,decision['owner_sid']
+    active.runtime = SimpleNamespace(supervisor=SimpleNamespace(root=tmp_path/'runtime'))
+    terminal = Path(os.environ['ORBIT_B0431_TWO_CARD_TERMINAL'])
+    doc = dict(schema='native-ozon-two-eligible-card-stock-technical-authority/v1',status='ROOT_TECHNICAL_EXECUTION_APPROVED',
+        task_id='TASK-20261023-001',offer_id='8412287877065586543',plan_id=media.PLAN,run_id=media.RUN,decision_id=media.DECISION,
+        candidate_digest='c5eacc9725ecefa012af02c6d4f5130c6098c9bedab65e2159357a708c73a5cc',snapshot_digest=media.SNAPSHOT,
+        account_id=media.ACCOUNT,products=media.PRODUCTS,selected_offers=list(media.PARTIAL_OFFERS),blocked_offer='2000431',
+        stock_per_selected=200,warehouse_id=media.PARTIAL_WAREHOUSE,original_shared_maximum=4,original_accepted_imports=3,
+        remaining_stock_batches=1,new_import=False,new_media=False,new_budget=False,new_human_review=False,full_three_card_success=False,
+        stock_body=media._two_stock_body(),base_source_head=image['source_head'],retained_ref=_pin(tmp_path/'retained.json',image),
+        official_terminal_ref=dict(path=str(terminal.resolve()),sha256=media.TERMINAL_SHA))
+    ref=_pin(tmp_path/'proof.json',doc);assert media.read_two_card_stock_proof(ref)==doc
+    ctx=dict(active=active,body=json.loads(grant['body_json']),grant_id=grant['grant_id'],snapshot=json.loads(raw),
+        root=tmp_path/'responses',partial=media._partial_material(ref,doc))
+    from shared_platform import publication_ozon_card_structure as structure
+    # Existing trusted startup structure/API reader is an explicit installation
+    # boundary. Its original frozen value is used; no source gate is claimed.
+    monkeypatch.setattr(structure,'require_verified_snapshot_structure',lambda snapshot:deepcopy(ctx['snapshot']['product']['ozon_card_structure']))
+    monkeypatch.setattr(media,'_context',lambda value:ctx if value is active else pytest.fail('wrong native context'))
+    monkeypatch.setattr(socket.socket,'connect',lambda *a,**kw:pytest.fail('Network forbidden'))
+    token=_ACTIVE.set(active)
+    try:yield ctx,store,image,doc,ref
+    finally:_ACTIVE.reset(token)
+    assert hashlib.sha256(source.read_bytes()).hexdigest()=='c551c511e5e2afc72046bab72bae73360b85bcb38814e5a620c05181d9493ea9'
+
+
+def _two_card_original_loop(fixture,monkeypatch,*,deny_wire=False):
+    from modules.products import server,release_adapters
+    from domains.channel_operations.release_executor import AdapterRegistration
+    from modules.ozon.approved_publication_v4 import execute_ozon_v4_publication,project_ozon_v4_variants,OzonStockDispatchFact
+    from shared_platform.native_prepared_v4_targets import _result
+    from shared_platform import native_tiktok_locale_draft_correction as tk,native_shopee_regional_continuation as sh
+    ctx,store,image,doc,ref=fixture;active=ctx['active'];plan=store.get_plan(media.PLAN);before=deepcopy(store.get_run(media.RUN))
+    # Real official identity/status/duplicate response. Frozen matching fields
+    # absent from that capture are exact fixtures, NOT a current official read.
+    official=json.loads(media._read_reference(doc['official_terminal_ref']))['items']
+    profile=dict(schema_version='ozon-official-profile-resolution/v1',resolution='EXACT',description_category_id=53968796,
+        category_name='Accessories and Spare Parts for Refrigerators · Чехол',category_path=deepcopy(ctx['snapshot']['categories_by_target'][media.TARGET]['category']['path']),
+        type_id=970663046,type_name='Captured category protocol fixture',required_attributes=dict(brand=dict(attribute_id=85,dictionary_value_id=1,value='Fixture brand'),
+            model_name=dict(attribute_id=9048),product_type=dict(attribute_id=8229,dictionary_value_id=970663046,value='Fixture product type')),
+        independent_card_attributes=dict(model_name=9048,quantity_per_pack=8513))
+    variants=project_ozon_v4_variants(ctx['snapshot'],target_labels=(media.TARGET,),official_profile_resolver=lambda _:profile)
+    observed=[]
+    for variant,item in zip(variants,official):
+        card=variant['independent_card']
+        observed.append(dict(offer_id=variant['offer_id'],id=item['id'],statuses=item['statuses'],
+            name=variant['title'].replace(' | ',' ',1),description=variant['description'],price=variant['price'],old_price=variant['old_price'],
+            images=variant['images'],category_id=variant['category']['id'],type_id='970663046',weight_kg=variant['parcel']['weight_kg'],
+            package_cm=variant['parcel']['package_cm'],independent_card=card))
+    # Use the existing card matcher input shape, without inventing provider reads.
+    from shared_platform.publication_ozon_card_structure import card_readback_matches
+    for item,variant in zip(observed,variants):
+        item['attributes']={'9048':[dict(value=variant['independent_card']['model_name'])],'8513':[dict(value='1')]}
+        assert card_readback_matches(variant['independent_card'],item)
+    claims=[];wire=[];reads=[]
+    class WireDenied(BaseException):pass
+    def adapter(request):
+        assert request.target_label==media.TARGET
+        with store._connect_readonly() as db:
+            binding=json.loads(db.execute("SELECT binding_json FROM native_final_budget_scopes WHERE plan_id=? AND platform='OZON'",(media.PLAN,)).fetchone()[0])
+        base=_DurableLedger(store=store,binding=binding,target_label=media.TARGET)
+        ledger=media.for_active(active,base)
+        with store._connect_readonly() as db:pictures=media._verified(db,ctx)
+        def post(path,body):
+            if path=='/v3/product/info/list':
+                assert body==dict(offer_id=list(media.PRODUCTS),limit=1000,visibility='ALL')
+                return dict(items=deepcopy(official))
+            if path==media.INFO:
+                return dict(items=[dict(product_id=k,errors=[],color_photo=[],photo_360=[],primary_photo=[v[0]],photo=v[1:]) for k,v in pictures.items()])
+            assert path=='/v2/products/stocks' and body==media._two_stock_body()
+            assert all(r['offer_id']!='2000431' for r in body['stocks'])
+            wire.append(deepcopy(body))
+            with store._connect_readonly() as db:
+                rows=media._stock_rows(image);current=base._rows(db)
+                assert len(current)==4 and current[-1]['request_digest'] and current[-1]['outcome']=='UNKNOWN'
+                assert len(rows)==3
+            if deny_wire:raise WireDenied('Durable stock slot4 reached; actual wire forbidden')
+            return dict(result=[dict(offer_id=k,updated=True,errors=[]) for k in media.PARTIAL_OFFERS])
+        wrapped=ledger.wrap_post(post,provider='ozon')
+        def current_items(ids):
+            wrapped('/v3/product/info/list',dict(offer_id=list(ids),limit=1000,visibility='ALL'))
+            # Current formal normalizer omits errors; the frozen-content fields
+            # here remain the explicit fixture described above.
+            return deepcopy(observed)
+        def stock_read(ids):
+            assert tuple(ids)==media.PARTIAL_OFFERS
+            reads.append(tuple(ids))
+            return [dict(offer_id=k,stock=0 if len(reads)==1 else 200,warehouse_id=media.PARTIAL_WAREHOUSE) for k in ids]
+        def update(updates):
+            wrapped('/v2/products/stocks',dict(stocks=list(updates)))
+            ledger.complete_reserved('update_stock','ACCEPTED')
+            return OzonStockDispatchFact(outcome='ACCEPTED')
+        execute=media.bind_executor(active,ledger,lambda request:execute_ozon_v4_publication(ctx['snapshot'],target_labels=(media.TARGET,),
+            official_profile_resolver=lambda _:profile,dispatch_variant=lambda _:pytest.fail('Reimport forbidden'),
+            readback_variants=current_items,update_stocks=update,readback_stocks=stock_read,
+            before_stock_update=lambda _:ledger.reserve_shared('update_stock'),read_before_dispatch=True,partial_stock_selection=ledger.partial_stock_selection))
+        canonical=execute(request)
+        value=media.retain_original_reference(active,_result(canonical,request,ledger,durable_seams=True),ledger)
+        assert not value.succeeded and value.readback_evidence['outcome_unknown'] is False
+        return value
+    registry={name:AdapterRegistration(name,adapter,True,True,True,True) for name in release_adapters.ADAPTER_NAMES.values()}
+    def gate(data,*,store):
+        with store._connect_readonly() as db:active.service._decision(db,media.DECISION,owner_sid=active.owner_sid)
+        return dict(dashboard={'frozen_review_projection':True},payload=plan['payload'],plan=plan,run=store.get_run(media.RUN),predecessor_run=None,
+            registry=registry,target_rows=[dict(channel=x.split(':')[0],site=x.split(':')[1],adapter=release_adapters.ADAPTER_NAMES[x.split(':')[0]]) for x in plan['targets']]),None
+    active.gate=gate;active.common_dependency_verified=lambda _:True
+    monkeypatch.setattr(tk,'activate_failed_targets',lambda _:())
+    monkeypatch.setattr(sh,'activate_failed_targets',lambda _:())
+    monkeypatch.setattr(server,'_activate_native_shopee_global_zero',lambda _:())
+    monkeypatch.setattr(server,'_activate_native_tiktok_claimed_save',lambda _:())
+    # Other frozen recovery families are outside this exact Ozon proof.
+    from shared_platform import native_accepted_save_core_repair as core,native_shopee_known_zero_recovery as zero,native_ozon_existing_media_recovery as oldmedia
+    for module in (core,zero,oldmedia):monkeypatch.setattr(module,'activate_failed_targets',lambda _:())
+    begin=store.begin_target
+    def traced(run,label):
+        assert label==media.TARGET
+        row=begin(run,label);claims.append((label,row['attempts']));return row
+    monkeypatch.setattr(store,'begin_target',traced)
+    data=dict(offer_id=plan['product_id'],plan_id=media.PLAN,confirmation_token=plan['confirmation_token'],confirm_publish=True)
+    if deny_wire:
+        with pytest.raises(WireDenied):server._publish_selected_release(data,native_gate=active)
+    else:server._publish_selected_release(data,native_gate=active)
+    assert claims==[(media.TARGET,3)] and wire==[media._two_stock_body()]
+    after=store.get_run(media.RUN)
+    old=next(r for r in before['targets'] if r['target_label']==media.TARGET)
+    new=next(r for r in after['targets'] if r['target_label']==media.TARGET)
+    assert new['submission']==old['submission'] and new['failure_events'][:1]==old['failure_events']
+    assert [r for r in before['targets'] if r['target_label']!=media.TARGET]==[r for r in after['targets'] if r['target_label']!=media.TARGET]
+    return new,ctx
+
+
+def test_two_eligible_original_loop_begin3_one_stock_batch_partial(two_cards,monkeypatch):
+    target,ctx=_two_card_original_loop(two_cards,monkeypatch)
+    assert target['storage_status']==target['status']=='FAILED' and target['attempts']==3
+    partial=target['partial_stock_result']
+    assert partial['stock_verified'] is True and partial['all_three_success'] is False and partial['outcome_unknown'] is False
+    assert [r['status'] for r in partial['cards']]==['BLOCKED_DUPLICATE','STOCK_VERIFIED','STOCK_VERIFIED']
+    assert media.activate_failed_targets(ctx['active'])==()
+
+
+def test_two_eligible_wire_denied_UNKNOWN_no_repeat(two_cards,monkeypatch):
+    target,ctx=_two_card_original_loop(two_cards,monkeypatch,deny_wire=True)
+    assert target['storage_status']=='RUNNING' and target['attempts']==3
+    assert media.activate_failed_targets(ctx['active'])==()
+
+
+def test_two_card_typed_proof_and_forbidden_body(two_cards,tmp_path):
+    ctx,store,image,doc,ref=two_cards
+    for patch in (dict(status='NOT_AUTHORIZED'),dict(selected_offers=['2000431','2000433']),dict(remaining_stock_batches=2)):
+        with pytest.raises(RuntimeError):media.read_two_card_stock_proof(_pin(tmp_path/('bad-'+str(len(patch))+str(list(patch))+'.json'),{**doc,**patch}))
+    ledger=media._StockOnlyLedger(ctx,None)
+    for body in (dict(stocks=[dict(offer_id=k,stock=200,warehouse_id=media.PARTIAL_WAREHOUSE) for k in media.PRODUCTS]),
+                 dict(stocks=[dict(offer_id=k,stock=201,warehouse_id=media.PARTIAL_WAREHOUSE) for k in media.PARTIAL_OFFERS])):
+        with pytest.raises(RuntimeError):ledger._stock_body(body)
 
 
 def _pin(path, value):

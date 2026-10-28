@@ -110,6 +110,8 @@ def _dependencies(active,platform,ledger,references,observations):
             official_profile_resolver=OfficialOzonFridgeMagnetProfileResolver(post=post))
         return build_product_publication_platform_executors(platform_scope=(platform,),ozon=deps)[platform]
     deps=edges.shopee_dependencies(ledger,active.runtime.supervisor.root,references)
+    from shared_platform.native_shopee_regional_continuation import bind_dependencies
+    deps=bind_dependencies(deps,ledger)
     return build_product_publication_platform_executors(platform_scope=(platform,),shopee=deps)[platform]
 
 def _execute(active,request):
@@ -125,6 +127,9 @@ def _execute(active,request):
         ledger=build_native_budget_ledger(active,platform=platform,target_label=request.target_label,snapshot=snapshot,candidate=candidate)
         if platform=='TIKTOK':
             from shared_platform.native_tiktok_locale_draft_correction import for_active
+            ledger=for_active(active,ledger)
+        if platform=='SHOPEE':
+            from shared_platform.native_shopee_regional_continuation import for_active
             ledger=for_active(active,ledger)
         if platform=='OZON':
             from shared_platform.native_ozon_three_card_media_recovery import for_active

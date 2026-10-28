@@ -903,9 +903,11 @@ def _has_exact_existing_continuation(store,decision_id,*,operations=None):
     from shared_platform.native_ozon_existing_media_recovery import has_verified_stock_work
     from shared_platform.native_ozon_three_card_media_recovery import has_pending_work
     from shared_platform.native_tiktok_locale_draft_correction import has_pending_work as has_tiktok_locale_work
+    from shared_platform.native_shopee_regional_continuation import has_pending_work as has_shopee_regional_work
     try:
         return (has_existing_item_work(store,decision_id) or has_verified_stock_work(store,decision_id)
             or has_pending_work(store,decision_id,operations)
-            or has_tiktok_locale_work(store,decision_id,operations))
+            or has_tiktok_locale_work(store,decision_id,operations)
+            or has_shopee_regional_work(store,decision_id,operations))
     except (NativeMutationBudgetHold,ValueError,OSError,KeyError,TypeError):
         return False

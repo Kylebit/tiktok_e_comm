@@ -14161,6 +14161,8 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
         native_tiktok_claimed_save = ()
         native_tiktok_locale_correction = ()
         native_tiktok_locale_hold = None
+        native_shopee_regional = ()
+        native_shopee_regional_hold = None
         if native_gate is not None:
             native_shopee_global_zero = _activate_native_shopee_global_zero(native_gate)
             native_tiktok_claimed_save = _activate_native_tiktok_claimed_save(native_gate)
@@ -14175,6 +14177,12 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
         if native_gate is not None:
             from shared_platform.native_known_rejected_save_repair import activate_failed_targets
             activate_failed_targets(native_gate)
+            run = store.get_run(run["run_id"]) or run
+        if native_gate is not None:
+            from shared_platform.native_shopee_regional_continuation import activate_failed_targets as activate_shopee_regional
+            from shared_platform.native_final_mutation_budget import NativeMutationBudgetHold
+            try:native_shopee_regional = activate_shopee_regional(native_gate)
+            except NativeMutationBudgetHold as error:native_shopee_regional_hold = str(error)
             run = store.get_run(run["run_id"]) or run
         if native_gate is not None:
             from shared_platform.native_shopee_known_zero_recovery import activate_failed_targets as activate_shopee_zero
@@ -14258,6 +14266,12 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
         if native_tiktok_locale_hold:
             recovery_actions = [{**action, 'runnable': False, 'reason_code': native_tiktok_locale_hold}
                 if str(action.get('target_label') or '').startswith('tiktok:') else action for action in recovery_actions]
+        recovery_actions = [{**action, 'action_kind': 'NATIVE_SHOPEE_EXISTING_GLOBAL_REGIONAL_CONTINUATION', 'runnable': True,
+            'reason_code': 'original_shared_Global_preserved_and_exact_regional_NOT_SENT_or_existing_PH_item'}
+            if action.get('target_label') in native_shopee_regional else action for action in recovery_actions]
+        if native_shopee_regional_hold:
+            recovery_actions = [{**action, 'runnable': False, 'reason_code': native_shopee_regional_hold}
+                if str(action.get('target_label') or '').startswith('shopee:') else action for action in recovery_actions]
         if native_gate is not None:
             from shared_platform.native_known_rejected_save_repair import recovery_actions as repair_recovery_actions
             recovery_actions = repair_recovery_actions(native_gate, run, recovery_actions)

@@ -13,6 +13,11 @@ from shared_platform.native_final_mutation_budget import NativeMutationBudgetHol
 from shared_platform.native_known_rejected_save_repair import _read_reference
 
 EVENT = 'source_code_approved_native_tiktok_locale_draft_correction'
+SAVED_EVENT = 'source_code_approved_native_shopee_regional_and_tiktok_saved_publish_continuation'
+SAVED_FAILURE_PINS = {
+    'tiktok:LH_PH': 'ec6577fcf48e693fe57b4cfc4456893f87c2c509195dbf0c424567df1080fc9e',
+    'tiktok:LH_TH': 'e48d873f414343f88b9bf163a7eb2890d08900eb602df4478fa103ebf4eba268',
+    'tiktok:LH_VN': '681e313300b07fa853d1901b39e9c1d0d1359216a2a3bab5637826eb26c47c0d'}
 PLAN = 'r3-marketplace:8412287877065586543:07707b4b7901ca9b97b08acd'
 RUN = 'release-run:25e66f7250d31cbb39ff8d0e'
 DECISION = 'native-final-decision:7a10d3ac157c55c6949b663c5b63194b2c43eab81b0fee88eda6aae412838fe2'
@@ -104,6 +109,89 @@ def _event_ref(bound, task):
     return ref, doc
 
 
+def _image_budget(image, platform):
+    scopes = {r['scope_key'] for r in image['native_final_budget_scopes'] if r['platform'] == platform}
+    dispatches = {(r['scope_key'], r['sequence']): r for r in image['native_final_budget_dispatches']}
+    outcomes = {(r['scope_key'], r['sequence']): r for r in image['native_final_budget_outcomes']}
+    return [{**r, 'request_digest': dispatches.get((r['scope_key'], r['sequence']), {}).get('request_digest'),
+        'outcome': outcomes.get((r['scope_key'], r['sequence']), {}).get('outcome')}
+        for r in sorted(image['native_final_budget_reservations'], key=lambda r: r['sequence']) if r['scope_key'] in scopes]
+
+
+def read_saved_publish_continuation_proof(ref):
+    """Same original accepted SAVE, NOT_SENT publish only; no new authority/cap."""
+    doc = json.loads(_ref(ref));labels = doc.get('target_labels')
+    expected = dict(schema='native-tiktok-accepted-save-unsent-publish-continuation/v1',
+        status='ROOT_TECHNICAL_EXECUTION_APPROVED', task_id='TASK-20261023-001', offer_id='8412287877065586543',
+        plan_id=PLAN, run_id=RUN, decision_id=DECISION, candidate_digest=CANDIDATE, snapshot_digest=SNAPSHOT,
+        before_attempt=4, no_new_SAVE=True, no_new_CREATE_or_CLAIM=True, no_new_budget=True)
+    need(all(type(doc.get(k)) is type(v) and doc[k] == v for k, v in expected.items())
+        and type(labels) is list and labels and labels == [label for label in EXACT if label in labels]
+        and set(labels) <= set(SAVED_FAILURE_PINS) and len(labels) == len(set(labels)), 'EXACT_SAVED_CONTINUATION_PROOF_REQUIRED')
+    need(type(doc.get('base_source_head')) is str and len(doc['base_source_head']) == 40
+        and all(c in '0123456789abcdef' for c in doc['base_source_head']), 'SAVED_SOURCE_HEAD_REQUIRED')
+    old_ref = doc['original_correction_authority_ref']
+    need(old_ref.get('sha256') == 'f46b1b49519e3d16094453f165ab2643111b74df28dbc0234273ebaba3eed10c', 'ORIGINAL_CORRECTION_AUTHORITY_REQUIRED')
+    original = read_correction_proof(old_ref)
+    need(doc['checkpoint_ref'].get('sha256') == PINS['checkpoint_ref']
+        and _ref(doc['checkpoint_ref']) == _ref(original['checkpoint_ref']), 'ORIGINAL_CP12_CHANGED')
+    image = json.loads(_ref(doc['retained_ref']));rows = _image_budget(image, 'TIKTOK')
+    need(image.get('source_head') == doc['base_source_head'], 'SAVED_CURRENT_IMAGE_SOURCE_CHANGED')
+    correction = _image_budget(image, PLATFORM)
+    scopes = [r for r in image['native_final_budget_scopes'] if r['platform'] == PLATFORM]
+    binding = dict(plan_id=PLAN, snapshot_digest=SNAPSHOT, platform=PLATFORM, target_labels=list(EXACT),
+        shared_maximum=0, per_target_maximum=1, decision_id=DECISION, candidate_digest=CANDIDATE,
+        technical_proof_digest=_sha(_json(original)), technical_proof_ref=old_ref)
+    need(len(rows) == 16 and len(scopes) == 1 and json.loads(scopes[0]['binding_json']) == binding
+        and scopes[0]['binding_sha256'] == _sha(_json(binding)), 'ORIGINAL_ACCEPTED_CORRECTION_SCOPE_REQUIRED')
+    targets = {r['target_label']: r for r in image['release_target_runs']};slots = []
+    need(set(doc['failure_refs']) == set(labels), 'EXACT_FAILURE4_FILES_REQUIRED')
+    for label in labels:
+        failure_ref = doc['failure_refs'][label]
+        need(failure_ref.get('sha256') == SAVED_FAILURE_PINS[label], 'ORIGINAL_FAILURE4_PIN_REQUIRED')
+        failure = json.loads(_ref(failure_ref))['failure_rows']
+        need(len(failure) == 1 and failure[0]['run_id'] == RUN and failure[0]['target_label'] == label
+            and failure[0]['attempt'] == 4 and _sha(failure[0]['evidence_json']) == failure[0]['evidence_digest'], 'ORIGINAL_FAILURE4_REQUIRED')
+        need(failure[0] in image['release_target_failure_events'], 'FAILURE4_NOT_IN_CURRENT_IMAGE')
+        value = json.loads(failure[0]['evidence_json'])
+        canonical = value['canonical_platform_result']['targets'][0]
+        need(canonical['target_label'] == label and canonical['status'] == 'FAILED'
+            and canonical['evidence']['stage'] == 'PUBLISH' and canonical['evidence']['provider_code'] == 'transport_unknown', 'EXACT_PUBLISH_READ_FAILURE_REQUIRED')
+        target = targets[label]
+        need(target['status'] == 'FAILED' and target['attempts'] == 4, 'ORIGINAL_FAILED4_REQUIRED')
+        detail, shop, _, sequence, _ = EXACT[label]
+        slot = next(r for r in rows if r['sequence'] == sequence)
+        saved = [r for r in correction if r['target_label'] == label]
+        need(slot['target_label'] == label and slot['operation'] == 'publish_target'
+            and slot['initial_outcome'] == 'UNKNOWN' and slot['request_digest'] is None and slot['outcome'] is None,
+            'ORIGINAL_PUBLISH_NOT_SENT_REQUIRED')
+        need(len(saved) == 1 and saved[0]['budget_scope'] == 'target' and saved[0]['operation'] == 'save_draft'
+            and saved[0]['attempt_count'] == 1 and saved[0]['request_digest'] and saved[0]['outcome'] == 'ACCEPTED', 'ORIGINAL_CORRECTIVE_SAVE_ACCEPTED_REQUIRED')
+        slots.append(dict(target_label=label, scope_key=slot['scope_key'], sequence=sequence, detail_id=detail, shop_id=shop,
+            failure4_evidence_digest=failure[0]['evidence_digest'], correction_scope_key=saved[0]['scope_key'],
+            correction_sequence=saved[0]['sequence'], correction_request_digest=saved[0]['request_digest']))
+    need(doc.get('not_sent_slots') == slots, 'EXACT_SAVED_NOT_SENT_SLOTS_REQUIRED')
+    return doc
+
+
+def _saved_event(bound, task):
+    with sqlite3.connect(bound.engine.store.path.resolve().as_uri() + '?mode=ro', uri=True) as db:
+        db.execute('PRAGMA query_only=ON')
+        rows = db.execute('SELECT detail_json FROM workbench_events WHERE task_id=? AND event_type=?', (task['task_id'], SAVED_EVENT)).fetchall()
+    if not rows:return None
+    need(len(rows) == 1, 'SINGLE_SAVED_CONTINUATION_EVENT_REQUIRED')
+    envelope = json.loads(rows[0][0]);raw = envelope.get('record_json')
+    need(type(raw) is str and _sha(raw) == envelope.get('record_digest'), 'SIGNED_SAVED_ENVELOPE_REQUIRED')
+    record = json.loads(raw);ref = record['tiktok_saved_publish_continuation_ref'];doc = read_saved_publish_continuation_proof(ref)
+    need(record['tiktok_saved_publish_continuation_digest'] == _sha(_json(doc)), 'SIGNED_SAVED_PROOF_CHANGED')
+    return _saved_material(ref, doc)
+
+
+def _saved_material(ref, doc):
+    return dict(ref=ref, doc=doc, digest=_sha(_json(doc)), image=json.loads(_ref(doc['retained_ref'])),
+        failures={label: json.loads(_ref(doc['failure_refs'][label]))['failure_rows'][0] for label in doc['target_labels']})
+
+
 def _material(ref, doc, root):
     image = json.loads(_ref(doc['retained_ref']));snapshot = json.loads(_ref(doc['snapshot_ref']))
     cp_raw = _ref(doc['checkpoint_ref']);cp = json.loads(cp_raw)
@@ -121,6 +209,7 @@ def _context(active):
     bound, task, _ = _scope(active, active.store.get_plan(PLAN))
     ref, doc = _event_ref(bound, task)
     ctx = _material(ref, doc, active.runtime.supervisor.root);ctx['active'] = active
+    ctx['saved_continuation'] = _saved_event(bound, task)
     _checkpoint(ctx)
     return ctx
 
@@ -177,6 +266,23 @@ def _technical(ctx, label, recheck=None):
     return _DurableLedger(store=ctx['active'].store, binding=binding, target_label=label, recheck=recheck)
 
 
+def _saved_facts(db, ctx, label):
+    proof = ctx.get('saved_continuation')
+    need(proof and label in proof['doc']['target_labels'], 'SAVED_TARGET_NOT_AUTHORIZED')
+    original = proof['failures'][label]
+    failure = db.execute('SELECT * FROM release_target_failure_events WHERE run_id=? AND target_label=? AND attempt=4', (RUN, label)).fetchone()
+    need(failure and dict(failure) == original, 'ORIGINAL_FAILURE4_CHANGED')
+    target = db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?', (RUN, label)).fetchone()
+    old_target = next(r for r in proof['image']['release_target_runs'] if r['target_label'] == label)
+    need(target and all(target[k] == old_target[k] for k in ('run_id', 'target_label', 'idempotency_key', 'created_at', 'external_id')),
+        'ORIGINAL_SAVED_TARGET_IDENTITY_CHANGED')
+    old_scope = next(r for r in proof['image']['native_final_budget_scopes'] if r['platform'] == PLATFORM)
+    scope = db.execute('SELECT * FROM native_final_budget_scopes WHERE scope_key=?', (old_scope['scope_key'],)).fetchone()
+    need(scope and dict(scope) == old_scope, 'ACCEPTED_CORRECTION_BINDING_CHANGED')
+    rows = [r for r in _rows(db, scope['scope_key']) if r['target_label'] == label]
+    need(rows == [r for r in _image_budget(proof['image'], PLATFORM) if r['target_label'] == label], 'ACCEPTED_CORRECTION_CHANGED')
+
+
 def activate_failed_targets(active):
     if getattr(active, 'plan_id', None) != PLAN:return ()
     ctx = _context(active);labels = []
@@ -193,6 +299,14 @@ def activate_failed_targets(active):
             ledger = technical[label]
             ledger._check_schema(db);ledger._binding(db, create=False)
             extra = ledger._rows(db)
+            if target['attempts'] == 4 and target['status'] in {'FAILED', 'PENDING'}:
+                if not ctx.get('saved_continuation') or label not in ctx['saved_continuation']['doc']['target_labels']:continue
+                _saved_facts(db, ctx, label)
+                need(slot['request_digest'] is None and slot['outcome'] is None, 'SAVED_PUBLISH_ALREADY_DISPATCHED_OR_UNKNOWN')
+                if target['status'] == 'FAILED':
+                    changed = db.execute("UPDATE release_target_runs SET status='PENDING',completed_at=NULL WHERE run_id=? AND target_label=? AND status='FAILED' AND attempts=4",
+                        (RUN, label));need(changed.rowcount == 1, 'FAILED4_PENDING4_CAS_CHANGED')
+                labels.append(label);continue
             if (target['attempts'] != 3 or target['status'] not in {'FAILED', 'PENDING'}
                     or slot['request_digest'] is not None or slot['outcome'] is not None or extra):continue
             need([r[0] for r in db.execute('SELECT attempt FROM release_target_failure_events '
@@ -206,8 +320,9 @@ def activate_failed_targets(active):
 
 
 class _CorrectionLedger:
-    def __init__(self, ctx, base):
+    def __init__(self, ctx, base, *, saved_only=False):
         self.ctx, self.base = ctx, base
+        self.saved_only = saved_only
         self.prepared = None;self.target = None;self.fresh_match = False
         self.extra = _technical(ctx, base.target_label, self._recheck)
     def __getattr__(self, key):return getattr(self.base, key)
@@ -218,8 +333,13 @@ class _CorrectionLedger:
         if db is None:
             current = _context(self.ctx['active'])
             need(current['proof_digest'] == self.ctx['proof_digest'], 'CURRENT_SOURCE_OR_PROOF_CHANGED')
-            with self.base._connect(readonly=True) as current_db:_facts(current_db, self.ctx)
-        else:_facts(db, self.ctx)
+            need(not self.saved_only or (current.get('saved_continuation') or {}).get('digest') == self.ctx['saved_continuation']['digest'], 'CURRENT_SAVED_PROOF_CHANGED')
+            with self.base._connect(readonly=True) as current_db:
+                _facts(current_db, self.ctx)
+                if self.saved_only:_saved_facts(current_db, self.ctx, self.base.target_label)
+        else:
+            _facts(db, self.ctx)
+            if self.saved_only:_saved_facts(db, self.ctx, self.base.target_label)
     def reserve_shared(self, *args, **kwargs):need(False, 'NO_CREATE_OR_CLAIM')
     def reserve_target(self, label, operation, *, count=1):
         need(label == self.base.target_label and type(count) is int and count == 1, 'EXACT_TARGET_REQUIRED')
@@ -232,11 +352,13 @@ class _CorrectionLedger:
                 operation=operation, attempt_count=1, outcome='UNKNOWN')
             self.base._pending[operation] = record
             return dict(record)
+        need(not self.saved_only, 'ACCEPTED_SAVE_MUST_NOT_REPEAT')
         need(operation == 'save_draft' and self.prepared is not None and not self.fresh_match, 'ONE_PREPARED_CORRECTIVE_SAVE_ONLY')
         return self.extra.reserve_target(label, operation, count=count)
     def dispatch_reserved(self, operation, call, *args, **kwargs):
         self._recheck()
         if operation == 'save_draft':
+            need(not self.saved_only, 'ACCEPTED_SAVE_MUST_NOT_REPEAT')
             need(self.prepared is not None and args == (self.prepared['path'], self.prepared['body'])
                 and not kwargs, 'EXACT_PREPARED_CORRECTION_REQUIRED')
             return self.extra.dispatch_reserved(operation, call, *args, **kwargs)
@@ -246,7 +368,7 @@ class _CorrectionLedger:
             and args == (PUBLISH_PATH, {'detailIds': [int(detail)], 'shopIds': [shop]}) and not kwargs,
             'FRESH_EXACT_MATCH_BEFORE_ORIGINAL_PUBLISH_REQUIRED')
         with self.extra._connect(readonly=True) as db:
-            rows = self.extra._rows(db)
+            rows = [r for r in self.extra._rows(db) if r['target_label'] == label]
             need(not rows or len(rows) == 1 and rows[0]['outcome'] == 'ACCEPTED', 'CORRECTIVE_SAVE_UNKNOWN_OR_REJECTED')
         return self.base.dispatch_reserved(operation, call, *args, **kwargs)
     def complete_reserved(self, operation, outcome):
@@ -267,8 +389,10 @@ def for_active(active, base):
         _facts(db, ctx)
         target = db.execute('SELECT status,attempts FROM release_target_runs WHERE run_id=? AND target_label=?',
             (RUN, base.target_label)).fetchone()
-        need(target and tuple(target) == ('RUNNING', 4), 'ORIGINAL_CONTINUATION_BEGIN4_REQUIRED')
-    return _CorrectionLedger(ctx, base)
+        saved_only = bool(target and tuple(target) == ('RUNNING', 5))
+        if saved_only:_saved_facts(db, ctx, base.target_label)
+        else:need(target and tuple(target) == ('RUNNING', 4), 'ORIGINAL_CONTINUATION_BEGIN4_REQUIRED')
+    return _CorrectionLedger(ctx, base, saved_only=saved_only)
 
 
 def bind_publisher(publisher, ledger):
@@ -345,9 +469,11 @@ def has_pending_work(store, decision_id, operations):
     try:
         ref, doc = _event_ref(bound, {'task_id': 'TASK-20261023-001'})
         ctx = _material(ref, doc, None)  # Availability is not execution or a CP mutation.
+        ctx['saved_continuation'] = _saved_event(bound, {'task_id': 'TASK-20261023-001'})
         with store._connect_readonly() as db:
             _, rows = _facts(db, ctx)
-            return any(row['attempts'] == 3 and row['status'] in {'FAILED', 'PENDING'}
+            return any((row['attempts'] == 3 or row['attempts'] == 4 and ctx.get('saved_continuation')
+                and row['target_label'] in ctx['saved_continuation']['doc']['target_labels']) and row['status'] in {'FAILED', 'PENDING'}
                 and any(slot['target_label'] == row['target_label'] and slot['operation'] == 'publish_target'
                     and slot['request_digest'] is None and slot['outcome'] is None for slot in rows)
                 for row in db.execute('SELECT * FROM release_target_runs WHERE run_id=?', (RUN,)))

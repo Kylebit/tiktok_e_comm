@@ -65,6 +65,13 @@ def main(argv=None):
     p.add_argument('--locale-draft-run-preimage-sha256')
     p.add_argument('--tiktok-draft-correction-proof',type=Path)
     p.add_argument('--tiktok-draft-correction-proof-sha256')
+    p.add_argument('--approved-tiktok-activation-connection-fix',action='store_true')
+    p.add_argument('--tiktok-activation-mechanism-head')
+    p.add_argument('--tiktok-activation-mechanism-manifest')
+    p.add_argument('--tiktok-activation-technical-request',type=Path)
+    p.add_argument('--tiktok-activation-technical-request-sha256')
+    p.add_argument('--tiktok-activation-run-preimage',type=Path)
+    p.add_argument('--tiktok-activation-run-preimage-sha256')
     p.add_argument('--initialize-common-correction-schema',action='store_true',help='Explicit correction-ledger schema maintenance')
     args=p.parse_args(argv);config=json.loads(args.deployment.read_text(encoding='utf-8-sig'))
     if args.api_only and (not args.completed_common_variant_image_projection or config.get('agent_prepared_api_target_scope') is None):
@@ -93,7 +100,11 @@ def main(argv=None):
         args.tiktok_draft_correction_proof,args.tiktok_draft_correction_proof_sha256)
     if (args.approved_tiktok_locale_draft_correction and not all(locale_draft_args)) or (not args.approved_tiktok_locale_draft_correction and any(locale_draft_args)):
         raise ValueError('LOCALE_DRAFT_SOURCE_EXACT_HISTORY_PINS_REQUIRED')
-    if (sum((args.common_create_successor,args.common_create_correction,args.common_baseline_successor,args.common_baseline_lock_fix,args.common_colormap_correction,args.completed_common_gallery_compatibility,args.completed_common_variant_image_projection,args.native_final_image_ui_compatibility,args.approved_native_r1_reader_compatibility,args.approved_platform_preparation_compatibility,args.native_tiktok_ozon_recovery_compatibility,args.approved_stock_category_continuation,args.approved_tiktok_locale_draft_correction))>1
+    activation_args=(args.tiktok_activation_mechanism_head,args.tiktok_activation_mechanism_manifest,args.tiktok_activation_technical_request,
+        args.tiktok_activation_technical_request_sha256,args.tiktok_activation_run_preimage,args.tiktok_activation_run_preimage_sha256)
+    if (args.approved_tiktok_activation_connection_fix and not all(activation_args)) or (not args.approved_tiktok_activation_connection_fix and any(activation_args)):
+        raise ValueError('TIKTOK_ACTIVATION_SOURCE_EXACT_HISTORY_PINS_REQUIRED')
+    if (sum((args.common_create_successor,args.common_create_correction,args.common_baseline_successor,args.common_baseline_lock_fix,args.common_colormap_correction,args.completed_common_gallery_compatibility,args.completed_common_variant_image_projection,args.native_final_image_ui_compatibility,args.approved_native_r1_reader_compatibility,args.approved_platform_preparation_compatibility,args.native_tiktok_ozon_recovery_compatibility,args.approved_stock_category_continuation,args.approved_tiktok_locale_draft_correction,args.approved_tiktok_activation_connection_fix))>1
         or args.initialize_common_correction_schema and not args.common_create_correction):
         raise ValueError('SOURCE_SUCCESSOR_EXACT_SOURCE_ACTION_REQUIRED')
     from scripts.stable_runtime_bootstrap import prebind_release_store,prebind_workbench_store,configure_stable_runtime
@@ -128,7 +139,13 @@ def main(argv=None):
         actor_reader=NativeWindowsActorProfileReader(actor,actor.grant_same_user()))
     if args.initialize_common_successor_schema and not args.common_create_successor:
         raise ValueError('SOURCE_SUCCESSOR_EXPLICIT_V2_REQUIRED')
-    if args.approved_tiktok_locale_draft_correction:
+    if args.approved_tiktok_activation_connection_fix:
+        from shared_platform.agent_prepared_source_successor import continue_tiktok_activation_source
+        record=continue_tiktok_activation_source(engine,profile,default_release_store(),mechanism_head=args.tiktok_activation_mechanism_head,
+            mechanism_manifest=args.tiktok_activation_mechanism_manifest,
+            technical_request=dict(path=str(args.tiktok_activation_technical_request),sha256=args.tiktok_activation_technical_request_sha256),
+            run_preimage=dict(path=str(args.tiktok_activation_run_preimage),sha256=args.tiktok_activation_run_preimage_sha256),**kwargs)
+    elif args.approved_tiktok_locale_draft_correction:
         from shared_platform.agent_prepared_source_successor import continue_locale_draft_source
         record=continue_locale_draft_source(engine,profile,default_release_store(),mechanism_head=args.locale_draft_mechanism_head,
             mechanism_manifest=args.locale_draft_mechanism_manifest,

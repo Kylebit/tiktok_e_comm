@@ -250,3 +250,51 @@ def test_missing_authority_changed_CP_once_cap_and_unknown_correction_stop(clone
         assert db.execute('SELECT count(*) FROM native_final_budget_reservations WHERE scope_key=?', (scope,)).fetchone()[0] == 4
         assert db.execute('SELECT count(*) FROM native_final_budget_outcomes WHERE scope_key=?', (scope,)).fetchone()[0] == 0
     assert repair.activate_failed_targets(active) == ()
+
+
+def test_activation_constructs_ledger_readers_before_writer_transaction(clone, monkeypatch):
+    """Real SQLite connection ordering; this does not manufacture SQLITE_BUSY."""
+    import inspect
+    from modules.products import server
+    observed = [];original = repair._technical
+    def technical(ctx, label, recheck=None):
+        frames = inspect.stack()
+        writers = [frame.frame.f_locals.get('db') for frame in frames
+            if frame.function == 'activate_failed_targets' and frame.filename == repair.__file__]
+        observed.append((label, any(isinstance(db, sqlite3.Connection) and db.in_transaction for db in writers)))
+        return original(ctx, label, recheck)
+    monkeypatch.setattr(repair, '_technical', technical)
+    with server._release_execution_lock:
+        assert repair.activate_failed_targets(clone['active']) == tuple(repair.EXACT)
+    assert observed == [(label, False) for label in repair.EXACT]
+
+
+def _whole_original_database(clone):
+    path = Path(os.environ['ORBIT_B0431_FULL_RELEASE_CLONE'])
+    raw = path.read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == '2f6cd096b1d7211635ef25963686a784ffe9b0b851183055124a3bd7f8c484b3'
+    destination = clone['store'].path.with_name('whole-original-private-test.db')
+    assert not destination.exists();destination.write_bytes(raw)
+    clone['store'].path = destination
+
+
+@pytest.mark.parametrize('version', ['original297', 'fixed'])
+def test_whole_actual_database_original_loop_once(clone, monkeypatch, version):
+    """Exact49-table/170-row copy; no synthetic SQLITE_BUSY is raised."""
+    _whole_original_database(clone)
+    if version == 'original297':
+        import ast
+        import subprocess
+        root = Path(__file__).resolve().parents[1]
+        raw = subprocess.check_output(['git', '-C', str(root), 'show',
+            '297203e7c6dd6bbce1d592c227aec51f1cfde475:shared_platform/native_tiktok_locale_draft_correction.py'])
+        node = next(n for n in ast.parse(raw).body if isinstance(n, ast.FunctionDef) and n.name == 'activate_failed_targets')
+        namespace = dict(repair.__dict__)
+        exec(compile(ast.Module(body=[node], type_ignores=[]), 'original297/activation.py', 'exec'), namespace)
+        monkeypatch.setattr(repair, 'activate_failed_targets', namespace['activate_failed_targets'])
+    test_original_publish_loop_begin4_correction_then_original_publish_outlet(clone, monkeypatch)
+
+
+def test_whole_actual_database_strict_unknown_and_cap_guards(clone):
+    _whole_original_database(clone)
+    test_missing_authority_changed_CP_once_cap_and_unknown_correction_stop(clone)

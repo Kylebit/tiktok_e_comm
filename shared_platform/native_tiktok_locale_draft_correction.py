@@ -180,14 +180,19 @@ def _technical(ctx, label, recheck=None):
 def activate_failed_targets(active):
     if getattr(active, 'plan_id', None) != PLAN:return ()
     ctx = _context(active);labels = []
+    # Constructors inspect schema/binding on their own readonly connection.
+    # Finish those external reads before taking the ReleaseStore writer; the
+    # same connection rechecks each immutable binding immediately before CAS.
+    technical = {label: _technical(ctx, label) for label in EXACT}
     with active.store._transaction() as db:
         active.service._decision(db, DECISION, owner_sid=active.owner_sid)
         active.store._require_active_run(db, RUN);_, rows = _facts(db, ctx)
         for label in EXACT:
             target = db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?', (RUN, label)).fetchone()
             slot = next(r for r in rows if r['sequence'] == EXACT[label][3])
-            technical = _technical(ctx, label)
-            extra = technical._rows(db)
+            ledger = technical[label]
+            ledger._check_schema(db);ledger._binding(db, create=False)
+            extra = ledger._rows(db)
             if (target['attempts'] != 3 or target['status'] not in {'FAILED', 'PENDING'}
                     or slot['request_digest'] is not None or slot['outcome'] is not None or extra):continue
             need([r[0] for r in db.execute('SELECT attempt FROM release_target_failure_events '

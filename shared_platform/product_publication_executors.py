@@ -194,7 +194,7 @@ def _shopee_preparation_failure(
 
 
 def _safe_shopee_preparation_failure(
-    labels: tuple[str, ...], error: BaseException
+    labels: tuple[str, ...], error: BaseException, *, phase: str
 ) -> dict[str, object]:
     message = str(error)
     if "category" in message.casefold():
@@ -227,6 +227,13 @@ def _safe_shopee_preparation_failure(
             "Shopee preparation failed before mutation",
             "preparation",
         )
+    allowed_types = {'Exception', 'TypeError', 'ValueError', 'RuntimeError', 'OSError', 'KeyError',
+                     'PermissionError', 'FileNotFoundError', 'TimeoutError', 'NativeMutationBudgetHold',
+                     'ShopeeRegionContractError', 'ShopeeGlobalV4Error', 'ShopeeGlobalV4LiveRuntimeError',
+                     '_ShopeeGlobalV4PreSubmitError', 'ShopeeGlobalModelUpdateFailure'}
+    kind = type(error).__name__
+    safe_phase = phase if phase in {'PREFLIGHT', 'GLOBAL_RESOLVER'} else 'UNKNOWN'
+    reason = f"{reason} [phase={safe_phase}; exception={kind if kind in allowed_types else 'Exception'}]"
     return _shopee_preparation_failure(
         labels,
         provider_code=code,
@@ -403,11 +410,15 @@ def build_tiktok_v4_executor(
         accepted_save_targets: tuple[str,...] = ()
         execution_labels = labels
         unprepared: dict[str, dict[str, object]] = {}
+        preparation_phase = 'MEDIA_PREFLIGHT'
         try:
             validate_description_media_preflight(snapshot,platform="TIKTOK",target_labels=labels)
             if draft_preparer is not None:
+                preparation_phase = 'DRAFT_PREPARER'
+                raw_preparation = draft_preparer(request)
+                preparation_phase = 'PREPARATION_RECEIPT'
                 preparation = _verified_tiktok_preparation(
-                    draft_preparer(request),
+                    raw_preparation,
                     request=request,
                     labels=labels,
                 )
@@ -441,7 +452,9 @@ def build_tiktok_v4_executor(
                 contexts = {label: context for label, context in contexts.items() if label in execution_labels}
             else:
                 assert collectbox_context_resolver is not None
+                preparation_phase = 'CONTEXT_RESOLVER'
                 contexts = collectbox_context_resolver(request)
+            preparation_phase = 'CONTEXT_PROJECTION'
             if not isinstance(contexts, Mapping):
                 raise TypeError("TikTok durable contexts must be a mapping")
             contexts = {
@@ -454,13 +467,14 @@ def build_tiktok_v4_executor(
                 result["external_write_count"] = preparation_write_count
                 result["requires_human_action"] = True
                 return result
+            preparation_phase = 'EXECUTION_PLAN'
             plan = project_tiktok_v4_execution_plan(
                 snapshot,
                 collectbox_contexts=contexts,
                 category_resolver=category_resolver,
                 target_scope=execution_labels,
             )
-        except Exception:
+        except Exception as error:
             if draft_preparer is not None:
                 count_getter = getattr(draft_preparer, "write_count", None)
                 if callable(count_getter):
@@ -476,7 +490,7 @@ def build_tiktok_v4_executor(
                 readback_completed=False,
                 external_write_count=preparation_write_count,
                 requires_human_action=True,
-                target_evidence=_tiktok_failure_evidence(labels, stage="PREPARATION", provider_code="tiktok_preparation_failed", provider_reason="TikTok local preparation failed", request_attempted=preparation_write_count is None or preparation_write_count > 0, outcome_unknown=preparation_write_count is None, external_write_count=preparation_write_count),
+                target_evidence=_tiktok_failure_evidence(labels, stage="PREPARATION", provider_code="tiktok_preparation_failed", provider_reason=_safe_tiktok_exception_reason('TikTok local preparation failed',preparation_phase,error), request_attempted=preparation_write_count is None or preparation_write_count > 0, outcome_unknown=preparation_write_count is None, external_write_count=preparation_write_count),
             )
         try:
             execution_kwargs = {}
@@ -519,12 +533,21 @@ def build_tiktok_v4_executor(
                 else None
             )
             return result
-        except Exception:
+        except Exception as error:
             # An unexpected failure after entering execution cannot prove that
             # a transport did not receive a request.
-            return _result("TIKTOK", labels, {label: "FAILED" for label in labels}, dispatch_attempted=True, readback_completed=False, external_write_count=None, requires_human_action=True, target_evidence=_tiktok_failure_evidence(labels, stage="EXECUTION", provider_code="transport_unknown", provider_reason="TikTok execution outcome is unknown", request_attempted=True, outcome_unknown=True, external_write_count=None))
+            return _result("TIKTOK", labels, {label: "FAILED" for label in labels}, dispatch_attempted=True, readback_completed=False, external_write_count=None, requires_human_action=True, target_evidence=_tiktok_failure_evidence(labels, stage="EXECUTION", provider_code="transport_unknown", provider_reason=_safe_tiktok_exception_reason('TikTok execution outcome is unknown','EXECUTION',error), request_attempted=True, outcome_unknown=True, external_write_count=None))
 
     return execute
+
+
+def _safe_tiktok_exception_reason(prefix: str, phase: str, error: Exception) -> str:
+    """Static phase and known type only; never exception text, cause or locals."""
+    allowed = {'Exception','ValueError','TypeError','RuntimeError','OSError','PermissionError','FileNotFoundError','TimeoutError','KeyError','IndexError',
+               'LivePublicationDependencyError','TikTokV4DraftPreparationError','TikTokV4SystemicPreflightError','TikTokV4ExecutionContractError',
+               'NativeMutationBudgetHold','MiaoshouBusinessRejectedError','PublicationWriteBudgetExceeded'}
+    kind = type(error).__name__
+    return f"{prefix} [phase={phase}; exception={kind if kind in allowed else 'Exception'}]"
 
 
 def _verified_tiktok_preparation(
@@ -821,7 +844,7 @@ def build_shopee_region_executor(
             if tuple(selected_region_targets(snapshot,target_scope=labels)) != labels:
                 raise ValueError("Shopee selected target order conflicts")
         except (TypeError, ValueError) as error:
-            return _safe_shopee_preparation_failure(labels, error)
+            return _safe_shopee_preparation_failure(labels, error, phase='PREFLIGHT')
         regional_kwargs = {"target_scope":labels}
         if checkpoint is not None:
             regional_kwargs["on_target_result"] = checkpoint.record
@@ -837,7 +860,7 @@ def build_shopee_region_executor(
             except Exception:
                 global_write_count = None
             if global_write_count == 0:
-                return _safe_shopee_preparation_failure(labels, error)
+                return _safe_shopee_preparation_failure(labels, error, phase='GLOBAL_RESOLVER')
             return _result(
                 "SHOPEE",
                 labels,

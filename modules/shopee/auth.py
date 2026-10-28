@@ -15,7 +15,7 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
-from core.config import ROOT
+from core.config import settings_base_dir
 from core.http_retry import DEFAULT_SSL_CTX as SSL_CTX
 from core.http_retry import urlopen as urlopen_retry
 from modules.shopee.config import ready, shopee_config
@@ -39,7 +39,7 @@ def token_path() -> Path:
             raise RuntimeError("ORBIT_SHOPEE_TOKEN_PATH must be absolute")
         return path
     p = Path(rel)
-    return p if p.is_absolute() else ROOT / rel
+    return p if p.is_absolute() else settings_base_dir() / rel
 
 
 def load_tokens() -> dict:

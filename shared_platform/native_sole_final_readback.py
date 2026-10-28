@@ -51,6 +51,251 @@ def _official_observation(payload, target):
             'external_writes_performed': []}
 
 
+def _ozon_need(value, code):
+    if not value:
+        raise ApprovalBlocked('NATIVE_OZON_READBACK_' + code)
+
+
+def _ozon_sha(value):
+    import hashlib
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+        separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
+
+
+def _ozon_context(active, db, target, submission):
+    """Read existing immutable rows/proofs only; no recovery admission or DDL."""
+    from shared_platform import native_ozon_existing_media_recovery as media
+    from shared_platform.native_sole_final_execution import _ACTIVE, _NativeExecution
+    from shared_platform.release_store import _plan_from_row, _validated_publication_snapshot_row
+    from modules.ozon.approved_publication_v4 import project_ozon_v4_variants
+    from shared_platform.native_final_mutation_budget import _request_sha
+    _ozon_need(type(active) is _NativeExecution and _ACTIVE.get() is active
+        and active.plan_id == media.PLAN and active.decision_id == media.DECISION,
+        'ORIGINAL_PROTECTED_SCOPE_REQUIRED')
+    active.service._decision(db, active.decision_id, owner_sid=active.owner_sid)
+    run = db.execute('SELECT * FROM release_runs WHERE run_id=?', (media.RUN,)).fetchone()
+    plan_row = db.execute('SELECT * FROM release_plans WHERE plan_id=?', (media.PLAN,)).fetchone()
+    snap_row = db.execute('SELECT * FROM approved_publication_snapshots WHERE plan_id=?', (media.PLAN,)).fetchone()
+    _ozon_need(run is not None and run['plan_id'] == media.PLAN and plan_row is not None
+        and snap_row is not None and target['run_id'] == media.RUN
+        and target['target_label'] == media.TARGET and submission['run_id'] == media.RUN
+        and submission['target_label'] == media.TARGET
+        and target['attempts'] == 4 and target['status'] in {'FAILED','SUCCEEDED'}
+        and target['external_id'] == submission['external_id'] == 'ozon:offer:' + media.OFFER,
+        'ORIGINAL_SUBMISSION_IDENTITY_CHANGED')
+    plan = _plan_from_row(plan_row)
+    frozen = _validated_publication_snapshot_row(snap_row, plan=plan)
+    _ozon_need(frozen['snapshot_digest'] == media.SNAPSHOT, 'FROZEN_SNAPSHOT_CHANGED')
+    variants = project_ozon_v4_variants(frozen, target_labels=(media.TARGET,))
+    _ozon_need(len(variants) == 1 and variants[0]['offer_id'] == media.OFFER,
+        'EXACT_FROZEN_MODEL_REQUIRED')
+    expected = variants[0]
+    prior = json.loads(submission['evidence_json'])
+    _ozon_need(submission['status'] == 'SUBMITTED_UNVERIFIED'
+        and _ozon_sha(prior) == submission['evidence_digest']
+        and prior.get('accepted') is True and prior.get('outcome_unknown') is False
+        and prior.get('target_label') == media.TARGET,
+        'KNOWN_ACCEPTED_SUBMISSION_REQUIRED')
+    stock_proof = prior['canonical_platform_result']['targets'][0]['evidence']['stock_readonly_observations']['post']
+    original_raw = stock_proof['raw_response']
+    _ozon_need(type(original_raw) is dict and original_raw.get('has_next') is False
+        and original_raw.get('cursor') == '' and type(original_raw.get('products')) is list
+        and len(original_raw['products']) == 1, 'ORIGINAL_COMPLETE_STOCK_PROOF_REQUIRED')
+    original_stock = original_raw['products'][0]
+    warehouse = expected.get('stock_warehouse_id')
+    sku = original_stock.get('sku')
+    _ozon_need(type(sku) is int and sku > 0 and type(warehouse) is int and warehouse > 0
+        and original_stock.get('offer_id') == media.OFFER
+        and original_stock.get('product_id') == media.PRODUCT
+        and original_stock.get('warehouse_id') == warehouse
+        and type(original_stock.get('present')) is int
+        and original_stock['present'] == expected['stock_quantity']
+        and type(original_stock.get('free_stock')) is int
+        and original_stock['free_stock'] == expected['stock_quantity']
+        and type(original_stock.get('reserved')) is int and original_stock['reserved'] == 0,
+        'ORIGINAL_EXACT_STOCK_IDENTITY_REQUIRED')
+    budget = prior['mutation_budget']
+    scope_key = budget['durable_scope']['scope_key']
+    scope = db.execute('SELECT * FROM native_final_budget_scopes WHERE scope_key=?', (scope_key,)).fetchone()
+    decision = db.execute('SELECT review_json FROM native_sole_final_decisions WHERE decision_id=?', (media.DECISION,)).fetchone()
+    reviewed = json.loads(decision['review_json'])
+    approved_budget = plan['payload']['r3_marketplace_binding']['reviewed_candidate_facts']['write_budget']['OZON']
+    expected_binding = {'plan_id':media.PLAN,'snapshot_digest':media.SNAPSHOT,'platform':'OZON',
+        'target_labels':approved_budget['target_labels'],'shared_maximum':approved_budget['shared_maximum'],
+        'per_target_maximum':approved_budget['per_target_maximum'],'payload_digest':plan['payload_digest'],
+        'candidate_digest':reviewed['candidate_digest'],'decision_id':media.DECISION}
+    _ozon_need(scope is not None and scope['plan_id'] == media.PLAN
+        and scope['snapshot_digest'] == media.SNAPSHOT and scope['platform'] == 'OZON'
+        and _ozon_sha(json.loads(scope['binding_json'])) == scope['binding_sha256']
+        and json.loads(scope['binding_json']) == expected_binding,
+        'ORIGINAL_BUDGET_SCOPE_CHANGED')
+    rows = [dict(row) for row in db.execute('''SELECT r.*,d.request_digest,o.outcome FROM native_final_budget_reservations r
+        JOIN native_final_budget_scopes s USING(scope_key)
+        LEFT JOIN native_final_budget_dispatches d USING(scope_key,sequence)
+        LEFT JOIN native_final_budget_outcomes o USING(scope_key,sequence)
+        WHERE s.plan_id=? ORDER BY r.scope_key,r.sequence''', (media.PLAN,))]
+    _ozon_need(len(rows) == 62 and all(row['outcome'] in {'ACCEPTED','REJECTED'}
+        and type(row['request_digest']) is str and len(row['request_digest']) == 64 for row in rows),
+        'ORIGINAL_62_KNOWN_BUDGET_ROWS_REQUIRED')
+    own = [row for row in rows if row['scope_key'] == scope_key]
+    request_digest = _request_sha('update_stock', ('/v2/products/stocks', {'stocks':[
+        {'offer_id': media.OFFER, 'stock': expected['stock_quantity'], 'warehouse_id': warehouse}]}), {})
+    _ozon_need(len(own) == 2 and [(row['operation'],row['outcome']) for row in own]
+        == [('import_variant','ACCEPTED'),('update_stock','ACCEPTED')]
+        and own[1]['request_digest'] == request_digest
+        and all(row['budget_scope'] == 'shared' and row['attempt_count'] == 1 for row in own)
+        and budget['limits'] == {'shared_maximum':2,'per_target_maximum':0}
+        and budget['base_attempts'] == {'shared':2,'per_target':{media.TARGET:0},'total':2},
+        'ORIGINAL_STOCK_SLOT_NOT_EXACTLY_SPENT')
+    grant = media._grant(db)
+    _ozon_need(grant is not None, 'REGISTERED_IMAGE_PROOF_REQUIRED')
+    content = media._registered_content_for_readback(db, grant, frozen)
+    pictures = content['ordered_ozon_images']
+    _ozon_need(content['ordered_source_images'] == expected['images'], 'REGISTERED_ORDERED_SOURCE_IMAGES_CHANGED')
+    failures = [dict(row) for row in db.execute('SELECT * FROM release_target_failure_events WHERE run_id=? AND target_label=? ORDER BY attempt',
+        (media.RUN, media.TARGET))]
+    _ozon_need([row['attempt'] for row in failures] == [1,2,3], 'ORIGINAL_THREE_FAILURES_CHANGED')
+    media_rows = {name:[dict(row) for row in db.execute('SELECT * FROM native_ozon_media_' + name + ' WHERE grant_id=?',
+        (grant['grant_id'],))] for name in ('grants','attempts','dispatches','outcomes','verifications','starts')}
+    _ozon_need(all(len(value) == 1 for value in media_rows.values()), 'ORIGINAL_MEDIA_LEDGER_CHANGED')
+    return {'expected':expected, 'account_id':media.ACCOUNT, 'product_id':media.PRODUCT,
+        'import_task_id':media.TASK,
+        'sku':sku, 'warehouse_id':warehouse, 'ordered_gallery':pictures,
+        'import_request_digest':own[0]['request_digest'],
+        'registered_proof_ref':content['registered_proof_ref'],
+        'snapshot_digest':frozen['snapshot_digest'],
+        'source_state_digest':_ozon_sha({'budget':rows,'media':media_rows,'failures':failures,
+            'submission_digest':submission['evidence_digest'],'target_attempt':target['attempts'],
+            'target_key':target['idempotency_key'],'plan_digest':plan['payload_digest']})}
+
+
+def _ozon_read_requests(context):
+    offer = context['expected']['offer_id']
+    return [('/v3/product/info/list', {'offer_id':[offer],'limit':1000,'visibility':'ALL'}),
+        ('/v4/product/info/attributes', {'filter':{'offer_id':[offer],'visibility':'ALL'},'limit':1000}),
+        ('/v1/product/info/description', {'offer_id':offer}),
+        ('/v2/warehouse/list', {}),
+        ('/v2/product/info/stocks-by-warehouse/fbs', {'offer_id':[offer],'limit':1000})]
+
+
+def _ozon_verified_evidence(context, responses):
+    """Deterministic raw-response recheck, also used inside original Store CAS."""
+    from copy import deepcopy
+    from shared_platform.product_publication_live_dependencies import (
+        OfficialOzonV4Transport, build_ozon_import_item_from_frozen_variant)
+    from shared_platform.native_final_mutation_budget import _request_sha
+    from modules.ozon.approved_publication_v4 import _classify_variant, OzonDispatchFact
+    requests = _ozon_read_requests(context)
+    _ozon_need(type(responses) is list and len(responses) == len(requests), 'COMPLETE_READ_BUNDLE_REQUIRED')
+    for row, (path,body) in zip(responses, requests):
+        _ozon_need(type(row) is dict and set(row) == {'path','body','response'}
+            and row['path'] == path and row['body'] == body and type(row['response']) is dict
+            and row['response'].get('error') in (None, '', False), 'EXACT_READ_BUNDLE_REQUIRED')
+    cursor = 0
+    def retained_post(path, body):
+        nonlocal cursor
+        _ozon_need(cursor < len(responses) and (path,body) == requests[cursor], 'READ_ORDER_CHANGED')
+        value = deepcopy(responses[cursor]['response']); cursor += 1
+        return value
+    transport = OfficialOzonV4Transport(post=retained_post, account_id=context['account_id'])
+    offer = context['expected']['offer_id']
+    normalized = transport.readback_variants((offer,))
+    stocks = transport.readback_stocks((offer,))
+    _ozon_need(cursor == 5 and len(normalized) == len(stocks) == 1, 'COMPLETE_EXACT_READ_REQUIRED')
+    info = responses[0]['response']; attrs = responses[1]['response']
+    _ozon_need(type(info.get('items')) is list and len(info['items']) == 1
+        and info.get('has_next', False) is False and info.get('cursor', '') == ''
+        and type(attrs.get('total')) is int and attrs['total'] == 1 and attrs.get('last_id') == ''
+        and type(attrs.get('result')) is list and len(attrs['result']) == 1,
+        'COMPLETE_SINGLE_PRODUCT_PAGE_REQUIRED')
+    item = info['items'][0]; attribute_row = attrs['result'][0]
+    expected = context['expected']; statuses = item.get('statuses') or {}
+    _ozon_need(item.get('id') == attribute_row.get('id') == context['product_id']
+        and item.get('sku') == attribute_row.get('sku') == context['sku']
+        and item.get('offer_id') == attribute_row.get('offer_id') == offer
+        and item.get('currency_code') == expected['currency'], 'OFFICIAL_COMPOSITE_IDENTITY_CHANGED')
+    _ozon_need(item.get('is_archived') is False and item.get('is_autoarchived') is False
+        and item.get('errors') == [] and statuses.get('status') == 'price_sent'
+        and statuses.get('is_created') is True and statuses.get('status_failed') == ''
+        and statuses.get('moderate_status') == 'approved' and statuses.get('validation_status') == 'success'
+        and item.get('visibility_details') == {'has_price':True,'has_stock':True}
+        and item.get('availabilities') == [{'availability':'AVAILABLE','reasons':[],
+            'sku':context['sku'],'source':'sds'}], 'OFFICIAL_ONSALE_NOT_PROVED')
+    # The original producer selected this dictionary profile. Rebuilding its
+    # original frozen request must match the immutable accepted dispatch SHA;
+    # current attribute values can never certify themselves.
+    attributes = normalized[0]['attributes']
+    brand = attributes.get('85')
+    _ozon_need(type(brand) is list and len(brand) == 1, 'ORIGINAL_ATTRIBUTE_PROFILE_REQUIRED')
+    profile = {'schema_version':'ozon-official-profile-resolution/v1','resolution':'EXACT',
+        'description_category_id':int(expected['category']['id']), 'type_id':attribute_row.get('type_id'),
+        'required_attributes':{'brand':{'attribute_id':85,**brand[0]},
+            'model_name':{'attribute_id':9048},'product_type':{'attribute_id':8229,
+                'dictionary_value_id':attribute_row.get('type_id'),'value':expected['category']['name']}}}
+    import_item = build_ozon_import_item_from_frozen_variant({**expected,'official_profile':profile})
+    _ozon_need(_request_sha('import_variant', ('/v3/product/import',{'items':[import_item]}), {})
+        == context['import_request_digest'], 'ORIGINAL_ACCEPTED_IMPORT_FACTS_CHANGED')
+    for row in import_item['attributes']:
+        if row['id'] == 8229 and '8229' not in attributes:
+            # Ozon returns product type as type_id instead of this optional
+            # attribute row. Both current official rows must bind that type.
+            _ozon_need(item.get('type_id') == attribute_row.get('type_id') == profile['type_id'],
+                'OFFICIAL_PRODUCT_TYPE_CHANGED')
+        else:
+            _ozon_need(attributes.get(str(row['id'])) == row['values'], 'OFFICIAL_ATTRIBUTE_CHANGED')
+    _ozon_need(normalized[0]['id'] == context['product_id']
+        and _classify_variant(expected, normalized[0], OzonDispatchFact(outcome='ACCEPTED',
+            task_id=str(context['import_task_id']))) == 'PUBLISHED'
+        and normalized[0]['images'] == context['ordered_gallery'], 'FROZEN_CONTENT_OR_ORDER_CHANGED')
+    stock = stocks[0]
+    _ozon_need(stock.get('offer_id') == offer and stock.get('product_id') == context['product_id']
+        and stock.get('sku') == context['sku'] and stock.get('warehouse_id') == context['warehouse_id']
+        and type(stock.get('stock')) is int and stock['stock'] == expected['stock_quantity']
+        and stock.get('free_stock') == expected['stock_quantity'] and stock.get('reserved') == 0,
+        'EXACT_FROZEN_STOCK_REQUIRED')
+    return {'source':'official_ozon_seller_api','verified':True,'region':'RU','seller_sku':offer,
+        'account_id':context['account_id'],'product_id':context['product_id'],'sku':context['sku'],
+        'warehouse_id':context['warehouse_id'],'snapshot_digest':context['snapshot_digest'],
+        'source_state_digest':context['source_state_digest'],
+        'registered_proof_ref':context['registered_proof_ref'],
+        'checks':{name:True for name in ('single_exact_sku','title','description','price','currency',
+            'ordered_approved_images','category','attributes','parcel','active','stock','stock_budget_spent')},
+        'official_responses':responses,'external_writes_performed':[]}
+
+
+def _ozon_official_observation(active, gate, target):
+    """One platform, at most five exact SDK READs, no retry/publish callable."""
+    from shared_platform.ozon_runtime_credentials import required_pinned_ozon_credentials
+    from modules.ozon.client import ozon_post_bound
+    from shared_platform.product_publication_live_dependencies import OfficialOzonV4Transport
+    try:
+        with active.store._connect_readonly() as db:
+            db.execute('BEGIN')
+            row = db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?',
+                (gate['run']['run_id'], target['target_label'])).fetchone()
+            submission = db.execute('SELECT * FROM release_target_submissions WHERE run_id=? AND target_label=?',
+                (gate['run']['run_id'], target['target_label'])).fetchone()
+            context = _ozon_context(active, db, row, submission)
+        pinned = required_pinned_ozon_credentials()
+        _ozon_need(pinned.account_id == context['account_id'], 'PINNED_ACCOUNT_CHANGED')
+        requests = _ozon_read_requests(context); responses = []
+        def read_once(path, body):
+            _ozon_need(len(responses) < len(requests) and (path,body) == requests[len(responses)],
+                'ENDPOINT_OR_READ_BUDGET_CHANGED')
+            value = ozon_post_bound(path, body, client_id=pinned.account_id, api_key=pinned.api_key, timeout=30)
+            responses.append({'path':path,'body':body,'response':value})
+            return value
+        transport = OfficialOzonV4Transport(post=read_once, account_id=pinned.account_id)
+        transport.readback_variants((context['expected']['offer_id'],))
+        transport.readback_stocks((context['expected']['offer_id'],))
+        return _ozon_verified_evidence(context, responses)
+    except (ValueError, OSError, KeyError, TypeError, RuntimeError) as error:
+        # A capability HOLD ends this observation round. It cannot silently
+        # spend another five READs via the original pending<3 scheduler.
+        return {'verified':False,'capability':'OZON_EXACT_OFFICIAL_READBACK_HOLD',
+            'error_type':type(error).__name__,'external_writes_performed':[]}
+
+
 def observe_submissions(runtime, decision_id):
     """Current decision recheck -> exact submission READ -> original store CAS."""
     from shared_platform.native_sole_final_execution import _NativeExecution, _ACTIVE
@@ -81,9 +326,21 @@ def observe_submissions(runtime, decision_id):
                 continue
             submission = target.get('submission') or {}
             if not submission.get('evidence_digest') or submission.get('external_id') != target['external_id']:
-                raise ApprovalBlocked('NATIVE_SUBMISSION_RECEIPT_REQUIRED')
+                # Invalid local receipt cannot authorise a READ/CAS for this
+                # target, nor prevent independent targets from being observed.
+                observations.append({'target_label': target['target_label'], 'verified': False,
+                    'capability': 'NATIVE_SUBMISSION_RECEIPT_REQUIRED', 'external_writes_performed': []})
+                continue
             try:
-                evidence = _official_observation(gate['payload'], target)
+                evidence = (_ozon_official_observation(active, gate, target)
+                    if target['target_label'] == 'ozon:RU'
+                    else _official_observation(gate['payload'], target))
+                if evidence.get('verified') is True and target['target_label'] == 'ozon:RU':
+                    # Same original actor/current/frozen/common gate after I/O;
+                    # no reader-mode selector is introduced into the write gate.
+                    refreshed, changed = active.gate(data, store=runtime.store)
+                    if changed:
+                        raise ApprovalBlocked('NATIVE_OZON_READBACK_CURRENT_CHANGED')
                 if evidence.get('verified') is True:
                     proof = _SubmissionReadback(run['run_id'], target['target_label'],
                         target['idempotency_key'], target['attempts'], target['external_id'],
@@ -96,6 +353,11 @@ def observe_submissions(runtime, decision_id):
             except (ValueError, OSError, KeyError, TypeError, RuntimeError) as error:
                 # A failed READ never clears the original submission or retries
                 # a write. The schedule is bounded even for unavailable APIs.
+                if target['target_label'] == 'ozon:RU':
+                    observations.append({'target_label': target['target_label'], 'verified': False,
+                        'capability': 'OZON_EXACT_OFFICIAL_READBACK_HOLD',
+                        'error_type': type(error).__name__, 'external_writes_performed': []})
+                    continue
                 retry_read = True
                 observations.append({'target_label': target['target_label'], 'verified': False,
                     'error': str(error), 'external_writes_performed': []})

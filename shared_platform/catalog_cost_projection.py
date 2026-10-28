@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS catalog_official_observations (
  variant_id TEXT NOT NULL, seller_sku TEXT NOT NULL, document_json TEXT NOT NULL,
  source_ref TEXT NOT NULL, PRIMARY KEY(platform,shop_key,product_id,variant_id));
 '''
+from shared_platform.publication_canonical_aliases import SCHEMA as CANONICAL_SCHEMA
+SCHEMA += CANONICAL_SCHEMA
 
 
 class CatalogProjectionError(ValueError):
@@ -151,6 +153,17 @@ def _upsert_listing(conn, i, row):
         raise CatalogProjectionError('existing_official_identity_conflict')
     if i['platform'] == 'shopee' and 'region' in observed:
         conn.execute('INSERT INTO shopee_shops(shop_id,region) VALUES(?,?) ON CONFLICT(shop_id) DO NOTHING', (i['shop_key'], observed['region']))
+    if i['platform']=='tiktok' and row.get('shop_binding') is not None:
+        binding=row['shop_binding']
+        if (not isinstance(binding,dict) or binding.get('schema_version')!='official-tiktok-shop-binding/v1'
+                or binding.get('shop_cipher')!=i['shop_key']
+                or any(type(binding.get(k)) is not str or not binding[k] for k in ('official_shop_id','region','name'))):
+            raise CatalogProjectionError('official_shop_binding_missing')
+        previous=conn.execute('SELECT shop_id,region FROM shops WHERE cipher=?',(i['shop_key'],)).fetchone()
+        if previous and any(previous[k] and str(previous[k])!=binding[v] for k,v in (('shop_id','official_shop_id'),('region','region'))):
+            raise CatalogProjectionError('official_shop_binding_conflict')
+        conn.execute('INSERT INTO shops(cipher,shop_id,name,region) VALUES(?,?,?,?) ON CONFLICT(cipher) DO UPDATE SET shop_id=excluded.shop_id,name=excluded.name,region=excluded.region',
+            (i['shop_key'],binding['official_shop_id'],binding['name'],binding['region']))
     columns = list(data)
     updates = ','.join(f'{c}=excluded.{c}' for c in columns if c not in key_columns)
     conn.execute(f"INSERT INTO {table}({','.join(columns)}) VALUES({','.join('?' for _ in columns)}) ON CONFLICT({','.join(key_columns)}) DO UPDATE SET {updates}", tuple(data.values()))
@@ -188,16 +201,18 @@ def save_manual(path, raw, value, expected_version):
         conn.close()
 
 
-def project(path, packet, *, fault=None):
+def project(path, packet, *, fault=None, canonical_authority=None):
     """Consume a durable server-owned observation; no network or dispatch.
 
     First/late binding never overwrites an existing cost. A later approved
     version requires an explicitly persisted baseline, never a fresh readback
     timestamp. Receipt and all eligible rows commit together.
     """
+    from shared_platform.publication_canonical_aliases import validate_projection_authority, register_binding
+    strict_alias = validate_projection_authority(packet, canonical_authority)
     if isinstance(packet,dict) and packet.get('schema')=='catalog-ozon-observation/v1':
         from shared_platform.catalog_ozon import project as project_ozon
-        return project_ozon(path,packet,fault=fault)
+        return project_ozon(path,packet,fault=fault,canonical_authority=canonical_authority)
     if not isinstance(packet, dict) or packet.get('schema') != 'catalog-publication-observation/v1':
         raise CatalogProjectionError('observation_schema_required')
     reference = packet.get('snapshot_digest')
@@ -226,11 +241,15 @@ def project(path, packet, *, fault=None):
                 seen.add(key);value=amount(row.get('approved_cost'))
                 if not row.get('variant_key'):raise CatalogProjectionError('approved_variant_binding_missing')
             except (KeyError,CatalogProjectionError) as error:
+                if strict_alias:raise
                 results.append({'status':'UNBOUND','code':str(error)});continue
             try:
                 _upsert_listing(conn,i,row)
             except CatalogProjectionError as error:
+                if strict_alias:raise
                 results.append({'identity':i,'status':'UNBOUND','code':str(error)});continue
+            if strict_alias:
+                register_binding(conn,row,receipt_id,packet=packet,authority=canonical_authority)
             prior=read_cost(conn,i)
             legacy=legacy_cost(conn,i)
             baseline=row.get('expected_cost_version')

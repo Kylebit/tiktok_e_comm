@@ -1,0 +1,1970 @@
+{
+  "schema_version": "u00-b1-source-matrix/v1",
+  "status": "REFERENCE_ONLY",
+  "superseded_by": "config/capability_catalog.json",
+  "base": "8457cf2246c7520bade525957cba2893a9bf0526",
+  "worktree": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905",
+  "regions": [
+    {
+      "key": "workbench",
+      "label": "工作台",
+      "description": "任务、常用入口与运行状态"
+    },
+    {
+      "key": "product",
+      "label": "商品发布",
+      "description": "商品事实、目录与成本"
+    },
+    {
+      "key": "content",
+      "label": "内容",
+      "description": "文案、图片与多语言结果"
+    },
+    {
+      "key": "channel",
+      "label": "店铺",
+      "description": "渠道发布、ERP 与经营工具"
+    },
+    {
+      "key": "supply-chain",
+      "label": "供应",
+      "description": "库存快照、入库与补货"
+    },
+    {
+      "key": "data",
+      "label": "数据",
+      "description": "结算事实、利润与分析"
+    },
+    {
+      "key": "knowledge",
+      "label": "知识工具",
+      "description": "流程 Skill、研究工具与可选集成"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "CAP-00-OVERVIEW",
+      "region": "workbench",
+      "title": "统一工作台",
+      "href": "/",
+      "asset": "web/index.html",
+      "kind": "page",
+      "description": "从七个区域找到已有能力；此页展示功能关系，不代表商品执行进度。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "70f67711abdecb3219faec64f25c343af9182662a486aa96360d3a82012f3665",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-00-TASKS",
+      "region": "workbench",
+      "title": "任务看板",
+      "href": "/workbench",
+      "asset": "web/workbench.html",
+      "kind": "page",
+      "description": "管理本地任务。任务、通知与报告各自保留来源；未读取不能当作已完成。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "be8c31fe6d26b602b8e1d67816d290099d33f15600c158a3c3dfe2caf8936f87",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-00-RUNTIME",
+      "region": "workbench",
+      "title": "运行检查",
+      "href": "/?view=system",
+      "asset": "web/index.html",
+      "kind": "page",
+      "description": "核对当前候选与本地服务身份；打开本页不会启动或替换服务。",
+      "method": "python scripts/product_publication_runtime.py --status",
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "70f67711abdecb3219faec64f25c343af9182662a486aa96360d3a82012f3665",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-00-DESKTOP",
+      "region": "workbench",
+      "title": "桌面 APP",
+      "href": null,
+      "asset": null,
+      "kind": "pending",
+      "description": "桌面入口保留，容器与打包待独立迁移；当前先使用浏览器工作台。",
+      "method": "python scripts/start_orbit_desktop.py",
+      "business_verified": false,
+      "source_exists": null,
+      "source_sha256": null,
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-01-PRODUCT",
+      "region": "product",
+      "title": "商品发布中心",
+      "href": "/product-workspace",
+      "asset": "web/product_workspace.html",
+      "kind": "page",
+      "description": "商品事实、版本、目标与审核发布的主入口；依赖新品服务及目标批准。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "d462a201835a47dd4b503de5caf3ca97f158e53f053824d494a3f5a0a2402c44",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-01-CATALOG",
+      "region": "product",
+      "title": "商品目录",
+      "href": "/catalog",
+      "asset": "web/catalog.html",
+      "kind": "page",
+      "description": "浏览已有商品与 SKU；同步需在页面内单独操作。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "eabc3224cb1317fe1f8cb250384af697855df64c13f7887a9db224396362badd",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-01-COSTS",
+      "region": "product",
+      "title": "成本维护",
+      "href": "/costs",
+      "asset": "web/costs.html",
+      "kind": "page",
+      "description": "维护采购成本与物流事实；成本记录不等于售价批准。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "5e0a6ef919812c830be2a960b39e422e2dc24426a1f2936b8caa499502bde628",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-01-SHADOW",
+      "region": "product",
+      "title": "商品代理实验",
+      "href": null,
+      "asset": null,
+      "kind": "pending",
+      "description": "冻结来源中保留实验代码，尚未整合到当前候选。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": null,
+      "source_sha256": null,
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-01-SOURCING",
+      "region": "product",
+      "title": "1688 选品工具",
+      "href": "/sourcing",
+      "asset": "web/sourcing.html",
+      "kind": "legacy",
+      "description": "保留选品与素材处理入口；抓取和 ERP 采集须有明确范围。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "60f53bb8b8d263dd1234aa6380470a7c03778f6fef2afd78349773d4462f57c2",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-02-AI-IMAGES",
+      "region": "content",
+      "title": "AI 图片工作室",
+      "href": "/ai-image-studio",
+      "asset": "web/ai_image_studio.html",
+      "kind": "page",
+      "description": "查看已有图片任务页面；内容执行组件待整合，生成还需 Lingshi 配置与付费授权。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "ebd5d81537d4924146c2c2f57631ec7f8b7acb8ca9a9d0d7248fd324ac890652",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-02-LOCALIZED",
+      "region": "content",
+      "title": "多语言图片结果",
+      "href": "/localized-image-review",
+      "asset": "web/localized_image_review.html",
+      "kind": "page",
+      "description": "查看已生成语言资产；需要具体商品、品牌、语言及结果文件。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "8c28895263eb9049040c4ca4a1f24499700f91d8329611b314b0dc71b4d05633",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-02-TITLE",
+      "region": "content",
+      "title": "标题工具",
+      "href": "/titles",
+      "asset": "web/titles.html",
+      "kind": "legacy",
+      "description": "保留历史标题候选；新商品文案跟随商品发布中心的事实版本。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "8f727f9e0aa0efe6aedfacf0aabf9c3cb0566e07031fa788c2256f424024c5b5",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-02-LEGACY-IMAGES",
+      "region": "content",
+      "title": "历史图片工具",
+      "href": "/images",
+      "asset": "web/images.html",
+      "kind": "legacy",
+      "description": "保留旧图片队列与资产；新商品图片使用 AI 图片工作室。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "b8129870b2112eef77e5f65d519c22f3d20f6737bc0d1ca057c30cdb7af188e5",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-03-PUBLISH",
+      "region": "channel",
+      "title": "审核与渠道发布",
+      "href": "/product-workspace",
+      "asset": "web/product_workspace.html",
+      "kind": "page",
+      "description": "当前 v4 按平台独立发布；旧批量写入口已退役，历史状态仍可读。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "d462a201835a47dd4b503de5caf3ca97f158e53f053824d494a3f5a0a2402c44",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-03-MIAOSHOU",
+      "region": "channel",
+      "title": "妙手 ERP 接线",
+      "href": "/product-workspace",
+      "asset": "web/product_workspace.html",
+      "kind": "page",
+      "description": "在商品发布中心查看采集箱、绑定与回读；依赖新品服务和 ERP 配置。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "d462a201835a47dd4b503de5caf3ca97f158e53f053824d494a3f5a0a2402c44",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-03-OZON",
+      "region": "channel",
+      "title": "Ozon 运营台",
+      "href": null,
+      "asset": null,
+      "kind": "service",
+      "description": "独立服务默认端口 8767；先在运行信息核验代码、配置和数据身份。",
+      "method": "python scripts/product_publication_runtime.py --status --include-rus",
+      "business_verified": false,
+      "source_exists": null,
+      "source_sha256": null,
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-03-MX",
+      "region": "channel",
+      "title": "墨西哥历史审批",
+      "href": "/mx",
+      "asset": "web/mx.html",
+      "kind": "legacy",
+      "description": "保留既有整组 SKU 审批与回执；不自动重发历史商品。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "ab8cae4837ff2c1cb331e843d7f1e192a8b687da38bd72923f0954cfaf8264af",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-03-UK",
+      "region": "channel",
+      "title": "英国历史审批",
+      "href": "/uk",
+      "asset": "web/uk.html",
+      "kind": "legacy",
+      "description": "保留已有审批记录；新执行仍需完整店铺、SKU 和目标授权。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "e43ac73dc5694dfee952a979fa4d7357e612d9455ff9056fc9b94c6cfb7e7b7f",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-03-PROMOTION",
+      "region": "channel",
+      "title": "促销与折扣",
+      "href": "/promotions",
+      "asset": "web/promotions.html",
+      "kind": "legacy",
+      "description": "页面保留；发布后折扣使用精确目标与已有活动的 Skill 合同。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "52b922590e050821313d204e9d79f65cfb3f27ce47be0516af7dfbe8bafb032d",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-03-DELIST",
+      "region": "channel",
+      "title": "下架巡检",
+      "href": "/deactivate",
+      "asset": "web/deactivate.html",
+      "kind": "legacy",
+      "description": "查看低表现候选；执行前冻结精确 SKU 和可恢复下架范围。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "99459ebb1d322192614f5705e7bdc345ec9e538a64657ede28355d251fe6a5e5",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-03-AFFILIATE",
+      "region": "channel",
+      "title": "达人合作",
+      "href": null,
+      "asset": null,
+      "kind": "partial",
+      "description": "CSV 列表工具已有代码；邀请功能尚未实现。列表命令可能创建示例文件。",
+      "method": "python main.py affiliate lists",
+      "business_verified": false,
+      "source_exists": null,
+      "source_sha256": null,
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-04-SUPPLY",
+      "region": "supply-chain",
+      "title": "库存与补货",
+      "href": "/supply-chain/",
+      "asset": "domains/supply_chain_operations/dashboard/index.html",
+      "kind": "snapshot",
+      "description": "2026-09-02 历史快照。新入口未迁入原 8874 浏览器手工覆盖；旧覆盖保留，迁移待后续。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "b629d50929d017daa655ff2989cb339437c00a8a0a777ed7f1ca2208b920680a",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-04-INBOUND",
+      "region": "supply-chain",
+      "title": "入库批次",
+      "href": "/supply-chain/inbound-batches.html",
+      "asset": "domains/supply_chain_operations/dashboard/inbound-batches.html",
+      "kind": "snapshot",
+      "description": "浏览已有入库计划；浏览器覆盖按地址隔离，不自动迁入旧入口的数据。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "a3e8083d4770b1b3a142fc92526abaca3bf98d53b0dc9391c0c5e748496dbf75",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-05-PROFIT",
+      "region": "data",
+      "title": "利润中心",
+      "href": "/profit",
+      "asset": "web/profit_center.html",
+      "kind": "page",
+      "description": "查看本地周报、质量与 SKU 利润；需要结算事实及期间覆盖。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "370bcc1f5571445379d873ea3481da13f9bbdf8c42867897ad980bde2d1b1a6a",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-05-SKU-PROFIT",
+      "region": "data",
+      "title": "SKU 利润估算",
+      "href": "/sku-profit",
+      "asset": "web/sku_profit.html",
+      "kind": "legacy",
+      "description": "历史估算探针，结果不能当作已结算利润。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "5aaab09c7d1ffb71c55bf65bd388c919ef269b4a08345ef7de1de162599d99f6",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-05-SETTLEMENT",
+      "region": "data",
+      "title": "结算与账单",
+      "href": "/settlement",
+      "asset": "web/settlement.html",
+      "kind": "page",
+      "description": "按期间核对结算事实与覆盖；账单及知识归档入口一并保留。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "94faecae7bcb034f24a15670d5905ad75aaca56e94f4661a24aeac252b55807c",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-05-ANALYTICS",
+      "region": "data",
+      "title": "经营分析",
+      "href": "/analytics",
+      "asset": "web/analytics.html",
+      "kind": "page",
+      "description": "查看已有表现快照；需要时间与来源，打开首页不自动同步。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": true,
+      "source_sha256": "71448f5b601366bda09884aa8dcd329b3d9c06f7438957c2aaf60b646d594267",
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-05-ADS",
+      "region": "data",
+      "title": "广告分析",
+      "href": null,
+      "asset": null,
+      "kind": "pending",
+      "description": "广告同步与报告目前为占位实现；尚无可用执行入口。",
+      "method": "python main.py ads --help",
+      "business_verified": false,
+      "source_exists": null,
+      "source_sha256": null,
+      "state_note": "源入口保留；business_verified=false 不是生产就绪；需要配置/安装/准确业务上下文的功能维持原状态"
+    },
+    {
+      "id": "CAP-00-NOTIFY",
+      "region": "knowledge",
+      "title": "已退役的外部通知实验",
+      "href": null,
+      "asset": null,
+      "kind": "retired",
+      "description": "历史实验已退役；当前平台没有外部通知发送入口。",
+      "method": null,
+      "business_verified": false,
+      "source_exists": null,
+      "source_sha256": null,
+      "state_note": "REFERENCE_ONLY；历史证据见 docs/legacy/notifications，不得据此恢复执行入口"
+    }
+  ],
+  "tools": [
+    {
+      "id": "prepare-product-publication",
+      "title": "第一轮 · 商品事实",
+      "method": "使用 $prepare-product-publication；先阅读 skills/prepare-product-publication/SKILL.md",
+      "asset": "skills/prepare-product-publication/SKILL.md",
+      "description": "核对商品、目标店铺与地区、文案、类目和定价，形成第一轮事实。",
+      "installation": "repository",
+      "configuration": "unverified",
+      "source_exists": true,
+      "source_sha256": "7bf9cf8805d9f9071bb4168940207e7682f22131190acfa3cc3eea4f0ec294d6",
+      "live_or_installed_verification": false
+    },
+    {
+      "id": "prepare-product-images",
+      "title": "第二轮 · 商品图片",
+      "method": "使用 $prepare-product-images；先核对当前安装 Skill 的版本与依赖，仓库流程尚待整合。",
+      "asset": "skills/prepare-product-images/SKILL.md",
+      "description": "按已批准的商品事实准备图片和多语言结果。当前流程尚待整合，使用前核对已安装 Skill 的版本与依赖。",
+      "installation": "repository",
+      "configuration": "unverified",
+      "integration_status": "pending",
+      "source_exists": true,
+      "source_sha256": "924bdc849f73dbee340b83fa317f5119875b6df6ba88aae8d957568d90334aa3",
+      "live_or_installed_verification": false
+    },
+    {
+      "id": "publish-approved-product",
+      "title": "第三轮 · 审核后发布",
+      "method": "使用 $publish-approved-product；先阅读 skills/publish-approved-product/SKILL.md",
+      "asset": "skills/publish-approved-product/SKILL.md",
+      "description": "消费已审核的商品与图片，按平台独立发布并保存官方回读。",
+      "installation": "repository",
+      "configuration": "unverified",
+      "source_exists": true,
+      "source_sha256": "a99506e2625be19d3a7ba395f8c372d2b4d0395689e6c3648e3bf2a7f0f491c3",
+      "live_or_installed_verification": false
+    },
+    {
+      "id": "delist-products-by-sku",
+      "title": "精确 SKU 下架",
+      "method": "使用 $delist-products-by-sku；先阅读 skills/delist-products-by-sku/SKILL.md",
+      "asset": "skills/delist-products-by-sku/SKILL.md",
+      "description": "按准确 Seller SKU 和店铺范围停售，保留可恢复状态及逐店回读。",
+      "installation": "repository",
+      "configuration": "unverified",
+      "source_exists": true,
+      "source_sha256": "628174f8299f333417fbcf5e1bc8af207c014c5bf5c8abc1b40468aa75a304da",
+      "live_or_installed_verification": false
+    },
+    {
+      "id": "apply-product-discounts",
+      "title": "发布后折扣",
+      "method": "使用 $apply-product-discounts；先检查折扣计划",
+      "asset": null,
+      "description": "为已发布商品加入选定店铺的既有折扣活动。尚未集成当前环境，使用前需核对 Skill 安装与依赖。",
+      "installation": "not_bundled",
+      "configuration": "unverified",
+      "source_exists": null,
+      "source_sha256": null,
+      "live_or_installed_verification": false
+    },
+    {
+      "id": "manage-seaya-replenishment",
+      "title": "供应与补货 Skill",
+      "method": "阅读 domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md",
+      "asset": "domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md",
+      "description": "导入完整快照并检查库存与订单各自时点。",
+      "installation": "repository",
+      "configuration": "unverified",
+      "source_exists": true,
+      "source_sha256": "560d3d19e1d2472e48c8bcb7db3732f398ae8139271c4ac66929a67722174583",
+      "live_or_installed_verification": false
+    },
+    {
+      "id": "manage-profit-settlement",
+      "title": "结算与知识归档",
+      "method": "阅读 domains/data_operations/skills/manage-profit-settlement/SKILL.md",
+      "asset": "domains/data_operations/skills/manage-profit-settlement/SKILL.md",
+      "description": "按期间保留结算事实、估算和数据质量，将确认过的经验归档复用。",
+      "installation": "repository",
+      "configuration": "unverified",
+      "source_exists": true,
+      "source_sha256": "a62e63f44013db575f6fa877b4c576675fc022e36dcc47a01c0c0431bf415be7",
+      "live_or_installed_verification": false
+    },
+    {
+      "id": "tikhub",
+      "title": "TikHub 参考研究",
+      "method": "python <EXISTING_PROJECT>/tikhub_reference_probe.py --keyword <QUERY> --region TH --video-count 20 --output-dir <NEW_DIR>",
+      "asset": null,
+      "description": "采集商品与视频参考数据。尚未集成当前环境；查询可能计费，先确认市场、样本范围与参考用途。",
+      "installation": "not_bundled",
+      "configuration": "unverified",
+      "source_exists": null,
+      "source_sha256": null,
+      "live_or_installed_verification": false
+    },
+    {
+      "id": "duoplus",
+      "title": "DuoPlus 云手机",
+      "method": "python <SKILL_DIR>/scripts/duoplus_client.py preview devices",
+      "asset": null,
+      "description": "预览云手机设备查询参数，按需查看设备状态。尚未集成当前环境，设备配置与权限需核对。",
+      "installation": "not_bundled",
+      "configuration": "unverified",
+      "source_exists": null,
+      "source_sha256": null,
+      "live_or_installed_verification": false
+    },
+    {
+      "id": "minimax-h3",
+      "title": "MiniMax H3 视频",
+      "method": "node <PLUGIN>/runtime/scripts/h3-cloud.mjs status --config <PROFILE>",
+      "asset": null,
+      "description": "远程生成视频、查询已有任务与停机状态。需要插件和独立 GPU 配置；生成前确认价格与资源。",
+      "installation": "not_bundled",
+      "configuration": "unverified",
+      "source_exists": null,
+      "source_sha256": null,
+      "live_or_installed_verification": false
+    },
+    {
+      "id": "lingshi",
+      "title": "Lingshi AI",
+      "method": "使用 $use-lingshi-ai；先检查模型、用途与生成预览",
+      "asset": "modules/sourcing/lingshi_client.py",
+      "description": "用于文案和图片生成。图片执行组件待接入，模型配置与付费能力需核对。",
+      "installation": "repository",
+      "configuration": "unverified",
+      "source_exists": false,
+      "source_sha256": null,
+      "live_or_installed_verification": false
+    },
+    {
+      "id": "linkfox",
+      "title": "LinkFox / EchoTik 调研",
+      "method": "LinkfoxClient.preview(\"echotik_product_search\", {\"region\":\"TH\",\"keyword\":\"<QUERY>\",\"pageSize\":10})",
+      "asset": "modules/sourcing/linkfox_client.py",
+      "description": "用于商品与竞品研究。当前组件待接入，预览与付费查询分开；参考数据不构成直接复用权。",
+      "installation": "repository",
+      "configuration": "unverified",
+      "source_exists": true,
+      "source_sha256": "d8870beea2dbab29cef5641232df4387d5f4a1064ee37eac2aa5b163daf4d07c",
+      "live_or_installed_verification": false
+    }
+  ],
+  "pages": [
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\ai_image_studio.html",
+      "relative": "web/ai_image_studio.html",
+      "sha256_physical_bytes": "ebd5d81537d4924146c2c2f57631ec7f8b7acb8ca9a9d0d7248fd324ac890652",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "Orbit · AI 图片工作室"
+      ],
+      "assets": [
+        "/static/ai_image_studio.css?v=20260819-1",
+        "/static/ai_image_studio.js?v=20260819-1",
+        "/static/disabled_control_hints.js?v=20260729-v2"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\analytics.html",
+      "relative": "web/analytics.html",
+      "sha256_physical_bytes": "71448f5b601366bda09884aa8dcd329b3d9c06f7438957c2aaf60b646d594267",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "Analytics 分段"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\billing.html",
+      "relative": "web/billing.html",
+      "sha256_physical_bytes": "4a2aa1e128895c329ab73f5341c7d6cacc363343820a71c6a563ac6b3299f8b0",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "结算账单 · 三平台周期结算"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\catalog.html",
+      "relative": "web/catalog.html",
+      "sha256_physical_bytes": "eabc3224cb1317fe1f8cb250384af697855df64c13f7887a9db224396362badd",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "Orbit · 商品目录"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\costs.html",
+      "relative": "web/costs.html",
+      "sha256_physical_bytes": "5e0a6ef919812c830be2a960b39e422e2dc24426a1f2936b8caa499502bde628",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "商品采购成本"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\deactivate.html",
+      "relative": "web/deactivate.html",
+      "sha256_physical_bytes": "99459ebb1d322192614f5705e7bdc345ec9e538a64657ede28355d251fe6a5e5",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "零销下架"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\images.html",
+      "relative": "web/images.html",
+      "sha256_physical_bytes": "b8129870b2112eef77e5f65d519c22f3d20f6737bc0d1ca057c30cdb7af188e5",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "主图优化"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\index.html",
+      "relative": "web/index.html",
+      "sha256_physical_bytes": "70f67711abdecb3219faec64f25c343af9182662a486aa96360d3a82012f3665",
+      "scope": "本包重构",
+      "titles": [
+        "Orbit · 运营工作台"
+      ],
+      "assets": [
+        "/static/orbit_product.css",
+        "/static/orbit_product.js"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\localized_image_review.html",
+      "relative": "web/localized_image_review.html",
+      "sha256_physical_bytes": "8c28895263eb9049040c4ca4a1f24499700f91d8329611b314b0dc71b4d05633",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "多语言图片执行结果 · Orbit"
+      ],
+      "assets": [
+        "/static/localized_image_review.css?v=20260819-1",
+        "/static/localized_image_review.js?v=20260819-1"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\mx.html",
+      "relative": "web/mx.html",
+      "sha256_physical_bytes": "ab8cae4837ff2c1cb331e843d7f1e192a8b687da38bd72923f0954cfaf8264af",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "MX 上架审批 · TikTok Shop 控制台"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\new_product.html",
+      "relative": "web/new_product.html",
+      "sha256_physical_bytes": "382ebe81618fdd5bcd22baa38445e7ce274b80bb0aab4b863e9c673aa61290c8",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "Orbit Treasury 新品发布台"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\ozon.html",
+      "relative": "web/ozon.html",
+      "sha256_physical_bytes": "9749898992310a70fa3eb33b0f95b4760563f2008c5777e669b0777e302685be",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "Orbit Rus 俄罗斯台"
+      ],
+      "assets": [
+        "/static/app.css",
+        "/static/ozon-migrate.js"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\photoroom_showcase.html",
+      "relative": "web/photoroom_showcase.html",
+      "sha256_physical_bytes": "b2b9aebd5157af02e8f75a2bf4553d9514318f9970c87b9782d69faf92f2bc84",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "Photoroom 能力试跑"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\product_workspace.html",
+      "relative": "web/product_workspace.html",
+      "sha256_physical_bytes": "d462a201835a47dd4b503de5caf3ca97f158e53f053824d494a3f5a0a2402c44",
+      "scope": "本包重构",
+      "titles": [
+        "Orbit · 商品发布中心"
+      ],
+      "assets": [
+        "/static/product_workspace.css?v=20260820-v21",
+        "/static/product_workspace.js?v=20260820-v40",
+        "/static/disabled_control_hints.js?v=20260729-v2"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\profit_center.html",
+      "relative": "web/profit_center.html",
+      "sha256_physical_bytes": "370bcc1f5571445379d873ea3481da13f9bbdf8c42867897ad980bde2d1b1a6a",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "Orbit 利润中心"
+      ],
+      "assets": [
+        "/static/profit_center.css",
+        "/static/profit_center.js"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\promotions.html",
+      "relative": "web/promotions.html",
+      "sha256_physical_bytes": "52b922590e050821313d204e9d79f65cfb3f27ce47be0516af7dfbe8bafb032d",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "促销工具"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\release.html",
+      "relative": "web/release.html",
+      "sha256_physical_bytes": "998e1030b335ac98b41a092b2391aeb8c4dd81dcd21c2b9de798671e6c828f36",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "Orbit Release Lab · 发布候选测试台"
+      ],
+      "assets": [
+        "/static/release.css",
+        "/static/release.js"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\settlement.html",
+      "relative": "web/settlement.html",
+      "sha256_physical_bytes": "94faecae7bcb034f24a15670d5905ad75aaca56e94f4661a24aeac252b55807c",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "结算利润 · TikTok Shop"
+      ],
+      "assets": [
+        "/static/app.css",
+        "/static/outprofit.js"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\sku_profit.html",
+      "relative": "web/sku_profit.html",
+      "sha256_physical_bytes": "5aaab09c7d1ffb71c55bf65bd388c919ef269b4a08345ef7de1de162599d99f6",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "SKU 利润探针 · TH 试验"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\sourcing.html",
+      "relative": "web/sourcing.html",
+      "sha256_physical_bytes": "60f53bb8b8d263dd1234aa6380470a7c03778f6fef2afd78349773d4462f57c2",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "1688 选品 · 选图工作台"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\titles.html",
+      "relative": "web/titles.html",
+      "sha256_physical_bytes": "8f727f9e0aa0efe6aedfacf0aabf9c3cb0566e07031fa788c2256f424024c5b5",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "Listing 优化"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\uk.html",
+      "relative": "web/uk.html",
+      "sha256_physical_bytes": "e43ac73dc5694dfee952a979fa4d7357e612d9455ff9056fc9b94c6cfb7e7b7f",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "UK 上架审批 · TikTok Shop 控制台"
+      ],
+      "assets": [
+        "/static/app.css"
+      ]
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\workbench.html",
+      "relative": "web/workbench.html",
+      "sha256_physical_bytes": "be8c31fe6d26b602b8e1d67816d290099d33f15600c158a3c3dfe2caf8936f87",
+      "scope": "保留入口，页面内部未重构",
+      "titles": [
+        "Orbit 工作台"
+      ],
+      "assets": []
+    }
+  ],
+  "modified_asset_identity": [
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\index.html",
+      "relative_path": "web/index.html",
+      "base_sha256": "e4a0518dc17e9a2e2fb6876e013d71453647c53faf1ff852d355d9495f32ad47",
+      "current_sha256": "70f67711abdecb3219faec64f25c343af9182662a486aa96360d3a82012f3665",
+      "base_lines": 52,
+      "current_lines": 54,
+      "sha256_lf_git_content": "8e3bc758f7660654183549cae953f5a52525b1f87057763eede6a043531d9dd4"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\product_workspace.html",
+      "relative_path": "web/product_workspace.html",
+      "base_sha256": "cac7d5607eaa1257a2b1a7f01cdfc06b17a4967dfcd3c931dbc5515c32f9a3be",
+      "current_sha256": "d462a201835a47dd4b503de5caf3ca97f158e53f053824d494a3f5a0a2402c44",
+      "base_lines": 556,
+      "current_lines": 595,
+      "sha256_lf_git_content": "1a8b5ba8173a102e1411b0975b9c298477c341bd68fb1fbe81dd2c9667c3cd7a"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\orbit_product.js",
+      "relative_path": "web/static/orbit_product.js",
+      "base_sha256": "aaa8c42005012c4d52fff861ec021ccad8479ac81f8c2be94fae8aaa738704a3",
+      "current_sha256": "54ff459ca2dbf24ae26a64fdbaf6a1887df920c7e1181f59139c52cc04b0e43c",
+      "base_lines": 188,
+      "current_lines": 216,
+      "sha256_lf_git_content": "5eca81042824d04c74610466db3d1b872c2efc0101a2645701658b3bcd3ab6a7"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\orbit_product.css",
+      "relative_path": "web/static/orbit_product.css",
+      "base_sha256": "d03ecf9cfbe47c197a2d4492fb3d3e04f870b2e9049cd8bfcf7c2e67ebb26a6a",
+      "current_sha256": "ffeded723cf0567a9b091d4e2dfe0da02d9ede8b1b9b1ebe6ae471f28d553b3f",
+      "base_lines": 610,
+      "current_lines": 610,
+      "sha256_lf_git_content": "d03ecf9cfbe47c197a2d4492fb3d3e04f870b2e9049cd8bfcf7c2e67ebb26a6a"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\product_workspace.js",
+      "relative_path": "web/static/product_workspace.js",
+      "base_sha256": "d67fb9d78353e00075878c33273dc85b23b9a68b5330930a5cfd0abd23836b59",
+      "current_sha256": "5e3052cf5ae48f051d83bb9f24b4d5ff61cce166d0d4cde869a2b8989ef32521",
+      "base_lines": 10185,
+      "current_lines": 10425,
+      "sha256_lf_git_content": "5e3052cf5ae48f051d83bb9f24b4d5ff61cce166d0d4cde869a2b8989ef32521"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\product_workspace.css",
+      "relative_path": "web/static/product_workspace.css",
+      "base_sha256": "b21c6c58f8845b2445e810a64ac497bf352493d32accb0660bc0bcd02a3ef896",
+      "current_sha256": "58c11c1d444d8d36270c7e562b74f1b98431c28c097f2953e07d616da3d452d6",
+      "base_lines": 2841,
+      "current_lines": 3005,
+      "sha256_lf_git_content": "f15cda6ef0908464d6ddad6e7c1722c953f6363898bb235d51b77cbd035ed551"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\shared_platform\\orbit_registry.py",
+      "relative_path": "shared_platform/orbit_registry.py",
+      "base_sha256": "986354b25dc3c1805503987365457be6019f28faf2ab76db8e7efea6be509fb8",
+      "current_sha256": "8a54e04e6dd09d588b9af2f791ce3f68dd7a5996e9bbe32c4fe2ed732525dab6",
+      "base_lines": 235,
+      "current_lines": 235,
+      "sha256_lf_git_content": "6a9e60b01deb36c91d138ce10083737d1343c37446d61141f74e413a81c2e2ec"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\shared_platform\\runtime_identity.py",
+      "relative_path": "shared_platform/runtime_identity.py",
+      "base_sha256": "95acc5b41b66959797e69e1f0c4cf5314e94dfd6fc86fff541b32be48c34af73",
+      "current_sha256": "2ed5f6828bce4b5695e1a239440cf75ae18816f568a7a34c681e8bd53ec4b3c9",
+      "base_lines": 240,
+      "current_lines": 242,
+      "sha256_lf_git_content": "7874c0397d231ba5c87b5e7f7a44d1937b5ee37311fb2c9608be137c14e397af"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\operations.css",
+      "relative_path": "web/static/operations.css",
+      "base_sha256": null,
+      "current_sha256": "8f2ead8d8833fcfff922d36537e9ef924aaf59d6ec2bce992ebef9f012545cee",
+      "base_lines": 0,
+      "current_lines": 115,
+      "sha256_lf_git_content": "8f2ead8d8833fcfff922d36537e9ef924aaf59d6ec2bce992ebef9f012545cee"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\operations_shell.js",
+      "relative_path": "web/static/operations_shell.js",
+      "base_sha256": null,
+      "current_sha256": "e04cf910fb6fda3c58efc09e78c4e60ab485dac733b2f06e240974d19849457c",
+      "base_lines": 0,
+      "current_lines": 45,
+      "sha256_lf_git_content": "e04cf910fb6fda3c58efc09e78c4e60ab485dac733b2f06e240974d19849457c"
+    }
+  ],
+  "full_file_comparison_to_r4": {
+    "exact_base": "8457cf2246c7520bade525957cba2893a9bf0526",
+    "files": [
+      {
+        "path": "web/index.html",
+        "frozen": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-baseline-recovery-20260905-fixed-00-r4\\restore-check\\main\\web\\index.html",
+          "exists": true,
+          "sha256": "39adf0aae0862f642d2e84c9d0b9a766088506b1870936d7b77dfbda065ffa47"
+        },
+        "current": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\index.html",
+          "sha256": "4123e277d3a0a6efa79302a6dc98d1259eb20a3ef3e3d0436e6eb992040e3147"
+        },
+        "normalized_equal": false,
+        "lines": [
+          212,
+          52
+        ],
+        "diff": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\web__index.html.diff"
+      },
+      {
+        "path": "web/static/orbit_product.js",
+        "frozen": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-baseline-recovery-20260905-fixed-00-r4\\restore-check\\main\\web\\static\\orbit_product.js",
+          "exists": true,
+          "sha256": "8d54bf50acced28085c323b23b6b8b30dcf7a362d2a5f351ccc79331c43ffc23"
+        },
+        "current": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\orbit_product.js",
+          "sha256": "bf3422165b3030f5f6dba14af67526657d92420295b5391107ac2ffb9fc66609"
+        },
+        "normalized_equal": false,
+        "lines": [
+          382,
+          188
+        ],
+        "diff": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\web__static__orbit_product.js.diff"
+      },
+      {
+        "path": "web/static/orbit_product.css",
+        "frozen": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-baseline-recovery-20260905-fixed-00-r4\\restore-check\\main\\web\\static\\orbit_product.css",
+          "exists": true,
+          "sha256": "c3d2fdf7683c96973732cbb81e13160c16c53a586f7e9b9c7b43810e5d30ca9a"
+        },
+        "current": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\orbit_product.css",
+          "sha256": "ffeded723cf0567a9b091d4e2dfe0da02d9ede8b1b9b1ebe6ae471f28d553b3f"
+        },
+        "normalized_equal": false,
+        "lines": [
+          585,
+          610
+        ],
+        "diff": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\web__static__orbit_product.css.diff"
+      },
+      {
+        "path": "web/product_workspace.html",
+        "frozen": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-baseline-recovery-20260905-fixed-00-r4\\restore-check\\main\\web\\product_workspace.html",
+          "exists": true,
+          "sha256": "2f45296ee91b3a6529fdfa61872b50cbc312858c8764b7ad4b9daf7af994335c"
+        },
+        "current": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\product_workspace.html",
+          "sha256": "ad1b61860a8444f5ab166bb981b9de5902dcd587c6523487da9334a29cb30b2a"
+        },
+        "normalized_equal": false,
+        "lines": [
+          865,
+          556
+        ],
+        "diff": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\web__product_workspace.html.diff"
+      },
+      {
+        "path": "web/static/product_workspace.js",
+        "frozen": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-baseline-recovery-20260905-fixed-00-r4\\restore-check\\main\\web\\static\\product_workspace.js",
+          "exists": true,
+          "sha256": "745889b0fb28a9a3c934d2c959227001b56620cfc5a26d46bf071190b167175b"
+        },
+        "current": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\product_workspace.js",
+          "sha256": "0cfee222f7b827268292d3e97706f59414ad3eff364f67ec1a7b109ad1344aa7"
+        },
+        "normalized_equal": false,
+        "lines": [
+          12254,
+          10185
+        ],
+        "diff": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\web__static__product_workspace.js.diff"
+      },
+      {
+        "path": "web/static/product_workspace.css",
+        "frozen": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-baseline-recovery-20260905-fixed-00-r4\\restore-check\\main\\web\\static\\product_workspace.css",
+          "exists": true,
+          "sha256": "e47da0747c88e8a25aaf3dabaf7226808c8dbf459c9dbd4f9319ecc88b86e89c"
+        },
+        "current": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\product_workspace.css",
+          "sha256": "df8a0ba1570409aec1e1acd13e21e26b80a4b7de4e17808312cce6cd7981e68f"
+        },
+        "normalized_equal": false,
+        "lines": [
+          4736,
+          2841
+        ],
+        "diff": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\web__static__product_workspace.css.diff"
+      },
+      {
+        "path": "modules/products/server.py",
+        "frozen": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-baseline-recovery-20260905-fixed-00-r4\\restore-check\\main\\modules\\products\\server.py",
+          "exists": true,
+          "sha256": "56f2bee4e13a1161ac89bd93bf88f35f9e8cbfe9b5f04d0a65c8b4fe310b181c"
+        },
+        "current": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\modules\\products\\server.py",
+          "sha256": "ef45e3cf73812d6cdb3fe3c8c2ad6bb3109f4e8dfd6c2a8a0771d17d9fe0b5b0"
+        },
+        "normalized_equal": false,
+        "lines": [
+          18662,
+          15829
+        ],
+        "diff": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\modules__products__server.py.diff"
+      },
+      {
+        "path": "shared_platform/orbit_registry.py",
+        "frozen": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-baseline-recovery-20260905-fixed-00-r4\\restore-check\\main\\shared_platform\\orbit_registry.py",
+          "exists": true,
+          "sha256": "05cf3af459b61933318661ebfc4f962ca8dc662a6590d9c6300ac3081ab6ac70"
+        },
+        "current": {
+          "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\shared_platform\\orbit_registry.py",
+          "sha256": "cba2d45900564b6a321db6a7573a5e526bf1718946eb5b2b6d91635f278b730a"
+        },
+        "normalized_equal": false,
+        "lines": [
+          216,
+          235
+        ],
+        "diff": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\u00-dense-evidence\\shared_platform__orbit_registry.py.diff"
+      }
+    ]
+  },
+  "comparison_note": "source-differences.current hashes identify the pre-edit 8457cf22 candidate, not final implementation. Final identities are separate above. Full physical file comparison and convention-based function digest preserve evidence; these are not semantic proof of every unmodified line.",
+  "contract_preservation": {
+    "base": "8457cf2246c7520bade525957cba2893a9bf0526",
+    "worktree": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905",
+    "files": [
+      {
+        "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\index.html",
+        "relative_path": "web/index.html",
+        "base_sha256": "e4a0518dc17e9a2e2fb6876e013d71453647c53faf1ff852d355d9495f32ad47",
+        "current_sha256": "70f67711abdecb3219faec64f25c343af9182662a486aa96360d3a82012f3665",
+        "base_lines": 52,
+        "current_lines": 54
+      },
+      {
+        "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\product_workspace.html",
+        "relative_path": "web/product_workspace.html",
+        "base_sha256": "cac7d5607eaa1257a2b1a7f01cdfc06b17a4967dfcd3c931dbc5515c32f9a3be",
+        "current_sha256": "d462a201835a47dd4b503de5caf3ca97f158e53f053824d494a3f5a0a2402c44",
+        "base_lines": 556,
+        "current_lines": 595
+      },
+      {
+        "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\orbit_product.js",
+        "relative_path": "web/static/orbit_product.js",
+        "base_sha256": "aaa8c42005012c4d52fff861ec021ccad8479ac81f8c2be94fae8aaa738704a3",
+        "current_sha256": "54ff459ca2dbf24ae26a64fdbaf6a1887df920c7e1181f59139c52cc04b0e43c",
+        "base_lines": 188,
+        "current_lines": 216
+      },
+      {
+        "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\orbit_product.css",
+        "relative_path": "web/static/orbit_product.css",
+        "base_sha256": "d03ecf9cfbe47c197a2d4492fb3d3e04f870b2e9049cd8bfcf7c2e67ebb26a6a",
+        "current_sha256": "ffeded723cf0567a9b091d4e2dfe0da02d9ede8b1b9b1ebe6ae471f28d553b3f",
+        "base_lines": 610,
+        "current_lines": 610
+      },
+      {
+        "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\product_workspace.js",
+        "relative_path": "web/static/product_workspace.js",
+        "base_sha256": "d67fb9d78353e00075878c33273dc85b23b9a68b5330930a5cfd0abd23836b59",
+        "current_sha256": "5e3052cf5ae48f051d83bb9f24b4d5ff61cce166d0d4cde869a2b8989ef32521",
+        "base_lines": 10185,
+        "current_lines": 10425
+      },
+      {
+        "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\product_workspace.css",
+        "relative_path": "web/static/product_workspace.css",
+        "base_sha256": "b21c6c58f8845b2445e810a64ac497bf352493d32accb0660bc0bcd02a3ef896",
+        "current_sha256": "58c11c1d444d8d36270c7e562b74f1b98431c28c097f2953e07d616da3d452d6",
+        "base_lines": 2841,
+        "current_lines": 3005
+      },
+      {
+        "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\shared_platform\\orbit_registry.py",
+        "relative_path": "shared_platform/orbit_registry.py",
+        "base_sha256": "986354b25dc3c1805503987365457be6019f28faf2ab76db8e7efea6be509fb8",
+        "current_sha256": "8a54e04e6dd09d588b9af2f791ce3f68dd7a5996e9bbe32c4fe2ed732525dab6",
+        "base_lines": 235,
+        "current_lines": 235
+      },
+      {
+        "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\shared_platform\\runtime_identity.py",
+        "relative_path": "shared_platform/runtime_identity.py",
+        "base_sha256": "95acc5b41b66959797e69e1f0c4cf5314e94dfd6fc86fff541b32be48c34af73",
+        "current_sha256": "2ed5f6828bce4b5695e1a239440cf75ae18816f568a7a34c681e8bd53ec4b3c9",
+        "base_lines": 240,
+        "current_lines": 242
+      },
+      {
+        "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\operations.css",
+        "relative_path": "web/static/operations.css",
+        "base_sha256": null,
+        "current_sha256": "8f2ead8d8833fcfff922d36537e9ef924aaf59d6ec2bce992ebef9f012545cee",
+        "base_lines": 0,
+        "current_lines": 115
+      },
+      {
+        "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-u00-dense-20260905\\web\\static\\operations_shell.js",
+        "relative_path": "web/static/operations_shell.js",
+        "base_sha256": null,
+        "current_sha256": "e04cf910fb6fda3c58efc09e78c4e60ab485dac733b2f06e240974d19849457c",
+        "base_lines": 0,
+        "current_lines": 45
+      }
+    ],
+    "function_boundaries": "two-space top-level function convention; syntax checked separately, not semantic equivalence proof",
+    "original_function_count": 223,
+    "current_function_count": 236,
+    "unchanged_functions": [
+      "addToQueue",
+      "adoptShopeeCategoryProjection",
+      "adoptTitleCandidate",
+      "adoptWorkflowDashboard",
+      "approvalEligible",
+      "approveReleasePlan",
+      "approvedPublishSnapshotIdentity",
+      "awaitsOfficialReadback",
+      "boundedJsonFetch",
+      "cancelCollectboxActionTimer",
+      "cancelOneClickTimer",
+      "captureProductFactsDraft",
+      "channelPriceLine",
+      "collectboxActionErrorText",
+      "collectboxActionIdentity",
+      "collectboxErrorShape",
+      "collectboxPlatformState",
+      "collectboxTargetFailureText",
+      "collectboxTargetOutcomeState",
+      "collectboxWriteClass",
+      "collectboxWriteClassAllowed",
+      "commonNeedsReadbackReconciliation",
+      "commonSpecLabelApplication",
+      "compactDigest",
+      "currentOneClickNextAction",
+      "currentReleaseBody",
+      "currentReleaseTarget",
+      "dashboardFromPayload",
+      "effectiveFirstReviewImagePlan",
+      "embeddedImageRows",
+      "ensureApprovedPublishSnapshotContexts",
+      "ensureCollectboxAction",
+      "ensureOneClickExecution",
+      "ensureShopeeCategoryDecisionReview",
+      "ensureShopeeGlobalPlanReview",
+      "exactObjectKeys",
+      "focusFirstControl",
+      "focusOneClickTarget",
+      "friendlyError",
+      "handleShopeeCategoryDecisionClick",
+      "hydrateUnloadedQueueProducts",
+      "imageType",
+      "isCurrentOneClickAttempt",
+      "isExplicitPreSubmitFailure",
+      "isStateRevisionConflict",
+      "isZeroWritePreSubmitEvidence",
+      "loadLocalizedImageResults",
+      "maskedToken",
+      "miaoshouDraftOnlyState",
+      "missingProductError",
+      "nullableDigest",
+      "oneClickActionText",
+      "oneClickAuthorityAvailable",
+      "oneClickContractError",
+      "oneClickDigest",
+      "oneClickIdentity",
+      "oneClickObservationWarningForm",
+      "oneClickProjection",
+      "oneClickProjectionDigest",
+      "oneClickPromotionPrerequisite",
+      "oneClickReasonText",
+      "oneClickRuleId",
+      "oneClickSourceIdentityDigest",
+      "oneClickStatusText",
+      "oneClickTargetBucket",
+      "overwriteMiaoshou",
+      "platformPublishErrorMessage",
+      "pollCollectboxActionStatus",
+      "pollOneClickStatus",
+      "pollPublicationReport",
+      "postProductWorkspace",
+      "postReleaseAction",
+      "prepareMiaoshou",
+      "preparedMiaoshouMessage",
+      "previewShopeePriceRepair",
+      "previewTargetScopedAction",
+      "productFactsReady",
+      "productKey",
+      "publishSelectedTargets",
+      "queueItem",
+      "readQueue",
+      "reconcileOneClickAcceptance",
+      "reconcileShopeeCategoryDecision",
+      "reconcileShopeePriceRepair",
+      "refreshDashboardAfterOneClickTerminal",
+      "refreshOneClickDashboard",
+      "refreshShopeeGlobalPlanAfterCategory",
+      "releaseRunCounts",
+      "releaseRunLabel",
+      "releaseTargetCssClass",
+      "releaseTargetDetail",
+      "releaseTargetDisposition",
+      "releaseTargetGroups",
+      "releaseTargetLabel",
+      "render",
+      "renderApproval",
+      "renderChannels",
+      "renderCollectboxTargetOutcomes",
+      "renderCommonOverwrite",
+      "renderFieldImpactSummary",
+      "renderFirstReviewImagePlan",
+      "renderImages",
+      "renderLocalizedImageResults",
+      "renderProduct",
+      "renderReleaseRecovery",
+      "renderStages",
+      "requestCollectboxActionPreview",
+      "requestOneClickPreview",
+      "requestShopeeCategoryDecisionPreview",
+      "requestShopeeGlobalPlanPreview",
+      "resetAllPlatformPublish",
+      "resetCollectboxAction",
+      "resetOneClickExecution",
+      "resetPlatformPublish",
+      "resetShopeeCategoryDecisionReview",
+      "resetShopeeGlobalPlanReview",
+      "resetTestOffer",
+      "restoreProductFactsDraft",
+      "retryOneClickReadOnly",
+      "routeOneClickNextAction",
+      "runCollectboxPrimaryAction",
+      "runLegacyReleasePrimaryAction",
+      "runOzonReleaseAction",
+      "runReleasePrimaryAction",
+      "runShopeeGlobalReleaseAction",
+      "runTiktokReleaseAction",
+      "sameSortedValues",
+      "sameTargetSet",
+      "saveDirtyProductFactsBeforeAction",
+      "saveEmbeddedImageReview",
+      "saveQueue",
+      "scheduleCollectboxActionStatus",
+      "scheduleOneClickStatusPoll",
+      "schedulePublicationReportPoll",
+      "selectedShopeeCategoryOption",
+      "setBadge",
+      "setLoading",
+      "setPendingPublicationTargets",
+      "setShopeePriceRepairState",
+      "shopeeCategoryDecisionAllowsFinalApproval",
+      "shopeeCategoryDecisionCanCollectSelection",
+      "shopeeCategoryDecisionPanel",
+      "shopeeCategoryDecisionRequired",
+      "shopeeCategoryOptionLabel",
+      "shopeeGlobalControlCard",
+      "shopeeGlobalPlanBlockerText",
+      "shopeeGlobalPlanIdentity",
+      "shopeeGlobalPlanPanel",
+      "shopeeGlobalPlanRecoveryRequired",
+      "shopeeGlobalPlanRequired",
+      "shopeeGlobalPlanReviewRequired",
+      "shopeeGlobalWriteCountText",
+      "shopeePriceRepairEligible",
+      "shopeePriceRepairKey",
+      "shopeePriceRepairLifecycle",
+      "shopeePriceRepairPanel",
+      "shopeePriceRepairState",
+      "shopeeRequiredAttributeMarkup",
+      "shopeeRequiredAttributesComplete",
+      "showError",
+      "sourceSkuOptions",
+      "stageModel",
+      "submitApproval",
+      "submitFactsEdit",
+      "submitManualTargetVerification",
+      "submitOneClickObservationAcceptance",
+      "submitShopeeCategoryDecision",
+      "submitShopeeGlobalPlanApproval",
+      "submitShopeePriceRepair",
+      "submitTargetScopedAction",
+      "syncCurrentUrl",
+      "syncShopeeGlobalPlanApprovalConsent",
+      "targetDisplayName",
+      "targetFailureEvidence",
+      "targetHasExternalOutcome",
+      "targetNamesForLedger",
+      "targetScopedActionPanel",
+      "translateBlocker",
+      "updateApprovalButton",
+      "updatePublicationScopeControls",
+      "updateReleaseControls",
+      "updateShopeeCategoryDraft",
+      "updateShopeeGlobalPlanApprovalConsent",
+      "validOfferId",
+      "validateApprovedShopeeGlobalPlan",
+      "validateCollectboxPlatform",
+      "validateCollectboxProjection",
+      "validateOneClickDispatchLedger",
+      "validateOneClickObservationWarning",
+      "validateOneClickProjection",
+      "validateShopeeCategoryDecisionProjection",
+      "validateShopeeGlobalPlanApprovalResponse",
+      "validateShopeeGlobalPlanCandidate",
+      "validateShopeeGlobalPlanPreview"
+    ],
+    "changed_functions": [
+      {
+        "name": "money",
+        "before": {
+          "line": 497,
+          "sha256": "78d679d50226c047037393484d10499699b04396588c15b3e688727597dc647f"
+        },
+        "after": {
+          "line": 501,
+          "sha256": "5fd5e4783ed8bdd87f4ed8f21625eaf5a05f1d5e74a0d19092d0929800212fe5"
+        }
+      },
+      {
+        "name": "localMoney",
+        "before": {
+          "line": 507,
+          "sha256": "0af86c0d71bed6d680bca4a35f7ef7ebf2af11b7e30a9210932c67d458fe64d5"
+        },
+        "after": {
+          "line": 512,
+          "sha256": "9b596bc8a990e30fc179296678fe6f56ca3fffd55be98a083364d7bf17eab052"
+        }
+      },
+      {
+        "name": "renderFailure",
+        "before": {
+          "line": 579,
+          "sha256": "e67e6feefeacc16c31646fa63c8bef6de94ebd9dc76af691cefe03420cec6f08"
+        },
+        "after": {
+          "line": 585,
+          "sha256": "d54337411f0f851de73f3b1bfc6d0ff4d8f3b533735c0fbfb422246093509283"
+        }
+      },
+      {
+        "name": "fetchDashboard",
+        "before": {
+          "line": 681,
+          "sha256": "9475fda4ae788d802c2de952a9709ab5e36c0361dee3d685871fa1b8d1837ee8"
+        },
+        "after": {
+          "line": 694,
+          "sha256": "cb33739992005b16189e53581746ba49c12c65f8bd8242e1b7b6dbb8ed00f89c"
+        }
+      },
+      {
+        "name": "renderCollectboxAction",
+        "before": {
+          "line": 1342,
+          "sha256": "b67becbc991a15783984be40e2171ecd611c8f4d7c5f214095d58606d6a7356e"
+        },
+        "after": {
+          "line": 1358,
+          "sha256": "4fc4bd3585692dad507ce1a3632fc70441c52e665c67c50680ae62a66ccffb9e"
+        }
+      },
+      {
+        "name": "renderOneClickExecution",
+        "before": {
+          "line": 4432,
+          "sha256": "2acc24b2b3eb71ca90db38351849d394b9616ae51b3486990c830182e12d895b"
+        },
+        "after": {
+          "line": 4449,
+          "sha256": "2fdbb972ede8f1eb65bb3b3f05fddfe159f0745a4fcc16e1b149234e755d2a87"
+        }
+      },
+      {
+        "name": "collectProduct",
+        "before": {
+          "line": 5004,
+          "sha256": "337c7a420a39e44f43abca68b2b9e030422f9ed03cf4aa177912133ecb258245"
+        },
+        "after": {
+          "line": 5021,
+          "sha256": "f39f7df4b9e2280c6b3e3e0744881f69c60288f7f20bd0a1f8f1ed4fd7f5c72d"
+        }
+      },
+      {
+        "name": "queueSummary",
+        "before": {
+          "line": 5138,
+          "sha256": "fcd3e7bb2b73be1ab6626390d168ee5ac8d989a69d971ba9c42d9c2405808ac0"
+        },
+        "after": {
+          "line": 5159,
+          "sha256": "5c64f1c8c29b3ae4954cd9a43b2556bf7514a812f8d1665a5cee16b4bc68c8a9"
+        }
+      },
+      {
+        "name": "renderQueue",
+        "before": {
+          "line": 5172,
+          "sha256": "0ca41f0aa8ebb8eb0aa4f40ed5fc010926a03f911679b69be40f84aabd920a29"
+        },
+        "after": {
+          "line": 5235,
+          "sha256": "31cf34a8f7d29b1823bcb1766aca3ffe7a500b00739cafea840ad048c68fb0c7"
+        }
+      },
+      {
+        "name": "renderFactsEditor",
+        "before": {
+          "line": 5456,
+          "sha256": "15c81800c02bc74094edf0b364b28a6041ae9e4ada5d3e4db0a59e9bc7b41638"
+        },
+        "after": {
+          "line": 5575,
+          "sha256": "d406635e05073143b0749846bd973c964e3816f3c698bbed709f0236d63b0e27"
+        }
+      },
+      {
+        "name": "renderTitleDraft",
+        "before": {
+          "line": 5653,
+          "sha256": "51381ee6486ce5b1bc6b5bb05aa2feea82ac4ac2129b113eed5d195f41df2957"
+        },
+        "after": {
+          "line": 5773,
+          "sha256": "4e076adca1b42f96925b48fd04df977f8c6e8286026bc99ef34ac101371c0d0d"
+        }
+      },
+      {
+        "name": "generateTitleDraft",
+        "before": {
+          "line": 5762,
+          "sha256": "9b9bd8d7352eb3928346416a37c9c5274831f2b0f713629f4aca448346b67d21"
+        },
+        "after": {
+          "line": 5886,
+          "sha256": "ed8d4b1836280eb19b364515abd9e752aca3b21e9e45f005b4e53bc15663326c"
+        }
+      },
+      {
+        "name": "updateFactsEditControls",
+        "before": {
+          "line": 5988,
+          "sha256": "182b274978f955341c9e5ed8a61cb6978a32ebd619b95d190587eb26d6362a93"
+        },
+        "after": {
+          "line": 6117,
+          "sha256": "ed0c40fe77f53ec598b36b26b134608b675b74a9fd7138f86c22130cfd988381"
+        }
+      },
+      {
+        "name": "renderNextStep",
+        "before": {
+          "line": 6302,
+          "sha256": "405e48392d696c93f64f8eedef654d1260c8d5e4116ec766ef6d747bd0bfaa0a"
+        },
+        "after": {
+          "line": 6432,
+          "sha256": "421e213d7d9803e79692f1df56cf40d87b35480512b30db3d41d042ccab1b560"
+        }
+      },
+      {
+        "name": "runWorkflowNextAction",
+        "before": {
+          "line": 6490,
+          "sha256": "3e6b2c8e4c9d6b61358c0cec58bcee5755f6031d3e1d25a27a66c53ad8ddbca8"
+        },
+        "after": {
+          "line": 6624,
+          "sha256": "42311cef1909622db2b9ea6420968787c98d8c7ab0ae0ccbd8457f7edef72aad"
+        }
+      },
+      {
+        "name": "updateEmbeddedImageReviewControls",
+        "before": {
+          "line": 6587,
+          "sha256": "219ca42014324eb40e7edb6a634d4f2d8e13d2d248a262efaa6faa17615ff6fc"
+        },
+        "after": {
+          "line": 6723,
+          "sha256": "e3a71b96055641101b7ae3615e1ee6eac945bb787445540cd5969f62d4bf148d"
+        }
+      },
+      {
+        "name": "renderEmbeddedImageReview",
+        "before": {
+          "line": 6606,
+          "sha256": "f746d82d61af2256031a81b7838456db5d8aec6a3cd0cf6fdcf29e74c27d827b"
+        },
+        "after": {
+          "line": 6743,
+          "sha256": "5aa1b33722b8a453326e2d79b14578869b6d5580530954314d5a8b5144037e5d"
+        }
+      },
+      {
+        "name": "loadEmbeddedImageReview",
+        "before": {
+          "line": 6658,
+          "sha256": "72eb223bc9afba705a0eb14a246c13fffbc4326e6353026e540f4b664e0b041f"
+        },
+        "after": {
+          "line": 6801,
+          "sha256": "9e5be7c57687ec1ed1e6770607110e8d00abb9957e6894b9e8fae964cb57868f"
+        }
+      },
+      {
+        "name": "renderPublicationScope",
+        "before": {
+          "line": 7047,
+          "sha256": "191e100327cdb6b9d9a7fff5695a8f5924d245b9f88248c0488d0b2e55f2b5b3"
+        },
+        "after": {
+          "line": 7195,
+          "sha256": "20c0790a103fde4b092b52efa4210bf24e1d462b3fe3dca425291a53dac7e2f0"
+        }
+      },
+      {
+        "name": "renderPricingReview",
+        "before": {
+          "line": 7096,
+          "sha256": "56d23136dfbce04c519b4838d2c3dc273c7da739d033369cd7c8c0349864d67e"
+        },
+        "after": {
+          "line": 7246,
+          "sha256": "1efda10d3e26e6b204199d01c7274157ab59aef4826f611d7ebe79ecadfa9093"
+        }
+      },
+      {
+        "name": "runReleaseRecovery",
+        "before": {
+          "line": 8018,
+          "sha256": "1ee5e9adaf248378ab1f98cda2d12094ea973e4bfc6be81f5eab6ceb14c2962e"
+        },
+        "after": {
+          "line": 8169,
+          "sha256": "387814946d35d1cda57684dfd1cd47402bd77eeaf2f3793810aa14dc17d679bf"
+        }
+      },
+      {
+        "name": "updateReleasePrimaryAction",
+        "before": {
+          "line": 8069,
+          "sha256": "615de5849dbcb3272cd25e1b39ef5d678a8ad4114b7e9b85274f3c9c1dae23a4"
+        },
+        "after": {
+          "line": 8261,
+          "sha256": "00fe2b70f9b2ab8fc363e51c8ccc3954a93f913558753043f29e192b2bd356b8"
+        }
+      },
+      {
+        "name": "renderReleaseV1",
+        "before": {
+          "line": 8379,
+          "sha256": "2011335031d7e893217125868ff1769abff53ca6263bcd5cb26e0a9158416290"
+        },
+        "after": {
+          "line": 8572,
+          "sha256": "ca27d4c6fa765e449c30c27b219d3b16043fe8987b843debd9922ea93c08c9ac"
+        }
+      },
+      {
+        "name": "publishPlatformBatch",
+        "before": {
+          "line": 9425,
+          "sha256": "5ea8950e1504f7e00e68ffa4a715627b4279395c847a8c54fb28ce272db42d3e"
+        },
+        "after": {
+          "line": 9630,
+          "sha256": "ce2917d638f18d4fcf42919727d07ca50748a5b34426033609ceea2ead349fd4"
+        }
+      },
+      {
+        "name": "clearCurrentApprovalContext",
+        "before": {
+          "line": 9576,
+          "sha256": "2087af44e6b94a8d5bbccb5719116393326e42aebf6767b492bf826f0fd53fb0"
+        },
+        "after": {
+          "line": 9786,
+          "sha256": "6a9b0a267c4e07cf3672783e329480f5edb3e8ab238b8b0cbb48c7e4ede82bd4"
+        }
+      },
+      {
+        "name": "refreshQueueProduct",
+        "before": {
+          "line": 9590,
+          "sha256": "38f0d15e3a3b348d8c3a561a1b65c7a45eaa750ff8cbfc984d54947ed10a3a25"
+        },
+        "after": {
+          "line": 9811,
+          "sha256": "c0452a0df19a51aeaed0e1630dc220a7da369997c7d58ff99f762f0fa768c775"
+        }
+      },
+      {
+        "name": "selectQueueProduct",
+        "before": {
+          "line": 9674,
+          "sha256": "6389e5164fb20d39c7430fdb882f9ef389a16ec702e6a09396a6f8c5a95a6cc0"
+        },
+        "after": {
+          "line": 9895,
+          "sha256": "573dbe90598248f0969a25b0283899a5fa486ce9a33ab0f0898e776bf7cab57c"
+        }
+      },
+      {
+        "name": "addAndOpenCurrentInput",
+        "before": {
+          "line": 9698,
+          "sha256": "a71b52bfa974be8d37e42eb3702d0b04f5bf6521a033631cb69527532692d8c0"
+        },
+        "after": {
+          "line": 9920,
+          "sha256": "13d392ad07cac92cef5d1106f918907547152b01842fffb31cd5eee2081c9800"
+        }
+      },
+      {
+        "name": "refreshAllQueueProducts",
+        "before": {
+          "line": 9712,
+          "sha256": "7024e0cb9aac6ea8b2edd2b12e4c89534a8a4b2997b75763aeb39dd1c8c798c3"
+        },
+        "after": {
+          "line": 9935,
+          "sha256": "9c5481abd47fb5c0e45e6f826acf8cc47ae6cb48862faa43a80f25a831991503"
+        }
+      }
+    ],
+    "removed_functions": [],
+    "added_functions": [
+      "canLeaveCurrentProduct",
+      "discardCurrentProductDraft",
+      "filteredQueueItems",
+      "platformPublicationBlocker",
+      "queueIdentityRows",
+      "queueInteractionBusy",
+      "queueTargetText",
+      "removeQueueProducts",
+      "revealProductControl",
+      "showProductSelection",
+      "showProductTab",
+      "undoQueueRemoval",
+      "updateDraftDiscardControl"
+    ],
+    "removed_api_literals": [],
+    "added_api_literals": [],
+    "api_literals": [
+      "/api/product-flow/content-package/finalize",
+      "/api/product-flow/content-package/localized-image-review",
+      "/api/product-flow/content-package/review",
+      "/api/product-flow/preview",
+      "/api/product-workspace/approve",
+      "/api/product-workspace/channel-category-decision",
+      "/api/product-workspace/channel-category-decision-preview",
+      "/api/product-workspace/collect",
+      "/api/product-workspace/collectbox-action/preview",
+      "/api/product-workspace/collectbox-action/start",
+      "/api/product-workspace/collectbox-action/status",
+      "/api/product-workspace/dashboard",
+      "/api/product-workspace/facts",
+      "/api/product-workspace/miaoshou-draft/commit",
+      "/api/product-workspace/publication-report",
+      "/api/product-workspace/publish-ozon",
+      "/api/product-workspace/publish-preview",
+      "/api/product-workspace/publish-shopee-global",
+      "/api/product-workspace/publish-status",
+      "/api/product-workspace/publish-tiktok",
+      "/api/product-workspace/release-plan/approve",
+      "/api/product-workspace/release-target/",
+      "/api/product-workspace/release-target/manual-verify",
+      "/api/product-workspace/release-target/shopee-price-repair",
+      "/api/product-workspace/release-target/shopee-price-repair-preview",
+      "/api/product-workspace/release-target/target-scoped-action",
+      "/api/product-workspace/release-target/target-scoped-action-preview",
+      "/api/product-workspace/reset-test-offer",
+      "/api/product-workspace/shopee-global-plan-approval",
+      "/api/product-workspace/shopee-global-plan-preview",
+      "/api/product-workspace/title-adopt",
+      "/api/product-workspace/title-draft",
+      "/api/proxy-image"
+    ],
+    "removed_control_ids": [],
+    "duplicate_ids": []
+  },
+  "consumers": [
+    {
+      "feature": "工作台/七域/知识工具",
+      "ui": "/ 与 /?view=<区域>",
+      "source": "web/static/orbit_product.js",
+      "consumer": "GET /api/orbit/entry-catalog; GET /api/orbit/navigation; runtime identity only",
+      "fields": [
+        "regions",
+        "capabilities",
+        "tools",
+        "flow",
+        "runtime identity"
+      ],
+      "disposition": "保留29项首审能力和12工具目录；高密度列表、简短关联流程；不将目录状态当业务完成。"
+    },
+    {
+      "feature": "任务/报告集合",
+      "ui": "/?view=tasks, /?view=audit; 首页按需按钮",
+      "source": "web/static/orbit_product.js",
+      "consumer": "GET /api/orbit/inbox?limit=50; GET /api/orbit/report-runs?limit=50",
+      "fields": [
+        "period",
+        "status",
+        "quality"
+      ],
+      "disposition": "只读按需读取；查询、空、503分别显示，不调用会读token的 /api/status。"
+    },
+    {
+      "feature": "商品队列/选择/刷新",
+      "ui": "/product-workspace",
+      "source": "web/static/product_workspace.js",
+      "consumer": "GET /api/product-workspace/dashboard?offer_id=...; ordinary collectIfMissing:false",
+      "fields": [
+        "product.offer_id",
+        "seller_sku_candidate",
+        "revision",
+        "title",
+        "selected_sku_keys",
+        "sku_commercial_facts",
+        "workflow_next_action",
+        "content.image_count"
+      ],
+      "disposition": "URL明确选择优先；无URL不选历史首项、不自动刷新队列、不采集。每次响应校验Offer；慢A不可覆盖B。库存字段缺失显示待核对并链接供应，成本0与null分别处理。"
+    },
+    {
+      "feature": "浏览器队列批选/导出/移出",
+      "ui": "搜索/筛选/选择范围/批量栏/撤销",
+      "source": "web/static/product_workspace.js",
+      "consumer": "只读批刷 dashboard；其余仅 localStorage/Clipboard/Blob下载",
+      "fields": [
+        "selected offer_id/seller_sku",
+        "hidden selected count"
+      ],
+      "disposition": "0选择隐藏批量栏，撤销独立可达；不调用 reset-test-offer；导出不含批准令牌。旧 resetTestOffer 定义保留但普通UI无调用。"
+    },
+    {
+      "feature": "商品事实/审批",
+      "ui": "事实页签",
+      "source": "web/static/product_workspace.js",
+      "consumer": "现有 facts/approve 及标题采用、审核消费者和身份校验原位保留（全部 API 字面量见 contract_preservation.api_literals）",
+      "fields": [
+        "expected_revision",
+        "product_revision",
+        "locked_fields",
+        "approval",
+        "fact_evidence"
+      ],
+      "disposition": "未保存阻止切换/刷新/移出；新增本地确认放弃恢复最后读取事实/图片决定；取消保留草稿；409保留编辑。仅导航动作不隐式保存或批准。"
+    },
+    {
+      "feature": "图片选择/本地化结果",
+      "ui": "图片页签；既有 AI image studio 链接",
+      "source": "web/static/product_workspace.js",
+      "consumer": "GET /api/product-flow/preview; existing embedded-image/localized-image/proxy consumers",
+      "fields": [
+        "preview.offer_id",
+        "preview.revision",
+        "image decisions",
+        "content.image_count",
+        "source assets",
+        "localized results"
+      ],
+      "disposition": "真实 preview 合同顶层 offer_id 必须与 cleanOfferId 严格相等后才能采用/保存副本，缺失或错商品拒绝；既有保存/审核消费者保留；加载错误可见且保留选择；503退出保存/SKU loading。新图生成依赖当前R2/付费上下文接线，不冒称就绪。"
+    },
+    {
+      "feature": "付费标题生成",
+      "ui": "事实文案区",
+      "source": "web/static/product_workspace.js",
+      "consumer": "generateTitleDraft 原消费者保留但当前入口明确禁用",
+      "fields": [
+        "listing_copy",
+        "approved frozen product identity"
+      ],
+      "disposition": "当前候选未接付费调用上下文；显示需接通后使用，保持现有候选/采用入口。不把旧ToAPI入口改名宣称已接新提供方。"
+    },
+    {
+      "feature": "店铺/定价",
+      "ui": "店铺售价与目标页签",
+      "source": "web/static/product_workspace.js",
+      "consumer": "dashboard publication_scope/pricing_review; existing governed category/price consumers",
+      "fields": [
+        "available_targets",
+        "selected_labels",
+        "pricing_review.target_pricing",
+        "store_prices",
+        "currency"
+      ],
+      "disposition": "全选数量由真实可用范围生成；不扩目标、不把缺折扣/售价/利润变0；明细显示币种与来源。"
+    },
+    {
+      "feature": "逐目标账本/历史回读",
+      "ui": "批准与回读页签",
+      "source": "web/static/product_workspace.js",
+      "consumer": "dashboard release_v1.run.targets plus existing governed recovery functions",
+      "fields": [
+        "plan_id",
+        "run_id",
+        "target_label",
+        "status",
+        "attempts",
+        "external_id",
+        "readback",
+        "submission",
+        "latest_failure_evidence"
+      ],
+      "disposition": "解除隐藏账本的 operator-clutter 和 unifiedAuthority 隐藏逻辑；无当前计划仍保留历史记录。历史不授予当前批准；null attempts 显示未记录；0保留0；JSON证据转义可查看。"
+    },
+    {
+      "feature": "逐平台202发布消费者",
+      "ui": "TikTok/Shopee全球商品/Ozon按钮",
+      "source": "web/static/product_workspace.js",
+      "consumer": "POST /api/product-workspace/publish-tiktok; publish-shopee-global; publish-ozon",
+      "fields": [
+        "offer_id",
+        "seller_sku",
+        "product_revision",
+        "payload_digest",
+        "targets_digest",
+        "publication_targets",
+        "plan_id",
+        "confirmation_token"
+      ],
+      "disposition": "沿用 currentReleaseBody 和服务端批准合同；新增按当前不可变plan_id账本的UI+函数前置阻断。成功/未知/执行中或同平台混合记录不能整个平台重发，不偷偷裁目标；其他计划历史不误伤当前候选，独立全PENDING平台保留。报告/恢复入口保留，当前页提交后需核对记录。"
+    },
+    {
+      "feature": "退役旧发布/其他业务页",
+      "ui": "旧URL/历史页面短入口",
+      "source": "modules/products/server.py (read only)",
+      "consumer": "POST /api/product-workspace/publish returns HTTP410; other explicit legacy consumers unchanged",
+      "fields": [],
+      "disposition": "未接回退役写入口；原标题/图片/MX/UK、catalog/cost、供应等真实路径仍可达。其内部页面重构另包，不称全系统完成。"
+    }
+  ],
+  "image_identity_contract": {
+    "proxy": "modules/products/server.py:13359-13445",
+    "read_route": "modules/sourcing/new_product_server.py:433-436 allow_precollect=False",
+    "producer": "modules/sourcing/new_product_workbench.py:6138-6144 returns top-level offer_id and revision",
+    "consumer": "web/static/product_workspace.js loadEmbeddedImageReview validates requestId then exact offer_id before adopting preview/saved copy",
+    "existing_read_side_effect_note": "build_preview:6052-6061 may call get_exchange_rates(force_refresh=False) when no saved FX. Production proxy still targets8766. The fixture replaces preview and never calls this producer or8766; no claim that the production GET has zero network activity."
+  },
+  "unchanged_source_discovery": {
+    "inventory_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\frontend-density-prep\\source-inventory.json",
+    "pages": 23,
+    "files": 46,
+    "literal_consumers": 202,
+    "route_conditions": 258
+  },
+  "semantic_merge": [
+    "Apply this focused diff on 8457cf22; never replace complete product_workspace.js or server.py with frozen r4 copies.",
+    "Keep all current approval, immutable identity, category, Shopee/Ozon, polling and target recovery contracts; all 223 original top-level function names and API literals/control IDs remain.",
+    "Merge B4B changes by affected function: renderReleaseV1/updateReleasePrimaryAction/publishPlatformBatch are deliberate overlap. New UI guard must consume current snapshot evidence from the future composed projection.",
+    "S02-B/U02 paid context and R2 consumers are separate integration work; do not re-enable disabled title generation before actual connection and validation.",
+    "D00 remains clean on 8457cf22; no native WebView validation or packaging claimed.",
+    "Root-provided Sep5 video addendum: original outputs/660003_replica_compare_site commit197f4ed8580f5dd79996dd825fab9b57b5ee38a6 is newer than r4; preserve launcher/8788 per-rank video links. No access/change/start/stop to3000/8788 in this package."
+  ],
+  "limitations": [
+    "Only homepage/seven-region entry presentation and product workspace rebuilt; other business pages remain for subsequent packages.",
+    "No real stock quantity exists in this dashboard projection. No zero-stock display scenario fabricated; tested cost0 versus null and inventory unknown.",
+    "Browser evidence is installed Chrome, not native WebView. Generated ReleaseStore records/readback are fixture evidence only, never proof of actual publication.",
+    "Real Handler and product view projection used with bounded release dashboard/authority/image-plan fixture substitutions; no provider or business database access.",
+    "No installation, paid generation, actual credential read, platform write, production restart, push, or deployment."
+  ]
+}

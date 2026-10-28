@@ -573,7 +573,16 @@ def evaluate_publication_quality_evidence(
     locales = locales if isinstance(locales, Mapping) else {}
     role_sets = pack.get("brand_role_sets")
     role_sets = dict(role_sets) if isinstance(role_sets, Mapping) else {}
-    round1_plan = round1.get("image_plan") if isinstance(round1, Mapping) else None
+    from shared_platform.publication_gallery_contract import effective_image_plan, validate_gallery_documents
+    try:
+        gallery = validate_gallery_documents(documents, bridge)
+        round1_plan = effective_image_plan(documents['first_review'], documents['generation_result'], round1=round1)
+        gallery_ok = gallery['status'] == 'PASSED'
+    except (ValueError, TypeError, KeyError):
+        gallery_ok = False
+        round1_plan = None
+    _check(checks, errors, 'GALLERY_DISTINCT_QUALIFIED_ROLE_COVERAGE', gallery_ok,
+           '图库未满足专用品类规则或默认每品牌七张独立合格图，或冻结角色及真实素材路由不完整。')
     if isinstance(round1_plan, Mapping):
         frozen_roles: dict[str, list[str]] = {}
         for brand_plan in round1_plan.get("brand_plans") or ():

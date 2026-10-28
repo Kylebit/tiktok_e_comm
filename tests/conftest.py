@@ -8,6 +8,8 @@ stable runtime pointer or data root.
 import os
 from pathlib import Path
 
+import pytest
+
 from scripts.regression_run_envelope import (
     EnvelopeError,
     configure_test_operations_environment,
@@ -23,3 +25,25 @@ try:
     configure_test_operations_environment(os.environ)
 except EnvelopeError as exc:
     raise RuntimeError(f"invalid regression envelope environment: {exc}") from exc
+
+
+@pytest.fixture(autouse=True)
+def isolate_synthetic_settings_process():
+    """A test case may bind once; the next case gets an empty process cache.
+
+    Production settings remain immutable within a process. Resetting only at
+    test boundaries prevents another synthetic fixture's path being inherited.
+    """
+    from core import config
+
+    def clear():
+        config._cache = None
+        config._cache_source = None
+        config._cache_source_stat = None
+        config._cache_explicit_source = None
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()

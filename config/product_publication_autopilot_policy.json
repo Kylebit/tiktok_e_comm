@@ -1,0 +1,99 @@
+{
+  "schema_version": "autopilot-policy/v1",
+  "policy_id": "orbit-product-publication-default-v1",
+  "status": "ACTIVE",
+  "language": "zh-CN",
+  "authority": {
+    "kind": "standing_user_instruction",
+    "approved_by": "Kyle",
+    "approved_at": "2026-08-21",
+    "scope": "商品发布中间准备步骤自动执行，正式渠道发布前必须进行唯一最终审核"
+  },
+  "automatic_steps": [
+    "fact_normalization",
+    "category_candidate_resolution",
+    "title_and_copy_generation",
+    "pricing_compilation",
+    "brand_image_generation",
+    "image_quality_assurance",
+    "image_translation",
+    "translation_quality_assurance",
+    "miaoshou_common_baseline_sync",
+    "zero_write_release_simulation",
+    "final_release_candidate_compilation"
+  ],
+  "paid_models": {
+    "provider": "lingshi",
+    "allowed_purposes": [
+      "title_and_copy_generation",
+      "brand_image_generation",
+      "image_quality_assurance",
+      "image_translation",
+      "translation_quality_assurance",
+      "regional_copy_repair"
+    ],
+    "maximum_confirmed_requests_per_product": 40,
+    "unknown_outcome_policy": "STOP_AND_RECONCILE",
+    "automatic_paid_retry": true,
+    "maximum_automatic_paid_retries_per_task": 3,
+    "retry_requires": [
+      "KNOWN_FAILED_OUTCOME",
+      "EXACT_FAILED_ASSET",
+      "DURABLE_RETRY_ATTEMPT"
+    ]
+  },
+  "miaoshou": {
+    "common_baseline_sync_allowed": true,
+    "maximum_confirmed_writes_per_product": 1,
+    "requires_exact_readback": true,
+    "marketplace_draft_or_publish_not_authorized": true
+  },
+  "write_budgets": {
+    "TIKTOK": {"shared_maximum": 1, "per_target_maximum": 3},
+    "SHOPEE": {"shared_maximum": 3, "per_target_maximum": 9},
+    "OZON": {"shared_maximum": 2, "per_target_maximum": 0}
+  },
+  "write_budget_overrides": {
+    "3956742887": {
+      "TIKTOK": {"shared_maximum": 10, "per_target_maximum": 3},
+      "SHOPEE": {"shared_maximum": 9, "per_target_maximum": 9},
+      "OZON": {"shared_maximum": 2, "per_target_maximum": 0}
+    }
+  },
+  "exception_escalation": {
+    "missing_or_conflicting_high_risk_fact": true,
+    "no_safe_category_candidate": true,
+    "policy_or_budget_exceeded": true,
+    "quality_assurance_unresolved": true,
+    "provider_capability_missing": true
+  },
+  "review_contract": {
+    "intermediate_candidate_rounds": [
+      "ROUND1_FACTS_COPY_PRICING_AND_IMAGE_PLAN",
+      "ROUND2_IMAGES_LOCALIZATION_AND_QA"
+    ],
+    "intermediate_human_approval_required": false,
+    "intermediate_artifacts_are_execution_authority": false,
+    "sole_human_gate": "FINAL_MARKETPLACE_PUBLISH",
+    "reuse_existing_final_approval_for": [
+      "READ_ONLY_RECONCILIATION",
+      "BOUNDED_TECHNICAL_RETRY",
+      "ASYNC_PROVIDER_CONVERGENCE",
+      "SYSTEM_DEFECT_CONTINUATION_WITH_EXACT_APPROVED_LINEAGE"
+    ],
+    "new_explicit_authority_required_for": [
+      "FROZEN_CANDIDATE_CHANGE",
+      "TARGET_SCOPE_EXPANSION",
+      "PAID_ACTION_OUTSIDE_EXISTING_AUTHORITY",
+      "NEW_EXTERNAL_WRITE_CLASS"
+    ]
+  },
+  "final_marketplace_publish": {
+    "requires_user_approval": true,
+    "approval_surface": "product-workspace",
+    "approval_kind": "FINAL_MARKETPLACE_PUBLISH",
+    "authorization_is_target_and_snapshot_scoped": true,
+    "single_review_per_frozen_candidate": true,
+    "valid_receipt_must_not_be_reprompted": true
+  }
+}

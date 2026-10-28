@@ -123,6 +123,12 @@ def _category_semantic(value: Any) -> str:
 def _safe_product_facts(preview: dict[str, Any]) -> dict[str, Any]:
     product = preview.get("product") if isinstance(preview.get("product"), dict) else {}
     if product:
+        if "source_image_count" in product:
+            source_image_count = product["source_image_count"]
+            if type(source_image_count) is not int or source_image_count < 0:
+                raise PreparationError("source image count must be a non-negative integer")
+        else:
+            source_image_count = len(((preview.get("content") or {}).get("images") or []))
         return _annotate_parcel_facts({
             "title": _clean_text(product.get("title")),
             "seller_sku": _clean_text(product.get("seller_sku_candidate")),
@@ -131,7 +137,7 @@ def _safe_product_facts(preview: dict[str, Any]) -> dict[str, Any]:
             "weight_kg": product.get("weight_kg"),
             "package_cm": list(product.get("package_cm") or []),
             "skus": _safe_dashboard_skus(product),
-            "source_image_count": len(((preview.get("content") or {}).get("images") or [])),
+            "source_image_count": source_image_count,
         })
     source = preview.get("source") if isinstance(preview.get("source"), dict) else {}
     review = preview.get("review") if isinstance(preview.get("review"), dict) else {}

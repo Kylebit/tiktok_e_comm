@@ -373,9 +373,35 @@ class NativeOwnerPipeLauncher:
         self.close()
 
 
+def _connect_before_frame(k, endpoint, deadline):
+    """Retry only a handle-less busy/missing pipe, never an RPC/frame.
+
+    The caller starts the original total deadline before identity checks.
+    No new endpoint, helper, session, ACL or Windows policy is created here.
+    """
+    import time
+    def remaining():
+        milliseconds = int((deadline - time.monotonic()) * 1000)
+        if milliseconds <= 0:
+            _deny('NATIVE_LAUNCHER_CONNECT_DEADLINE_EXPIRED')
+        return milliseconds
+    while True:
+        remaining()
+        handle = _allocate_ipc(lambda: k.CreateFileW(endpoint.pipe_name,0xC0000000,0,None,3,
+            _OVERLAPPED_IO|0x100000|0x20000,None))
+        if handle and handle != _INVALID_HANDLE:
+            return handle, remaining
+        error = C.get_last_error()
+        if error not in {2, 231}:  # ERROR_FILE_NOT_FOUND / ERROR_PIPE_BUSY only.
+            _deny('NATIVE_LAUNCHER_CONNECT_FAILED')
+        time.sleep(min(0.01, remaining() / 1000))
+
+
 def request_owner_carrier(endpoint, *, timeout_seconds=2):
     """Trusted native launcher, owner-token pipe; no credentials in URLs/logs."""
     timeout = _milliseconds(timeout_seconds)
+    import time
+    deadline = time.monotonic() + min(timeout, 2000) / 1000
     _io_available()
     if type(endpoint) is not NativeLauncherEndpoint:
         _deny('NATIVE_LAUNCHER_STARTUP_ENDPOINT_REQUIRED')
@@ -383,10 +409,7 @@ def request_owner_carrier(endpoint, *, timeout_seconds=2):
     if owner.current_windows_owner_sid() != endpoint.owner_sid:
         _deny('NATIVE_LAUNCHER_WRONG_OWNER')
     # Explicit SQOS permits an impersonation token, never a delegating token.
-    handle = _allocate_ipc(lambda: k.CreateFileW(endpoint.pipe_name,0xC0000000,0,None,3,
-        _OVERLAPPED_IO|0x100000|0x20000,None))
-    if handle == _INVALID_HANDLE or not handle:
-        _deny('NATIVE_LAUNCHER_CONNECT_FAILED')
+    handle, remaining = _connect_before_frame(k, endpoint, deadline)
     try:
         pid = W.ULONG()
         if not k.GetNamedPipeServerProcessId(handle,C.byref(pid)) or pid.value != endpoint.process_id:
@@ -394,8 +417,8 @@ def request_owner_carrier(endpoint, *, timeout_seconds=2):
         mode = W.DWORD(2)
         if not k.SetNamedPipeHandleState(handle,C.byref(mode),None,None):
             _deny('NATIVE_LAUNCHER_MODE_FAILED')
-        _write(k,handle,_REQUEST,timeout)
-        raw = _read(k,handle,timeout)
+        _write(k,handle,_REQUEST,remaining())
+        raw = _read(k,handle,remaining())
         try:
             result = json.loads(raw)
         except (ValueError,TypeError):
@@ -408,7 +431,7 @@ def request_owner_carrier(endpoint, *, timeout_seconds=2):
         path = owner._safe_path(endpoint.owner_root/result['filename'])
         owner.verify_owner_only(endpoint.owner_root,endpoint.owner_sid)
         owner.verify_owner_only(path,endpoint.owner_sid,protected=False)
-        _write(k,handle,_ACK,timeout)
+        _write(k,handle,_ACK,remaining())
         return path
     finally:
         k.CloseHandle(handle)

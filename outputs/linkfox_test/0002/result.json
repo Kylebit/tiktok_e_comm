@@ -1,0 +1,58 @@
+{
+  "product": {
+    "alias": "0002",
+    "sku_id": "1729650398374108082",
+    "name": "2pcs Creative Wall Stickers, Tropical Green Plant Potted Pattern Self-Adhesive Wall Stickers, Bedroom Porch Living Room Porch Home Decoration Wall Stickers, Wall Decoration Decals",
+    "sku_name": "Green Plants",
+    "source_image": "https://p19-oec-eu-common-no.tiktokcdn-eu.com/tos-no1a-i-t5fjg24jzw-no/dfe36a0b604c42018d43434771c55013~tplv-t5fjg24jzw-origin-jpeg.jpeg?dr=11254&from=520841845&height=800&idc=no1a&ps=933b5bde&shcp=2c1af732&shp=1f0b6a75&t=555f072d&width=800",
+    "price": 14.18,
+    "currency": "GBP"
+  },
+  "results": [
+    {
+      "model": "gpt-image-2",
+      "type": "white_bg_hero",
+      "prompt": "Product title: 2pcs Creative Wall Stickers, Tropical Green Plant Potted Pattern Self-Adhesive Wall Stickers, Bedroom Porch Living Room Porch Home Decoration Wall Stickers, Wall Decoration Decals. Variant: Green Plants. Professional e-commerce product hero shot on pure white background, the product centered and filling frame, soft studio lighting, sharp detail, clean commercial photography",
+      "elapsed_s": 36.5,
+      "ok": true,
+      "task_id": "tsk_img_01KY48MY0TM94NN3N6F9FPJHR7",
+      "files": [
+        "outputs\\linkfox_test\\0002\\gpt-image-2__white_bg_hero__1.png"
+      ]
+    },
+    {
+      "model": "gpt-image-2",
+      "type": "lifestyle_scene",
+      "prompt": "Product title: 2pcs Creative Wall Stickers, Tropical Green Plant Potted Pattern Self-Adhesive Wall Stickers, Bedroom Porch Living Room Porch Home Decoration Wall Stickers, Wall Decoration Decals. Variant: Green Plants. The product placed in a realistic lifestyle scene, warm natural home environment showing contextual usage, cinematic soft lighting, 8k product photography",
+      "elapsed_s": 55.4,
+      "ok": true,
+      "task_id": "tsk_img_01KY48P8FZMJ66GHJJRYJF676X",
+      "files": [
+        "outputs\\linkfox_test\\0002\\gpt-image-2__lifestyle_scene__1.png"
+      ]
+    },
+    {
+      "model": "nano_banana",
+      "type": "white_bg_hero",
+      "prompt": "Product title: 2pcs Creative Wall Stickers, Tropical Green Plant Potted Pattern Self-Adhesive Wall Stickers, Bedroom Porch Living Room Porch Home Decoration Wall Stickers, Wall Decoration Decals. Variant: Green Plants. Professional e-commerce product hero shot on pure white background, the product centered and filling frame, soft studio lighting, sharp detail, clean commercial photography",
+      "elapsed_s": 15.1,
+      "ok": true,
+      "task_id": "tsk_img_01KY48R8HDH0HMKBV3ZM9ZB62B",
+      "files": [
+        "outputs\\linkfox_test\\0002\\nano_banana__white_bg_hero__1.png"
+      ]
+    },
+    {
+      "model": "nano_banana",
+      "type": "lifestyle_scene",
+      "prompt": "Product title: 2pcs Creative Wall Stickers, Tropical Green Plant Potted Pattern Self-Adhesive Wall Stickers, Bedroom Porch Living Room Porch Home Decoration Wall Stickers, Wall Decoration Decals. Variant: Green Plants. The product placed in a realistic lifestyle scene, warm natural home environment showing contextual usage, cinematic soft lighting, 8k product photography",
+      "elapsed_s": 19.2,
+      "ok": true,
+      "task_id": "tsk_img_01KY48RYZQP8T7YM6YVXT1R7FG",
+      "files": [
+        "outputs\\linkfox_test\\0002\\nano_banana__lifestyle_scene__1.png"
+      ]
+    }
+  ],
+  "generated_at": "2026-07-22T14:39:19"
+}

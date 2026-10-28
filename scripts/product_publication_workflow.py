@@ -40,14 +40,27 @@ def status_offer(offer_id: str, *, base_url=DEFAULT_STAGE_BASE_URL) -> dict:
         stage = 'COMMON_TECHNICAL_ADMISSION_BLOCKED'
         command = None
     elif common['status'] == 'READY_TO_SYNC':
-        from shared_platform.publication_common_write_admission import inspect_common_write_admission
-        admission = inspect_common_write_admission(common.get('plan'))
-        if admission['status'] != 'READY':
+        native = common.get('native_request_preflight') or {}
+        plan = common.get('plan') or {}
+        native_ready = (native.get('schema_version') == 'native-common-request-preflight/v1'
+            and native.get('status') == 'READY' and native.get('execution_scope') == ['miaoshou:COMMON']
+            and native.get('execution_authority') is False and native.get('recheck_at_commit') is True
+            and native.get('binding') == {'offer_id': offer_id, 'plan_id': plan.get('plan_id'),
+                                         'payload_digest': plan.get('payload_digest')})
+        if native_ready:
+            stage = 'COMMON_NATIVE_REQUEST_READY'
+            command = None  # The private canonical caller keeps the token in memory.
+        elif native:
             stage = 'COMMON_TECHNICAL_ADMISSION_BLOCKED'
             command = None
         else:
-            plan = common['plan']
-            command += f" --execute-miaoshou --confirm-miaoshou-write --plan-id {plan['plan_id']} --confirmation-token {plan['confirmation_token']}"
+            from shared_platform.publication_common_write_admission import inspect_common_write_admission
+            admission = inspect_common_write_admission(plan)
+            if admission['status'] != 'READY':
+                stage = 'COMMON_TECHNICAL_ADMISSION_BLOCKED'
+                command = None
+            else:
+                command += f" --execute-miaoshou --confirm-miaoshou-write --plan-id {plan['plan_id']} --confirmation-token {plan['confirmation_token']}"
     elif common['status'] == 'VERIFIED':
         stage = 'MARKETPLACE_' + market.get('status', 'NOT_FROZEN')
         command += ' --finalize-release-handoff'

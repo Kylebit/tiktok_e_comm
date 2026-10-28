@@ -1,0 +1,8 @@
+{
+  "schema": "orbit-source-feedback-profile/v1",
+  "sources": {
+    "product_business": null,
+    "engineering": null,
+    "supply": null
+  }
+}

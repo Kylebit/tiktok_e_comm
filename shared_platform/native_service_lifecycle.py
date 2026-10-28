@@ -8,7 +8,7 @@ _RETIREMENT_UNKNOWN = []  # Strong owner refs; an unknown lifetime cannot be rep
 
 
 @contextmanager
-def installed_native_services(application, http, operations):
+def installed_native_services(application, http, operations, *, install_new_tasks=True):
     """Never initialize a schema, scan historical tasks or enable the old worker."""
     from shared_platform.native_common_edit_boundary import install_service_boundary, restore_service_boundary
     from shared_platform.native_sole_final_service import NativeSoleFinalService
@@ -83,7 +83,7 @@ def installed_native_services(application, http, operations):
         old_boundary, boundary = install_service_boundary(config)
         stack.callback(restore_service_boundary, old_boundary, boundary)
         stack.callback(close_new_worker)
-        worker = install_explicit_new_task_preparation(operations)
+        worker = install_explicit_new_task_preparation(operations) if install_new_tasks else None
         final = NativeSoleFinalService(store,
             NativeActorServiceConfig(operations.profile.data_root / 'native-final-owner', 'Kyle'),
             new_decision_execution_enabled=True, operations=operations)

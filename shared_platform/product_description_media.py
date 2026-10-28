@@ -134,6 +134,64 @@ def tiktok_rich_description(
     )
 
 
+def tiktok_description_text(description: object) -> str:
+    """Strict visible text for the existing p/br/img rich-description producer.
+
+    Preserve spaces inside text and explicit block/line boundaries. Unsupported
+    markup is unavailable, not a reason to strip arbitrary hidden content.
+    Image identity/order is checked independently by the native consumer.
+    """
+    from html.parser import HTMLParser
+    if type(description) is not str:
+        raise TypeError('TikTok description text is unavailable')
+    class Text(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+            self.stack = []
+        def boundary(self):
+            if self.parts and not self.parts[-1].endswith('\n'):
+                self.parts.append('\n')
+        def handle_starttag(self, tag, attrs):
+            if tag not in {'p','br','img','b','strong','i','em','u'}:
+                raise ValueError('TikTok description markup is unsupported')
+            names = [name for name,value in attrs]
+            allowed = {'src','width','height','alt'} if tag == 'img' else set()
+            if len(names) != len(set(names)) or not set(names).issubset(allowed):
+                raise ValueError('TikTok description attributes are unsupported')
+            if tag == 'p':
+                self.boundary()
+            if tag == 'br':
+                self.parts.append('\n')
+            elif tag != 'img':
+                self.stack.append(tag)
+        def handle_startendtag(self, tag, attrs):
+            if tag not in {'br','img'}:
+                raise ValueError('TikTok self-closing description markup is unsupported')
+            self.handle_starttag(tag,attrs)
+        def handle_endtag(self, tag):
+            if not self.stack or self.stack.pop() != tag:
+                raise ValueError('TikTok description markup is unbalanced')
+            if tag == 'p':
+                self.boundary()
+        def handle_data(self, data):
+            self.parts.append(data)
+        def handle_comment(self, data):
+            raise ValueError('TikTok description comments are unsupported')
+        def handle_decl(self, decl):
+            raise ValueError('TikTok description declarations are unsupported')
+        def unknown_decl(self, data):
+            raise ValueError('TikTok description declarations are unsupported')
+        def handle_pi(self, data):
+            raise ValueError('TikTok description processing instructions are unsupported')
+    parser = Text()
+    parser.feed(description.replace('\r\n','\n').replace('\r','\n'))
+    parser.close()
+    if parser.stack:
+        raise ValueError('TikTok description markup is incomplete')
+    return ''.join(parser.parts).strip()
+
+
 def html_image_urls(description: object) -> tuple[str, ...]:
     """Extract ordered ``img`` sources from provider-returned HTML."""
 

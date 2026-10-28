@@ -83,7 +83,7 @@ def validate_order_records(rows, platform):
 def load_inputs(profile, artifact):
     config = profile.get('captured')
     require(profile['schema'] == 'supply-chain-refresh-profile/v2' and type(config) is dict, 'captured v2 profile required')
-    require(set(config) == {'sources', 'targets', 'output_root'}, 'captured profile fields differ')
+    require(set(config)-{'canonical_aliases'} == {'sources', 'targets', 'output_root'}, 'captured profile fields differ')
     require(set(config['sources']) == {'inventory', 'orders', 'inbound', 'seed'}, 'four explicit source files required')
     require(set(config['targets']) == set(REGIONS), 'exact four-country target set required')
     output = checked_path(artifact, config['output_root'])
@@ -99,7 +99,7 @@ def load_inputs(profile, artifact):
         sources[kind] = read(path)
     for kind in ('inventory', 'orders', 'inbound'):
         source = sources[kind]
-        schemas={'supply-chain-captured-source/v1','supply-chain-captured-source/v2'}
+        schemas={'supply-chain-captured-source/v1','supply-chain-captured-source/v2','supply-chain-captured-source/v3'}
         require(source.get('schema') in schemas and source.get('kind') == kind, 'captured source kind mismatch')
         require(type(source.get('sourceId')) is str and bool(source['sourceId'].strip()), 'source identity required')
         clock(source.get('capturedAt'))
@@ -110,7 +110,7 @@ def load_inputs(profile, artifact):
     for platform in ('tiktok', 'shopee'):
         require(len({v[platform] for v in config['targets'].values()}) == len(REGIONS), 'channel target reused across countries')
     orders=sources['orders']
-    if orders['schema']=='supply-chain-captured-source/v2':
+    if orders['schema'] in {'supply-chain-captured-source/v2','supply-chain-captured-source/v3'}:
         require(clock(orders['capturedAt'])<=clock(orders.get('collectionStartedAt'))<=clock(orders.get('materializedAt')), 'capture materialization clock invalid')
         targets=orders.get('targets');require(type(targets) is dict and set(targets)==set(REGIONS),'order target bindings missing')
         for r,t in targets.items():
@@ -118,26 +118,67 @@ def load_inputs(profile, artifact):
             require(type(t['tiktok_shop_id']) is str and t['tiktok_shop_id'].strip() and not any(x in t['tiktok_shop_id'] for x in ('...','…','*')),'TikTok shop identity missing')
             require(type(t['shopee_shop_id']) is int and t['shopee_shop_id']>0 and str(t['shopee_shop_id'])==config['targets'][r]['shopee'] and t['tiktok_cipher']==config['targets'][r]['tiktok'],'order target differs from profile')
         require(len({t['tiktok_shop_id'] for t in targets.values()})==4,'TikTok shop reused across countries')
+    if orders['schema']=='supply-chain-captured-source/v3':
+        require(orders.get('demandWindowPolicy')=='completed_local_calendar_30_v1' and type(orders.get('mappingExceptions')) is list, 'explicit complete-calendar policy and exact exceptions required')
+    if 'platformCollectionClocks' in orders:
+        clocks = orders['platformCollectionClocks']
+        require(type(clocks) is dict and set(clocks)=={'tiktok','shopee'}, 'both independent platform clocks required')
+        for value in clocks.values():
+            require(type(value) is dict and set(value)=={'capturedAt','collectionStartedAt','materializedAt'}, 'independent platform clock fields differ')
+            require(clock(value['capturedAt'])==clock(orders['capturedAt']) and
+                    clock(orders['collectionStartedAt'])<=clock(value['collectionStartedAt'])<=clock(value['materializedAt'])<=clock(orders['materializedAt']),
+                    'independent platform collection clock invalid')
+        require(min(clock(v['collectionStartedAt']) for v in clocks.values())==clock(orders['collectionStartedAt']) and
+                max(clock(v['materializedAt']) for v in clocks.values())==clock(orders['materializedAt']), 'composite clocks differ from platform observations')
     return config, sources, output
+
+
+def unresolved_lines(raw, region, platform, aggregate, *, alias_registry=None, shop_key=None):
+    """Reuse the existing lifecycle/SKU aggregator to identify each exception."""
+    detail_key = 'line_items' if platform == 'tiktok' else 'item_list'
+    id_key = 'id' if platform == 'tiktok' else 'order_sn'
+    result = []
+    for row in raw:
+        for index, item in enumerate(row.get(detail_key) or []):
+            _, evidence = aggregate([{**row, detail_key: [item]}], region,alias_registry=alias_registry,shop_key=shop_key)
+            if evidence.get('item_lines_unresolved'):
+                result.append({'country':region, 'platform':platform, 'orderId':row[id_key], 'lineIndex':index,
+                               'itemSha256':digest(item), 'reason':'UNRESOLVED_SELLER_SKU'})
+    return result
 
 
 def prepare(profile, artifact, load_module):
     config, sources, output = load_inputs(profile, artifact)
+    alias_registry=None
+    if 'canonical_aliases' in config:
+        ref=config['canonical_aliases']
+        require(type(ref) is dict and set(ref)=={'database_path','registry_digest'},'explicit canonical registry source required')
+        path=Path(ref['database_path'])
+        require(path.is_absolute(),'canonical registry database path must be absolute')
+        from shared_platform.publication_canonical_aliases import load_alias_registry
+        alias_registry=load_alias_registry(path)
+        require(alias_registry.digest==ref['registry_digest'],'canonical registry changed')
+        source_pin=sources['orders'].get('canonicalAliasRegistryDigest')
+        require(source_pin is None or source_pin==alias_registry.digest,'order canonical registry binding differs')
     require(sources['inventory']['schema'] == sources['inbound']['schema'], 'inventory and inbound evidence versions must match')
     seaya = None
     for kind in ('inventory', 'inbound'):
         source = sources[kind]
-        if source['schema'] == 'supply-chain-captured-source/v2':
+        if source['schema'] in {'supply-chain-captured-source/v2','supply-chain-captured-source/v3'}:
             seaya = load_module('seaya_capture')
-            expected = seaya.capture(source.get('evidence'), sources['inventory'] if kind == 'inbound' else None)
+            normalizer = seaya.capture_global_browser if source['schema']=='supply-chain-captured-source/v3' else seaya.capture
+            expected = normalizer(source.get('evidence'), sources['inventory'] if kind == 'inbound' else None)
             require(source == expected, 'Seaya normalized source differs from bound complete evidence')
     seed = sources['seed']; require(set(seed['countries']) == set(REGIONS), 'four seed countries required')
     inventory = {'capturedAt': sources['inventory']['capturedAt'], 'source': sources['inventory']['sourceId'], 'records': []}
     inbound = {'capturedAt': sources['inbound']['capturedAt'], 'source': sources['inbound']['sourceId'], 'regions': {}}
     orders = sources['orders']; captured = clock(orders['capturedAt']); days = orders.get('days')
     require(type(days) is int and 30 <= days <= 366, 'order window must contain at least 30 days')
+    if orders['schema']=='supply-chain-captured-source/v3': require(days >= 31, 'complete local dates require a buffered capture window')
     snapshot = {'schemaVersion': 'order_demand_snapshot_v1', 'capturedAt': orders['capturedAt'], 'days': days, 'countries': {}}
     validator = load_module('validate_inventory_snapshot'); ai = load_module('apply_inventory_snapshot'); ao = load_module('apply_order_demand'); pull = load_module('pull_order_demand')
+    verified_exceptions = []
+    demand_windows = {}
     for region in REGIONS:
         targets = config['targets'][region]
         require(seed['config'][region]['warehouse'] == targets['warehouse'], 'seed country warehouse mismatch')
@@ -171,30 +212,74 @@ def prepare(profile, artifact, load_module):
             require(type(batch.get('totalUnits')) is int and sum(amounts.values()) == batch['totalUnits'], 'inbound batch total mismatch')
             for sku, n in amounts.items(): totals[sku] = totals.get(sku, 0)+n
         require({k:v for k,v in totals.items() if v} == {k:v['inbound'] for k,v in grouped.items() if v['inbound']}, 'inbound and inventory quantities differ')
-        inbound['regions'][region] = {'batches': batches}
+        inbound['regions'][region] = {'batches': batches, 'totalUnits': sum(batch['totalUnits'] for batch in batches)}
         require(set(orders['regions'][region]) == {'tiktok', 'shopee'}, 'both order channels required')
         snapshot['countries'][region] = {}
         for platform, aggregate in [('tiktok', pull.aggregate_tiktok_orders), ('shopee', pull.aggregate_shopee_orders)]:
-            raw = pull.captured_order_rows(orders['regions'][region][platform],platform,targets[platform],int(captured.timestamp())-days*86400,int(captured.timestamp())) if orders['schema']=='supply-chain-captured-source/v2' else full_pages(orders['regions'][region][platform], targets[platform])
+            raw = pull.captured_order_rows(orders['regions'][region][platform],platform,targets[platform],int(captured.timestamp())-days*86400,int(captured.timestamp())) if orders['schema'] in {'supply-chain-captured-source/v2','supply-chain-captured-source/v3'} else full_pages(orders['regions'][region][platform], targets[platform])
             validate_order_records(raw, platform)
             identities = [r.get('id' if platform == 'tiktok' else 'order_sn') for r in raw]
             require(all(type(i) is str and i for i in identities) and len(set(identities)) == len(identities), 'duplicate or missing order identity')
             require(all(type(r.get('create_time')) is int and int(captured.timestamp())-days*86400 <= r['create_time'] < int(captured.timestamp()) for r in raw), 'order outside captured window')
             if platform == 'tiktok':
                 require(all(not r.get('paid_time') or (type(r['paid_time']) is int and int(captured.timestamp())-days*86400 <= r['paid_time'] < int(captured.timestamp())) for r in raw), 'order payment event outside captured window')
-            facts, evidence = aggregate(raw, region)
-            require(not any(evidence.get(k, 0) for k in ('orders_invalid', 'item_lines_unresolved', 'item_lines_invalid_quantity')), 'unresolved order facts')
+            facts, evidence = aggregate(raw, region,alias_registry=alias_registry,shop_key=targets[platform])
+            require(not any(evidence.get(k, 0) for k in ('orders_invalid', 'item_lines_invalid_quantity')), 'invalid order facts')
+            if orders['schema']=='supply-chain-captured-source/v3':
+                exact = unresolved_lines(raw, region, platform, aggregate,alias_registry=alias_registry,shop_key=targets[platform])
+                require(len(exact)==evidence.get('item_lines_unresolved',0), 'unresolved line count differs')
+                verified_exceptions.extend(exact)
+            else:
+                require(not evidence.get('item_lines_unresolved',0), 'unresolved order facts')
             require(not (set(facts)-known), 'unknown order SKU requires presentation intake')
-            snapshot['countries'][region][platform] = pull.finalize_order_snapshot(facts, region=region, platform='TikTok' if platform=='tiktok' else 'Shopee', captured_at=captured, days=days, evidence=evidence)
+            policy = orders['demandWindowPolicy'] if orders['schema']=='supply-chain-captured-source/v3' else 'capture_calendar_days_v1'
+            finalized = pull.finalize_order_snapshot(facts, region=region, platform='TikTok' if platform=='tiktok' else 'Shopee', captured_at=captured, days=days, evidence=evidence, window_policy=policy)
+            snapshot['countries'][region][platform] = finalized
+            if 'demandWindow' in finalized: demand_windows[region] = finalized['demandWindow']
+    if orders['schema']=='supply-chain-captured-source/v3':
+        key = lambda r: (r['country'], r['platform'], r['orderId'], r['lineIndex'], r['itemSha256'])
+        require(all(type(r) is dict and set(r)=={'country','platform','orderId','lineIndex','itemSha256','reason'} for r in orders['mappingExceptions']), 'exception fields differ')
+        require(sorted(verified_exceptions,key=key)==sorted(orders['mappingExceptions'],key=key), 'exact unresolved exceptions differ; raw facts must remain intact')
     before = json.loads(json.dumps(seed))
     data = ao.apply_snapshot(ai.apply_inventory(seed, inventory), snapshot)
+    conditions = []
+    if orders['schema']=='supply-chain-captured-source/v3':
+        data['demandWindowPolicy'] = orders['demandWindowPolicy']
+        data['demandWindows'] = demand_windows
+        data['orderMappingExceptions'] = [{**{k:v for k,v in e.items() if k!='orderId'}, 'orderRefSha256':digest(e['orderId'])} for e in verified_exceptions]
+        for region in REGIONS:
+            count = sum(r['country']==region for r in verified_exceptions)
+            data['config'][region]['orderMappingComplete'] = count == 0
+            data['config'][region]['demandCoverage'] = '30 completed local dates from retained 31-day transport window' + ('; mapped facts conditional' if count else '')
+            if count:
+                conditions.append({'country':region, 'code':'UNRESOLVED_SELLER_SKU', 'message':f'{region}：{count}条空SKU异常单独保留，已映射数量继续作条件测算；未知行不计为零销量。'})
+                for row in data['countries'][region]:
+                    for platform in ('tiktok','shopee'):
+                        if any(e['country']==region and e['platform']==platform for e in verified_exceptions):
+                            channel = row['channels'][platform]
+                            channel['mappingComplete'] = False
+                            if row['sku'] not in snapshot['countries'][region][platform]['facts']:
+                                channel['evidence'] = 'no_mapped_fact_unresolved_scope_not_proven_zero'
+                                channel['zeroIsObserved'] = False
+    if sources['inventory']['schema']=='supply-chain-captured-source/v3':
+        conditions.append({'country':'ALL', 'code':'NON_ATOMIC_BROWSER_OBSERVATIONS', 'message':'雅仓为全仓分页的独立观察时间，不是原子实时快照；库存、订单、入库时钟分别保留。'})
+    if orders['schema']=='supply-chain-captured-source/v3' or sources['inventory']['schema']=='supply-chain-captured-source/v3':
+        data['sourceReadiness'] = {'executionAuthority':False, 'businessAcceptance':False, 'conditional':bool(conditions), 'conditions':conditions}
     data['capturedRefreshSources'] = {k: {'sourceId':sources[k]['sourceId'], 'capturedAt':sources[k]['capturedAt'], 'sha256':config['sources'][k]['sha256']} for k in ('inventory', 'orders', 'inbound')}
+    if alias_registry is not None:
+        data['canonicalAliasRegistryDigest']=alias_registry.digest
     for kind in ('inventory', 'orders', 'inbound'):
-        if sources[kind]['schema']=='supply-chain-captured-source/v2':
+        if sources[kind]['schema'] in {'supply-chain-captured-source/v2','supply-chain-captured-source/v3'}:
             data['capturedRefreshSources'][kind].update({k:sources[kind][k] for k in ('collectionStartedAt','materializedAt')})
             if kind != 'orders':
                 data['capturedRefreshSources'][kind].update({k:sources[kind][k] for k in ('tenantId','evidenceDigest')})
-    if sources['inbound']['schema']=='supply-chain-captured-source/v2':
+            if sources[kind]['schema']=='supply-chain-captured-source/v3' and kind != 'orders':
+                data['capturedRefreshSources'][kind].update({k:sources[kind][k] for k in ('atomicSnapshot','clockBasis','normalizationBasis')})
+                e = sources[kind]['evidence']
+                data['capturedRefreshSources'][kind].update(globalTotalRows=e['totalRows'], globalPageRowCounts=[p['rowCount'] for p in e['pagination']], rowToPageBinding=e['rowToPageBinding'], tenantIdentityBasis='visible_username_not_numeric_tenant_id', tenantIdentityObservedAt=e['tenantWitness']['observedAt'])
+        if kind=='orders' and 'platformCollectionClocks' in sources[kind]:
+            data['capturedRefreshSources'][kind]['platformCollectionClocks'] = json.loads(json.dumps(sources[kind]['platformCollectionClocks']))
+    if sources['inbound']['schema'] in {'supply-chain-captured-source/v2','supply-chain-captured-source/v3'}:
         inbound['captureEvidence'] = data['capturedRefreshSources']['inbound']
     diff = []
     for region in REGIONS:

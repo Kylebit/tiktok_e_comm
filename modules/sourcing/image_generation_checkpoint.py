@@ -392,6 +392,7 @@ class ImageCheckpoint:
         self.path = self.root / f"lingshi-{kind}-v2-{self.request_digest[:24]}.json"
         self.model = model
         self.source_identity_complete = source_identity_complete
+        self.unknown_successor = None
 
     @classmethod
     def from_path(cls, path: str | Path) -> "ImageCheckpoint":
@@ -413,6 +414,7 @@ class ImageCheckpoint:
             self.request_digest = identity["request_digest"]
             self.model = identity["model"]
             self.source_identity_complete = identity["source_identity_complete"]
+            self.unknown_successor = identity.get("unknown_successor")
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             raise CheckpointRecoveryRequired(path, "identity sidecar is missing or damaged; preserve and restore its verified original") from None
         return self
@@ -424,7 +426,8 @@ class ImageCheckpoint:
     def _identity(self) -> dict[str, Any]:
         return _sealed({"kind": self.kind, "business_digest": self.business_digest,
                         "request_digest": self.request_digest, "model": self.model,
-                        "source_identity_complete": self.source_identity_complete})
+                        "source_identity_complete": self.source_identity_complete,
+                        **({"unknown_successor":self.unknown_successor} if self.unknown_successor is not None else {})})
 
     @property
     def journal_path(self) -> Path:
@@ -549,7 +552,7 @@ class ImageCheckpoint:
             records[path.name] = {"sha256": _file_sha(path), "task_id": task_id, "task_ids": task_ids, "status": status}
         return records
 
-    def open_for_execution(self) -> dict[str, Any]:
+    def open_for_execution(self, *, allowed_unknown_predecessor=None) -> dict[str, Any]:
         if self.path.exists():
             record = self.read()
         else:
@@ -575,6 +578,10 @@ class ImageCheckpoint:
             peer_checkpoint = ImageCheckpoint.from_path(peer)
             other = peer_checkpoint.read()
             if other["status"] in _UNRESOLVED:
+                if (allowed_unknown_predecessor is not None
+                    and peer == Path(allowed_unknown_predecessor['original_checkpoint_path'])
+                    and inspect_image_checkpoint(peer) == allowed_unknown_predecessor['original_checkpoint_observed']):
+                    continue
                 raise CheckpointRecoveryRequired(peer, "same business has an unresolved request; reconcile before changing prompt")
         legacy = self.legacy_records()
         if any(record.get("resolved_legacy", {}).get(name) != item["sha256"] for name, item in legacy.items()):
@@ -786,7 +793,13 @@ def execute_image_checkpoint(checkpoint: ImageCheckpoint, *, retry_attempt: int,
     if type(retry_attempt) is not int or not 0 <= retry_attempt <= 3:
         raise ValueError("image retry attempt must be between zero and three")
     with business_lock(checkpoint.root, checkpoint.business_digest):
-        state = checkpoint.open_for_execution()
+        predecessor = None
+        if getattr(checkpoint, 'unknown_successor', None) is not None:
+            if paid_context is None:
+                raise ValueError('risk successor requires the original product paid context')
+            from shared_platform.publication_image_successor import validate_successor
+            predecessor = validate_successor(paid_context, checkpoint)
+        state = checkpoint.open_for_execution(allowed_unknown_predecessor=predecessor)
         if state["status"] == "SUPERSEDED":
             raise CheckpointRecoveryRequired(checkpoint.path, "this request was superseded by an explicitly authorized rework successor")
         if paid_context is not None:

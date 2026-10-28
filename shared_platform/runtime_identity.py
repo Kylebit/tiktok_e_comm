@@ -20,6 +20,11 @@ from core.static_files import resolve_static_path
 CONTRACT = 'orbit-runtime/v1'
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY_FILES = (
+    'shared_platform/operations_http.py', 'shared_platform/workbench_engine.py',
+    'shared_platform/workbench_observations.py', 'shared_platform/workbench_observation_updates.py',
+    'shared_platform/workbench_source_feedback.py',
+    'scripts/observe_work_feedback.py', 'scripts/update_work_observations.py',
+    'scripts/operations_web_entry.py',
     'shared_platform/original_profit_reports.py', 'config/original_profit_reports.json',
     'shared_platform/internal_catalog_sku.py',
     'shared_platform/catalog_sku_costs.py','shared_platform/catalog_images.py','modules/catalog/sku_directory.py',
@@ -44,6 +49,7 @@ ENTRY_FILES = (
     'domains/product_operations/catalog_database_audit.py',
 )
 ASSET_FILES = (
+    'web/static/task_overview.js', 'web/static/task_overview.css',
     'web/task_workspace.html', 'web/static/task_workspace.css', 'web/static/task_workspace.js',
     'web/static/catalog_directory.js','web/static/catalog_directory.css',
     'web/knowledge.html','web/static/knowledge_directory.js','web/static/operations_shell.css',

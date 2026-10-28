@@ -53,7 +53,7 @@ def profit_unknown_projection(value, profile):
 
 def handle(handler, *, method, runtime):
     path = urlsplit(handler.path).path
-    if not path.startswith('/api/orbit/tasks') and path != '/api/orbit/operations-runtime':
+    if not path.startswith(('/api/orbit/tasks', '/api/orbit/home')) and path != '/api/orbit/operations-runtime':
         return False
     host = handler.headers.get('Host', '')
     try:
@@ -66,6 +66,107 @@ def handle(handler, *, method, runtime):
     if not trusted or (origin and origin != 'http://' + host):
         handler._json(403, {'error': '仅允许本机同源工作台请求'})
         return True
+    if path.startswith('/api/orbit/home'):
+        if method != 'GET':
+            handler._json(405, {'error': 'Work summary is read-only'})
+            return True
+        from datetime import datetime, timezone
+        import os
+        from shared_platform.workbench_engine import ReceiptSnapshotUnavailable
+        from shared_platform.workbench_observations import read_registry, public_registry, image_bytes
+        if path == '/api/orbit/home/feedback':
+            if urlsplit(handler.path).query:
+                handler._json(400, {'error': 'feedback query unsupported'})
+            else:
+                from shared_platform.workbench_source_feedback import read_feedback_health
+                handler._json(200, read_feedback_health(os.environ.get('ORBIT_WORK_FEEDBACK_HEALTH')))
+            return True
+        try:
+            registry = read_registry(os.environ.get('ORBIT_WORK_OBSERVATIONS_MANIFEST'))
+        except (KeyError, TypeError, ValueError, OSError):
+            registry = {'status': 'UNAVAILABLE', 'complete': False, 'items': [], 'assets': {},
+                        'message': '交接记录暂不可读；保留原工作，不推定没有任务。'}
+        if path.startswith('/api/orbit/home/images/'):
+            try:
+                if urlsplit(handler.path).query:
+                    raise ValueError('image query unsupported')
+                raw, mime = image_bytes(registry, path.rsplit('/', 1)[1])
+                handler.send_response(200)
+                handler.send_header('Content-Type', mime)
+                handler.send_header('Content-Length', str(len(raw)))
+                handler.send_header('Cache-Control', 'no-store')
+                handler.send_header('X-Content-Type-Options', 'nosniff')
+                handler.end_headers()
+                handler.wfile.write(raw)
+            except (KeyError, TypeError, ValueError, OSError):
+                handler._json(404, {'error': 'Product image missing or identity changed'})
+            return True
+        if path == '/api/orbit/home/tasks' or path.startswith('/api/orbit/home/tasks/'):
+            try:
+                if urlsplit(handler.path).query:
+                    raise ValueError('task snapshot query unsupported')
+                if path == '/api/orbit/home/tasks':
+                    try:
+                        value = runtime.engine.read_dashboard_snapshot()
+                        value['task_snapshot_status'] = 'AVAILABLE'
+                    except (ReceiptSnapshotUnavailable, KeyError, OSError, TypeError, ValueError, sqlite3.Error):
+                        value = {'tasks': [], 'release': runtime.engine.release,
+                                 'task_snapshot_status': 'UNAVAILABLE',
+                                 'task_snapshot_message': '原账本一致只读快照暂不可用，不能判断原任务为空。'}
+                    value['observations'] = public_registry(registry)
+                    value['snapshot_read_at'] = datetime.now(timezone.utc).isoformat()
+                    value['read_only'] = True
+                else:
+                    task_id = path[len('/api/orbit/home/tasks/'):]
+                    if '/' in task_id:
+                        raise ValueError('task identity invalid')
+                    value = runtime.engine.read_task_snapshot(task_id)
+                from shared_platform.workbench_delisting_receipt import public_projection
+                value = public_projection(value)
+                value = profit_unknown_projection(value, runtime.profile)
+                value = paused_projection(value) if not getattr(runtime, 'worker_enabled', False) else value
+                handler._json(200, value)
+            except ReceiptSnapshotUnavailable:
+                handler._json(503, {'ok': False, 'code': 'READONLY_TASK_SNAPSHOT_UNAVAILABLE',
+                                   'error': '无法取得一致只读快照；未处理租约或修改原账本。'})
+            except KeyError:
+                handler._json(404, {'error': 'Task does not exist'})
+            except (OSError, TypeError, ValueError, sqlite3.Error):
+                handler._json(503, {'ok': False, 'error': '只读任务记录暂不可用'})
+            return True
+        if path == '/api/orbit/home/runtime':
+            try:
+                value = runtime.profile.public()
+                status = runtime.engine.read_runtime_status()
+                dispatcher = runtime.worker.status()
+                enabled = getattr(runtime, 'worker_enabled', False)
+                ready = enabled and dispatcher.get('running') is True and dispatcher.get('state') == 'polling'
+                templates = status['executor']['templates'] if ready else []
+                preparation = getattr(runtime, 'new_task_worker', None)
+                prepared = preparation.status() if preparation else {
+                    'running': False, 'scope': 'EXPLICIT_NEW_POST_PUBLICATION_ONLY',
+                    'historical_task_scan': False, 'paid_image_executor_connected': False}
+                value.update(executor={'connected': ready and status['executor']['connected'], 'templates': templates},
+                             worker_enabled=enabled, execution_mode='worker' if enabled else 'web-only',
+                             domain_guard=status['domain_guard'], dispatcher=dispatcher,
+                             new_task_preparation=prepared, read_only=True,
+                             capabilities={'publication': {'connected': 'publication' in templates},
+                                           'delisting': {'connected': 'delisting' in templates},
+                                           'profit': {'connected': 'profit' in templates}})
+                if prepared.get('running'):
+                    value['capabilities']['profit'].update(
+                        connected=prepared.get('profit_executor_connected') is True,
+                        scope=prepared.get('profit_scope'))
+                    value['capabilities']['delisting'].update(
+                        connected=prepared.get('delisting_executor_connected') is True,
+                        scope=prepared.get('delisting_scope'))
+                handler._json(200, value)
+            except (ReceiptSnapshotUnavailable, OSError, TypeError, ValueError, sqlite3.Error):
+                handler._json(503, {'ok': False, 'error': '只读运行快照暂不可用'})
+            return True
+        if path != '/api/orbit/home/runtime':
+            handler._json(404, {'error': 'Read-only summary endpoint not found'})
+            return True
     if path == '/api/orbit/operations-runtime' and method == 'GET':
         value = runtime.profile.public()
         if runtime.profile.environment == 'preview':

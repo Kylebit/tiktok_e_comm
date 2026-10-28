@@ -26,6 +26,10 @@ REGISTERED_SOURCE_PATHS = (
     'modules/products/server.py', 'modules/products/release_adapters.py',
     'modules/sourcing/new_product_workbench.py', 'modules/miaoshou/oneclick_release.py',
     'modules/miaoshou/client.py',
+    'shared_platform/manual_common_creation.py',
+    'shared_platform/agent_prepared_common_service.py',
+    'shared_platform/agent_prepared_publication_adoption.py',
+    'shared_platform/publication_runtime_config.py',
 )
 
 
@@ -166,7 +170,8 @@ class NativeCommonEditBoundary:
         if self is not _ACTIVE or reader is None or reader._config is not self._config:
             _deny('COMMON_EDIT_SERVICE_SIGNING_CONTEXT_REQUIRED')
         before = reader._signing_input()
-        raw = _read(self._config.root, 'config/miaoshou.local.json')
+        from shared_platform.publication_runtime_config import common_signing_bytes
+        raw = common_signing_bytes(self._config)
         value = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_unique_object)
         if hashlib.sha256(raw).digest() != before[0] or reader._signing_input() != before:
             _deny('COMMON_EDIT_CONFIG_CHANGED_DURING_READ')
@@ -190,6 +195,9 @@ class NativeCommonEditBoundary:
                     _deny('COMMON_EDIT_PINNED_CONFIG_CHANGED')
                 facts = technical._service_facts(store, db, plan_id)
                 self._check_mutation(db, facts, body, transport._current_response)
+                from shared_platform.native_common_baseline_successor import check_preimage
+                payload=json.loads(db.execute('SELECT payload_json FROM release_plans WHERE plan_id=?',(plan_id,)).fetchone()[0])
+                check_preimage(store,db,payload,transport._current_response)
                 if self._pinned_config(store)[1] != transport._pinned_input:
                     _deny('COMMON_EDIT_PINNED_CONFIG_CHANGED')
                 reserved = technical._reserve_in_transaction(store, db, facts)
@@ -217,7 +225,7 @@ class NativeCommonEditBoundary:
     def _check_mutation(db, facts, body, current_response):
         if (type(body) is not dict or set(body) !=
                 {'commonCollectBoxDetailId', 'editCommonCollectBoxDetail', 'ossMd5'}
-                or str(body['commonCollectBoxDetailId']) != facts.offer_id
+                or str(body['commonCollectBoxDetailId']) != technical._provider_id(db,facts)
                 or type(body['editCommonCollectBoxDetail']) is not dict):
             _deny('COMMON_EDIT_EXACT_MUTATION_REQUIRED')
         row = db.execute('SELECT payload_json FROM release_plans WHERE plan_id=?',
@@ -231,7 +239,7 @@ class NativeCommonEditBoundary:
         # Reuse the exact original adapter builder, including untouched provider
         # fields, selected SKU mapping, frozen logistics and labels. A legacy
         # image/cost mutation cannot hide in extra envelope fields.
-        expected = {'commonCollectBoxDetailId': int(facts.offer_id),
+        expected = {'commonCollectBoxDetailId': int(technical._provider_id(db,facts)),
             'editCommonCollectBoxDetail': _build_immutable_common_edit(
                 json.loads(row['payload_json']), current['editCommonCollectBoxDetail']),
             'ossMd5': str(current['ossMd5'])}
@@ -331,7 +339,21 @@ def retain_native_edit_response(path, request_bytes, packet):
     transport._accepted_response_retained = True
 
 
+def retain_native_edit_outcome(path,request_bytes,summary):
+    """Sanitized response metadata, committed before SDK raises or later GET."""
+    capture=native_edit_response_capture(path)
+    if capture is None:_deny('COMMON_EDIT_WIRE_CAPTURE_CONTEXT_REQUIRED')
+    active,transport,body=capture
+    if _canonical(json.loads(request_bytes))!=_canonical(body):_deny('COMMON_EDIT_WIRE_REQUEST_CHANGED')
+    run_id,attempt=transport._native_claim
+    technical._retain_edit_outcome(transport._store,transport._plan_id,run_id,attempt,body,summary)
+
+
 def require_edit_dispatch(path, body):
+    from shared_platform.manual_common_creation import CREATE_PATH, require_create_dispatch
+    if '/' + str(path).lstrip('/') == CREATE_PATH:
+        require_create_dispatch(body)
+        return
     if '/' + str(path).lstrip('/') != EDIT_PATH:
         return
     permit = _DISPATCH.get()

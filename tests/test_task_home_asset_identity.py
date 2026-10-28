@@ -43,9 +43,9 @@ def isolated_asset_identity(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(config, 'CONFIG_PATH', settings)
     monkeypatch.setattr(config, 'FALLBACK_CONFIG_PATHS', [])
-    monkeypatch.setattr(config, '_cache', {'ozon': {'data_dir': str(ozon)}})
-    monkeypatch.setattr(config, '_cache_source', settings)
-    monkeypatch.setattr(config, '_cache_source_stat', (settings.stat().st_size, settings.stat().st_mtime_ns))
+    settings.write_text(json.dumps({'ozon': {'data_dir': str(ozon)}}), encoding='utf-8')
+    monkeypatch.setenv('ORBIT_HIVE_SETTINGS', str(settings))
+    config.load_settings()
     store = root / 'data/orbit_platform.db'
     workbench = root / 'data/orbit_workbench.db'
     monkeypatch.setattr(report_store, 'DEFAULT_REPORT_STORE_PATH', store)

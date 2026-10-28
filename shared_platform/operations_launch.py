@@ -44,6 +44,30 @@ def bind_review_paths(config):
         os.environ['ORBIT_RELEASE_SOURCE_IDENTITY_OFFER_ID'] = config['release_evidence_offer_id']
 
 
+def bind_publication_policy_override(config):
+    """Bind one SHA-pinned local policy from trusted deployment metadata."""
+    os.environ.pop('ORBIT_R3_POLICY_PATH', None)
+    relative = config.get('publication_runtime_policy_path')
+    expected = config.get('publication_runtime_policy_sha256')
+    if relative is None:
+        if expected is not None:
+            raise ValueError('PUBLICATION_POLICY_PATH_AND_SHA_REQUIRED_TOGETHER')
+        return None
+    if (type(relative) is not str or type(expected) is not str
+            or len(expected) != 64 or any(c not in '0123456789abcdef' for c in expected)):
+        raise ValueError('PUBLICATION_POLICY_EXACT_PATH_AND_SHA_REQUIRED')
+    from shared_platform.publication_runtime_config import _read
+    from shared_platform.publication_common_standing_policy import _unique_object
+    from shared_platform.publication_autopilot import validate_autopilot_policy
+    root = Path(config.get('publication_runtime_config_root') or config['r3_config_root'])
+    raw = _read(root, relative)  # Existing lexical/link/regular-file checks.
+    if hashlib.sha256(raw).hexdigest() != expected:
+        raise ValueError('PUBLICATION_POLICY_PIN_CHANGED')
+    validate_autopilot_policy(json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_unique_object))
+    os.environ['ORBIT_R3_POLICY_PATH'] = relative
+    return {'relative_path': relative, 'sha256': expected}
+
+
 def preflight_operations_schema(path):
     """Inspect an existing operations ledger without running a schema initializer.
 
@@ -137,6 +161,47 @@ def maintenance_handler(base, *, allow_local_posts=True, native_service_scope=No
         _REJECTED_POST_MAX_BODY = 1_048_576
         _REJECTED_POST_BODY_TIMEOUT = 2.0
 
+        def _read_json(self):
+            if hasattr(self, '_original_preparation_data'):
+                data = self._original_preparation_data
+                del self._original_preparation_data
+                return data
+            return super()._read_json()
+
+        def _original_preparation_body(self):
+            lengths = self.headers.get_all('Content-Length', [])
+            if (self.headers.get_all('Transfer-Encoding') or len(lengths) != 1
+                    or len(self.headers.get_all('Origin', [])) > 1
+                    or len(self.headers.get_all('Host', [])) != 1
+                    or not lengths[0].isascii() or not lengths[0].isdigit()
+                    or 'application/json' not in self.headers.get('Content-Type', '').lower()):
+                raise ValueError('ORIGINAL_PREPARATION_REQUEST_FRAMING')
+            digits = lengths[0].lstrip('0') or '0'
+            if len(digits) > 7 or int(digits) > self._REJECTED_POST_MAX_BODY:
+                raise ValueError('ORIGINAL_PREPARATION_BODY_TOO_LARGE')
+            remaining = int(digits)
+            previous = self.connection.gettimeout()
+            deadline = time.monotonic() + self._REJECTED_POST_BODY_TIMEOUT
+            chunks = []
+            try:
+                while remaining:
+                    available = deadline - time.monotonic()
+                    if available <= 0: raise ValueError('ORIGINAL_PREPARATION_BODY_INCOMPLETE')
+                    self.connection.settimeout(min(.25, available))
+                    chunk = self.rfile.read1(min(65536, remaining))
+                    if not chunk or time.monotonic() >= deadline:
+                        raise ValueError('ORIGINAL_PREPARATION_BODY_INCOMPLETE')
+                    chunks.append(chunk); remaining -= len(chunk)
+            finally:
+                self.connection.settimeout(previous)
+            def exact_object(pairs):
+                value = {}
+                for key, item in pairs:
+                    if key in value: raise ValueError('ORIGINAL_PREPARATION_DUPLICATE_FIELD')
+                    value[key] = item
+                return value
+            return json.loads(b''.join(chunks).decode('utf-8'), object_pairs_hook=exact_object)
+
         def _reject_blocked_post(self):
             """Consume only a small, declared body before a terminal 409.
 
@@ -219,24 +284,54 @@ def maintenance_handler(base, *, allow_local_posts=True, native_service_scope=No
         def do_POST(self):
             path = urlsplit(self.path).path
             from shared_platform.native_service_lifecycle import SCOPE, POST_PATHS
-            native_path = native_service_scope == SCOPE and path in POST_PATHS
-            if not allow_local_posts or not (local_post_allowed(path) or native_path):
+            from shared_platform.original_prepared_service import (
+                SCOPE as ORIGINAL_SCOPE, PREPARATION_POST_PATHS, admit_preparation_request,
+            )
+            from shared_platform.agent_prepared_common_service import (
+                SCOPE as ADOPTED_SCOPE, PREPARATION_POST_PATHS as ADOPTED_POSTS,
+                admit_preparation_request as admit_adopted_request,
+            )
+            native_path = native_service_scope in (SCOPE, ORIGINAL_SCOPE, ADOPTED_SCOPE) and path in POST_PATHS
+            original_path = native_service_scope == ORIGINAL_SCOPE and path in PREPARATION_POST_PATHS
+            adopted_path = native_service_scope == ADOPTED_SCOPE and path in ADOPTED_POSTS
+            local_path = local_post_allowed(path) and native_service_scope != ADOPTED_SCOPE
+            if not allow_local_posts or not (local_path or native_path or original_path or adopted_path):
                 return self._reject_blocked_post()
             host = self.headers.get('Host', '')
             expected = '127.0.0.1:' + str(self.server.server_port)
             if host != expected or self.headers.get('Origin') not in (None, 'http://' + expected):
                 return self._json(403, {'ok': False, 'error': '仅允许本机同源请求'})
+            if original_path or adopted_path:
+                # Consume once with bounded framing, then replay only the exact
+                # parsed object into the existing domain handler. No SDK shortcut.
+                self.close_connection = True
+                if urlsplit(self.path).query or urlsplit(self.path).fragment:
+                    return self._reject_blocked_post()
+                try:
+                    data = self._original_preparation_body()
+                    admit = admit_adopted_request if adopted_path else admit_preparation_request
+                    self._original_preparation_data = admit(self.server, path, data)
+                except (OSError, UnicodeError, ValueError, KeyError, TypeError, AttributeError):
+                    return self._json(409, {'ok':False,'code':'AGENT_PREPARED_ADMISSION_BLOCKED' if adopted_path else 'ORIGINAL_PREPARATION_ADMISSION_BLOCKED',
+                        'external_writes_performed':[]})
             capability = getattr(self.server, 'native_service_capability', None)
             if (native_service_scope == SCOPE and path == '/api/orbit/tasks'
                     and capability and capability['new_task_readiness'] == 'BLOCKED'):
                 return self._json(409, {'ok': False, 'error': capability['agent_readiness'],
                                         'external_writes_performed': []})
-            return super().do_POST()
+            try:
+                return super().do_POST()
+            finally:
+                if hasattr(self, '_original_preparation_data'):
+                    del self._original_preparation_data
     return MaintenanceHandler
 
 
 def serve(config, root):
     """Restore existing stores. The worker is intentionally not an option here."""
+    from scripts.stable_runtime_bootstrap import prebind_release_store
+    prebound_release = prebind_release_store(config)
+    bind_publication_policy_override(config)
     from domains.supply_chain_operations.captured_serving import deployment_capture
     selected_capture = deployment_capture(config)
     from scripts.stable_runtime_bootstrap import prebind_workbench_store
@@ -246,8 +341,14 @@ def serve(config, root):
     from shared_platform.operations_runtime import RuntimeProfile
     environment = config.get('deployment_environment', 'stable')
     from shared_platform.native_service_lifecycle import SCOPE, POST_PATHS, installed_native_services
+    from shared_platform.original_prepared_service import (
+        SCOPE as ORIGINAL_SCOPE, PREPARATION_POST_PATHS, installed_original_service,
+    )
+    from shared_platform.agent_prepared_common_service import (
+        SCOPE as ADOPTED_SCOPE, PREPARATION_POST_PATHS as ADOPTED_POSTS, installed_agent_prepared_service,
+    )
     native_scope = config.get('native_service_scope')
-    if native_scope is not None and (native_scope != SCOPE or environment != 'stable'):
+    if native_scope is not None and (native_scope not in (SCOPE, ORIGINAL_SCOPE, ADOPTED_SCOPE) or environment != 'stable'):
         raise ValueError('NATIVE_SERVICE_DEPLOYMENT_SCOPE_INVALID')
     if environment not in {'stable', 'preview'}:
         raise ValueError('deployment_environment must be stable or preview')
@@ -269,6 +370,10 @@ def serve(config, root):
         agent_capability = agent_binding['reason']
     os.environ['ORBIT_HIVE_SETTINGS'] = str(paths['settings'])
     os.environ['ORBIT_R3_CONFIG_ROOT'] = str(config.get('publication_runtime_config_root') or config['r3_config_root'])
+    for field,variable in (('common_credentials_root','ORBIT_COMMON_CREDENTIALS_ROOT'),
+                           ('common_credentials_sha256','ORBIT_COMMON_CREDENTIALS_SHA256')):
+        os.environ.pop(variable,None)
+        if config.get(field) is not None:os.environ[variable]=str(config[field])
     os.environ['TIKTOK_ECOMM_HOME'] = str(config['r3_config_root'])
     os.environ['ORBIT_OPERATIONS_CONFIG_ROOT'] = str(paths['settings'].parent.parent)
     bind_review_paths(config)
@@ -283,7 +388,7 @@ def serve(config, root):
     if profile.manifest_digest != config['manifest_digest']:
         raise ValueError('deployment source manifest differs from candidate')
     from scripts.stable_runtime_bootstrap import configure_stable_runtime
-    configured_profile = configure_stable_runtime(config, expected_workbench_store_path=prebound_workbench)
+    configured_profile = configure_stable_runtime(config, expected_workbench_store_path=prebound_workbench, expected_release_store_path=prebound_release)
     verify_workbench_store_pin(configured_profile)
     from core import config as settings
     settings.CONFIG_PATH = paths['settings']
@@ -368,6 +473,32 @@ def serve(config, root):
                 receipt['allowed_local_posts'] += sorted(POST_PATHS)
                 receipt['execution_mode'] = 'scoped-native'
                 receipt['native_service'] = http.native_service_capability
+                write_ready()
+                http.serve_forever()
+        elif native_scope == ADOPTED_SCOPE:
+            with installed_agent_prepared_service(server,http,runtime,config) as adopted:
+                task,record=adopted._current()
+                http.native_service_capability={'status':'REGISTERED','scope':ADOPTED_SCOPE,
+                    'task_id':task['task_id'],'offer_id':record['offer_id'],
+                    'adoption_digest':config['agent_prepared_adoption_digest'],
+                    'historical_task_scan':False,'new_task_worker_enabled':False,
+                    'maximum_create_attempts':1,'maximum_baseline_edits':1}
+                receipt['execution_mode']='scoped-native-agent-prepared'
+                receipt['native_service']=http.native_service_capability
+                receipt['allowed_local_posts']=sorted(POST_PATHS | ADOPTED_POSTS)
+                write_ready()
+                http.serve_forever()
+        elif native_scope == ORIGINAL_SCOPE:
+            with installed_original_service(server, http, config, paths) as installed:
+                binding=installed['binding']
+                http.native_service_capability={'status':'REGISTERED','scope':ORIGINAL_SCOPE,
+                    'original_task_id':binding.pins.task_id,'offer_id':binding.pins.offer_id,
+                    'original_task_release':binding.engine.release,'original_executor_only':True,
+                    'historical_task_scan':False,'new_task_worker_enabled':False,
+                    'COMMON_release_receipt':'NOT_ISSUED'}
+                receipt['execution_mode']='scoped-native-original'
+                receipt['native_service']=http.native_service_capability
+                receipt['allowed_local_posts']+=sorted(POST_PATHS | PREPARATION_POST_PATHS)
                 write_ready()
                 http.serve_forever()
         else:

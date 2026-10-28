@@ -52,9 +52,12 @@ def project_explicit_decision_progress(runtime,decision_id,phase):
             task=engine._project(connection,stored)
             identity=engine._review_identity(connection,origin['task_id'])
         frozen=native.read_frozen(task,profile)
+        from shared_platform.prepared_target_consumer import effective_marketplace_targets
+        effective=(effective_marketplace_targets(frozen['offer_id'],[label for label in frozen['targets'] if label!='miaoshou:COMMON'])
+            if frozen else [])
         if (frozen is None or frozen['prepared_reference']!=reference
                 or frozen['snapshot_digest']!=review['round1_digest']
-                or tuple(label for label in frozen['targets'] if label!='miaoshou:COMMON')!=tuple(sorted(review['targets']))):
+                or sorted(effective)!=sorted(review['targets'])):
             raise ApprovalBlocked('NATIVE_TASK_DECISION_SOURCE_CHANGED')
         if task['current_step'] not in {'release','readback'}:
             return {'status':'ORIGINAL_TASK_STEP_NOT_APPLICABLE','task_id':task['task_id']}

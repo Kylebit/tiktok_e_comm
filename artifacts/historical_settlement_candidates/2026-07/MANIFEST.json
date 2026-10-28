@@ -1,0 +1,16 @@
+{
+  "schema_version": "historical-settlement-candidate-manifest/v1",
+  "candidate_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\_codex_worktrees\\05-profit-july-restore-20260908\\artifacts\\historical_settlement_candidates\\2026-07\\shopee_TH_20260718_20260731.partial.json",
+  "candidate_sha256": "38aad361b14bd226347038b6dabc430de01461fe23a0c343ff27efbd15269bc8",
+  "readable_bundle": "shopee_TH_20260718_20260731.partial.html",
+  "readable_bundle_sha256": "1b8d0d324693c2e07887c42bacc6541ace0f748c76e9439d7304c412ee45c882",
+  "application_entry": "/profit",
+  "historical_partial_route": "/profit-historical-partial",
+  "source_path": "D:\\Users\\Windows11\\Desktop\\Agent_PR\\tiktok_e_comm\\outputs\\shopee_escrow_TH_20260718_20260731.json",
+  "source_sha256": "d37e4ef610e11ff2d62c8fdcc7b9e1e1a5a62d3108353dbd14de5e1021e9b24e",
+  "row_count": 428,
+  "unique_order_count": 409,
+  "official_completeness": "UNKNOWN",
+  "profit_calculation_allowed": false,
+  "external_writes": 0
+}

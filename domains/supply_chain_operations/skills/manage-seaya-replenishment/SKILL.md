@@ -7,6 +7,14 @@ description: Audit Seaya/雅仓 inventory and inbound supply, combine valid TikT
 
 Produce auditable, read-only, SKU-level supply decisions for MY, TH, VN, and PH.
 
+Read [current entry and source binding](references/current-entry.md) before any
+collection. The installed D04 personal Skill and the E formal service are separate
+consumers. Bind source, settings, existing session files, four account identities
+and runtime output explicitly. Never fall back to the residual C Desktop project,
+import a legacy auto-refresh CLI for a read-only request, or restart a service to
+inspect it. An isolated candidate is not adopted by the installed junction or
+the formal server merely because its tests pass.
+
 ## Enforce exact identifiers
 
 - Read the complete source value for every SKU, warehouse code, barcode, order ID, snapshot ID, and revision.
@@ -30,7 +38,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 5. Build two separate ledgers by exact country and SKU: valid order facts determine quantity; settlement facts determine economics. Never use settlement rows, released escrow rows, or payout timing as demand velocity. Combine TikTok and Shopee order demand only within the same country. Distinguish `PENDING_REFRESH` (mapping and refresh credential exist, access token expired, pull not run) from `BLOCKED_AUTH`; never interpret missing order demand as zero. After a successful complete pull, every included channel fact must be `READY`, retain its exact event-time window and coverage evidence, and replace pending placeholders rather than layering data on top of them.
    - Reuse another country's row only for product presentation metadata such as name, image, dimensions, weight, and cost. Never copy its channel demand, inventory, warehouse binding, or SKU aliases.
    - Require each channel source identity to match the target country before calculation. Replace a mismatched country fact with an explicit local `no_sku_fact` record; never treat it as local demand.
-   - Pull the current 31-day order snapshot with `scripts/pull_order_demand.py`, then merge it with `scripts/apply_order_demand.py SNAPSHOT`. The pull output is ignored runtime data and contains no order IDs or buyer fields; the dashboard keeps only SKU aggregates and local main images.
+   - Use `scripts/read_orders_explicit.py --profile ABSOLUTE_PROFILE --preflight`, then `--inspect-sessions`. Read exact TikTok identities with `--read-identity`; pin them in the same explicit profile before `--read-orders`. This entry uses existing sessions only, has no token refresh or implicit settings selection, and aborts on config/session drift. An expired or uncertain authorization pauses that platform dependency, not independent Seaya reads or engineering. `--read-tiktok-orders` can retain four complete TikTok page envelopes as an explicitly incomplete artifact while Shopee is blocked; it cannot be applied as an eight-store refresh. After original-owner Shopee recovery, `--read-shopee-orders --continue-from-tiktok ABSOLUTE_RETAINED_SOURCE` validates and preserves those exact receipts/cutoff, verifies official Shopee ID/region and pulls only the missing scopes, with no repeated TikTok request. Read the original per-entity recovery journal, including uncertain shared-credential aliases; never bypass an unreadable journal or use a separate new recovery journal to evade it. The underlying captured collector keeps redacted exact order IDs for completeness reconciliation, omits buyer fields and credentials, and emits SKU-only dashboard aggregates. Keep runtime evidence out of source control.
 6. For Shopee demand, accept a canonical 4-digit SKU or the explicitly approved `77xxxx` / `99xxxx` aliases. When a model SKU has another shape, resolve it only through an exact `(item_id, model_id) -> catalog seller_sku` relation. Never use title or image similarity. Keep unresolved item lines visible as excluded evidence.
 7. Calculate lead-time demand, time-phased arrival stock, target coverage, and recommended quantity from eligible orders plus Seaya supply. Read every inbound batch identity, its exact per-SKU quantity, and its exact `已入库（Reach the domestic warehouse）` operation-log time when present. Otherwise retain `NOT_YET_INBOUND` and estimate the anchor as creation time plus four days. Estimate each existing batch's sellable date from the effective anchor plus the current country transport policy, with no extra sign-and-shelve buffer, and let a user confirm actual inbound timing locally. For a new replenishment decision, use the current user-approved sequence of 3 goods-preparation days, 4 days to the domestic warehouse, and the country transport period; include the full three-stage lead in both lead demand and the new-goods expected-sellable date. Calculate fixed head freight, handling cost, and known savings from settlement economics. Apply the current user-approved head-freight policy of CNY 1 per unit to every country, site, and SKU.
 8. Keep quantity recommendations fail-closed when exact identity, inventory, demand, country lead-time policy, or the approved fixed-freight policy is unavailable. Dimensions, weight, cost, and profitability are presentation or execution-readiness evidence; they must not hide a SKU or block an otherwise valid demand-and-inventory quantity recommendation.
@@ -44,7 +52,9 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 - Sum recent demand across READY TikTok and Shopee facts only within the same country.
 - Provide a dedicated recent-30-day filter.
 - Render existing-stock replenishment and first-stock recommendations in one SKU ledger. Distinguish them with `REPLENISH` and `FIRST_STOCK` labels and shared filters; do not split them into separate tables.
-- Provide a four-country summary view that first calculates each country independently and then includes only rows whose recommended quantity is strictly greater than 10. Preserve the country identity on every row; never aggregate the same SKU across countries.
+- Provide a four-country summary view that first calculates each country independently and includes rows where either separate recommendation is at least 10. Retain exactly 10; exclude only rows below 10 in both scenarios. Country is the first column, followed by the local main image and exact SKU; never aggregate the same SKU across countries.
+- Offer one downloadable, self-contained editable HTML table with embedded main images, both scenario suggestions, editable planned quantity and notes, and independent inventory/order/inbound clocks. Default the explicitly labelled planned basis to trend; allow an explicit actual-30-day or manual plan choice without changing either forecast. A planned zero remains visible when the source suggestions qualify. The download is a decision artifact, never a purchase/inbound/stock command.
+- Bind saved plan edits to country + SKU, source clocks, inventory, current inbound plan and scenario results. Ignore stale bindings without erasing stored bytes. Reject stale other-tab writes, preserve drafts on storage failure, and validate integer quantities. Export covers all four countries independently of screen filters. Fail the export if required main images cannot be read locally; do not create an apparently complete file with missing media.
 - Keep the four-country active-inbound headline independent from that recommendation-row filter. Count every active batch and its complete `totalUnits` from the reconciled inbound ledger; if batch-SKU, region, or inventory aggregate totals disagree, show an unresolved headline instead of a partial total.
 - When logistics fields are incomplete, display the SKU, image, demand, inventory and calculated quantity. Mark only the affected output as pending: dimensions affect volume, weight affects local handling and net benefit, and cost affects working capital.
 - Do not use known benefit as a readiness gate. Display positive or negative benefit alongside the demand-and-inventory recommendation.
@@ -73,7 +83,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 
 ## Maintain manual completion
 
-- Allow manual entry only for missing package dimensions, weight, unit cost, and an optional source note.
+- Allow manual package dimensions, weight and unit cost with required source/estimate notes and explicit `ESTIMATED` or `USER_CONFIRMED` provenance. Default unverified entries to estimated; existing manual entries without provenance remain pending verification. Reasonable estimates may support planning but must not be relabelled as measured/provider facts.
 - Require finite positive numbers; reject booleans, strings, zero, negative, `NaN`, and infinity.
 - Store manual values only in browser-local reversible storage unless the user explicitly authorizes another destination.
 - Do not use logistics entry to resolve an identity or alias blocker.
@@ -177,6 +187,15 @@ scoped operations; ordinary authorized documentation work adds no approval step.
 - Distinguish captured facts, user-approved policy, conservative assumptions, and blockers.
 
 ## Local confirmation migration and refresh preflight
+
+Retained all-warehouse browser evidence and a buffered order capture may use the
+explicit v3 local admission described in `references/captured-refresh.md`. Preserve
+global page observations, account witness and independent platform collection
+clocks. Thirty completed local dates exclude the partial cutoff day; retain the
+31-day transport transcript unchanged. Exact unresolved SKU lines stay in private
+evidence while mapped facts remain conditional. The original Handler, versioned
+data pair and original dashboard are still the display path; do not substitute
+an exported attachment or activate the formal runtime to validate a candidate.
 
 For explicitly captured local inventory/order/inbound snapshots, use the existing
 refresh entry's `--captured-stage` and `--captured-apply <stage-digest>` modes.

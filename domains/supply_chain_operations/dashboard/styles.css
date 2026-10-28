@@ -104,15 +104,22 @@ footer{padding:28px 4vw;display:flex;justify-content:space-between;background:#1
 .dense-ledger .group-heading>div>span{display:none}
 .dense-ledger .ledger-group{margin-bottom:0}
 .dense-ledger .table-wrap{border-radius:5px;max-width:100%}
-.dense-ledger .ledger-group>.table-wrap>table{min-width:1180px;table-layout:fixed}
+.dense-ledger .ledger-group>.table-wrap>table{min-width:1480px;table-layout:fixed}
 .dense-ledger .ledger-group>.table-wrap>table>thead th{padding:9px 8px;font-size:11px;background:#eaf0ec}
-.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(1){width:18%}
-.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(2){width:11%}
-.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(3){width:13%}
-.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(4){width:18%}
-.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(5){width:9%}
-.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(6){width:13%}
-.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(7){width:18%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(1){width:4%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(2){width:16%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(3){width:8%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(4){width:11%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(5){width:14%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(6){width:7%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(7){width:17%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(8){width:10%}
+.dense-ledger .ledger-group>.table-wrap>table>thead th:nth-child(9){width:13%}
+.dense-ledger .decision-edit label{display:block;font-size:11px}
+.dense-ledger .decision-edit :is(input,select,textarea){display:block;width:100%;box-sizing:border-box;font:inherit;margin:4px 0;padding:5px;border:1px solid #bacdc0;border-radius:3px;background:#fff}
+.dense-ledger .decision-edit textarea{resize:vertical;min-height:48px}
+.dense-ledger .decision-save-status{font-size:12px;color:var(--muted);margin:6px 0 10px;overflow-wrap:anywhere}
+.dense-ledger #exportDecisionSheet{padding:7px 10px;border:1px solid #acc2b3;border-radius:4px;background:#edf3ef;color:var(--green);font:inherit;cursor:pointer}
 .dense-ledger .sku-summary>td{padding:8px;font-size:12px;vertical-align:middle}
 .dense-ledger .sku-summary .product-cell{min-width:0;gap:8px;align-items:center}
 .dense-ledger .sku-summary .product-cell img{width:40px;height:40px;border-radius:4px;flex-shrink:0}
@@ -153,3 +160,5 @@ footer{padding:28px 4vw;display:flex;justify-content:space-between;background:#1
  .dense-ledger .group-heading{display:block}
  .dense-ledger .formula-section{grid-template-columns:1fr}
 }
+.source-readiness { margin: 0 0 16px; padding: 12px 16px; border: 1px solid #dfb46f; border-radius: 8px; background: #fff5e4; }
+.source-readiness p { margin: 6px 0 0; overflow-wrap: anywhere; }

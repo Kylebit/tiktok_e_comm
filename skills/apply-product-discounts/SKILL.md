@@ -1,6 +1,6 @@
 ---
 name: apply-product-discounts
-description: Inspect and apply target-scoped, frozen postpublication discounts through the existing governed OneClick action after exact marketplace readback; report pending Shopee/browser capability separately. Never publish products or create activities.
+description: Inspect and apply target-scoped, frozen postpublication discounts through the existing governed OneClick action after exact marketplace readback; report adapter readiness and target-specific readback separately. Never publish products or create activities.
 ---
 
 # 应用商品折扣
@@ -12,16 +12,20 @@ description: Inspect and apply target-scoped, frozen postpublication discounts t
 
 - LivelyHive TikTok PH/MY/TH/VN：既有 `OneClickReleaseStore` / `OneClickReleaseWorker`
   的 `postpublish_promotion` 注册项负责准备、持久 claim、单次写入和正式回读。
-- Shopee PH/MY/TH/VN：列在目标注册表中，执行明确返回 `promotion_execution_surface_unavailable`。
-  需要接通同一账本的官方折扣 adapter；旧独立脚本不能替代它。此能力仍待完成。
+- Shopee PH/MY/TH/VN：既有 `OneClickReleaseStore` / `OneClickReleaseWorker` 的
+  `postpublish_promotion` 注册项已有官方 adapter，源码位于已绑定仓库中的 `modules/shopee/oneclick_promotion.py`。
+  仅加入唯一进行中的已有活动；精确已有成员可零写核对，冲突停止。依赖原批准计划、
+  正式发布回读、当前既有凭据及原账本 schema；代码可用不代表逐目标折扣已经执行。
 - HomeBloom TikTok SEA、MX、GB：必须走明确批准范围内的可审计浏览器流程，参见
   [妙手页面合同](references/miaoshou.md)。仓库当前没有自动浏览器 writer；不要宣称已自动接通。
 
 调用只读计划检查：
 
 ```text
-python skills/apply-product-discounts/scripts/inspect_discount_plan.py --plan-json <immutable-plan-payload.json>
+python <skill-path>/scripts/inspect_discount_plan.py --repository <absolute-verified-Git-root> --plan-json <immutable-plan-payload.json>
 ```
+
+个人安装副本必须显式传入已核验的 `--repository`，不能从当前工作目录猜测工程。输出 `source` 用于核对实际脚本、Git 与策略/注册项来源。
 
 `ready` 只表示定价合同可读取，`execution_authorized=false`；任意本地 JSON 都不能证明
 数据库计划已批准。真正执行继续使用 Product Center 的原批准计划、run、OneClick job，
@@ -36,10 +40,15 @@ python skills/apply-product-discounts/scripts/inspect_discount_plan.py --plan-js
    当前活动观察值或默认 32/30 补齐。暂不支持多价格行的变体折扣。
 3. 历史 v1 仅校验并保留完整已冻结批准的原摘要与原比例；新 builder 不再产生固定比例
    v1。旧 prepare/adapter 指纹可能要求重新只读准备，但不能改写旧批准事实。
+   相同冻结计划、目标、折扣及限制沿用原批准；纯技术修复或重新只读准备不增加人工审核轮次。
 4. 完整读取活动目录并核对分页/总数，只接受唯一进行中直接折扣活动。准备时与提交前
    均核店铺、活动窗口、商品、完整 SKU、标价及币种。
 5. 活动已包含精确商品及相同比例：正式回读后记录零写成功；已有冲突或重复成员则停止。
-   缺成员时，先在既有账本记录写入意图，再执行一次 PUT，再正式回读。
+   缺成员时先在既有账本记录写入意图：TikTok 使用原 PUT；Shopee 通过原 SDK 单次
+   `POST /api/v2/discount/add_discount_item`，保持冻结折后价的小数精度，再完整官方回读。
+   返回错误、部分成功或超时都不能证明零写；未精确回读则保留 UNKNOWN，不直接重发。
+   官方实价与冻结价不同时，先对账原活动成员及实价并保留原尝试；只就价格偏差取得新的明确决定，
+   不重新审核整个商品，也不重发 ADD。接受既有实价须追加原账本接受证据，保留原精确验证结果及防重发占用。
 6. 超时/未知保留 UNKNOWN 与占用；接受后回读失败保留已写前缀。重开同 job 不能再发。
    新的已授权变更或确证零写恢复仍走既有显式恢复接口，不使用全局永久锁。
 

@@ -184,6 +184,17 @@ def adapt_settlement_evidence(
                 catalog,
                 overrides,
             )
+            declared_shop = _text(record.get("shop_id") or evidence.get("shop_id"))
+            raw_provider_sku = _text(item.get('seller_sku'))
+            if not raw_provider_sku:
+                candidate=_metadata(catalog,source_sku,seller_sku)
+                raw_provider_sku=_text((candidate.get('identity') or {}).get('seller_sku'))
+            from shared_platform.publication_canonical_aliases import needs_registered_alias,registered_catalog_line
+            registered = None
+            if needs_registered_alias(raw_provider_sku):
+                registered=registered_catalog_line(catalog,platform=platform,shop_key=declared_shop,
+                    product_id=item.get('product_id'),variant_id=source_sku,seller_sku=raw_provider_sku)
+                seller_sku=registered[0] if registered else ''
             if not seller_sku:
                 code = "invalid_shopee_seller_sku" if platform == "shopee" else "missing_seller_sku_mapping"
                 issues.append(_issue(code, f"{record_id}:{item_index}", "seller_sku"))
@@ -197,11 +208,14 @@ def adapt_settlement_evidence(
                     "seller_sku",
                     f"Settlement item maps to seller SKU {seller_sku}, but the cost snapshot has no positive unit cost",
                 ))
-            metadata = _metadata(catalog, source_sku, seller_sku)
+            metadata = registered[1] if registered else _metadata(catalog, source_sku, seller_sku)
+            if needs_registered_alias(raw_provider_sku) and not registered:
+                metadata={}
             from .catalog_scope import catalog_scope_issue
-            declared_shop = _text(record.get("shop_id") or evidence.get("shop_id"))
             if catalog_scope_issue(metadata, platform=platform, shop_id=declared_shop,
-                    site=site, currency=record.get("currency"), product_id=item.get("product_id")):
+                    site=site, currency=record.get("currency"), product_id=item.get("product_id"),
+                    seller_sku=raw_provider_sku if registered else '',canonical_sku=seller_sku if registered else '',
+                    variant_id=source_sku if registered else ''):
                 issues.append(_issue("catalog_scope_mismatch", f"{record_id}:{item_index}", "platform/shop/site/currency/product"))
                 metadata = {}
                 seller_sku = ""
@@ -230,8 +244,10 @@ def adapt_settlement_evidence(
                 "product_sales_amount": paid_allocations[item_index],
                 "buyer_cash_paid_product_amount": buyer_cash_allocations[item_index],
                 "platform_sku": source_sku,
-                "seller_sku": seller_sku,
+                "seller_sku": raw_provider_sku if registered else seller_sku,
+                "provider_sku": raw_provider_sku or seller_sku,
                 "canonical_sku": seller_sku,
+                "product_id": _text(item.get('product_id')),
                 "catalog_identity": dict(metadata.get("identity") or {}),
                 "quantity": quantity,
                 "product_name": _text(item.get("product_name") or metadata.get("product_name")),

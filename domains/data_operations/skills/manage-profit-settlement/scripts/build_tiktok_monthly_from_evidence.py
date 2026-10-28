@@ -90,7 +90,8 @@ def main(argv=None) -> int:
     adapted = adapt_settlement_evidence(evidence, catalog, period_kind="monthly")
     period_order_ids = {str(o.get("order_id") or "") for o in evidence.get("orders") or [] if args.start.isoformat() <= str(o.get("order_created_at") or "")[:10] <= args.end.isoformat()}
     required_skus = {str(row.get("canonical_sku") or "") for row in adapted.rows if str(row.get("order_id") or "") in period_order_ids}
-    required_skus.update(internal_sku(i.get("seller_sku")) for o in evidence.get("orders") or [] if str(o.get("order_id") or "") in period_order_ids for i in o.get("items") or [] if isinstance(i, dict))
+    from domains.data_operations.profit_settlement.monthly_missing_cost_scope import canonical_settlement_item_sku
+    required_skus.update(canonical_settlement_item_sku(catalog,evidence,o,i) for o in evidence.get("orders") or [] if str(o.get("order_id") or "") in period_order_ids for i in o.get("items") or [] if isinstance(i, dict))
     required_skus.discard("")
     missing_cost_receipt = None
     period_start, period_end = monthly_cost_period(site, args.start, args.end, coverage['created_period']['timezone'])

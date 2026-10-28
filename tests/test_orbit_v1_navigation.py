@@ -93,12 +93,15 @@ def test_home_is_task_workspace_with_registered_five_core_navigation_and_unknown
     assert "return self._file(WEB_DIR / 'task_workspace.html')" in server
     assert "<h1>任务工作台</h1>" in html
     assert 'src="/static/operations_shell.js"' in html
-    assert 'src="/static/task_workspace.js"' in html
+    assert 'src="/static/task_overview.js' in html
+    assert 'src="/static/task_workspace.js' in html
     assert "ORBIT_REGISTERED_NAVIGATION" in shell
     assert "fetch('/api/orbit/navigation'" in shell
     assert "导航配置不一致" in shell
     assert "状态未知" in tasks
-    assert "任务服务连接失败，当前进度未验证。" in tasks
+    assert '/api/orbit/home/tasks' in tasks
+    assert 'href="/api/orbit/tasks"' not in tasks
+    assert "body===undefined&&base==='/api/orbit/tasks'?'/api/orbit/home/tasks':base" in tasks
     assert "@media(max-width:" in (ROOT / "web/static/operations_shell.css").read_text(encoding="utf-8")
 
 

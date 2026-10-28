@@ -35,6 +35,7 @@ def build_weekly_evidence_bundle(
     tiktok_local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     shopee_local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     seller_sku_by_ozon_sku: Mapping[str, str] | None = None,
+    seller_sku_mappings_by_platform: Mapping[str, Mapping[str, str]] | None = None,
     quantity_by_ozon_order_sku: Mapping[str, object] | None = None,
     cost_assumption_warnings: tuple[object, ...] = (),
     cost_policy_issues: tuple[Mapping[str, str], ...] = (),
@@ -67,7 +68,8 @@ def build_weekly_evidence_bundle(
             evidence,
             catalog,
             period_kind="weekly",
-            seller_sku_by_platform_sku=seller_sku_by_ozon_sku if platform == "ozon" else None,
+            seller_sku_by_platform_sku=(seller_sku_mappings_by_platform or {}).get(platform,
+                seller_sku_by_ozon_sku if platform == "ozon" else None),
             quantity_by_order_platform_sku=quantity_by_ozon_order_sku if platform == "ozon" else None,
         )
         if calculation_timezone:

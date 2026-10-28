@@ -3182,7 +3182,7 @@ class ReleaseStore:
         result["approved"] = approved
         return result
 
-    def _unreconciled_common_claim(self, connection, *, product_id, exclude_plan_id=None):
+    def _unreconciled_common_claim(self, connection, *, product_id, exclude_plan_id=None, authorized_old_run_id=None, authorized_old_run_ids=()):
         """A new COMMON identity cannot release an older claim on the same provider detail."""
         rows = connection.execute('''
             SELECT target.*, plan.payload_json AS claim_payload_json FROM release_target_runs AS target
@@ -3193,6 +3193,8 @@ class ReleaseStore:
               AND (? IS NULL OR plan.plan_id != ?)
         ''', (product_id, exclude_plan_id, exclude_plan_id)).fetchall()
         for row in rows:
+            if row['run_id']==authorized_old_run_id or row['run_id'] in authorized_old_run_ids:
+                continue  # Exact typed successor accepts old UNKNOWN risk only.
             if row['status'] == 'SUCCEEDED':
                 receipt = connection.execute('''SELECT * FROM release_target_readbacks
                     WHERE run_id = ? AND target_label = ?''', (row['run_id'], row['target_label'])).fetchone()
@@ -3204,8 +3206,9 @@ class ReleaseStore:
                         'spec_labels', 'spec_label_binding', 'weight', 'dimensions', 'images',
                         'description_notes', 'description_image_count', 'video_action', 'common_id',
                         'source_identity', 'detail_binding', 'sku_logistics'} if payload.get('r3_stage_binding') else set()
+                    from shared_platform.manual_common_creation import common_detail_id
                     verified = (receipt is not None and evidence.get('verified') is True
-                        and str(row['external_id']) == str(product_id) and evidence.get('offer_id') == str(product_id)
+                        and str(row['external_id']) == common_detail_id(payload,store=self,connection=connection) and evidence.get('offer_id') == str(product_id)
                         and bool(evidence.get('source')) and bool(receipt['verified_at'])
                         and hashlib.sha256(receipt['evidence_json'].encode('utf-8')).hexdigest() == receipt['evidence_digest']
                         and isinstance(checks, dict) and bool(checks) and required.issubset(checks)
@@ -3236,18 +3239,21 @@ class ReleaseStore:
                 return dict(row)
         return None
 
-    def _require_reconciled_common_claims(self, connection, *, product_id, exclude_plan_id=None):
-        row = self._unreconciled_common_claim(connection, product_id=product_id, exclude_plan_id=exclude_plan_id)
+    def _require_reconciled_common_claims(self, connection, *, product_id, exclude_plan_id=None, authorized_old_run_id=None, authorized_old_run_ids=()):
+        row = self._unreconciled_common_claim(connection, product_id=product_id, exclude_plan_id=exclude_plan_id,authorized_old_run_id=authorized_old_run_id,authorized_old_run_ids=authorized_old_run_ids)
         if row:
             raise ReleaseAuthorizationError(
                 f"COMMON_RECONCILIATION_REQUIRED: retain original run {row['run_id']} for product {product_id}")
 
-    def common_reconciliation_reference(self, product_id):
+    def common_reconciliation_reference(self, product_id, *, successor_payload=None):
         """Read the original unresolved provider-detail claim without reserving a successor."""
         if not self.path.is_file():
             return None
         with self._connect_readonly() as connection:
-            row = self._unreconciled_common_claim(connection, product_id=_text(product_id))
+            from shared_platform.native_common_baseline_successor import context,retained_run_ids
+            authorized=context(self,connection,successor_payload) if successor_payload else None
+            row = self._unreconciled_common_claim(connection, product_id=_text(product_id),
+                authorized_old_run_ids=retained_run_ids(authorized))
         if not row:
             return None
         run = self.get_run(row['run_id'])
@@ -3259,6 +3265,7 @@ class ReleaseStore:
         payload: Mapping[str, Any],
         *,
         supersedes_plan_id: str | None = None,
+        image_successor=None,
     ) -> dict[str, Any]:
         """Persist an immutable plan and reserve its numeric seller SKU.
 
@@ -3299,7 +3306,10 @@ class ReleaseStore:
                     return result
 
                 if plan.get('r3_stage_binding') and 'miaoshou:COMMON' in plan['targets']:
-                    self._require_reconciled_common_claims(connection, product_id=plan['product_id'], exclude_plan_id=plan_id)
+                    from shared_platform.native_common_baseline_successor import context,retained_run_ids
+                    successor=context(self,connection,plan)
+                    self._require_reconciled_common_claims(connection, product_id=plan['product_id'], exclude_plan_id=plan_id,
+                        authorized_old_run_ids=retained_run_ids(successor))
 
                 predecessor = None
                 if predecessor_id:
@@ -3329,6 +3339,13 @@ class ReleaseStore:
                 else:
                     relink_unlinked_superseded = False
 
+                if image_successor is not None:
+                    from shared_platform.original_images_successor import OriginalImagesSuccessor, installed_successor
+                    if (type(image_successor) is not OriginalImagesSuccessor
+                            or installed_successor(plan['product_id']) is not image_successor
+                            or image_successor.continuation.release_store.path.resolve() != self.path.resolve()):
+                        raise ValueError('IMAGE_SUCCESSOR_PRIVATE_PLAN_WRITER_REQUIRED')
+                    image_successor.validate_atomic_predecessor(connection, predecessor, plan)
                 connection.execute(
                     """
                     INSERT INTO release_plans (
@@ -5397,7 +5414,9 @@ class ReleaseStore:
         if (not plan or row['target_label'] != 'miaoshou:COMMON' or row['attempts'] < 1
                 or current.get('verified') is not True or current.get('offer_id') != plan['product_id']):
             raise ImmutableReleaseError('COMMON_OBSERVATION_LINEAGE_INVALID')
-        validate_common_observation_receipt(observation, detail_id=plan['product_id'])
+        from shared_platform.manual_common_creation import common_detail_id
+        validate_common_observation_receipt(observation,
+            detail_id=common_detail_id(json.loads(plan['payload_json']),store=self,connection=connection))
         comparison = {k:v for k,v in current.items() if k not in ('native_common_observation','stored_common_lineage')}
         comparison_digest = hashlib.sha256(_canonical_json(comparison).encode('utf-8')).hexdigest()
         if observation['comparison_sha256'] != comparison_digest:
@@ -5754,11 +5773,12 @@ class ReleaseStore:
             raise ReleaseAuthorizationError('native submission source recheck is required')
         evidence = json.loads(proof.evidence_json)
         checks = evidence.get('checks') or {}
-        if (evidence.get('source') != 'official_tiktok_shop_api'
+        ozon = proof.target_label == 'ozon:RU' and evidence.get('source') == 'official_ozon_seller_api'
+        if (not ozon and (evidence.get('source') != 'official_tiktok_shop_api'
                 or evidence.get('verified') is not True
                 or evidence.get('external_writes_performed') != []
                 or not {'single_exact_sku','title','price','image_count','category','active'}.issubset(checks)
-                or any(value is not True for value in checks.values())):
+                or any(value is not True for value in checks.values()))):
             raise ReleaseAuthorizationError('native submission official zero-write readback is required')
         with self._transaction() as connection:
             run = connection.execute('SELECT * FROM release_runs WHERE run_id=?', (proof.run_id,)).fetchone()
@@ -5780,7 +5800,17 @@ class ReleaseStore:
             payload = json.loads(plan['payload_json'])
             from modules.products.release_adapters import SEA_SITES, SITE_COUNTRIES
             channel, site = proof.target_label.split(':', 1)
-            if (proof.target_label not in payload['targets'] or not proof.target_label.startswith('tiktok:')
+            if ozon:
+                from shared_platform.native_sole_final_readback import _ozon_context, _ozon_verified_evidence
+                if active.service._actor()['owner_sid'] != active.owner_sid:
+                    raise ReleaseAuthorizationError('native submission owner changed')
+                # Rebuild all frozen/receipt/proof/budget joins and the complete
+                # official matcher inside this original active-scoped CAS.
+                context = _ozon_context(active, connection, target, submission)
+                expected = _ozon_verified_evidence(context, evidence.get('official_responses'))
+                if evidence != expected:
+                    raise ReleaseAuthorizationError('native Ozon readback evidence changed')
+            elif (proof.target_label not in payload['targets'] or not proof.target_label.startswith('tiktok:')
                     or site not in SEA_SITES or evidence.get('region') != SITE_COUNTRIES[site]
                     or evidence.get('seller_sku') != payload['seller_sku']):
                 raise ReleaseAuthorizationError('native submission frozen target changed')

@@ -4,6 +4,8 @@ Pure route helpers migrated from frozen r4 (see B00_B4B_R2_R3_BINDING.md).
 No paid provider, COMMON writer, automatic approval or ReleaseStore mutation.
 """
 from __future__ import annotations
+
+from shared_platform.publication_image_qa import is_completed_image_asset
 from copy import deepcopy
 import hashlib
 import json
@@ -57,9 +59,9 @@ def _brand_family(brand_id: str) -> str:
     """Resolve approval-bound single-market brand aliases to their SEA family."""
 
     normalized = str(brand_id or "").strip().casefold()
-    if normalized == "livelyhive-sea" or normalized.startswith("livelyhive-"):
+    if normalized in {"lh", "livelyhive-sea"} or normalized.startswith("livelyhive-"):
         return "livelyhive-sea"
-    if normalized == "homebloom-sea" or normalized.startswith("homebloom-"):
+    if normalized in {"hb", "homebloom-sea"} or normalized.startswith("homebloom-"):
         return "homebloom-sea"
     return normalized
 
@@ -183,9 +185,8 @@ def build_dual_brand_publication_bridge(
     ):
         raise ValueError("completed dual-brand generation report is missing")
     generated = [dict(row) for row in (generation.get("assets") or []) if isinstance(row, Mapping)]
-    image_plan = first_review.get("image_execution_plan") or first_review.get(
-        "image_plan"
-    ) or {}
+    from shared_platform.publication_gallery_contract import effective_image_plan
+    image_plan = effective_image_plan(first_review, generation)
     expected_roles = {
         str(plan.get("id") or ""): [
             str(asset.get("role") or "")
@@ -208,7 +209,7 @@ def build_dual_brand_publication_bridge(
     ):
         raise ValueError("first-review brand role plan is incomplete")
     if len(generated) != expected_count or any(
-        row.get("status") != "COMPLETED" for row in generated
+        not is_completed_image_asset(row) for row in generated
     ):
         raise ValueError("dual-brand generation coverage differs from the approved role plan")
     generated.sort(key=lambda row: int(row.get("review_number") or 0))
@@ -362,6 +363,9 @@ def build_dual_brand_publication_bridge(
         "approved_by": approved_by,
         "approval_authority": approval_authority,
     }
+    frozen_planning = (first_review.get('product_facts') or {}).get('parcel_planning')
+    if frozen_planning is not None:
+        identity['parcel_planning'] = deepcopy(frozen_planning)
     return {
         **identity,
         "bridge_digest": _canonical_digest(identity),
@@ -490,7 +494,7 @@ def _validated_r2_identity(documents: Mapping[str, Any]) -> dict[str, Any]:
     if len(asset_keys) != len(assets) or len(asset_keys) != len(set(asset_keys)) or set(asset_keys) != keys:
         raise ValueError("R2_TRANSLATION_ASSET_CONFLICT")
     all_assets = list(generation["assets"]) + assets
-    if any(row.get("status") != "COMPLETED" for row in all_assets):
+    if any(not is_completed_image_asset(row) for row in all_assets):
         raise ValueError("R2_ASSET_NOT_COMPLETED")
     expected_artifacts = sorted({row.get("artifact_digest") for row in all_assets})
     if not all(type(value) is str and re.fullmatch(r"sha256:[0-9a-f]{64}",value) for value in expected_artifacts):
@@ -523,6 +527,10 @@ def _validated_r2_identity(documents: Mapping[str, Any]) -> dict[str, Any]:
         "translation_plan_digest":_canonical_digest(plan), "translation_result_digest":_canonical_digest(translated),
         "qa_digest":qa_digest, "artifact_digests":expected_artifacts,
     }
+    if generation.get('gallery_image_plan_successor') is not None:
+        from shared_platform.publication_gallery_contract import effective_image_plan, read_pin
+        effective_image_plan(first, generation, round1=r1)
+        identity['image_plan_successor_digest'] = read_pin(generation['gallery_image_plan_successor'])['successor_digest']
     return dict(identity,identity_digest=_canonical_digest(identity))
 
 
@@ -586,6 +594,8 @@ def prepare_common_stage_dashboard(
     for field in ('cost_cny', 'weight_kg'):
         if number(product.get(field)) != number(facts.get(field)):
             raise ValueError('COMMON_R1_COMMERCIAL_FACTS_CONFLICT: ' + field)
+    if product.get('parcel_planning') != facts.get('parcel_planning'):
+        raise ValueError('COMMON_R1_PARCEL_PLANNING_CONFLICT')
     if len(facts.get('package_cm') or []) != 3 or (
         [number(v) for v in product.get('package_cm') or []]
         != [number(v) for v in facts['package_cm']]
@@ -638,7 +648,9 @@ def prepare_common_stage_dashboard(
         'images': [{**row, 'image_url': row['url'], 'audit_id': identity['qa_digest'],
                     'asset_type': 'generated', 'decision_source': 'CURRENT_R1_R2_QA'}
                    for row in route['common_miaoshou_baseline']],
-        'video_urls': [],
+        # R2 replaces image routes only. Retain the already selected source or
+        # user-edited video from the current dashboard for COMMON comparison.
+        'video_urls': deepcopy((dashboard.get('content') or {}).get('video_urls') or []),
     }
     result['listing_copy'] = {
         'schema_version': 'r3-common-frozen-copy/v1', 'status': 'R1_FACTS_APPROVED',
@@ -707,6 +719,14 @@ def bind_common_stage_payload(payload: Mapping[str, Any], documents: Mapping[str
                 or source['execution_authority'] is not False):
             raise ValueError('COMMON_NATIVE_PREPARATION_SOURCE_CONFLICT')
         result['r3_stage_binding']['native_preparation_source'] = source
+    from shared_platform.manual_common_creation import ManualCommonCreateLedger
+    manual=ManualCommonCreateLedger(store.path).for_offer(r1['offer_id'])
+    if manual is not None:
+        if manual['state']!='VERIFIED':
+            raise ValueError('MANUAL_COMMON_CREATE_RECONCILIATION_REQUIRED')
+        result['r3_stage_binding']['manual_common_binding']={
+            'intent_id':manual['intent_id'],'intent_digest':manual['intent_digest'],
+            'detail_id':manual['detail_id']}
     result['product_facts']['source_offer_id'] = (result.get('source_product_identity') or {}).get('source_offer_id')
     lineage = result.get('sku_lineage') or {}
     # Operational lineage mode changes to INHERITED after this plan is stored.
@@ -728,6 +748,10 @@ def _report_path(offer_id: str, name: str, *, reports_root: Path | None = None) 
         raise ValueError("offer_id must contain 1 to 32 ASCII digits")
     root = reports_root or REPORTS_ROOT
     if reports_root is None:
+        from shared_platform.original_prepared_continuation import configured_original_continuation
+        continuation = configured_original_continuation(offer_id)
+        if continuation is not None:
+            return _report_path(offer_id, name, reports_root=continuation.r2_profile.root / 'reports/product-preparation')
         from shared_platform.publication_r2_review import has_registration, registered_project, review_runtime_root
         runtime_root = review_runtime_root(REPORTS_ROOT.parent.parent)
         if has_registration(offer_id, runtime_root=runtime_root):
@@ -820,6 +844,23 @@ def _frozen_shopee_master_source(prices, r1):
     }}
 
 
+def parse_marketplace_category_candidate(label, category):
+    """Project frozen display syntax without changing its evidence or source.
+
+    Ozon uses a category/type pair. Both retained display spellings preserve
+    that same pair; other platforms may never borrow Ozon's type syntax.
+    """
+    text = str(category.get('candidate') or '')
+    match = re.fullmatch(r'([0-9]+)(?:\s*/\s*(?:type\s*)?([0-9]+))?\s*·\s*(.+)', text)
+    if (not match or not re.fullmatch(r'sha256:[0-9a-f]{64}', str(category.get('evidence_digest') or ''))
+            or (match.group(2) is not None and label != 'ozon:RU')
+            or int(match.group(1)) <= 0 or (match.group(2) is not None and int(match.group(2)) <= 0)):
+        raise ValueError('MARKETPLACE_CATEGORY_EVIDENCE_REQUIRED: ' + label)
+    category_id, type_id, name = match.groups()
+    return {'id': category_id, 'name': name, 'path': [{'id': category_id, 'name': name}],
+            **({'type_id': type_id} if type_id is not None else {})}
+
+
 def _marketplace_category_candidate(label, category, *, first_review, common_payload,
                                     category_store=None, category_connection=None):
     """Project the native Shopee receipt shape without changing frozen facts.
@@ -828,6 +869,10 @@ def _marketplace_category_candidate(label, category, *, first_review, common_pay
     rows need the original fixed-store provenance and all R1 target/context
     checks, not a receipt copied from JSON or a category from another platform.
     """
+    if isinstance(category, Mapping) and category.get('status') == 'PROPOSED':
+        from shared_platform.retained_category_metadata import project_retained_category
+        return project_retained_category(label, category, first_review=first_review,
+            common_payload=common_payload, store=category_store, connection=category_connection)
     if not isinstance(category, Mapping) or category.get('status') != 'EVIDENCE_BOUND':
         return category
     if (not label.startswith('shopee:') or type(category) is not dict
@@ -917,6 +962,107 @@ def _native_shopee_global_category(payload, *, category_store, category_connecti
     return decision
 
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class _RetainedApprovedCopyShape:
+    """DB-validated serializer shape; not a preparation or HTTP option."""
+    plan_id: str
+    snapshot_digest: str
+    legacy_targets: tuple[str, ...]
+
+
+def _marketplace_target_copy(label, copy, locale, model_skus, *, retained_shape=None):
+    """Preserve exact R1 target displays through the R3 payload projection."""
+    result = {'title': copy.get('title'), 'description': copy.get('description'), 'locale': locale}
+    if label.startswith('tiktok:'):
+        # R1's historical seller_sku field identifies the Model-SKU display row.
+        from domains.product_operations.approved_publication_snapshot import _localized_variant_displays
+        variants = copy.get('variants')
+        if not isinstance(variants, list) or any(not isinstance(v, Mapping)
+                or set(v) != {'seller_sku', 'display_name'} for v in variants):
+            raise ValueError('TIKTOK_R1_LOCALIZED_VARIANT_DISPLAYS_REQUIRED')
+        localized = _localized_variant_displays([
+            {'model_sku': v['seller_sku'], 'display_name': v['display_name']} for v in variants],
+            expected_models=model_skus)
+        if retained_shape is not None and type(retained_shape) is not _RetainedApprovedCopyShape:
+            raise ValueError('MARKETPLACE_APPROVED_COPY_SHAPE_REQUIRED')
+        if retained_shape is None or label not in retained_shape.legacy_targets:
+            result['variants'] = localized
+    return result
+
+
+def _project_frozen_variant_images(payload, documents, common_plan, common_run):
+    """Derive SKU heroes from the retained COMMON color/R2 relation, never provenance aliases."""
+    from shared_platform.native_common_colormap_correction import KEY, frozen_projection
+    relation = payload.get(KEY)
+    if relation is None:
+        return
+    facts = payload['product_facts']
+    assets = [dict(role=row['role'], image_url=row['public_url'], artifact_digest=row['artifact_digest'])
+        for row in documents['generation_result']['assets']
+        if _brand_family(row['brand_id']) == 'livelyhive-sea']
+    if relation['dto'] != frozen_projection(payload, documents['first_review'], relation['relation'], assets):
+        raise ValueError('MARKETPLACE_VARIANT_FROZEN_COLOR_RELATION_CHANGED')
+    gallery = [row['image_url'] for row in payload['images']]
+    bindings = {row['variant_key']: row for row in relation['relation']['variant_bindings']}
+    positions, proof = [], []
+    for sku in facts['selected_skus']:
+        row = bindings[sku['key']]
+        url = relation['dto']['colorMap'][sku['key'].strip(';').split(';')[0]]['imgUrl']
+        matches = [asset for asset in documents['generation_result']['assets']
+            if _brand_family(asset['brand_id']) == 'livelyhive-sea' and asset['public_url'] == url
+            and asset['role'] == row['role'] and asset['artifact_digest'] == row['artifact_digest']]
+        if gallery.count(url) != 1 or len(matches) != 1:
+            raise ValueError('MARKETPLACE_VARIANT_R2_IMAGE_AMBIGUOUS')
+        sku['image_urls'] = [url]
+        positions.append(dict(model_sku=sku['model_sku'], position=gallery.index(url)))
+        proof.append(dict(variant_key=sku['key'], model_sku=sku['model_sku'], role=row['role'],
+            artifact_id=matches[0]['artifact_id'], artifact_digest=row['artifact_digest'],
+            image_url=url, approved_position=gallery.index(url)))
+    if len({row['position'] for row in positions}) != len(positions):
+        raise ValueError('MARKETPLACE_VARIANT_R2_IMAGE_AMBIGUOUS')
+    if facts.get('shopee_global_variant_image_bindings') is not None:
+        raise ValueError('MARKETPLACE_VARIANT_IMAGE_PROVENANCE_CONFLICT')
+    facts['shopee_global_variant_image_positions'] = positions
+    payload['r3_marketplace_binding']['variant_image_projection'] = dict(
+        schema_version='r3-frozen-variant-image-projection/v1',
+        round1_snapshot_digest=documents['round1_snapshot']['snapshot_digest'],
+        r2_identity=validate_r2_identity(documents), common_plan_id=common_plan['plan_id'],
+        common_payload_digest=common_plan['payload_digest'], common_run_id=common_run['run_id'],
+        color_relation_digest=_canonical_digest(relation), variants=proof,
+        product_gallery_unchanged=True, description_routes_unchanged=True)
+
+
+def independent_card_gallery(snapshot, sku, structure):
+    """The frozen B projection keeps one variation hero and eight images per RU card."""
+    from shared_platform.publication_gallery_contract import REFRIGERATOR_R1
+    if structure.get('round1_snapshot_digest') != REFRIGERATOR_R1:
+        return None
+    skus = snapshot['skus']
+    if not any(len(row['variant_images']) == 1 for row in skus):
+        return None  # Historical full-variant galleries retain their exact behavior.
+    product = snapshot['product']; master = snapshot['shopee_global_master']
+    gallery = product['images']
+    positions = master.get('variant_image_positions') or []
+    if (master.get('schema_version') != 'shopee-global-master/v1'
+        or len(gallery) != 8 or len(set(gallery)) != 8 or len(skus) != 3
+        or [row.get('model_sku') for row in positions] != [row['model_sku'] for row in skus]
+        or len({row.get('position') for row in positions}) != 3):
+        raise ValueError('OZON_FROZEN_VARIANT_IMAGE_PROJECTION_CHANGED')
+    for row, position in zip(skus, positions):
+        index = position.get('position')
+        if type(index) is not int or not 0 <= index < len(gallery) or row['variant_images'] != [gallery[index]]:
+            raise ValueError('OZON_FROZEN_VARIANT_IMAGE_PROJECTION_CHANGED')
+    from domains.product_operations.approved_publication_snapshot import publication_images_for_target
+    routed = publication_images_for_target(snapshot, 'ozon:RU')
+    if len(routed) != 8 or len(set(routed)) != 8:
+        raise ValueError('OZON_FROZEN_VARIANT_IMAGE_PROJECTION_CHANGED')
+    hero = routed[gallery.index(sku['variant_images'][0])]
+    return [hero] + [url for url in routed if url != hero]
+
+
 def build_marketplace_stage_payload(
     documents,
     common_plan,
@@ -928,6 +1074,8 @@ def build_marketplace_stage_payload(
     ozon_stock_decision=None,
     category_store=None,
     category_connection=None,
+    target_reduction=None,
+    _retained_copy_shape=None,
 ):
     """Project frozen commercial facts after the caller verifies the durable COMMON receipt."""
     if category_connection is None and any(
@@ -941,7 +1089,8 @@ def build_marketplace_stage_payload(
             return build_marketplace_stage_payload(documents, common_plan, common_run,
                 policy=policy, incidents=incidents, promotion_policy=promotion_policy,
                 ozon_stock_decision=ozon_stock_decision, category_store=category_store,
-                category_connection=category_db)
+                category_connection=category_db, target_reduction=target_reduction,
+                _retained_copy_shape=_retained_copy_shape)
     from domains.product_operations import build_approved_publication_snapshot_inputs
     from shared_platform.approved_publication_snapshot_projection import project_release_plan_for_publication_snapshot
 
@@ -949,17 +1098,28 @@ def build_marketplace_stage_payload(
     r1 = documents['round1_snapshot']
     route = build_dual_brand_publication_bridge(offer_id=r1['offer_id'], first_review=documents['first_review'],
         generation=documents['generation_result'], translation=documents['translation_result'], approved_by=r1['approved_by'])
+    from shared_platform.publication_gallery_contract import validate_gallery_documents
+    validate_gallery_documents(documents, route)
     payload = deepcopy(common_plan['payload'])
     target = next(row for row in common_run['targets'] if row['target_label'] == 'miaoshou:COMMON')
-    if (payload.get('r3_stage_binding', {}).get('r2_identity') != identity
+    from shared_platform.original_images_successor import installed_successor, replace_final_image_fields
+    successor = installed_successor(r1['offer_id'])
+    relation = (successor.for_common(documents, common_plan, common_run)
+        if successor is not None and identity == successor.current_identity else None)
+    common_identity = successor.old_identity if relation is not None else identity
+    if (payload.get('r3_stage_binding', {}).get('r2_identity') != common_identity
             or common_run['plan_id'] != common_plan['plan_id']):
         raise ValueError('COMMON_MARKETPLACE_IDENTITY_CONFLICT')
     payload.pop('r3_stage_binding')
     # The original R1/R2 documents retain COMMON and its complete binding.
     # This derived plan has only market actions; COMMON already ran separately.
     from shared_platform.release_store import _target_labels
-    payload['targets'] = list(_target_labels(
-        [label for label in r1['canonical_targets'] if label != 'miaoshou:COMMON']))
+    targets = [label for label in r1['canonical_targets'] if label != 'miaoshou:COMMON']
+    if target_reduction is not None:
+        from shared_platform.prepared_target_reduction import select_marketplace_targets
+        targets = select_marketplace_targets(r1['canonical_targets'],
+            offer_id=r1['offer_id'], r2_identity=common_identity, reduction=target_reduction)
+    payload['targets'] = list(_target_labels(targets))
     if promotion_policy is not None:
         payload['approved_postpublish_promotion_policy'] = deepcopy(promotion_policy)
     payload['r3_marketplace_binding'] = {
@@ -970,6 +1130,10 @@ def build_marketplace_stage_payload(
         'incident_registry': deepcopy(incidents), 'approval_source': 'ReleaseStore',
         'final_candidate_contract_version': 'stable-final-review/v1',
     }
+    if relation is not None:
+        payload['r3_marketplace_binding']['image_successor'] = successor.payload_binding()
+    if target_reduction is not None:
+        payload['r3_marketplace_binding']['target_reduction'] = deepcopy(target_reduction)
     payload['publication_business_snapshot_schema_version'] = (
         'publication-business-snapshot/v1'
     )
@@ -980,13 +1144,12 @@ def build_marketplace_stage_payload(
         category = _marketplace_category_candidate(label, frozen['category'],
             first_review=documents['first_review'], common_payload=common_plan['payload'],
             category_store=category_store, category_connection=category_connection)
-        match = re.fullmatch(r'([0-9]+)(?:\s*/\s*type\s*([0-9]+))?\s*·\s*(.+)', str(category.get('candidate') or ''))
-        if not match or not re.fullmatch(r'sha256:[0-9a-f]{64}', str(category.get('evidence_digest') or '')):
-            raise ValueError('MARKETPLACE_CATEGORY_EVIDENCE_REQUIRED: ' + label)
-        category_id, type_id, category_name = match.groups()
+        parsed_category = parse_marketplace_category_candidate(label, category)
+        if 'retained_metadata_projection' in category:
+            payload['r3_marketplace_binding'].setdefault('retained_category_metadata', {})[label] = deepcopy(category['retained_metadata_projection'])
         platform, site = label.split(':', 1)
         categories[label] = {'target_label': label, 'platform': platform, 'site': site, 'store': site,
-            'category': {'id': category_id, 'name': category_name, 'path': [{'id': category_id, 'name': category_name}]},
+            'category': parsed_category,
             'decision': {'status': 'APPROVED', 'decision_digest': category['evidence_digest']}}
         rows = []
         for row in frozen['price'].get('sku_prices') or []:
@@ -1013,8 +1176,9 @@ def build_marketplace_stage_payload(
                 store_prices.append(value)
         if store_prices:
             prices[label]['store_prices'] = store_prices
-        copies[label] = {'title': frozen['copy'].get('title'), 'description': frozen['copy'].get('description'),
-                         'locale': route['route_locales'][label]}
+        copies[label] = _marketplace_target_copy(label, frozen['copy'], route['route_locales'][label],
+            [row['model_sku'] for row in payload['sku_lineage']['assignment']['model_skus']],
+            retained_shape=_retained_copy_shape)
         image_routes[label] = {'locale': route['route_locales'][label],
                               'ordered_images': [row['url'] for row in route['image_routes'][label]]}
     facts['categories_by_target'] = categories
@@ -1033,6 +1197,14 @@ def build_marketplace_stage_payload(
         'supplement_digest': _canonical_digest(image_routes), 'source_snapshot_digest': identity['generation_identity_digest'],
         'routes': image_routes,
     }
+    if relation is not None:
+        payload = replace_final_image_fields(payload, relation)
+        facts = payload['product_facts']
+        payload['images'] = [{**row, 'image_url': row['url'], 'audit_id': identity['qa_digest'],
+            'asset_type': 'generated', 'decision_source': 'CURRENT_R1_R2_QA'}
+            for row in route['common_miaoshou_baseline']]
+        payload['content_package_id'] = 'r2-content:' + _canonical_digest(identity)[7:31]
+    _project_frozen_variant_images(payload, documents, common_plan, common_run)
     dashboard = {
         'product': {'actual_product_approved': True, 'offer_id': payload['product_id'],
             'revision': payload['product_revision'], 'actual_approval': {'package_id': payload['product_package_id']},
@@ -1053,6 +1225,22 @@ def build_marketplace_stage_payload(
     if not projection.ready:
         raise ValueError('MARKETPLACE_V4_FACTS_REQUIRED: ' + str(projection.missing_fields))
     payload = projection.payload
+    # The separately pinned structure exception is read only from the startup
+    # native adoption consumer. It never edits original R1/source-binding bytes.
+    from shared_platform.publication_ozon_card_structure import configured_structure
+    card_structure = configured_structure(r1['offer_id'])
+    if card_structure is not None and target_reduction is not None:
+        from shared_platform.publication_ozon_card_structure import project_selected_structure
+        card_structure=project_selected_structure(card_structure,target_reduction)
+    if card_structure is not None:
+        if (card_structure['round1_snapshot_digest'] != r1['snapshot_digest']
+                or sorted(card_structure['selected_target_labels']) != sorted(payload['targets'])):
+            raise ValueError('OZON_STRUCTURE_FULL_FROZEN_SCOPE_REQUIRED')
+        # v4 target ordering belongs to ReleaseStore, while R1 remains immutable.
+        if card_structure['selected_target_labels'] != payload['targets']:
+            raise ValueError('OZON_STRUCTURE_TARGET_ORDER_CHANGED')
+        payload['product_facts']['ozon_card_structure'] = card_structure
+        payload['r3_marketplace_binding']['ozon_card_structure_successor_digest'] = card_structure['successor_digest']
     payload.pop('plan_id', None)
     payload['plan_id'] = 'r3-marketplace:' + r1['offer_id'] + ':' + _canonical_digest(payload)[7:31]
     return payload
@@ -1061,11 +1249,12 @@ def build_marketplace_stage_payload(
 def build_marketplace_review_material(documents, common_plan, common_run, *,
                                       policy, incidents, promotion_policy=None,
                                       ozon_stock_decision=None, category_store=None,
-                                      category_connection=None):
+                                      category_connection=None, target_reduction=None, _retained_copy_shape=None):
     """Rebuild the complete inert original-page candidate from domain sources.
 
     This is not COMMON authority: the consumer must independently verify its
-    durable readback and Offer-wide budget. No target subset is accepted here.
+    durable readback and Offer-wide budget. Only a pinned cancellation record
+    can derive a target subset; this inert compiler does not adopt that record.
     The digest envelope is identical to the existing original-page compiler.
     """
     from domains.product_operations.approved_publication_snapshot import (
@@ -1083,11 +1272,13 @@ def build_marketplace_review_material(documents, common_plan, common_run, *,
             return build_marketplace_review_material(documents, common_plan, common_run,
                 policy=policy, incidents=incidents, promotion_policy=promotion_policy,
                 ozon_stock_decision=ozon_stock_decision, category_store=category_store,
-                category_connection=category_db)
+                category_connection=category_db, target_reduction=target_reduction,
+                _retained_copy_shape=_retained_copy_shape)
     payload = build_marketplace_stage_payload(
         documents, common_plan, common_run, policy=policy, incidents=incidents,
         promotion_policy=promotion_policy, ozon_stock_decision=ozon_stock_decision,
-        category_store=category_store, category_connection=category_connection)
+        category_store=category_store, category_connection=category_connection,
+        target_reduction=target_reduction, _retained_copy_shape=_retained_copy_shape)
     snapshot = build_publication_preview(payload)
     evidence = marketplace_quality_evidence(snapshot, payload,
         category_store=category_store, category_connection=category_connection)
@@ -1116,10 +1307,24 @@ def marketplace_quality_evidence(snapshot, payload, *, category_store=None, cate
     identity = validate_r2_identity(documents)
     if identity != binding['r2_identity']:
         raise ValueError('MARKETPLACE_FROZEN_R2_IDENTITY_CONFLICT')
+    reduction_identity = identity
+    if binding.get('image_successor') is not None:
+        from shared_platform.original_images_successor import installed_successor
+        successor = installed_successor(identity['offer_id'])
+        if successor is None:
+            raise ValueError('MARKETPLACE_IMAGE_SUCCESSOR_NOT_INSTALLED')
+        reduction_identity = successor.validate_payload_binding(binding)
+    if binding.get('target_reduction') is not None:
+        from shared_platform.prepared_target_reduction import select_marketplace_targets
+        expected = select_marketplace_targets(documents['round1_snapshot']['canonical_targets'],
+            offer_id=identity['offer_id'], r2_identity=reduction_identity, reduction=binding['target_reduction'])
+        if sorted(payload['targets']) != sorted(expected):
+            raise ValueError('MARKETPLACE_CANCELLED_TARGET_SCOPE_CHANGED')
     digest = snapshot.get('snapshot_digest') or snapshot.get('preview_digest')
     route = deepcopy(binding['route'])
     rich_labels = [label for label, facts in route['target_facts'].items()
-                   if facts.get('category', {}).get('status') == 'EVIDENCE_BOUND']
+                   if label in payload['targets']
+                   and facts.get('category', {}).get('status') == 'EVIDENCE_BOUND']
     if rich_labels:
         first_review, common_payload = _native_marketplace_category_source(payload,
             category_store=category_store, category_connection=category_connection)
@@ -1145,6 +1350,19 @@ def marketplace_quality_evidence(snapshot, payload, *, category_store=None, cate
                 label, route['target_facts'][label]['category'], first_review=first_review,
                 common_payload=common_payload, category_store=category_store,
                 category_connection=category_connection)
+    retained_labels = [label for label, facts in route['target_facts'].items()
+        if label in payload['targets'] and facts.get('category', {}).get('status') == 'PROPOSED'
+        and facts['category'].get('evidence_digest') == 'sha256:00ee98706e170f1b4957260cf12e8f2ef32f98ae1e0845e6e52fad01963c7f2c']
+    if retained_labels:
+        first_review, common_payload = _native_marketplace_category_source(payload,
+            category_store=category_store, category_connection=category_connection)
+        for label in retained_labels:
+            projected = _marketplace_category_candidate(label, route['target_facts'][label]['category'],
+                first_review=first_review, common_payload=common_payload,
+                category_store=category_store, category_connection=category_connection)
+            if projected['retained_metadata_projection'] != binding.get('retained_category_metadata', {}).get(label):
+                raise ValueError('MARKETPLACE_RETAINED_CATEGORY_PROJECTION_CHANGED')
+            route['target_facts'][label]['category'] = projected
     release = {'status': 'FACTS_PREPARED', 'plan_id': payload['plan_id'], 'snapshot_digest': digest,
                'round1_snapshot_digest': identity['round1_snapshot_digest']}
     route.update(status='MIAOSHOU_VERIFIED', approval_status='IMAGE_PREPARATION_VERIFIED',
@@ -1153,7 +1371,20 @@ def marketplace_quality_evidence(snapshot, payload, *, category_store=None, cate
         common_stage={'schema_version': 'r3-common-evidence/v1', 'plan_id': binding['common_plan_id'],
                       'run_id': binding['common_run_id'], 'payload_digest': binding['common_payload_digest'],
                       'readback': deepcopy(binding['common_readback'])})
+    if binding.get('image_successor') is not None:
+        route['image_successor'] = deepcopy(binding['image_successor'])
+        route['miaoshou_sync'].update(verification_scope='RETAINED_FACTS_BASELINE_ONLY',
+            new_images_written=False, new_images_verified_by_COMMON=False)
+        route['common_stage']['images_state'] = 'VERIFIED_PREDECESSOR_ONLY_NOT_NEW_GENERATED_IMAGES'
     documents.update(publication_bridge=route, workflow_handoff={'offer_id': payload['product_id'], **release})
+    if binding.get('variant_image_projection') is not None:
+        expected = deepcopy(payload)
+        _project_frozen_variant_images(expected, documents,
+            dict(plan_id=binding['common_plan_id'], payload_digest=binding['common_payload_digest']),
+            dict(run_id=binding['common_run_id']))
+        if expected != payload:
+            raise ValueError('MARKETPLACE_VARIANT_IMAGE_PROJECTION_CHANGED')
+        documents['variant_image_projection'] = deepcopy(binding['variant_image_projection'])
     preflight = build_platform_preview_preflight if snapshot.get('status') == 'NOT_APPROVED' else build_platform_preflight
     documents['platform_preflight'] = preflight(snapshot, evidence=documents)
     return documents

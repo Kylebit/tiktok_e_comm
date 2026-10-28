@@ -1,0 +1,17 @@
+{
+  "0126": {
+    "weight_g": 150,
+    "reason": "用户确认目录物流实测数据有误，按Ozon登记重量修正(2026-06-26)",
+    "weight_source": "manual_override"
+  },
+  "0005": {
+    "weight_g": 250,
+    "reason": "用户确认目录物流实测数据有误，按Ozon登记重量修正(2026-06-26)",
+    "weight_source": "manual_override"
+  },
+  "0928": {
+    "weight_g": 300,
+    "reason": "用户确认目录物流实测数据有误，按Ozon登记重量修正(2026-06-26)",
+    "weight_source": "manual_override"
+  }
+}

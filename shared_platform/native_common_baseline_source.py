@@ -76,7 +76,8 @@ class NativeCommonBaselineReader:
                 raise ValueError('COMMON_BASELINE_PREPARATION_SOURCE_UNKNOWN')
             completion = read_retained_completion(reader, db, common_plan_id, common_run_id)
             census = census_same_snapshot(self._store, db, payload, source_facts)
-            if census['status'] != 'LOCAL_PERSISTED_CENSUS' or census['unresolved_attempts']:
+            from shared_platform.native_common_baseline_successor import unresolved_after_authorized_successor
+            if census['status'] != 'LOCAL_PERSISTED_CENSUS' or unresolved_after_authorized_successor(self._store,db,payload,census):
                 raise ValueError('COMMON_BASELINE_ACTIVE_RESULT_REQUIRES_RECONCILIATION')
             signing = NativeCommonSigningContextReader(self._config, self._store).read(
                 db, common_plan_id, common_run_id=common_run_id)

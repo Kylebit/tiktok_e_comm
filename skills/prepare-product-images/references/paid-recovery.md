@@ -9,6 +9,7 @@ python -B -m shared_platform.publication_paid_requests --repo-root <repo> --offe
 python -B -m shared_platform.publication_paid_requests --repo-root <repo> --offer-id <id> --paid-policy <existing-policy> reconcile-request --evidence <verified-evidence.json>
 python -B -m shared_platform.publication_paid_requests --repo-root <repo> --offer-id <id> --paid-policy <existing-policy> reconcile-history --evidence <verified-history-evidence.json>
 python -B -m shared_platform.publication_paid_requests --repo-root <repo> --offer-id <id> --paid-policy <existing-policy> activate-plan-rebuild --proposal <exact-proposal.json>
+python -B -m shared_platform.publication_paid_requests --repo-root <repo> --offer-id <id> --paid-policy <existing-policy> prepare-image-successor-grant --decision <conversation-receipt.json> --decision-sha256 <exact-sha256> --checkpoint <original-unknown-v2-path> [--checkpoint <next-original-path>]
 ```
 
 Omit checkpoint for chat. Inspect returns the full `observed` object: product/key, business/full request digest, provider/model/attempt, original approval binding, current ledger digest/time, original raw digest and image checkpoint/identity/journal hashes, revision, tasks and legacy hashes.
@@ -20,6 +21,21 @@ Evidence contains the unchanged `observed`, `verified_by`, timezone-aware `verif
 - `raw_response_verified_for_request`: original chat response and response_sha256. Raw is preserved before parsing; it cannot overwrite different retained bytes.
 
 These are upper-layer facts already verified against authoritative task/usage evidence. This interface verifies bindings only. A verified boolean, another product's receipt or stale revision is insufficient. If interrupted after checkpoint transition but before ledger projection, identical evidence can resume that local projection without another POST.
+
+An explicit conversation decision can instead authorize one new image per exact
+missing role while accepting possible duplicate charges. This is not a no-charge
+outcome. The local `prepare-image-successor-grant` command requires the decision's
+exact product/R1, original keys, maximum (at most five), per-role maximum one,
+duplicate-charge risk, retained UNKNOWN and the unchanged shared cap. It binds the
+original model, full request/reference digest and all checkpoint source hashes;
+original bytes and accounting states are retained. Pass the resulting canonical
+grant to the original direct images entry with `--execute-brand-generation
+--unknown-successor-grant <grant-path>`. Existing successful assets are verified
+and reused. Each successor has a distinct checkpoint identity and durable
+reservation in the same ledger. Repeated execution can only resume that successor;
+an unresolved successor cannot obtain another successor under this grant.
+Completed successors emit a verifiable image-only receipt for native adoption.
+That receipt neither resolves the originals nor applies to merchant UNKNOWNs.
 
 Historical reconciliation uses the exact `inspect-history` observed object, unchanged original source/request SHA, current ledger revision, original provider, verified timestamp/verifier/reference, and either an exact task or a no-task/no-charge outcome. The historical slot remains occupied. This resolves the budget-history blocker only; a corresponding old image checkpoint still needs its own S02-A task/ownership evidence. It cannot silently relabel old ToAPI tasks or combine separate v1 identities.
 

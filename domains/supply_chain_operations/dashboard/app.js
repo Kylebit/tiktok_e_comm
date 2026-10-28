@@ -512,7 +512,7 @@ function detailedRowHtml(item, config, region = activeRegion) {
     ? ` · 来源：${escapeHtml(item.manualInput.sourceNote)}`
     : "";
   const physicalLabel = [
-    item.manualInput ? "手动补齐" : "",
+    item.manualInput ? (item.manualInput.evidenceKind === 'USER_CONFIRMED' ? '用户确认资料' : '估算 / 手动资料（待核）') : "",
     item.dimensionsReady ? `${item.dimensionsCm.join("×")} cm` : "尺寸待补充",
     item.weightReady ? `${item.weightG} g` : "重量待补充",
     item.costReady ? `成本 ${money(item.costCny, 2)}` : "成本待补充"
@@ -576,16 +576,114 @@ function rowHtml(item, config, region = activeRegion) {
   const missing = [!item.dimensionsReady && "尺寸", !item.weightReady && "重量", !item.costReady && "成本"].filter(Boolean).join("、");
   const blocker = item.inventoryDecisionState !== "READY" ? "库存与订单日期不一致 · 条件测算" : "";
   const risk = trend.crossBorderFallbackUnits > 0 || (item.recent30Ready && actual.crossBorderFallbackUnits > 0);
-  return `<tr class="sku-summary" data-sku="${escapeHtml(item.sku)}">
+  const decision = decisionFor(item, region);
+  return `<tr class="sku-summary" data-country="${escapeHtml(region)}" data-sku="${escapeHtml(item.sku)}">
+    <td><strong>${escapeHtml(region)}</strong></td>
     <td><div class="product-cell"><img src="${escapeHtml(supplyImageSrc(item.image))}" alt="SKU ${escapeHtml(item.sku)} 主图"><div><strong>${escapeHtml(item.sku)}${activeRegion === "SUMMARY" ? ` · ${escapeHtml(region)}` : ""}</strong><span>${escapeHtml(item.name)}</span></div></div></td>
     <td><div class="compact-pair"><span>趋势 <b>${item.dailyVelocity.toFixed(2)}</b></span><span>30日 <b>${item.recent30Ready ? item.recent30DailyVelocity.toFixed(2) : "不可用"}</b></span></div>${!item.recent30Ready ? '<small class="pending-data">订单事实待补</small>' : ""}</td>
     <td><b>${escapeHtml(config.warehouse)}</b><span class="compact-line">可用 ${item.inventory.available} · 在途 ${item.inventory.inbound}</span><small>到仓前计入 ${item.countedInbound}${!item.inboundReconciled ? ' · 分摊待核' : ''}</small></td>
     <td><b>${escapeHtml(item.nextArrivalDate)}</b><small class="compact-line ${risk ? 'pending-data' : ''}">${risk ? `跨境兜底：趋势 ${trend.crossBorderFallbackUnits} / 30日 ${item.recent30Ready ? actual.crossBorderFallbackUnits : '—'} 件` : '到仓前本土供给覆盖'}</small></td>
     <td><div class="compact-pair recommendation"><span>趋势 <b>${item.recommended}</b></span><span>30日 <b>${item.recent30Recommended ?? "—"}</b></span></div></td>
-    <td>${missing ? `<span class="pending-data">${missing}待补</span>` : `<span>单件 ${item.netUnit === null ? '待核' : money(item.netUnit, 2)}</span>`}<small class="compact-line">收益不阻断数量建议</small></td>
+    <td class="decision-edit"><label>计划件数<input data-decision-field="quantity" type="number" min="0" max="10000000" step="1" value="${decision.quantity}" aria-label="${escapeHtml(region)} ${escapeHtml(item.sku)} 计划件数"></label><select data-decision-field="basis" aria-label="${escapeHtml(region)} ${escapeHtml(item.sku)} 计划口径"><option value="trend" ${decision.basis === 'trend' ? 'selected' : ''}>趋势建议</option><option value="recent30" ${decision.basis === 'recent30' ? 'selected' : ''} ${!item.recent30Ready ? 'disabled' : ''}>30日实绩</option><option value="manual" ${decision.basis === 'manual' ? 'selected' : ''}>人工调整</option></select><textarea data-decision-field="note" maxlength="1000" rows="2" aria-label="${escapeHtml(region)} ${escapeHtml(item.sku)} 备注" placeholder="估算参数、待核事项或调整原因">${escapeHtml(decision.note)}</textarea></td>
+    <td>${missing ? `<span class="pending-data">${missing}待补</span>` : `<span>单件 ${item.netUnit === null ? '待核' : money(item.netUnit, 2)}</span>`}${item.manualInput ? `<small class="compact-line pending-data">${item.manualInput.evidenceKind === 'USER_CONFIRMED' ? '用户确认参数' : '估算 / 手动参数待核'}</small>` : ''}<small class="compact-line">收益不阻断数量建议</small></td>
     <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span>${blocker ? `<small class="compact-line pending-data">${blocker}</small>` : ""}<button type="button" class="sku-detail-toggle" aria-expanded="false" aria-controls="${escapeHtml(detailId)}">事实与计算详情</button></td>
-  </tr><tr id="${escapeHtml(detailId)}" class="sku-detail-row" hidden><td colspan="7"><div class="sku-detail-content"><h4>${escapeHtml(region)} · ${escapeHtml(item.sku)} 完整事实与两套计算</h4><div class="table-wrap"><table class="detail-facts"><thead><tr><th>商品资料</th><th>需求事实</th><th>供应事实</th><th>两套计算</th><th>建议</th><th>收益</th><th>判断与补录</th></tr></thead><tbody>${detailedRowHtml(item, config, region)}</tbody></table></div></div></td></tr>`;
+  </tr><tr id="${escapeHtml(detailId)}" class="sku-detail-row" hidden><td colspan="9"><div class="sku-detail-content"><h4>${escapeHtml(region)} · ${escapeHtml(item.sku)} 完整事实与两套计算</h4><div class="table-wrap"><table class="detail-facts"><thead><tr><th>商品资料</th><th>需求事实</th><th>供应事实</th><th>两套计算</th><th>建议</th><th>收益</th><th>判断与补录</th></tr></thead><tbody>${detailedRowHtml(item, config, region)}</tbody></table></div></div></td></tr>`;
 }
+
+// Planning edits never enter the forecast, provider API, or purchase workflow.
+const DECISION_KEY = "supply-chain-decision-sheet-v1";
+let decisionRaw;
+let decisionStore;
+let decisionLoadError = "";
+const decisionDrafts = new Map();
+try {
+  decisionRaw = localStorage.getItem(DECISION_KEY);
+  decisionStore = decisionRaw ? JSON.parse(decisionRaw) : {schema: 1, rows: {}};
+  if (decisionStore?.schema !== 1 || !decisionStore.rows || typeof decisionStore.rows !== "object" || Array.isArray(decisionStore.rows)) throw new Error();
+} catch {
+  decisionLoadError = "计划存储不可用或格式异常；旧记录保留，本页编辑仅为未保存草稿。";
+  decisionStore = {schema: 1, rows: {}};
+}
+function decisionBinding(item, region) {
+  return JSON.stringify([DATA.snapshotDate, DATA.orderDemandCapturedAt, DATA.config[region].inventoryEvidence,
+    INBOUND_PLAN.capturedAt, INBOUND_PLAN.regions[region], region, item.sku, item.inventory,
+    item.recommended, item.recent30Recommended, item.nextArrivalDate, item.dailyVelocity,
+    item.recent30DailyVelocity, item.targetCoverageDays, item.transportPolicy, item.inboundBatches,
+    DATA.demandWindowPolicy, DATA.capturedRefreshSources]);
+}
+function decisionFor(item, region) {
+  const id = `${region}:${item.sku}`, binding = decisionBinding(item, region);
+  const saved = decisionDrafts.get(id) || decisionStore.rows[id];
+  if (saved?.binding === binding && Number.isSafeInteger(saved.quantity) && saved.quantity >= 0 && saved.quantity <= 10000000 &&
+      ['trend', 'recent30', 'manual'].includes(saved.basis) && typeof saved.note === 'string' && saved.note.length <= 1000) return saved;
+  return {binding, quantity: item.recommended, basis: 'trend', note: ''};
+}
+function decisionStatus(message) {
+  document.querySelector('#decisionSaveStatus').textContent = message;
+}
+document.querySelector('#skuRows').addEventListener('change', event => {
+  const field = event.target.dataset.decisionField;
+  if (!field) return;
+  const row = event.target.closest('.sku-summary'), region = row.dataset.country;
+  const item = calculated.find(value => value.sku === row.dataset.sku && (activeRegion === 'SUMMARY' ? value.region : activeRegion) === region);
+  if (!item) return;
+  const quantityInput = row.querySelector('[data-decision-field="quantity"]'), basisInput = row.querySelector('[data-decision-field="basis"]');
+  if (field === 'basis' && basisInput.value !== 'manual') quantityInput.value = basisInput.value === 'recent30' ? item.recent30Recommended : item.recommended;
+  if (field === 'quantity') basisInput.value = 'manual';
+  const quantity = Number(quantityInput.value);
+  if (!quantityInput.value.trim() || !Number.isSafeInteger(quantity) || quantity < 0 || quantity > 10000000) {
+    quantityInput.setCustomValidity('请输入 0 至 10000000 的整数'); quantityInput.reportValidity(); decisionStatus('件数无效，未保存。'); return;
+  }
+  quantityInput.setCustomValidity('');
+  const value = {binding: decisionBinding(item, region), quantity, basis: basisInput.value,
+    note: row.querySelector('[data-decision-field="note"]').value.slice(0, 1000), editedAt: new Date().toISOString()};
+  const id = `${region}:${item.sku}`;
+  decisionDrafts.set(id, value);
+  try {
+    if (decisionLoadError) throw new Error(decisionLoadError);
+    if (localStorage.getItem(DECISION_KEY) !== decisionRaw) throw new Error('另一页已更改计划；请先下载草稿，再重新加载以核对。');
+    const next = {schema: 1, rows: {...decisionStore.rows, [id]: value}};
+    const raw = JSON.stringify(next);
+    localStorage.setItem(DECISION_KEY, raw);
+    decisionStore = next; decisionRaw = raw;
+    decisionStatus('计划已保存到当前浏览器；未创建采购或修改库存。');
+  } catch (error) {
+    decisionStatus(`未保存草稿：${error.message || '本地存储失败'}。可下载本页计划单保留编辑。`);
+  }
+});
+
+async function embeddedImage(item) {
+  const url = new URL(supplyImageSrc(item.image), location.href);
+  if (url.origin !== location.origin || !/\/assets\/[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp|gif)$/.test(url.pathname)) throw new Error(`主图路径未通过核对：${item.sku}`);
+  const response = await fetch(url.href, {credentials: 'same-origin'});
+  if (!response.ok) throw new Error(`主图读取失败：${item.sku}`);
+  const blob = await response.blob();
+  if (!/^image\/(jpeg|png|webp|gif)$/.test(blob.type) || blob.size > 10 * 1024 * 1024) throw new Error(`主图格式或大小异常：${item.sku}`);
+  return new Promise((resolve, reject) => {const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(blob);});
+}
+function downloadDecisionHtml(html) {
+  const url = URL.createObjectURL(new Blob([html], {type:'text/html;charset=utf-8'}));
+  const link = document.createElement('a'); link.href = url; link.download = `四国补货计划-${DATA.snapshotDate}.html`;
+  link.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+document.querySelector('#exportDecisionSheet').addEventListener('click', async event => {
+  const invalid = [...document.querySelectorAll('#skuRows [data-decision-field="quantity"]')].find(input =>
+    !input.value.trim() || !Number.isSafeInteger(Number(input.value)) || Number(input.value) < 0 || Number(input.value) > 10000000);
+  if (invalid) {invalid.reportValidity(); invalid.focus(); decisionStatus('存在无效计划件数，尚未下载；请先修正当前编辑。'); return;}
+  const button = event.currentTarget; button.disabled = true; decisionStatus('正在打包四国计划与主图…');
+  try {
+    const rows = ['MY','TH','VN','PH'].flatMap(region => calculateCountry(region).rows.map(item => ({...item, region})))
+      .filter(item => item.recommendationMax >= 10).sort((a,b) => a.region.localeCompare(b.region) || a.sku.localeCompare(b.sku));
+    const images = new Map();
+    for (const item of rows) if (!images.has(item.image)) images.set(item.image, await embeddedImage(item));
+    const body = rows.map(item => {const value = decisionFor(item,item.region); const missing = [!item.dimensionsReady && '尺寸', !item.weightReady && '重量', !item.costReady && '成本'].filter(Boolean);
+      const parameterLabel = missing.length ? missing.join('、') + '待核；数量已生成' : item.manualInput ? (item.manualInput.evidenceKind === 'USER_CONFIRMED' ? '用户确认参数' : '估算 / 手动参数待核') + '：' + (item.manualInput.sourceNote || '来源待核') : '已有参数';
+      return `<tr><td>${escapeHtml(item.region)}</td><td><img alt="${escapeHtml(item.sku)} 主图" src="${images.get(item.image)}"></td><td>${escapeHtml(item.sku)}</td><td>${escapeHtml(item.name)}</td><td>${item.recommended}</td><td>${item.recent30Recommended ?? '不可用'}</td><td><input type="number" min="0" max="10000000" step="1" aria-label="${escapeHtml(item.region)} ${escapeHtml(item.sku)} 计划件数" value="${value.quantity}"><small>${escapeHtml({trend:'趋势建议',recent30:'30日实绩',manual:'人工调整'}[value.basis])}</small></td><td><textarea rows="3" maxlength="1000" aria-label="${escapeHtml(item.region)} ${escapeHtml(item.sku)} 备注">${escapeHtml(value.note)}</textarea></td><td>${escapeHtml(parameterLabel)}<br>${escapeHtml(item.inventoryDecisionState !== 'READY' ? '库存与订单日期不一致：条件测算' : '来源日期对齐；仍需采购前复核')}</td></tr>`;}).join('');
+    const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>四国补货计划单</title><style>body{font:14px system-ui;margin:24px;color:#183d30;background:#f8faf8}table{border-collapse:collapse;background:white;width:100%}th,td{border:1px solid #c8d7cf;padding:8px;text-align:left}th{background:#eaf0ec}img{width:64px;height:64px;object-fit:contain}input{width:90px}textarea{width:200px}input,textarea{font:inherit;padding:6px;box-sizing:border-box}small{display:block;color:#63716a}button{padding:10px;margin-bottom:14px}.wrap{overflow:auto}</style></head><body><h1>四国补货计划单</h1><p>库存 ${escapeHtml(DATA.snapshotDate)} · 订单 ${escapeHtml(DATA.orderDemandCapturedAt || '未知')} · 在途 ${escapeHtml(INBOUND_PLAN.capturedAt || '未知')}<br>任一建议 ≥10 件保留；两套建议分别展示，计划件数可人工调整。缺成本或包装不阻断数量；估算与待核事项写入备注。此文件是本地计划，不具备采购、入库或库存写入权限。</p><section data-source-readiness>${sourceReadinessHtml("SUMMARY")}</section><button id="saveSheet">下载编辑后的计划单</button><span id="sheetStatus" role="status"></span><div class="wrap"><table><thead><tr><th>国家</th><th>主图</th><th>SKU</th><th>商品</th><th>趋势建议</th><th>30日实绩</th><th>计划件数</th><th>备注</th><th>资料与验收状态</th></tr></thead><tbody>${body}</tbody></table></div><script>for(const input of document.querySelectorAll('input'))input.addEventListener('change',()=>input.nextElementSibling.textContent='人工调整');document.getElementById('saveSheet').addEventListener('click',()=>{for(const input of document.querySelectorAll('input')){if(!input.value.trim()||!Number.isSafeInteger(Number(input.value))||Number(input.value)<0||Number(input.value)>10000000){document.getElementById('sheetStatus').textContent='请输入有效整数件数，尚未下载';input.focus();return;}input.setAttribute('value',input.value);}for(const note of document.querySelectorAll('textarea'))note.textContent=note.value;document.getElementById('sheetStatus').textContent='';const url=URL.createObjectURL(new Blob(['<!doctype html>'+document.documentElement.outerHTML],{type:'text/html;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='四国补货计划-已编辑.html';a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);});<\/script></body></html>`;
+    downloadDecisionHtml(html); decisionStatus(`已下载 ${rows.length} 行四国计划单；主图已嵌入，可继续编辑并下载。`);
+  } catch (error) {decisionStatus(`下载失败，未生成不完整计划单：${error.message || '读取失败'}`);}
+  finally {button.disabled = false;}
+});
 document.querySelector("#skuRows").addEventListener("click", event => {
   const button = event.target.closest(".sku-detail-toggle");
   if (!button) return;
@@ -594,6 +692,32 @@ document.querySelector("#skuRows").addEventListener("click", event => {
   button.setAttribute("aria-expanded", String(!expanded));
   detail.hidden = expanded;
 });
+
+function sourceReadinessHtml(region) {
+  const state = DATA.sourceReadiness;
+  const conditions = (state?.conditions || []).filter(row => region === 'SUMMARY' || row.country === 'ALL' || row.country === region);
+  const range = DATA.demandWindows?.[region];
+  const windowText = DATA.demandWindowPolicy === 'completed_local_calendar_30_v1'
+    ? `需求使用截止前完整30个当地自然日；31天为采集缓冲，不直接除以30${range ? `（${range.startAt} 至 ${range.endAtExclusive}，右端不含）` : ''}。`
+    : '';
+  const sources = DATA.capturedRefreshSources || {}, clocks = [];
+  for (const [kind, label] of [['inventory','雅仓库存'], ['inbound','雅仓入库']]) {
+    const source = sources[kind];
+    if (source?.globalPageRowCounts) clocks.push(`${label}：全仓 ${source.globalTotalRows} 行，全局页 ${source.globalPageRowCounts.join(' + ')}；观察 ${source.collectionStartedAt} 至 ${source.capturedAt}。`);
+  }
+  for (const [platform, source] of Object.entries(sources.orders?.platformCollectionClocks || {})) clocks.push(`${platform === 'tiktok' ? 'TikTok' : 'Shopee'}：采集 ${source.collectionStartedAt} 至 ${source.materializedAt}；共同订单事件截止 ${source.capturedAt}。`);
+  if (DATA.retainedEconomicsEvidence?.refreshed === false) clocks.push(`费用与收益沿用 ${DATA.retainedEconomicsEvidence.sourceSnapshotDate} 审计展示中的历史结算资料；本轮未刷新结算。`);
+  if (!conditions.length && !windowText && !clocks.length) return '';
+  return `<strong>数据范围与条件</strong>${windowText ? `<p>${escapeHtml(windowText)}</p>` : ''}${conditions.map(row => `<p>${escapeHtml(row.message)}</p>`).join('')}${clocks.map(value => `<p>${escapeHtml(value)}</p>`).join('')}`;
+}
+
+function renderSourceReadiness() {
+  const panel = document.querySelector('#sourceReadiness');
+  if (!panel) return;
+  const html = sourceReadinessHtml(activeRegion);
+  panel.hidden = !html;
+  panel.innerHTML = html;
+}
 
 function renderRows() {
   const query = document.querySelector("#searchInput").value.trim().toLowerCase();
@@ -622,6 +746,7 @@ function renderRows() {
 }
 
 function renderSummary() {
+  renderSourceReadiness();
   const regions = ["MY", "TH", "VN", "PH"];
   const activeInboundBatches = regions.flatMap(region => INBOUND_PLAN.regions[region].batches || []);
   const inbound = activeInboundBatches.reduce((sum, batch) => sum + number(batch.totalUnits), 0);
@@ -658,7 +783,7 @@ function renderSummary() {
   calculated = regions.flatMap(region => calculateCountry(region).rows.map(item => ({
     ...item,
     region
-  }))).filter(item => item.recommendationMax > 10)
+  }))).filter(item => item.recommendationMax >= 10)
     .sort((left, right) => right.recommendationMax - left.recommendationMax || left.region.localeCompare(right.region) || left.sku.localeCompare(right.sku));
   batch = {rows: calculated};
 
@@ -696,13 +821,13 @@ function renderSummary() {
   const firstStockCount = calculated.length - replenishCount;
 
   document.querySelector("#snapshotDate").textContent = `库存 ${DATA.snapshotDate} · 订单 ${shanghaiDate(DATA.orderDemandCapturedAt) || "待刷新"} · 批次 ${shanghaiDate(INBOUND_PLAN.capturedAt) || "待刷新"}${inboundStorageError ? " · 本地确认读取失败，暂用已提交来源" : ""}`;
-  document.querySelector("#countryEyebrow").textContent = "MY · TH · VN · PH · 建议数 > 10";
+  document.querySelector("#countryEyebrow").textContent = "MY · TH · VN · PH · 建议数 ≥ 10";
   document.querySelector("#countryName").textContent = "四国汇总：";
-  document.querySelector("#heroDescription").textContent = "把马来西亚、泰国、越南和菲律宾分别按本国需求、本国仓库与本国交期完成计算，再集中展示建议备货数严格大于10件的 SKU；跨国库存和销量不会互相抵扣。";
+  document.querySelector("#heroDescription").textContent = "把马来西亚、泰国、越南和菲律宾分别按本国需求、本国仓库与本国交期完成计算，再集中展示任一建议备货数达到10件的 SKU；跨国库存和销量不会互相抵扣。";
   document.querySelector("#sourceChips").innerHTML = regions.map(
     region => `<span>${region} ${countryCounts[region]} 款</span>`
-  ).join("") + "<span>门槛：建议数 &gt; 10</span>";
-  document.querySelector("#coverageLabel").textContent = "四国独立计算 · 日期权重 / 30日实绩双口径 · 任一建议 >10件";
+  ).join("") + "<span>门槛：建议数 ≥ 10</span>";
+  document.querySelector("#coverageLabel").textContent = "四国独立计算 · 日期权重 / 30日实绩双口径 · 任一建议 ≥10件";
   document.querySelector("#batchQty").textContent = `趋势 ${qty.toLocaleString("zh-CN")} · 30日 ${recent30Qty.toLocaleString("zh-CN")}`;
   document.querySelector("#batchSkuCount").textContent = `${calculated.length} 款`;
   document.querySelector("#batchVolume").textContent = missingVolumeCount
@@ -720,7 +845,7 @@ function renderSummary() {
   document.querySelector("#headFreight").textContent = `趋势 ${money(qty)} / 30日 ${money(recent30Qty)}`;
   document.querySelector("#batchSentence").textContent = calculated.length
     ? `数量最高：${calculated.slice(0, 6).map(item => `${item.region}-${item.sku} 趋势${item.recommended}/30日${item.recent30Recommended ?? "—"}件`).join("、")}。`
-    : "四国当前没有建议备货数大于10件的 SKU。";
+    : "四国当前没有建议备货数达到10件的 SKU。";
   document.querySelector("#warehouseLabel").textContent = "覆盖国家";
   document.querySelector("#inventoryUnits").textContent = "4 国";
   document.querySelector("#inboundUnits").textContent = inboundReconciled
@@ -728,20 +853,21 @@ function renderSummary() {
     : "批次在途待对账";
   document.querySelector("#demandWindow").textContent = "四国分国计算";
   document.querySelector("#decisionHeadline").textContent = `备 ${calculated.length} 款`;
-  document.querySelector("#ledgerTitle").textContent = "四国建议备货数 >10 件汇总";
+  document.querySelector("#ledgerTitle").textContent = "四国建议备货数 ≥10 件汇总";
   document.querySelector("#ledgerDescription").textContent = "每行带国家标识；同一 SKU 在不同国家分别成行，因为需求、库存和补货周期互不混算。";
-  document.querySelector("#formulaText").textContent = "每国分别用日期权重日均和完整30天订单日均执行同一在途分时点投影；任一口径 Q > 10 即保留";
+  document.querySelector("#formulaText").textContent = "每国分别用日期权重日均和完整30天订单日均执行同一在途分时点投影；任一口径 Q ≥ 10 即保留";
   document.querySelector("#freightRule").textContent = "每个国家仍按各自库存、交期和处理规则计算；头程统一按 ¥1.00/件展示。";
   document.querySelector("#economicsRule").textContent = "收益按各国已批准税费比例和本国结算事实分别计算，仅展示、不拦截数量建议。";
   document.querySelector("#evidenceGrid").innerHTML = `
     <article class="ok"><strong>四国严格隔离</strong><p>MY ${countryCounts.MY} 款、TH ${countryCounts.TH} 款、VN ${countryCounts.VN} 款、PH ${countryCounts.PH} 款。每国先独立计算，再汇总展示。</p></article>
-    <article class="ok"><strong>双口径门槛严格大于10</strong><p>当前共 ${calculated.length} 款；日期权重 ${qty.toLocaleString("zh-CN")} 件，30日实绩 ${recent30Qty.toLocaleString("zh-CN")} 件。任一口径超过10即进入本页。</p></article>
+    <article class="ok"><strong>双口径门槛含10件</strong><p>当前共 ${calculated.length} 款；日期权重 ${qty.toLocaleString("zh-CN")} 件，30日实绩 ${recent30Qty.toLocaleString("zh-CN")} 件。任一口径达到10即进入本页。</p></article>
     <article class="neutral"><strong>建议类型</strong><p>已有海外仓库存的建议补货 ${replenishCount} 款；海外仓尚无的建议首批 ${firstStockCount} 款。</p></article>
     <article class="neutral"><strong>外部写入为0</strong><p>该汇总只读取本地决策快照，不会创建采购单、调整库存或写入任何平台。</p></article>`;
   renderRows();
 }
 
 function renderCountry() {
+  renderSourceReadiness();
   if (activeRegion === "SUMMARY") {
     renderSummary();
     return;
@@ -895,6 +1021,7 @@ document.addEventListener("click", event => {
   manualForm.elements.weightG.value = saved?.weightG ?? sourceItem.weightG ?? "";
   manualForm.elements.costCny.value = saved?.costCny ?? sourceItem.costCny ?? "";
   manualForm.elements.sourceNote.value = saved?.sourceNote ?? "";
+  manualForm.elements.evidenceKind.value = saved?.evidenceKind === 'USER_CONFIRMED' ? 'USER_CONFIRMED' : 'ESTIMATED';
   document.querySelector("#manualDialogTitle").textContent = `${sourceRegion} · SKU ${sku} 手动补齐`;
   document.querySelector("#clearManualInput").hidden = !saved;
   manualError.textContent = "";
@@ -914,16 +1041,21 @@ manualForm.addEventListener("submit", event => {
   }
   const region = manualForm.elements.region.value;
   const sku = manualForm.elements.sku.value;
-  manualInputs[manualInputId(region, sku)] = {
+  const sourceNote = manualForm.elements.sourceNote.value.trim();
+  if (!sourceNote) {manualError.textContent = '请填写参数来源或估算依据；未核实参数不能标为实测事实。'; return;}
+  const id = manualInputId(region, sku), previous = manualInputs[id];
+  manualInputs[id] = {
     dimensionsCm: values.slice(0, 3),
     weightG: values[3],
     costCny: values[4],
-    sourceNote: manualForm.elements.sourceNote.value.trim(),
+    sourceNote,
+    evidenceKind: manualForm.elements.evidenceKind.value,
     updatedAt: new Date().toISOString()
   };
   try {
     saveManualInputs();
   } catch {
+    if (previous) manualInputs[id] = previous; else delete manualInputs[id];
     manualError.textContent = "浏览器本地存储不可用，资料尚未保存。";
     return;
   }
@@ -934,10 +1066,12 @@ manualForm.addEventListener("submit", event => {
 document.querySelector("#clearManualInput").addEventListener("click", () => {
   const region = manualForm.elements.region.value;
   const sku = manualForm.elements.sku.value;
-  delete manualInputs[manualInputId(region, sku)];
+  const id = manualInputId(region, sku), previous = manualInputs[id];
+  delete manualInputs[id];
   try {
     saveManualInputs();
   } catch {
+    if (previous) manualInputs[id] = previous;
     manualError.textContent = "浏览器本地存储不可用，无法清除。";
     return;
   }
@@ -946,9 +1080,11 @@ document.querySelector("#clearManualInput").addEventListener("click", () => {
 });
 
 window.addEventListener("storage", event => {
+  if (event.key === DECISION_KEY) {decisionStatus('另一页已更新计划；当前编辑保留，请下载草稿后重新加载核对。'); return;}
   if (![INBOUND_ETA_KEY, OVERRIDE_STORE.LEGACY_KEY].includes(event.key)) return;
   inboundEtaOverrides = loadInboundOverrides();
   renderCountry();
 });
 reflectRegionNavigation();
 renderCountry();
+if (decisionLoadError) decisionStatus(decisionLoadError);

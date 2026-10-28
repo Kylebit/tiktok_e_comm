@@ -193,6 +193,11 @@ def generate_brand_image(
             raise ValueError("R2 rework requires its existing authorization and product budget")
         from modules.sourcing.image_generation_checkpoint import prepare_image_rework
         retry_attempt = prepare_image_rework(checkpoint,basis=rework_basis)
+    if getattr(paid_context, 'unknown_successor_grant', None) is not None:
+        if rework_basis is not None or retry_attempt != 0:
+            raise ValueError('unknown successor cannot mix with rework or retry')
+        from shared_platform.publication_image_successor import successor_checkpoint
+        checkpoint = successor_checkpoint(paid_context, checkpoint, brand_id=brand_id, role=role)
     api = client
     def get_api():
         nonlocal api

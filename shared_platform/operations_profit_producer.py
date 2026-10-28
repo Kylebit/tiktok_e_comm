@@ -47,7 +47,7 @@ def _producer_identity():
                 'report-policy.json': hashlib.sha256(POLICY_PATH.read_bytes()).hexdigest()}
 
 
-def build_verified_reports(input_manifest, scope, output_dir, release_identity):
+def build_verified_reports(input_manifest, scope, output_dir, release_identity, *, alias_registry=None):
     """Calculate from a frozen ``profit-producer-input/v1`` manifest.
 
     Each reports entry has platform/site/shop_id, rows {path,sha256} (a JSON
@@ -69,6 +69,8 @@ def build_verified_reports(input_manifest, scope, output_dir, release_identity):
     month_end = (start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
     identity = {'input_manifest': manifest_ref, 'scope': scope, 'release_identity': release_identity,
                 'producer_sources': _producer_identity()}
+    if alias_registry is not None:
+        identity['canonical_alias_registry_digest']=alias_registry.digest
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     receipt_path = output / 'producer-receipt.json'
@@ -82,7 +84,7 @@ def build_verified_reports(input_manifest, scope, output_dir, release_identity):
         for ref in previous['reports']:
             _read(ref)
         _read(previous['verification_manifest'])
-        validate_reports([r['path'] for r in previous['reports']], scope,
+        validate_reports([r['path'] for r in previous['reports']], scope,alias_registry=alias_registry,
                          manifest_path=previous['verification_manifest']['path'])
         return {**previous, 'receipt': _ref(receipt_path), 'reused': True,
                 'evidence_paths': [r['path'] for r in previous['reports']] + [previous['verification_manifest']['path']]}
@@ -139,7 +141,7 @@ def build_verified_reports(input_manifest, scope, output_dir, release_identity):
                            'parameters': parameters, 'normalized_rows': entry['rows'],
                            'source_refs': {k: entry[k] for k in SOURCE_KEYS}, 'report': ref})
     verification = _persist(output / 'verification-manifest.json', {'schema_version': 'profit-verification-manifest/v1', 'reports': entries})
-    validate_reports([r['path'] for r in reports], scope, manifest_path=verification['path'])
+    validate_reports([r['path'] for r in reports], scope, manifest_path=verification['path'],alias_registry=alias_registry)
     receipt = {'schema_version': 'profit-producer-receipt/v1', 'status': 'VERIFIED', 'identity': identity,
                'executions': executions, 'reports': reports, 'verification_manifest': verification,
                'external_write_count': 0}

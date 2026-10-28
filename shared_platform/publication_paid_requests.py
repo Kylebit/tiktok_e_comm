@@ -700,7 +700,8 @@ class PaidRequestContext:
                     'attempt': attempt, 'provider': 'lingshi'}
         return digest(identity), identity
 
-    def reserve(self, *, purpose: str, model: str, business: Mapping, request: Mapping, attempt: int = 0) -> str:
+    def reserve(self, *, purpose: str, model: str, business: Mapping, request: Mapping, attempt: int = 0,
+                unknown_successor: Mapping | None = None) -> str:
         self.authorize(purpose, model)
         key, identity = self._key(purpose=purpose, business=business, request=request, attempt=attempt)
         with business_lock(self.root, self.lock_key):
@@ -714,12 +715,24 @@ class PaidRequestContext:
             baseline = self._historical(rows)
             if any(row['provider'] == 'UNKNOWN' or row['state'] == 'UNKNOWN' for row in baseline):
                 raise PaidRequestBlocked('HISTORICAL_UNKNOWN: historical usage includes an unresolved request; reconcile before new paid work')
-            if any(row['business'] == identity['business'] and row['state'] in UNKNOWN for row in entries.values()):
+            predecessor = None
+            if unknown_successor is not None:
+                from shared_platform.publication_image_successor import validate_successor_reservation
+                if purpose != 'brand_image_generation':
+                    raise PaidRequestBlocked('risk successor applies only to exact brand images')
+                predecessor = validate_successor_reservation(self, unknown_successor,
+                    business=dict(business), request=dict(request), model=model, attempt=attempt, entries=entries)
+                if any((r.get('unknown_successor') or {}).get('original_paid_key') == predecessor['original_paid_key']
+                       for r in entries.values()):
+                    raise PaidRequestBlocked('the one authorized successor already occupies its slot; never replace it again')
+            if any(row['business'] == identity['business'] and row['state'] in UNKNOWN
+                   and (predecessor is None or row['key'] != predecessor['original_paid_key']) for row in entries.values()):
                 raise PaidRequestBlocked('same business has an unknown paid attempt; changing prompt cannot bypass it')
             occupied = len(baseline) + len(entries)
             if occupied >= self.cap:
                 raise PaidRequestBlocked(f'PAID_BUDGET_EXHAUSTED: occupied {occupied}, cap {self.cap}; no provider call')
-            self._append(rows, 'RESERVE', key=key, request={**identity, 'model':model},
+            self._append(rows, 'RESERVE', key=key, request={**identity, 'model':model,
+                         **({'unknown_successor':dict(unknown_successor)} if unknown_successor is not None else {})},
                          invocation_id=self.invocation_id, binding=self.binding, cap=self.cap)
         return key
 
@@ -775,6 +788,13 @@ class PaidRequestContext:
             rows,entries=self._load()
             if key not in entries or entries[key]['state']!='RESERVED':
                 raise PaidRequestBlocked('a paid attempt cannot enter provider twice')
+            entry = entries[key]
+            if entry.get('unknown_successor') is not None:
+                from shared_platform.publication_image_successor import validate_successor_reservation
+                basis = entry['unknown_successor']
+                validate_successor_reservation(self, basis, business=entry['business'],
+                    request={'checkpoint_request_digest':basis['successor_request_digest']},
+                    model=entry['model'], attempt=entry['attempt'], entries=entries)
             self._append(rows,'ATTEMPTED',key=key,details={})
         try:
             response = dict(call())
@@ -817,7 +837,8 @@ class PaidRequestContext:
 
     def image_reservation(self, checkpoint, state: Mapping, purpose: str) -> str:
         return self.reserve(purpose=purpose, model=checkpoint.model, business={'kind':checkpoint.kind, 'business_digest':checkpoint.business_digest},
-                            request={'checkpoint_request_digest':checkpoint.request_digest}, attempt=state['attempt'])
+                            request={'checkpoint_request_digest':checkpoint.request_digest}, attempt=state['attempt'],
+                            unknown_successor=getattr(checkpoint,'unknown_successor',None))
 
     def image_recovery(self, checkpoint, state: Mapping, purpose: str) -> int | None:
         key = self.image_key(checkpoint, state, purpose)
@@ -1055,6 +1076,10 @@ def main(argv=None) -> int:
     history=commands.add_parser('inspect-history');history.add_argument('--index',type=int,required=True)
     reconcile_history=commands.add_parser('reconcile-history');reconcile_history.add_argument('--evidence',type=Path,required=True)
     rebuild=commands.add_parser('activate-plan-rebuild');rebuild.add_argument('--proposal',type=Path,required=True)
+    successor=commands.add_parser('prepare-image-successor-grant')
+    successor.add_argument('--decision',type=Path,required=True)
+    successor.add_argument('--decision-sha256',required=True)
+    successor.add_argument('--checkpoint',type=Path,action='append',required=True)
     args=parser.parse_args(argv)
     snapshot=_read(args.repo_root/'reports/product-preparation'/args.offer_id/'round1-approved-snapshot.json')
     context=load_paid_context(offer_id=args.offer_id,round1=snapshot,repo_root=args.repo_root,policy_path=args.paid_policy)
@@ -1063,6 +1088,12 @@ def main(argv=None) -> int:
     elif args.command=='reconcile-request':value=context.reconcile_request(evidence=_read(args.evidence))
     elif args.command=='inspect-history':value=context.inspect_history(args.index)
     elif args.command=='reconcile-history':value=context.reconcile_history(evidence=_read(args.evidence))
+    elif args.command=='prepare-image-successor-grant':
+        from shared_platform.publication_image_successor import prepare_unknown_image_successor_grant
+        path=prepare_unknown_image_successor_grant(context,decision_path=args.decision,
+            decision_sha256=args.decision_sha256,checkpoint_paths=args.checkpoint)
+        value={'grant_path':str(path),'grant_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+            'paid_calls':0,'original_unknown_outcomes_retained':True}
     else:value=context.activate_plan_rebuild(args.proposal)
     print(json.dumps(value,ensure_ascii=False,indent=2))
     return 0

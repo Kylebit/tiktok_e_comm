@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from dataclasses import asdict
 import json
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -23,6 +24,59 @@ from shared_platform.native_windows_actor import NativeActorServiceConfig
 PREFIX='/api/product-workspace/native-final/'
 
 
+# Diagnostics are projections only: no raw exception text or arbitrary class/code.
+_SAFE_PHASES=frozenset({'DEQUEUED','TASK_RUNNING_PROJECTION','PUBLICATION_SCOPE',
+    'PUBLICATION_ACTOR_RECHECK','PUBLICATION_EXECUTION','PROMOTION_ACTOR_RECHECK',
+    'PROMOTION_EXECUTION','READBACK_OBSERVATION','TASK_RECORDED_PROJECTION','WORKER_SETUP','STAGE_PROJECTION'})
+_SAFE_ERROR_TYPES=frozenset({'ApprovalBlocked','ValueError','OSError','KeyError','TypeError',
+    'RuntimeError','Exception','ImportError','AttributeError','LookupError','TimeoutError',
+    'PermissionError','FileNotFoundError','OperationalError','IntegrityError','ProgrammingError',
+    'DatabaseError','InterfaceError','DataError','NotSupportedError','ReturnedError'})
+_SAFE_ERROR_CODES=frozenset({'NATIVE_EXPLICIT_EXECUTION_FAILED','NATIVE_TASK_PROGRESS_PROJECTION_FAILED',
+    'NATIVE_SOLE_FINAL_STAGE_PROJECTION_FAILED','DOMAIN_REVIEW_DISPLAY_OR_PAYLOAD_CHANGED',
+    'NATIVE_HELPER_CLIENT_RESULT_UNKNOWN','NATIVE_SOLE_FINAL_CURRENT_COMMON_READ_UNVERIFIED',
+    'NATIVE_SOLE_FINAL_CURRENT_ROUNDS_CHANGED','NATIVE_SOLE_FINAL_OWNER_IDENTITY_UNVERIFIED',
+    'NATIVE_SOLE_FINAL_EXECUTION_OWNER_CHANGED','NATIVE_SOLE_FINAL_EXECUTION_IDENTITY_CHANGED',
+    'NATIVE_SOLE_FINAL_EXECUTION_SCOPE_CHANGED','NATIVE_SOLE_FINAL_COMMON_DEPENDENCY_CHANGED',
+    'NATIVE_SOLE_FINAL_ATOMIC_APPROVAL_CHANGED','NATIVE_SOLE_FINAL_SERVICE_CLOSED',
+    'NATIVE_SOLE_FINAL_SERVICE_CONTEXT_MISSING','NATIVE_SOLE_FINAL_SERVICE_CONTEXT_CHANGED',
+    'NATIVE_SOLE_FINAL_SCHEMA_NOT_INSTALLED','NATIVE_SOLE_FINAL_OFFER_CHANGED',
+    'NATIVE_SOLE_FINAL_COMMON_BUDGET_UNVERIFIED','NATIVE_SOLE_FINAL_STANDING_POLICY_UNKNOWN',
+    'NATIVE_SOLE_FINAL_PLAN_NOT_CURRENT','NATIVE_SOLE_FINAL_DECISION_REQUIRED',
+    'NATIVE_SOLE_FINAL_GENUINE_COMMON_CONTEXT_REQUIRED','NATIVE_NEW_DECISION_EXECUTION_NOT_INSTALLED',
+    'NATIVE_TASK_ACTIVE_OWNER_REQUIRES_RECONCILIATION','NATIVE_TASK_PROGRESS_COMPARE_AND_SWAP_CHANGED',
+    'NATIVE_SOLE_FINAL_OWNER_CHANGED_DURING_RECHECK','LOCAL_OPERATOR_SESSION_EXPIRED'})
+_SAFE_SQLITE_NAMES=frozenset(name for name,value in vars(sqlite3).items()
+    if name.startswith('SQLITE_') and type(value) is int)
+
+def _safe_error_code(value):
+    return value if type(value) is str and value in _SAFE_ERROR_CODES else None
+
+def _safe_worker_outcome(outcome,phase,error=None):
+    status,value=outcome if type(outcome) is tuple and len(outcome)==2 else (None,{})
+    value=value if type(value) is dict else {}
+    safe={'http_status':status if type(status) is int and 100<=status<=599 else None,
+          'phase':phase if phase in _SAFE_PHASES else 'WORKER_SETUP'}
+    code=_safe_error_code(value.get('error'))
+    if error is not None:
+        kind=type(error).__name__
+        safe['error_type']=kind if kind in _SAFE_ERROR_TYPES else 'Exception'
+        code=_safe_error_code(str(error))
+        if isinstance(error,sqlite3.Error):
+            sqlite_name=getattr(error,'sqlite_errorname',None)
+            if type(sqlite_name) is str and sqlite_name in _SAFE_SQLITE_NAMES:
+                safe['sqlite_errorname']=sqlite_name
+    elif type(status) is int and status>=400:
+        safe['error_type']='ReturnedError'
+    if code is not None:safe['error_code']=code
+    return safe
+
+def _worker_failure(decision_id,error):
+    return 409,{'ok':False,'error':_safe_error_code(str(error)) or 'NATIVE_EXPLICIT_EXECUTION_FAILED',
+        'approval_saved':True,'external_write_outcome':'UNKNOWN','new_human_review_required':False,
+        'native_decision_id':decision_id}
+
+
 def check_current_rounds(store,plan_id,*,operations=None):
     from shared_platform import publication_r3_image_bridge as bridge
     from shared_platform.workbench_publication_native import load_service_r2_documents
@@ -31,6 +85,8 @@ def check_current_rounds(store,plan_id,*,operations=None):
         row=db.execute('SELECT payload_json FROM release_plans WHERE plan_id=?',(plan_id,)).fetchone()
         if row is None:raise ApprovalBlocked('NATIVE_SOLE_FINAL_PLAN_MISSING')
         payload=json.loads(row['payload_json'])
+        if operations is not None:
+            operations.engine.assert_publication_scope_consumable(payload['product_id'], payload=payload)
         binding=payload['r3_marketplace_binding']
         documents=load_service_r2_documents(payload['product_id'],operations)
         if bridge.validate_r2_identity(documents)!=binding['r2_identity']:
@@ -57,6 +113,12 @@ class NativeSoleFinalService:
         self._execution_result=None
         self._execution_queue=deque()
         self._execution_results={}
+        self._execution_phase=None
+        self._execution_diagnostics={}
+        self._promotion_diagnostics={}
+        self._active_promotion_targets=None
+        self._promotion_queue=deque()
+        self._promotion_results={}
         self._readback_schedule={}
         self._work_available=threading.Event()
         self._stopping=False
@@ -98,9 +160,48 @@ class NativeSoleFinalService:
             yield NativeSoleFinalDecisionService(self.store,self._reader)
 
     def prepare(self,plan_id):
+        self._require_original_plan_scope(plan_id)
         with self.operation() as service:
             check_current_rounds(self.store,plan_id,operations=self._operations)
             return service.prepare(plan_id)
+
+    def _require_original_plan_scope(self, plan_id):
+        adopted=getattr(self._operations,'agent_prepared_common',None)
+        if adopted is not None:
+            from shared_platform.agent_prepared_common_service import AgentPreparedCommonService
+            if type(adopted) is not AgentPreparedCommonService:
+                raise ApprovalBlocked('ADOPTION_CONCRETE_SERVICE_REQUIRED')
+            task,record=adopted._current()
+            from shared_platform.prepared_target_consumer import effective_marketplace_targets
+            effective=effective_marketplace_targets(record['offer_id'],record['targets'])
+            with self.store._connect_readonly() as db:
+                row=db.execute('SELECT product_id,target_labels_json FROM release_plans WHERE plan_id=?',(plan_id,)).fetchone()
+            if (row is None or row['product_id']!=record['offer_id']
+                    or sorted(json.loads(row['target_labels_json']))!=sorted(effective)):
+                raise ApprovalBlocked('ADOPTION_NATIVE_PLAN_OUTSIDE_FROZEN_SCOPE')
+        binding=getattr(self._operations,'original_continuation',None)
+        if binding is None:return
+        from shared_platform.original_prepared_continuation import OriginalPreparedTaskContinuation
+        from shared_platform.prepared_target_consumer import configured_target_consumer
+        if type(binding) is not OriginalPreparedTaskContinuation:
+            raise ApprovalBlocked('ORIGINAL_CONTINUATION_CONCRETE_BINDING_REQUIRED')
+        binding.verify_sources()
+        with self.store._connect_readonly() as db:
+            db.execute('BEGIN')
+            row=db.execute('SELECT product_id,payload_json FROM release_plans WHERE plan_id=?',(plan_id,)).fetchone()
+            if row is None or row['product_id']!=binding.pins.offer_id:
+                raise ApprovalBlocked('ORIGINAL_NATIVE_PLAN_OUTSIDE_BOUND_OFFER')
+            consumer=configured_target_consumer(binding.pins.offer_id)
+            if consumer is None:raise ApprovalBlocked('ORIGINAL_NATIVE_TARGET_CONSUMER_REQUIRED')
+            consumer.validate_payload(json.loads(row['payload_json']))
+
+    def _require_original_decision_scope(self, decision_id):
+        if (getattr(self._operations,'original_continuation',None) is None
+                and getattr(self._operations,'agent_prepared_common',None) is None):return
+        with self.store._connect_readonly() as db:
+            row=db.execute('SELECT plan_id FROM native_sole_final_decisions WHERE decision_id=?',(decision_id,)).fetchone()
+            if row is None:raise ApprovalBlocked('ORIGINAL_NATIVE_DECISION_REQUIRED')
+        self._require_original_plan_scope(row['plan_id'])
 
     def prepare_common_for_task(self,engine,task,token,profile,binding,plan):
         """The original workflow's native COMMON-first path, no human approve.
@@ -112,6 +213,10 @@ class NativeSoleFinalService:
         from modules.products import server
         from shared_platform import workbench_publication_native as native
         from shared_platform import operations_publication_common as common
+        original=getattr(self._operations,'original_continuation',None)
+        if original is not None and (task.get('task_id')!=original.pins.task_id
+                or task.get('worker')!=original.pins.original_worker):
+            raise ApprovalBlocked('ORIGINAL_CONTINUATION_ORIGINAL_WRITER_REQUIRED')
         if self._closed or not self._new_decision_execution_enabled:
             raise ApprovalBlocked('NATIVE_COMMON_TASK_RUNTIME_NOT_INSTALLED')
         if self._operations is None or engine is not self._operations.engine or profile is not self._operations.profile:
@@ -179,6 +284,11 @@ class NativeSoleFinalService:
         code,current=server._publication_stages_for_request({'offer_id':binding['offer_id'],
             'plan_id':plan.get('plan_id')})
         actual=current.get('marketplace') or {};review=actual.get('native_final_review') or {}
+        from shared_platform.prepared_target_consumer import configured_target_consumer
+        consumer=configured_target_consumer(task['scope']['offer_id'])
+        expected_targets=[label for label in task['scope']['shops'] if label!='miaoshou:COMMON']
+        if consumer is not None:
+            expected_targets=consumer.read_effective_scope(task['scope']['offer_id'])['shops']
         if (code!=200 or current.get('ok') is not True
                 or common._verified_binding(task,current.get('common') or {},self._operations.profile)!=binding
                 or actual.get('status')!='APPROVAL_REQUIRED'
@@ -186,8 +296,7 @@ class NativeSoleFinalService:
                 or review.get('schema_version')!='native-sole-final-review/v1'
                 or review.get('approval_saved') is not False
                 or review.get('plan_id')!=plan.get('plan_id')
-                or sorted(review.get('targets') or [])!=[
-                    label for label in task['scope']['shops'] if label!='miaoshou:COMMON']
+                or sorted(review.get('targets') or [])!=expected_targets
                 or review.get('execution_authority') is not False
                 or not review.get('review_digest')):
             raise ApprovalBlocked('NATIVE_COMMON_COMPLETE_FINAL_REVIEW_UNPROVEN')
@@ -225,6 +334,7 @@ class NativeSoleFinalService:
                     (_hash(nonce.encode()),)).fetchone() if type(nonce) is str else None
                 if row is None:raise ApprovalBlocked('NATIVE_SOLE_FINAL_NONCE_INVALID')
                 plan_id=row['plan_id']
+            self._require_original_plan_scope(plan_id)
             check_current_rounds(self.store,plan_id,operations=self._operations)
             # A page TTL or a genuine helper-session refresh is technical
             # recovery of these exact displayed bytes, never another decision.
@@ -233,12 +343,64 @@ class NativeSoleFinalService:
             return service.decide(nonce=value['nonce'],review_digest=review_digest)
 
     def resume(self,decision_id):
+        self._set_execution_phase('PUBLICATION_SCOPE')
+        self._require_original_decision_scope(decision_id)
         from shared_platform.native_sole_final_execution import execute_decision
+        self._set_execution_phase('PUBLICATION_ACTOR_RECHECK')
         with self.operation() as service:pass
+        self._set_execution_phase('PUBLICATION_EXECUTION')
         return execute_decision(service,decision_id,runtime=self)
+
+    def submit_media_verification(self,decision_id,proof_ref):
+        """Existing trust fence, local technical evidence only; never dispatch."""
+        from shared_platform.native_sole_final_execution import _NativeExecution, _ACTIVE
+        from shared_platform.native_ozon_three_card_media_recovery import DECISION, PLAN, intake_verification
+        if decision_id!=DECISION:raise ApprovalBlocked('NATIVE_SOLE_FINAL_ORIGINAL_MEDIA_DECISION_REQUIRED')
+        self._require_original_decision_scope(decision_id)
+        with self._execution_lock:
+            if (self._execution_busy_decision==decision_id or decision_id in self._execution_queue
+                    or decision_id in self._readback_schedule):
+                return 409,{'ok':False,'error':'NATIVE_EXECUTION_OWNER_BUSY','external_writes_performed':[]}
+            with self.operation() as service:
+                active=_NativeExecution(service,decision_id,self);active.plan_id=PLAN
+                token=_ACTIVE.set(active)
+                try:intake_verification(active,proof_ref)
+                finally:_ACTIVE.reset(token)
+        return 200,{'ok':True,'native_decision_id':decision_id,'technical_media_verification_recorded':True,
+            'new_human_review_required':False,'execution_authority':False,'external_writes_performed':[]}
+
+    def submit_promotions(self,decision_id,target_labels):
+        """Same explicit native route/FIFO; publication cache is never replayed."""
+        from shared_platform.native_companion_promotions import selected_targets
+        labels=selected_targets(target_labels)
+        self._require_original_decision_scope(decision_id)
+        with self.operation() as service:
+            actor=service._actor()
+            with self.store._connect_readonly() as db:
+                db.execute('BEGIN')
+                service._decision(db,decision_id,owner_sid=actor['owner_sid'])
+        if self._closed or not self._new_decision_execution_enabled:
+            raise ApprovalBlocked('NATIVE_NEW_DECISION_EXECUTION_NOT_INSTALLED')
+        key=(decision_id,labels)
+        with self._execution_lock:
+            if self._stopping:raise ApprovalBlocked('NATIVE_EXECUTION_OWNER_STOPPING')
+            if (self._execution_busy_decision is not None or self._execution_queue
+                    or self._readback_schedule):
+                raise ApprovalBlocked('NATIVE_PUBLICATION_OR_READBACK_STILL_RUNNING')
+            if key in self._promotion_results:return self._promotion_results[key]
+            if key not in self._promotion_queue:
+                if self._pending_count()>=32:
+                    raise ApprovalBlocked('NATIVE_EXPLICIT_DECISION_QUEUE_FULL')
+                self._promotion_queue.append(key)
+            self._start_owned_worker()
+        return 202,{'ok':True,'native_decision_id':decision_id,
+            'promotion_targets':list(labels),'promotion_execution_queued':True,
+            'approval_saved':True,'new_human_review_required':False,
+            'external_writes_performed':[]}
 
     def submit_readback(self,decision_id):
         """Explicit original-decision READ only; never enters the WRITE FIFO."""
+        self._require_original_decision_scope(decision_id)
         with self.operation() as service:
             actor=service._actor()
             with self.store._connect_readonly() as db:
@@ -287,6 +449,7 @@ class NativeSoleFinalService:
 
     def submit(self,decision_id,*,_reserved_slot=False):
         """Only this explicit verified POST enters one bounded owned FIFO."""
+        self._require_original_decision_scope(decision_id)
         with self.operation() as service:
             actor=service._actor()
             with self.store._connect_readonly() as db:
@@ -307,8 +470,10 @@ class NativeSoleFinalService:
                 prior=previous[1]
                 rows=(prior.get('run') or {}).get('targets') or []
                 from modules.products import server
-                if (not any(row.get('status')=='PENDING' or server._generic_tiktok_safe_retry_target(row)
-                            for row in rows)):
+                if (not self._known_zero_actor_failure(decision_id, prior, actor['owner_sid'])
+                        and not _has_exact_existing_continuation(self.store,decision_id,operations=self._operations)
+                        and not any(row.get('status')=='PENDING' or server._generic_tiktok_safe_retry_target(row)
+                                    for row in rows)):
                     if (prior.get('readonly_observation') or {}).get('pending') is True:
                         # A new explicit resume may renew only the bounded READ
                         # schedule, never replay the already accepted writes.
@@ -335,6 +500,30 @@ class NativeSoleFinalService:
         return 202,{'ok':True,'approval_saved':True,'execution_queued':True,
             'native_decision_id':decision_id,'new_human_review_required':False,'external_writes_performed':[]}
 
+    def _known_zero_actor_failure(self, decision_id, prior, owner_sid):
+        # submit() has just verified the current protected actor. A failed
+        # identity RPC is reusable only when the original durable executor
+        # never created a run or reserved a provider mutation for this plan.
+        if prior.get('error') != 'NATIVE_HELPER_CLIENT_RESULT_UNKNOWN':
+            return False
+        with self.store._connect_readonly() as db:
+            db.execute('BEGIN')
+            row = db.execute(
+                'SELECT p.plan_id,p.status,p.superseded_by_plan_id FROM native_sole_final_decisions d '
+                'JOIN release_plans p ON p.plan_id=d.plan_id WHERE d.decision_id=? AND d.owner_sid=?',
+                (decision_id, owner_sid)).fetchone()
+            if row is None or row['status'] != PLAN_APPROVED or row['superseded_by_plan_id'] is not None:
+                return False
+            if db.execute('SELECT 1 FROM release_runs WHERE plan_id=? LIMIT 1', (row['plan_id'],)).fetchone():
+                return False
+            for table in ('native_final_budget_reservations',
+                          'native_final_budget_dispatches', 'native_final_budget_outcomes'):
+                if db.execute(
+                        'SELECT 1 FROM native_final_budget_scopes s JOIN '+table+' r '
+                        'ON r.scope_key=s.scope_key WHERE s.plan_id=? LIMIT 1', (row['plan_id'],)).fetchone():
+                    return False
+        return True
+
     def _start_owned_worker(self):
         # Caller holds the same execution lock as enqueue/empty-exit/CAS.
         self._work_available.set()
@@ -346,15 +535,53 @@ class NativeSoleFinalService:
 
     def _pending_count(self):
         return self._approval_reservations+len(set(self._execution_queue)|set(self._readback_schedule)
-                   |({self._execution_busy_decision} if self._execution_busy_decision else set()))
+                   |({self._execution_busy_decision} if self._execution_busy_decision else set()))+len(self._promotion_queue)
+
+    def _set_execution_phase(self,phase):
+        with self._execution_lock:self._execution_phase=phase
+
+    def _project_worker_diagnostics(self,market,decision_id):
+        with self._execution_lock:
+            diagnostic=self._execution_diagnostics.get(decision_id)
+            if diagnostic is not None:market['native_execution_last_outcome']=dict(diagnostic)
+            promotion=self._promotion_diagnostics.get(decision_id)
+            if promotion is not None:market['native_promotion_last_outcome']=dict(promotion)
+            market['native_execution_current_phase']=(self._execution_phase
+                if self._execution_busy_decision==decision_id and self._execution_phase in _SAFE_PHASES else None)
 
     def _run_explicit_queue(self):
         try:self._process_explicit_queue()
+        except Exception as error:
+            # Last-resort cache before finally clears ownership. No retry/requeue.
+            with self._execution_lock:
+                decision_id=self._execution_busy_decision
+                promotion_targets=self._active_promotion_targets
+                phase=self._execution_phase
+                if decision_id is None:
+                    # Imports/setup can fail before dequeue. Retain queued work;
+                    # record its failure without silently retrying or claiming it.
+                    phase='WORKER_SETUP'
+                    if self._execution_queue:decision_id=self._execution_queue[0]
+                    elif self._promotion_queue:
+                        decision_id,promotion_targets=self._promotion_queue[0]
+                    elif self._readback_schedule:decision_id=next(iter(self._readback_schedule))
+                if decision_id is not None:
+                    outcome=_worker_failure(decision_id,error)
+                    diagnostic=_safe_worker_outcome(outcome,phase,error)
+                    if promotion_targets is not None:
+                        self._promotion_results[(decision_id,promotion_targets)]=outcome
+                        self._promotion_diagnostics[decision_id]=diagnostic
+                    else:
+                        self._execution_results[decision_id]=outcome
+                        self._execution_result=outcome
+                        self._execution_diagnostics[decision_id]=diagnostic
         finally:
             with self._execution_lock:
                 if self._execution_thread is threading.current_thread():
                     self._worker_running=False
                     self._execution_busy_decision=None
+                    self._execution_phase=None
+                    self._active_promotion_targets=None
 
     def _process_explicit_queue(self):
         from shared_platform.native_sole_final_tasks import project_explicit_decision_progress
@@ -365,8 +592,12 @@ class NativeSoleFinalService:
                 if self._stopping:
                     self._worker_running=False
                     return
+                promotion_targets=None
                 if self._execution_queue:
                     decision_id=self._execution_queue.popleft()
+                    read_round=None
+                elif self._promotion_queue:
+                    decision_id,promotion_targets=self._promotion_queue.popleft()
                     read_round=None
                 else:
                     due=next(((key,value) for key,value in self._readback_schedule.items()
@@ -385,13 +616,25 @@ class NativeSoleFinalService:
                 if decision_id is not None:
                     self._execution_decision=decision_id
                     self._execution_busy_decision=decision_id
+                    self._active_promotion_targets=promotion_targets
+                    self._execution_phase='DEQUEUED'
                     self._execution_result=self._execution_results.get(decision_id)
-                    if read_round is None:self._execution_results.pop(decision_id,None)
+                    if read_round is None and promotion_targets is None:self._execution_results.pop(decision_id,None)
             if decision_id is None:
                 self._work_available.wait(timeout=delay)
                 continue
+            error=None
             try:
-                if read_round is None:
+                if promotion_targets is not None:
+                    from shared_platform.native_sole_final_execution import execute_decision
+                    self._set_execution_phase('PROMOTION_ACTOR_RECHECK')
+                    with self.operation() as service:pass
+                    self._set_execution_phase('PROMOTION_EXECUTION')
+                    outcome=execute_decision(service,decision_id,runtime=self,
+                        promotion_targets=promotion_targets)
+                    observations=None
+                elif read_round is None:
+                    self._set_execution_phase('TASK_RUNNING_PROJECTION')
                     project_explicit_decision_progress(self,decision_id,'RUNNING')
                     outcome=self.resume(decision_id)
                     observations=None
@@ -404,6 +647,7 @@ class NativeSoleFinalService:
                     outcome=self._execution_results.get(decision_id,(200,{
                         'ok':True,'approval_saved':True,'native_decision_id':decision_id,
                         'new_human_review_required':False,'external_writes_performed':[]}))
+                    self._set_execution_phase('READBACK_OBSERVATION')
                     observations=observe_submissions(self,decision_id)
                 if observations is not None:
                     code,value=outcome
@@ -416,26 +660,40 @@ class NativeSoleFinalService:
                     if observations.get('pending') and read_round<3:
                         with self._execution_lock:
                             self._readback_schedule[decision_id]=(time.monotonic()+2,read_round+1)
-            except (ValueError,OSError,KeyError,TypeError,RuntimeError) as error:
-                outcome=(409,{'ok':False,'error':str(error),'approval_saved':True,
-                    'external_write_outcome':'UNKNOWN','new_human_review_required':False,
-                    'native_decision_id':decision_id})
+            except Exception as caught:
+                error=caught
+                outcome=_worker_failure(decision_id,error)
+            diagnostic=_safe_worker_outcome(outcome,self._execution_phase,error)
+            if promotion_targets is not None:
+                with self._execution_lock:
+                    self._promotion_results[(decision_id,promotion_targets)]=outcome
+                    self._promotion_diagnostics[decision_id]=diagnostic
+                    self._execution_busy_decision=None
+                    self._execution_phase=None
+                continue
             with self._execution_lock:
                 self._execution_results[decision_id]=outcome
                 self._execution_result=outcome
+                self._execution_diagnostics[decision_id]=diagnostic
                 if len(self._execution_results)>128:
                     old=next((key for key in self._execution_results if key!=decision_id
                         and key not in self._execution_queue and key not in self._readback_schedule),None)
-                    if old is not None:del self._execution_results[old]
-            try:project_explicit_decision_progress(self,decision_id,'RECORDED')
-            except (ValueError,OSError,KeyError,TypeError,RuntimeError) as error:
+                    if old is not None:
+                        del self._execution_results[old]
+                        self._execution_diagnostics.pop(old,None)
+            try:
+                self._set_execution_phase('TASK_RECORDED_PROJECTION')
+                project_explicit_decision_progress(self,decision_id,'RECORDED')
+            except Exception as error:
                 code,value=outcome
                 with self._execution_lock:
-                    self._execution_results[decision_id]=(code,{**value,'task_progress_error':str(error),
+                    self._execution_diagnostics[decision_id]=_safe_worker_outcome(outcome,'TASK_RECORDED_PROJECTION',error)
+                    self._execution_results[decision_id]=(code,{**value,'task_progress_error':_safe_error_code(str(error)) or 'NATIVE_TASK_PROGRESS_PROJECTION_FAILED',
                         'task_progress_requires_reconciliation':True})
                     self._execution_result=self._execution_results[decision_id]
             with self._execution_lock:
                 self._execution_busy_decision=None
+                self._execution_phase=None
 
     def project(self,stages):
         """Full frozen matrix from the same store; no IPC, READ, DB creation."""
@@ -448,12 +706,16 @@ class NativeSoleFinalService:
         value=dict(stages);market=dict(value.get('marketplace') or {})
         plan=market.get('plan') or {}
         if not plan.get('plan_id'):return stages
+        decision_id=None
         try:
             if value.get('current_r2_matches_approved') is not True:
                 raise ApprovalBlocked('NATIVE_SOLE_FINAL_CURRENT_ROUNDS_CHANGED')
             with self.store._connect_readonly() as db:
                 db.execute('BEGIN')
                 check_schema(db)
+                decision=db.execute('SELECT decision_id FROM native_sole_final_decisions WHERE plan_id=?',(plan['plan_id'],)).fetchone()
+                decision_id=decision['decision_id'] if decision else None
+                self._project_worker_diagnostics(market,decision_id)
                 reader=NativeCommonSourceReader(self.store)
                 graph=read_stored_domain_graph(db,plan['plan_id'],native_reader=reader)
                 if graph.offer_id!=str(value.get('offer_id')):
@@ -461,7 +723,8 @@ class NativeSoleFinalService:
                 common=db.execute('SELECT * FROM release_plans WHERE plan_id=?',(graph.common_plan_id,)).fetchone()
                 facts=reader.read_source_facts(db,graph.common_plan_id)
                 census=census_same_snapshot(self.store,db,json.loads(common['payload_json']),facts)
-                if (census['status']!='LOCAL_PERSISTED_CENSUS' or census['unresolved_attempts']
+                from shared_platform.native_common_baseline_successor import unresolved_after_authorized_successor
+                if (census['status']!='LOCAL_PERSISTED_CENSUS' or unresolved_after_authorized_successor(self.store,db,json.loads(common['payload_json']),census)
                         or census['local_observed_confirmed_writes']!=1
                         or any(r.get('same_preparation_root') is True for r in census['unclassified_history'])):
                     raise ApprovalBlocked('NATIVE_SOLE_FINAL_COMMON_BUDGET_UNVERIFIED')
@@ -476,7 +739,6 @@ class NativeSoleFinalService:
                 known=inspect_service_policy(policy)
                 if known.status!='KNOWN_LOCAL_USER_INTENT' or known.maximum_confirmed_writes!=1:
                     raise ApprovalBlocked('NATIVE_SOLE_FINAL_STANDING_POLICY_UNKNOWN')
-                decision=db.execute('SELECT decision_id FROM native_sole_final_decisions WHERE plan_id=?',(plan['plan_id'],)).fetchone()
                 persisted=db.execute('SELECT status FROM release_plans WHERE plan_id=?',(plan['plan_id'],)).fetchone()
                 if persisted['status'] not in {PLAN_PENDING_APPROVAL,PLAN_APPROVED}:
                     raise ApprovalBlocked('NATIVE_SOLE_FINAL_PLAN_NOT_CURRENT')
@@ -538,6 +800,7 @@ class NativeSoleFinalService:
                         and (decision_id in self._execution_queue or decision_id in self._readback_schedule
                             or self._execution_decision==decision_id))
                     market['native_execution_queued']=(decision_id in self._execution_queue)
+                    self._project_worker_diagnostics(market,decision_id)
                     last=(self._execution_results.get(decision_id) or (None,{}))[1]
                     observations=(last.get('readonly_observation') or {}).get('observations') or []
                     market['native_readback_resume_available']=(bool(decision)
@@ -563,10 +826,12 @@ class NativeSoleFinalService:
                 value['common']={**(value.get('common') or {}),'status':'VERIFIED'}
                 value['marketplace']=market
                 return value
-        except (ValueError,OSError,KeyError,TypeError,RuntimeError) as error:
+        except Exception as error:
             market['final_review_available']=False
             market['final_review_admission']={'final_review_available':False,'execution_authority':False}
-            market['native_final_review']={'status':'BLOCKED','error':str(error),'execution_authority':False}
+            market['native_final_review']={'status':'BLOCKED',
+                'error':_safe_error_code(str(error)) or 'NATIVE_SOLE_FINAL_STAGE_PROJECTION_FAILED',
+                'diagnostic':_safe_worker_outcome((409,{}),'STAGE_PROJECTION',error),'execution_authority':False}
             value['marketplace']=market
             return value
 
@@ -607,6 +872,12 @@ def handle_native_final(handler,*,method):
             code,outcome=server._approve_r3_marketplace_stage(body,native_service=installed)
             handler._json(code,outcome)
             return True
+        elif path.path==PREFIX+'resume' and set(body)=={'decision_id','promotion_targets'}:
+            code,result=installed.submit_promotions(body['decision_id'],body['promotion_targets'])
+            handler._json(code,result);return True
+        elif path.path==PREFIX+'resume' and set(body)=={'decision_id','media_verification_ref'}:
+            code,result=installed.submit_media_verification(body['decision_id'],body['media_verification_ref'])
+            handler._json(code,result);return True
         elif path.path==PREFIX+'resume' and set(body)=={'decision_id'}:
             from modules.products import server
             code,result=server._resume_r3_marketplace_stage(body,native_service=installed)
@@ -619,3 +890,22 @@ def handle_native_final(handler,*,method):
     except (ValueError,OSError,KeyError,TypeError,RuntimeError,ReleaseStoreError) as error:
         handler._json(409,{'ok':False,'error':str(error),'execution_authority':False,'external_writes_performed':[]})
     return True
+
+
+def _has_exact_existing_continuation(store,decision_id,*,operations=None):
+    """After submit's current actor/decision READ, inspect exact local work only.
+
+    This adds no execution authority: original protected activate, server lock,
+    begin_target and per-wire ledger/current checks remain the only write path.
+    """
+    from shared_platform.native_final_mutation_budget import NativeMutationBudgetHold
+    from shared_platform.native_shopee_known_zero_recovery import has_existing_item_work
+    from shared_platform.native_ozon_existing_media_recovery import has_verified_stock_work
+    from shared_platform.native_ozon_three_card_media_recovery import has_pending_work
+    from shared_platform.native_tiktok_locale_draft_correction import has_pending_work as has_tiktok_locale_work
+    try:
+        return (has_existing_item_work(store,decision_id) or has_verified_stock_work(store,decision_id)
+            or has_pending_work(store,decision_id,operations)
+            or has_tiktok_locale_work(store,decision_id,operations))
+    except (NativeMutationBudgetHold,ValueError,OSError,KeyError,TypeError):
+        return False

@@ -1,0 +1,85 @@
+{
+  "package": "B00-C2",
+  "scope": "Isolated composition only; no service activation or full B00 completion",
+  "base": "82a2e55e4250c743045afa17ccf953f4c1ae0a95",
+  "tested_composed_head": "077350433b98fd6b01900fb2ee2e86d174233c17",
+  "source_replay_mapping": [
+    {
+      "package": "S01-A",
+      "source": "3537468bfb9c3f3b963b22c849314ee4ddc60cdd",
+      "source_parent": "fae95b44f607bd8965172a7acd5ba690d500a306",
+      "files": [
+        "core/http_retry.py",
+        "docs/audits/S01_HTTP_CONTRACT.md",
+        "tests/test_http_retry_contract.py"
+      ],
+      "replayed": "3ba9acb18d545f8577ad964e51d53f1bb4e74f7c",
+      "stable_patch_id": "34b777a230ab1eced755cdd5327fd061365e15c5"
+    },
+    {
+      "package": "S01-B",
+      "source": "3dbbb5cd80fd83ad8233015f10d35a927c714956",
+      "source_parent": "3537468bfb9c3f3b963b22c849314ee4ddc60cdd",
+      "files": [
+        "docs/audits/S01_WEBSOCKET_CONTRACT.md",
+        "modules/hub/feishu_bot.py",
+        "tests/test_feishu_bot_tls.py"
+      ],
+      "replayed": "f84acf9df55c8ce7ba4644dddfae11fc29bf39f1",
+      "stable_patch_id": "26fdf5a6d170c7b091818b30c2dae367eac1b9d7"
+    },
+    {
+      "package": "S01-C",
+      "source": "6d4514e6aecda473c28dea8e92051d68f70e60b4",
+      "source_parent": "3dbbb5cd80fd83ad8233015f10d35a927c714956",
+      "files": [
+        "core/auth.py",
+        "docs/audits/S01_AUTH_CONTRACT.md",
+        "tests/test_auth_transport_contract.py",
+        "tiktok_auth.py"
+      ],
+      "replayed": "077350433b98fd6b01900fb2ee2e86d174233c17",
+      "stable_patch_id": "3dd9b851be7861cec73140084a78e0971f27d2ca"
+    }
+  ],
+  "allowed_source_paths": [
+    "core/auth.py",
+    "core/http_retry.py",
+    "docs/audits/S01_AUTH_CONTRACT.md",
+    "docs/audits/S01_HTTP_CONTRACT.md",
+    "docs/audits/S01_WEBSOCKET_CONTRACT.md",
+    "modules/hub/feishu_bot.py",
+    "tests/test_auth_transport_contract.py",
+    "tests/test_feishu_bot_tls.py",
+    "tests/test_http_retry_contract.py",
+    "tiktok_auth.py"
+  ],
+  "preserved_B4A_blobs": {
+    "modules/products/server.py": "de57a77288a8f38778c4a08dd377e6aebff071e0",
+    "shared_platform/product_publication_runner.py": "1109ae2501f35f0b75a13532717f0473e44a1484",
+    "shared_platform/product_publication_runs.py": "47fd3576af0c555ab5ce484d57937d8d15fdf5e7",
+    "domains/channel_operations/tiktok_v4_execution.py": "1ebc9fd24ed16b3f1ffefa7ce622b273311e42d9",
+    "tests/test_b4a_publication_entry_contract.py": "fc181a37212eaa5d8df18e6e5de47764d3c20368",
+    "tests/test_tiktok_collectbox_publish_bridge.py": "e8981d3ad549933f86d376a12a34ad0f81c13ec9",
+    "docs/audits/B00_B4A_ENTRY_CONTRACT.md": "e7589fdfcdd8eff6331161fa49ce8defd66a7528"
+  },
+  "combined_matrix": {
+    "unique_cases": 470,
+    "passed": 470,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "preserved_assets": 224,
+  "supply_manifest_check": "dashboard/skill sync: valid (sha256-utf8-crlf-to-lf/v1)",
+  "supply_manifest_mutated": false,
+  "excluded": [
+    "B3A",
+    "S02",
+    "B4B46-path integration",
+    "U00",
+    "production settings or services",
+    "real platform, paid, Feishu or credential operations"
+  ],
+  "rollback_base": "82a2e55e4250c743045afa17ccf953f4c1ae0a95"
+}

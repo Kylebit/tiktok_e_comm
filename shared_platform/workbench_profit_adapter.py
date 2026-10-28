@@ -146,7 +146,16 @@ def _coverage_orders(coverage, *, platform, site, start, end, settlement):
     return orders, rebuilt
 
 
-def _verify_sources(report, entry, scope):
+def _profit_alias_registry():
+    from core.db import db_path
+    from shared_platform.publication_canonical_aliases import load_alias_registry
+    path=db_path()
+    # Legacy report validation is file-based. A missing optional catalog is
+    # no alias authority; every new numeric alias still fails unresolved.
+    return load_alias_registry(path) if path.is_file() else None
+
+
+def _verify_sources(report, entry, scope, *, alias_registry=None):
     from domains.data_operations.profit_settlement.shared_inputs import CostSnapshot, FxSnapshot
     platform, site, shop = entry['platform'], entry['site'], str(entry['shop_id'])
     if not shop or (scope.get('shops') and shop not in scope['shops']):
@@ -225,6 +234,11 @@ def _verify_sources(report, entry, scope):
         for line in order['lines']:
             key = (str(order['order_id']), str(line.get('order_line_id') or ''))
             canonical = internal_sku(line.get('seller_sku'))
+            from shared_platform.publication_canonical_aliases import needs_registered_alias,resolve_order_alias
+            if needs_registered_alias(line.get('seller_sku')):
+                canonical=resolve_order_alias(alias_registry,platform=platform,shop_key=shop,
+                    product_id=line.get('product_id'),variant_id=line.get('platform_sku') or line.get('variant_id'),
+                    seller_sku=line.get('seller_sku')) or ''
             if (not key[1] or key in original_lines or len(canonical) != 4 or not canonical.isdigit()
                     or str(line.get('canonical_sku')) != canonical):
                 raise ValueError('original order line has missing or ambiguous SKU mapping')
@@ -300,7 +314,7 @@ def _verify_sources(report, entry, scope):
             raise ValueError('order actual advertising provenance missing or mismatched')
 
 
-def validate_reports(paths, scope, *, manifest_path=None):
+def validate_reports(paths, scope, *, manifest_path=None, alias_registry=None):
     from domains.data_operations.profit_settlement.audit import audit_profit_report
     platforms = set(scope.get('platforms') or ['tiktok', 'shopee'])
     sites = set(scope.get('sites') or ['MY', 'TH', 'VN', 'PH'])
@@ -346,7 +360,7 @@ def validate_reports(paths, scope, *, manifest_path=None):
         entry = entries.get(key)
         if not entry or hashlib.sha256(path.read_bytes()).hexdigest() != entry['report']['sha256']:
             raise ValueError('report is not bound to verified source manifest')
-        _verify_sources(report, entry, scope)
+        _verify_sources(report, entry, scope,alias_registry=alias_registry)
         found[key] = (path, report, audit)
     if {(p,s) for p,s,_ in found} != {(p, s) for p in platforms for s in sites}:
         raise ValueError('monthly report set incomplete for requested platforms/sites')
@@ -459,14 +473,15 @@ def adapter(bridge):
             attempt_path=checkpoint.get('attempt_output') or (engine.get(task_id).get('checkpoint') or {}).get('attempt_output')
             if attempt_path and fixed_output.resolve().is_relative_to(Path(attempt_path).resolve()):
                 raise ValueError('fixed producer output cannot share agent writable workspace')
+            alias_registry=_profit_alias_registry()
             try:
-                produced=build_verified_reports({'path':str(inputs[0]),'sha256':input_digest},task['scope'],fixed_output,engine.release)
+                produced=build_verified_reports({'path':str(inputs[0]),'sha256':input_digest},task['scope'],fixed_output,engine.release,alias_registry=alias_registry)
             except AwaitingSettlement as error:
                 result['result']['missing_inputs']=[str(error)]
                 engine.record_checkpoint(task_id,token,{**(engine.get(task_id).get('checkpoint') or {}),'agent_result':result})
                 engine.wait_for_user(task_id,token,kind='input',label='等待完整结算资料',reason=str(error),url='/profit')
                 return
-            reports = validate_reports(produced['evidence_paths'], task['scope'])
+            reports = validate_reports(produced['evidence_paths'], task['scope'],alias_registry=alias_registry)
             manifest_path, manifest = _manifest(produced['evidence_paths'])
             manifest_ref = {'path': str(manifest_path), 'sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest()}
             saved = []
@@ -479,7 +494,7 @@ def adapter(bridge):
         records = coverage['reports']
         _read(coverage['producer_receipt'])
         _read(coverage['manifest'])
-        reports = validate_reports([r['report']['path'] for r in records], task['scope'], manifest_path=coverage['manifest']['path'])
+        reports = validate_reports([r['report']['path'] for r in records], task['scope'], manifest_path=coverage['manifest']['path'],alias_registry=_profit_alias_registry())
         for record in records:
             _read(record['report'])
         if step != 'report':

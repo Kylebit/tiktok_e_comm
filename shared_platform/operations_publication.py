@@ -32,6 +32,8 @@ def _native_receipt(task,profile):
         raise ValueError('completed native image identity changed')
     if task['current_step']=='images':return images
     identity={**images['native_r1'],'targets':[target for target in images['native_r1']['targets'] if target!='miaoshou:COMMON']}
+    from shared_platform.prepared_target_consumer import effective_marketplace_targets
+    identity['targets']=effective_marketplace_targets(identity['offer_id'],identity['targets'])
     if not identity['targets']:
         raise ValueError('native marketplace target scope is empty')
     release=registered._read_release(identity['offer_id'],profile)

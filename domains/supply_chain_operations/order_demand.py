@@ -58,7 +58,7 @@ def _new_row() -> dict[str, Any]:
 
 
 def aggregate_tiktok_orders(
-    orders: Iterable[dict[str, Any]], region: str
+    orders: Iterable[dict[str, Any]], region: str, *, alias_registry=None, shop_key=None
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     region = region.upper()
     rows: defaultdict[str, dict[str, Any]] = defaultdict(_new_row)
@@ -87,6 +87,11 @@ def aggregate_tiktok_orders(
         for item in order.get("line_items") or []:
             mapped = canonical_order_sku(item.get("seller_sku"), region)
             if mapped is None:
+                from shared_platform.publication_canonical_aliases import resolve_order_alias
+                canonical=resolve_order_alias(alias_registry,platform='tiktok',shop_key=shop_key,
+                    product_id=item.get('product_id'),variant_id=item.get('sku_id'),seller_sku=item.get('seller_sku'))
+                if canonical:mapped=(canonical,item['seller_sku'])
+            if mapped is None:
                 evidence["item_lines_unresolved"] += 1
                 continue
             sku, source = mapped
@@ -109,7 +114,7 @@ def aggregate_tiktok_orders(
 
 
 def aggregate_shopee_orders(
-    orders: Iterable[dict[str, Any]], region: str
+    orders: Iterable[dict[str, Any]], region: str, *, alias_registry=None, shop_key=None
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     region = region.upper()
     rows: defaultdict[str, dict[str, Any]] = defaultdict(_new_row)
@@ -133,6 +138,12 @@ def aggregate_shopee_orders(
             mapped = canonical_order_sku(
                 item.get("model_sku") or item.get("item_sku"), region
             )
+            if mapped is None:
+                from shared_platform.publication_canonical_aliases import resolve_order_alias
+                source=item.get('model_sku') or item.get('item_sku')
+                canonical=resolve_order_alias(alias_registry,platform='shopee',shop_key=shop_key,
+                    product_id=item.get('item_id'),variant_id=item.get('model_id'),seller_sku=source)
+                if canonical:mapped=(canonical,source)
             quantity = item.get("model_quantity_purchased")
             cancelled = item.get("cancelled_qty") or 0
             returned = item.get("returned_qty") or 0
@@ -188,6 +199,7 @@ def finalize_order_snapshot(
     captured_at: datetime,
     days: int,
     evidence: dict[str, Any],
+    window_policy: str = "capture_calendar_days_v1",
 ) -> dict[str, Any]:
     if captured_at.tzinfo is None:
         raise ValueError("captured_at must be timezone-aware")
@@ -196,6 +208,10 @@ def finalize_order_snapshot(
     region = region.upper()
     region_timezone = timezone(timedelta(hours=REGION_UTC_OFFSET_HOURS[region]))
     captured_day = captured_at.astimezone(region_timezone).date()
+    if window_policy not in {"capture_calendar_days_v1", "completed_local_calendar_30_v1"}:
+        raise ValueError("unsupported demand window policy")
+    completed_days = window_policy == "completed_local_calendar_30_v1"
+    window_end = datetime.combine(captured_day, datetime.min.time(), tzinfo=region_timezone)
     facts: dict[str, Any] = {}
 
     for sku, row in sorted(rows.items()):
@@ -204,6 +220,10 @@ def finalize_order_snapshot(
         recent_days: list[int] = []
         for day_text, units in daily.items():
             age = (captured_day - datetime.fromisoformat(day_text).date()).days
+            if completed_days:
+                # Thirty complete local dates precede the partial capture day.
+                # Keep the independently captured 31-day units unchanged.
+                age -= 1
             if 0 <= age < 7:
                 buckets[0] += units
                 recent_days.append(units)
@@ -242,6 +262,13 @@ def finalize_order_snapshot(
             "imageUrl": row["image_url"],
             "trendDecision": trend,
         }
+        if completed_days:
+            facts[sku]["demandWindowPolicy"] = window_policy
+            facts[sku]["windowStartAt"] = (window_end - timedelta(days=30)).isoformat()
+            facts[sku]["windowEndAtExclusive"] = window_end.isoformat()
+            facts[sku]["mappingComplete"] = not evidence.get("item_lines_unresolved", 0)
+            if evidence.get("item_lines_unresolved", 0):
+                facts[sku]["evidence"] = "complete_transport_scope_mapped_lines_only"
 
     digest_payload = {
         "region": region,
@@ -251,6 +278,13 @@ def finalize_order_snapshot(
         "facts": facts,
         "evidence": evidence,
     }
+    if completed_days:
+        digest_payload["demandWindow"] = {
+            "policy": window_policy, "days": 30, "transportCaptureDays": days,
+            "startAt": (window_end - timedelta(days=30)).isoformat(),
+            "endAtExclusive": window_end.isoformat(),
+            "partialCaptureDayExcluded": True,
+        }
     digest = hashlib.sha256(
         json.dumps(
             digest_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")

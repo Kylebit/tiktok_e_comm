@@ -2,7 +2,7 @@
   "schema": "orbit-tool-runtime/v1",
   "hash_format": "utf8-lf-text/raw-binary-sha256",
   "files": {
-    "config/capability_catalog.json": "bd400721dc2a5d2cb4814f30870d0725a94d328aa799e8f7a736e7396e8afaea",
+    "config/capability_catalog.json": "8b79924518f762318e62415c864d3698abef4fa89d10571a6fac6a0946be2bc0",
     "config/tool_profile.example.json": "c6ebccc467ec31ba4a08060a199f1dee1dc7509cf7938d91191441d9d5d85391",
     "docs/knowledge/README.md": "657aaaa6dcfc7b234bb1bf6eb942b60ce960bb09993761db73ee61f03d7de839",
     "docs/tools/README.md": "f85e898dc96214c3a390ab950282307bcdd2ba5c75d8c23368a7ed1200dadad6",
@@ -31,7 +31,7 @@
     "skills/use-lingshi-ai/references/provider-contract.md": "384da7b430a025a9aeba2355fd0ec313aaf37b6469219b266ba6fce79f11b98b"
   },
   "package_version": "orbit-portable-tools/6",
-  "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+  "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
   "runtime_requirements": {
     "minimum_python": "3.11",
     "required_capabilities": [
@@ -50,5 +50,5 @@
       "publication-knowledge": []
     }
   },
-  "digest": "2e0cd497fa2fd1093f918f94a83bfd05bde39819dec15ac175679bd0bdd5d352"
+  "digest": "b00db37c09b0241e27cc16b00d8f42bfd27bc752d714b468a756aa3457073a5b"
 }

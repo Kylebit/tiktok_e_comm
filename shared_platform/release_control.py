@@ -24,7 +24,7 @@ import sqlite3
 from typing import Any
 
 from core.config import ROOT
-from core.db import connect_readonly
+from core.db import connect_readonly, db_path as configured_catalog_path
 from domains.channel_operations import (
     OmnichannelPublicationPlan,
     build_channel_pricing_preview,
@@ -1120,7 +1120,19 @@ def build_release_dashboard(
 ) -> dict[str, Any]:
     """Build the complete local release rehearsal without side effects."""
     clean_offer_id = _clean_offer_id(offer_id)
-    project_root = configured_release_evidence_root(root)
+    from shared_platform.original_prepared_continuation import configured_original_continuation
+    continuation = configured_original_continuation(clean_offer_id)
+    if continuation is not None:
+        if continuation.catalog_path is None:
+            raise ValueError('ORIGINAL_CONTINUATION_CATALOG_BINDING_REQUIRED')
+        project_root = continuation.r2_profile.root
+        database_path = continuation.catalog_path
+        report_store_path = release_store_path = continuation.release_store.path
+        data_root = project_root / 'data'
+        state_dir = data_root / 'new_product_workbench'
+        source_outputs_root = content_outputs_root = data_root / 'outputs'
+    else:
+        project_root = configured_release_evidence_root(root)
     scoped_source = any(value is not None for value in (data_root,state_dir,source_outputs_root))
     data_dir = Path(data_root) if data_root is not None else project_root/'data'
     states_dir = Path(state_dir) if state_dir is not None else data_dir/'new_product_workbench'
@@ -1129,7 +1141,11 @@ def build_release_dashboard(
     if str(state.get("offer_id") or "").strip() != clean_offer_id:
         raise ValueError("workbench offer identity does not match the requested offer_id")
     review = state.get("review") if isinstance(state.get("review"), Mapping) else {}
-    db_path = Path(database_path or data_dir / "shop.db")
+    db_path = Path(database_path or (
+        configured_catalog_path()
+        if os.environ.get("ORBIT_CATALOG_DATABASE")
+        else data_dir / "shop.db"
+    ))
     missing_catalog = catalog_optional and not strict_catalog and not db_path.exists()
     known_skus = set() if missing_catalog else _known_seller_skus(db_path, strict=strict_catalog)
     tiktok_skus = set() if missing_catalog else _known_tiktok_seller_skus(db_path, strict=strict_catalog)
@@ -1315,7 +1331,10 @@ def build_release_dashboard(
         }
         else next_seller_skus
     )
-    if scoped_source:
+    if continuation is not None:
+        from shared_platform.retained_source_identity_projection import retained_prepared_source
+        source = retained_prepared_source(continuation, state, frozen_round1)
+    elif scoped_source:
         source = _source_summary(clean_offer_id, state_dir=states_dir,
                                  data_root=data_dir, source_outputs_root=source_outputs_root)
     elif project_root.resolve() == Path(ROOT).resolve():
@@ -1449,6 +1468,10 @@ def build_release_dashboard(
             or "1688"
         ),
     }
+    if continuation is not None:
+        source_identity_inputs = {
+            key: dict(source[key]) for key in ('collect_box', 'precollect', 'source_record')
+        } | {'source_authority': source.get('source_authority')}
     source_identity_resolution = resolve_source_product_identity(
         **source_identity_inputs
     )
@@ -2154,6 +2177,7 @@ def build_release_dashboard(
         },
         "product": {
             "offer_id": clean_offer_id,
+            "source_image_count": len(source.get("images") or []),
             "source_mode": source.get("source_mode") or "miaoshou",
             "source_authority": source.get("source_authority") or "1688",
             "source_item_code": str(
@@ -2168,6 +2192,9 @@ def build_release_dashboard(
                 or collect_box.get("source_title")
                 or ""
             ).strip(),
+            **({"parcel_planning": deepcopy(
+                frozen_round1['fact_snapshot']['product_facts'].get('parcel_planning')
+            )} if continuation is not None and frozen_round1 is not None else {}),
             "category": dict(review.get("category") or {}),
             "cost_cny": review.get("cost_cny"),
             "weight_kg": review.get("weight_kg"),

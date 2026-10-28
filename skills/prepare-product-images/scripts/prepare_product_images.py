@@ -433,11 +433,40 @@ def _prepare_manual_lingshi_references(
             "kind": "manual_lingshi_reference",
             "action": "keep",
             "local_path": str(artifact),
+            "source_path": str(source),
             "source_digest": "sha256:" + source_sha256,
             "artifact_digest": "sha256:" + _sha256_file(artifact),
             "compression": compression,
         }
     return rows
+
+
+def _validated_reference_binding(ref: dict[str, Any]) -> dict[str, Any]:
+    """Verify the original identity and, separately, the provider reference bytes."""
+
+    raw = (
+        Path(ref["local_path"]).read_bytes()
+        if ref.get("local_path")
+        else _download_source(ref["url"])
+    )
+    artifact_digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    source_digest = (
+        "sha256:" + _sha256_file(Path(ref["source_path"]))
+        if ref.get("source_path")
+        else artifact_digest
+    )
+    if ref.get("source_digest") and ref["source_digest"] != source_digest:
+        raise ValueError("approved reference source bytes drifted")
+    if ref.get("artifact_digest") and ref["artifact_digest"] != artifact_digest:
+        raise ValueError("approved reference artifact bytes drifted")
+    ref["source_digest"] = source_digest
+    binding = {"url": ref.get("url"), "source_digest": source_digest}
+    if ref.get("source_path") or ref.get("artifact_digest"):
+        ref["artifact_digest"] = artifact_digest
+        binding["artifact_digest"] = artifact_digest
+        if ref.get("source_path"):
+            binding["source_path"] = ref["source_path"]
+    return binding
 
 
 def prepare_manual_source_public_assets(offer_id: str) -> dict[str, Any]:
@@ -1660,12 +1689,7 @@ def generate_approved_brand_images(
     source_bindings = {}
     for position in sorted(required_reference_positions):
         ref = source_rows_by_position[position]
-        raw = Path(ref['local_path']).read_bytes() if ref.get('local_path') else _download_source(ref['url'])
-        actual = 'sha256:' + hashlib.sha256(raw).hexdigest()
-        if ref.get('source_digest') and ref['source_digest'] != actual:
-            raise ValueError('approved reference source bytes drifted')
-        ref['source_digest'] = actual
-        source_bindings[str(position)] = {'url':ref.get('url'), 'source_digest':actual}
+        source_bindings[str(position)] = _validated_reference_binding(ref)
     paid_context.bind_plan('brand', {'image_plan':plan, 'reuse_plan':reuse_plan, 'sources':source_bindings})
     canonical_reuse_path = _brand_reuse_plan_path(str(offer_id), runtime=runtime)
     try:
@@ -1679,6 +1703,17 @@ def generate_approved_brand_images(
         f"{row.get('brand_id')}:{row.get('role')}": row
         for row in (previous.get("assets") or []) if isinstance(row, dict)
     }
+    if getattr(paid_context, 'unknown_successor_grant', None) is not None:
+        from shared_platform.publication_image_successor import validate_grant
+        grant, _grant_sha = validate_grant(paid_context, paid_context.unknown_successor_grant)
+        allowed = {f"{r['brand_id']}:{r['role']}" for r in grant['rows']}
+        pending = {f"{s['brand']['id']}:{s['asset']['role']}" for s in task_specs
+            if completed_by_key.get(f"{s['brand']['id']}:{s['asset']['role']}", {}).get('status') != 'COMPLETED'}
+        if not pending.issubset(allowed):
+            raise ValueError('IMAGE_SUCCESSOR_MISSING_ROLE_OUTSIDE_EXACT_GRANT')
+        paid_context.planned_requests = len(pending)
+        for row in completed_by_key.values():
+            _validate_cached_asset(row, paid_context)
     rework: dict[str, Any] = {}
     rework_path = _brand_rework_report_path(str(offer_id), runtime=runtime)
     if rework_path.is_file():
@@ -1703,6 +1738,8 @@ def generate_approved_brand_images(
     current_generation_count = (
         len(selected_rework_numbers) if selected_rework_numbers else execution["generation_count"]
     )
+    if getattr(paid_context, 'unknown_successor_grant', None) is not None:
+        current_generation_count = paid_context.planned_requests
     output = {
         "schema_version": "brand-image-generation/v1",
         "offer_id": str(offer_id),
@@ -1969,6 +2006,10 @@ def generate_approved_brand_images(
     output = _number_translation_review_assets(output)
     output["status"] = "BRAND_IMAGE_REVIEW_REQUIRED"
     output["completed_at"] = datetime.now(timezone.utc).isoformat()
+    if getattr(paid_context, 'unknown_successor_grant', None) is not None:
+        from shared_platform.publication_image_successor import completed_successor_receipt, RECEIPT_NAME
+        proof = completed_successor_receipt(paid_context, persist=True)
+        output['unknown_successor_receipt'] = {'path':str(paid_context.root/RECEIPT_NAME), 'digest':proof['digest']}
     output["next_action"] = "请按图片编号审核最终图片和翻译初步意见；确认后再冻结翻译位置和目标语言。"
     _write_json_atomic(_brand_generation_report_path(str(offer_id), runtime=runtime), output)
     if selected_rework_numbers:
@@ -2239,7 +2280,9 @@ def _validate_cached_asset(row: Mapping[str,Any], context) -> None:
     if row.get('locale'):business['locale']=row['locale']
     if cp.business_digest!=digest({'kind':cp.kind,**business}):raise ValueError('cached image business identity drifted')
     with business_lock(cp.root,cp.business_digest):
-        state=cp.open_for_execution()
+        from shared_platform.publication_image_successor import validate_successor
+        predecessor = validate_successor(context, cp)
+        state=cp.open_for_execution(allowed_unknown_predecessor=predecessor)
         if (state['status']!='COMPLETED' or state.get('task_id')!=(row.get('provider_task_id') or row.get('task_id'))
                 or state.get('output_digest')!=str(row.get('artifact_digest') or '').removeprefix('sha256:')
                 or hashlib.sha256(cp.output_path.read_bytes()).hexdigest()!=state.get('output_digest')):
@@ -2371,6 +2414,13 @@ def run(args: argparse.Namespace, *, runtime=None, binding=None) -> dict[str, An
     if any(paid_flags):
         context = runtime.paid_context if runtime is not None else load_paid_context(offer_id=str(args.offer_id), round1=round1, repo_root=_runtime_root(runtime),
             policy_path=getattr(args,'paid_policy',None), usage_baseline_path=getattr(args,'usage_baseline',None))
+    successor_grant = getattr(args, 'unknown_successor_grant', None)
+    if successor_grant is not None:
+        if context is None or not paid_flags[0] or runtime is not None:
+            raise ValueError('IMAGE_SUCCESSOR_REQUIRES_ORIGINAL_DIRECT_BRAND_PHASE')
+        from shared_platform.publication_image_successor import validate_grant
+        context.unknown_successor_grant = Path(successor_grant).absolute()
+        validate_grant(context, context.unknown_successor_grant)
     with business_lock(directory, digest({'scope':'round2-phase','offer_id':str(args.offer_id)})):
         if getattr(args,'prepare_brand_rework',False):
             if any(paid_flags) or getattr(args,'approve_translation_images',None) is not None:
@@ -2431,6 +2481,8 @@ def main( *, runtime=None) -> int:
     parser.add_argument("--offer-id", required=True)
     parser.add_argument('--paid-policy', type=Path, help='Existing applicable policy; no default active policy is shipped.')
     parser.add_argument('--usage-baseline', type=Path, help='Upper-layer verified all-product prior usage binding.')
+    parser.add_argument('--unknown-successor-grant', type=Path,
+        help='Exact retained one-time risk authorization for missing UNKNOWN brand-image roles.')
     parser.add_argument('--rework-authorization', type=Path, help='Existing user intent or exact QA rework evidence.')
     parser.add_argument("--execute-paid", action="store_true")
     parser.add_argument("--execute-brand-generation", action="store_true")

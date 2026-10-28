@@ -14,6 +14,18 @@ def _canonical(value):
     return internal_sku(value)
 
 
+def canonical_settlement_item_sku(catalog, evidence, order, item):
+    """Keep the monthly required-cost set on the registered internal key."""
+    from shared_platform.publication_canonical_aliases import needs_registered_alias,registered_catalog_line
+    raw=item.get('seller_sku')
+    if not needs_registered_alias(raw):
+        return _canonical(raw)
+    registered=registered_catalog_line(catalog,platform=evidence.get('platform'),
+        shop_key=order.get('shop_id') or evidence.get('shop_id'),product_id=item.get('product_id'),
+        variant_id=item.get('platform_sku'),seller_sku=raw)
+    return registered[0] if registered else ''
+
+
 def monthly_cost_period(site, start, end, timezone_name=None):
     zones = {'TH': ('Asia/Bangkok', 7), 'VN': ('Asia/Ho_Chi_Minh', 7),
              'MY': ('Asia/Kuala_Lumpur', 8), 'PH': ('Asia/Manila', 8)}
@@ -59,12 +71,12 @@ def resolve_monthly_missing_cost_policy(catalog, evidence, required_skus, *, sit
         items = [item for item in order.get('items') or [] if isinstance(item, dict)]
         mappings = {}
         for item in items:
-            sku = _canonical(item.get('seller_sku'))
+            sku = canonical_settlement_item_sku(catalog,evidence,order,item)
             variant = str(item.get('platform_sku') or '')
             mappings.setdefault(variant, set()).add(sku)
         scope_ok = bool(order.get('order_id')) and order.get('shop_id') == evidence['shop_id'] and str(order.get('region', '')).upper() == site and order.get('settlement_status') == 'settled'
         for item in items:
-            sku = _canonical(item.get('seller_sku'))
+            sku = canonical_settlement_item_sku(catalog,evidence,order,item)
             if sku not in required:
                 continue
             variant = str(item.get('platform_sku') or '')

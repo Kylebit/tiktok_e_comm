@@ -38,6 +38,8 @@ class LocalCatalogSnapshot:
     review: Mapping[str, Any] = field(default_factory=dict)
     cost_records_by_sku: Mapping[str, tuple[Mapping[str, Any], ...]] = field(default_factory=dict)
     blocked_skus: tuple[str, ...] = ()
+    canonical_alias_registry: object | None = None
+    product_by_identity: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 def _metadata_rows(connection, table, optional):
@@ -62,6 +64,8 @@ def load_local_catalog(database_path: str | Path, *, cost_view: str = "historica
         review = audit_catalog_connection(connection, cost_view=cost_view).payload()
         if review["status"] == "check_failed":
             raise ValueError("catalog review failed: " + review["error"]["code"])
+        from shared_platform.publication_canonical_aliases import read_alias_registry
+        registry = read_alias_registry(connection)
         metadata = {
             table: _metadata_rows(connection, table, columns)
             for table, columns in {
@@ -80,10 +84,11 @@ def load_local_catalog(database_path: str | Path, *, cost_view: str = "historica
 
     if cost_view == "historical":
         from .historical_internal_costs import attach_internal_history
-        review = attach_internal_history(review)
+        review = attach_internal_history(review, alias_registry=registry)
 
     by_row = {table: {r["_rowid"]: r for r in rows} for table, rows in metadata.items()}
     by_sku, by_variant = defaultdict(list), defaultdict(list)
+    by_identity = {}
     for row in review["records"]:
         if not row["identity_valid"]:
             continue
@@ -96,6 +101,11 @@ def load_local_catalog(database_path: str | Path, *, cost_view: str = "historica
             "shop_id": identity["shop_key"], "region": row["shop"].get("region") or extra.get("region"),
             "provider_shop_id": row["shop"].get("shop_id"),
         }
+        from shared_platform.publication_canonical_aliases import _digest
+        canonical = registry.resolve(identity)
+        if canonical:
+            row['display_metadata']['canonical_sku'] = canonical
+        by_identity[_digest(identity)] = deepcopy(row['display_metadata'])
         if identity['platform']=='ozon':
             row['display_metadata'].update(
                 listing_status=row['listing_status'],
@@ -177,6 +187,22 @@ def load_local_catalog(database_path: str | Path, *, cost_view: str = "historica
                 newest = max(valid, key=lambda c: (_source_time(c['source']['source_updated_at']), -c['source']['row_locator']['rowid']))
                 costs[code] = _decimal(newest['amount'])
 
+    # Preserve exact raw identities while exposing registered aliases under
+    # one internal cost key. Historical candidate intervals/conflicts survive.
+    canonical_groups = defaultdict(set)
+    for binding in registry.rows():
+        canonical_groups[binding['canonical_sku']].update((binding['provider_sku'],binding['canonical_sku']))
+    for code, raw_keys in canonical_groups.items():
+        records = {r['candidate_id']:r for raw in raw_keys for r in cost_records.get(raw, ())}
+        ordered = tuple(records[key] for key in sorted(records))
+        cost_records[code] = ordered
+        values = tuple(sorted({_decimal(c['amount']) for c in ordered if c['valid_value']}))
+        candidates[code] = values
+        if any(raw in blocked for raw in raw_keys) or len(values)>1:
+            blocked.add(code);costs.pop(code,None)
+        elif len(values)==1:
+            costs[code] = values[0]
+
     weight_by_seller = {}
     weight_groups = defaultdict(list)
     for row in metadata["sku_logistics_weights"]:
@@ -199,11 +225,12 @@ def load_local_catalog(database_path: str | Path, *, cost_view: str = "historica
         "cost_candidates_by_sku": {key: [str(value) for value in values] for key, values in candidates.items()},
         "cost_records_by_sku": _stable(cost_records), "issues": [asdict(issue) for issue in issues],
         "review": _stable(review), "metadata": metadata, "blocked_skus": sorted(blocked),
+        "canonical_alias_registry_digest": registry.digest,
     }
     digest = sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     effective_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
     return LocalCatalogSnapshot(mapping, costs, candidates, by_platform, by_seller, weight_by_seller,
-                                f"shop-db-catalog:{digest}", effective_at, tuple(issues), review, cost_records, tuple(sorted(blocked)))
+                                f"shop-db-catalog:{digest}", effective_at, tuple(issues), review, cost_records, tuple(sorted(blocked)),registry,by_identity)
 
 
 def enrich_settlement_row(row: Mapping[str, Any], catalog: LocalCatalogSnapshot) -> dict[str, Any]:
@@ -217,9 +244,16 @@ def enrich_settlement_row(row: Mapping[str, Any], catalog: LocalCatalogSnapshot)
     platform_sku = _text(row.get("platform_sku"))
     seller_sku = _text(row.get("canonical_sku") or row.get("seller_sku"))
     metadata = catalog.product_by_platform_sku.get(platform_sku) or catalog.product_by_seller_sku.get(seller_sku) or {}
+    from shared_platform.publication_canonical_aliases import registered_catalog_line,needs_registered_alias
+    raw_sku = _text(row.get('seller_sku'))
+    if needs_registered_alias(raw_sku):
+        registered=registered_catalog_line(catalog,platform=row.get('platform'),shop_key=row.get('shop_id'),
+            product_id=row.get('product_id'),variant_id=platform_sku,seller_sku=raw_sku)
+        seller_sku,metadata=registered if registered else ('',{})
+        output['canonical_sku']=seller_sku
     issue = catalog_scope_issue(metadata, platform=row.get("platform"),
         shop_id=row.get("shop_id"), site=row.get("region"), currency=row.get("currency"),
-        product_id=row.get("product_id"), seller_sku=seller_sku,
+        product_id=row.get("product_id"), seller_sku=raw_sku if needs_registered_alias(raw_sku) else seller_sku,
         variant_id=platform_sku if row.get("platform") == "tiktok" else "", require_identity=True)
     if seller_sku in catalog.blocked_skus:
         issue = "catalog_scope_unverified"

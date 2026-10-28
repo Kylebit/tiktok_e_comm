@@ -894,6 +894,17 @@ def _approved_price(
         pricing.get("selected_targets"), "selected pricing"
     )
     row = _mapping(selected.get(target), "target pricing")
+    if "store_prices" not in row:
+        from shared_platform.native_approved_discount_prices import retained_discount_price
+        try:
+            retained = retained_discount_price(payload, target)
+        except (OSError, ValueError) as error:
+            raise TikTokPromotionBlocked(
+                "approved_retained_price_invalid",
+                "original immutable retained storefront price is unavailable",
+                category="CONTENT",
+            ) from error
+        return retained["list_price"], retained["currency"]
     prices = row.get("store_prices")
     if (
         not isinstance(prices, list)

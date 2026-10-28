@@ -1,4 +1,89 @@
 /* Selected immutable 99401680 review CSS; no legacy global/body mode. */
+/* A trusted current native-final manifest replaces only the legacy image pane. */
+.native-final-images-ready #pane-images > :not(#nativeFinalFrozenContent) { display:none !important; }
+.native-final-images-ready .next-panel { display:none; }
+.native-final-images-ready.original-review-active #productDetail { display:block; }
+#nativeFinalFrozenContent { max-width:1320px; margin:20px auto; overflow-wrap:anywhere; }
+#nativeFinalFrozenContent section, #nativeFinalFrozenContent article { margin-top:24px; }
+#nativeFinalFrozenContent h2 { font-size:22px; line-height:1.5; }
+#nativeFinalFrozenContent h3 { font-size:17px; line-height:1.5; }
+#nativeFinalFrozenContent .native-frozen-image-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr)); gap:18px; align-items:start; }
+#nativeFinalFrozenContent figure { margin:0; padding:12px; border:1px solid #d5dfda; border-radius:12px; background:white; }
+#nativeFinalFrozenContent figure img { display:block; width:100%; height:auto; aspect-ratio:1; object-fit:contain; }
+#nativeFinalFrozenContent figcaption { margin-top:10px; font-size:14px; line-height:1.6; }
+#nativeFinalFrozenContent .native-image-load { display:block; color:#52685e; font-size:12px; }
+#nativeFinalFrozenContent .native-image-load[data-state="error"] { color:#a73927; }
+#nativeFinalFrozenContent .native-frozen-description { white-space:pre-wrap; line-height:1.8; }
+/* Final-only operator reading order; authority controls stay in their original nodes. */
+.operator-final-active #originalPublicationReview { max-width:1200px; margin:0 auto; }
+.operator-final-active #releasePlan { display:none; }
+.operator-final-active #releaseCandidatePanel { padding:22px; border-radius:16px; }
+.operator-final-active #originalFinalRound,
+.operator-final-active #releaseCandidatePanel,
+.operator-final-active #releaseCandidateContent,
+.operator-final-active .release-review-section,
+.operator-final-active .release-review-targets,
+.operator-final-active .release-review-variants,
+.operator-final-active .release-review-copy,
+.operator-final-active .table-scroll { min-width:0; max-width:100%; box-sizing:border-box; }
+.operator-final-active #releaseCandidateTargets .table-scroll { width:100%; overflow-x:auto; }
+.operator-final-active #releaseCandidatePanel > header .kicker,
+.operator-final-active .release-review-heading .kicker { display:none; }
+.operator-final-active #releaseCandidatePanel > header h4 { font-size:24px; }
+.operator-final-active .operator-product-summary { padding:18px 20px; margin:16px 0; border:1px solid #cadbd3; border-radius:12px; background:#f2f7f3; }
+.operator-final-active #releaseCandidatePanel > .operator-product-summary { display:block; }
+.operator-final-active .operator-product-summary h2 { font-size:22px; line-height:1.45; margin:8px 0; }
+.operator-final-active .operator-product-summary p { margin:6px 0; }
+.operator-final-active .operator-eyebrow { color:#49655c; font-size:13px; }
+.operator-final-active #releaseCandidateContent { display:flex; flex-direction:column; gap:18px; }
+.operator-final-active .release-review-section { margin:0; padding:0; }
+.operator-final-active .release-review-heading { margin-bottom:10px; }
+.operator-final-active .release-review-heading h5,
+.operator-final-active #releaseCandidateCompanions h5 { margin:0 0 8px; font-size:18px; }
+.operator-final-active .release-review-variants { display:block; }
+.operator-final-active .release-review-variant-card { padding:12px 16px; }
+.operator-final-active .release-review-variant-card h6 { margin:0; font-size:14px; }
+.operator-final-active .release-review-variant-card p { margin:7px 0; font-size:13px; }
+.operator-final-active #releaseCandidateImages { display:block; }
+.operator-final-active #operatorImageCount { margin:8px 0 12px; font-size:14px; }
+.operator-final-active .operator-thumbnail-grid { display:flex; flex-wrap:wrap; gap:14px; }
+.operator-final-active .operator-thumbnail-grid figure { margin:0; max-width:320px; padding:12px; border:1px solid #dce5e0; border-radius:12px; background:white; }
+.operator-final-active .operator-thumbnail-grid img { display:block; width:160px; height:160px; object-fit:contain; border-radius:8px; border:1px solid #e0e5e2; }
+.operator-final-active .operator-thumbnail-grid figcaption { margin-top:8px; font-size:13px; }
+.operator-final-active .operator-thumbnail-grid small { display:block; color:#65776e; margin-top:5px; }
+.operator-final-active .release-review-copy { display:block; }
+.operator-final-active .operator-copy-picker { display:grid; grid-template-columns:auto minmax(240px,1fr); gap:12px; align-items:center; margin:10px 0; font-size:13px; }
+.operator-final-active .operator-copy-picker select { width:100%; padding:9px; border:1px solid #b8cbc2; border-radius:7px; background:#fff; font:inherit; }
+.operator-final-active .release-review-copy-card { padding:14px 16px; gap:8px; }
+.operator-final-active .release-review-copy-card h6 { font-size:16px; }
+.operator-final-active .release-review-copy-card > p { margin:0; font-size:14px; }
+.operator-final-active .operator-muted { font-size:12px !important; color:#66786f; }
+.operator-final-active #releaseCandidateTargets { display:block; }
+.operator-final-active .operator-target-table { min-width:860px; font-size:13px; }
+.operator-final-active #releaseCandidateTargets td,.operator-final-active #releaseCandidateTargets th { padding:7px 9px; }
+.operator-final-active .operator-target-table th { white-space:nowrap; background:#f0f5f1; }
+.operator-final-active .operator-target-table td { line-height:1.45; }
+.operator-final-active .operator-target-table td:last-child { width:100px; }
+.operator-final-active #releaseCandidateCompanions { padding:15px 18px; border:1px solid #d5e0da; background:#f6f8f5; border-radius:12px; }
+.operator-final-active #releaseCandidateCompanions p { font-size:14px; margin:9px 0; }
+.operator-final-active #originalFinalActions { margin-top:20px; }
+.operator-final-active #publicationFlow { padding:18px; border:1px solid #abc6b8; border-radius:12px; background:#edf6ef; }
+.operator-final-active #publicationFlow h2 { margin:0; font-size:18px; }
+.operator-final-active #publicationFlowStatus { margin:12px 0; font-size:14px; }
+.operator-final-active .operator-technical { margin-top:16px; padding:13px; border:1px solid #d5ded8; border-radius:9px; background:#fafbf9; }
+.operator-final-active #operatorTechnicalBody { padding:15px 0; }
+.operator-final-active #operatorTechnicalBody .release-candidate-grid { grid-template-columns:repeat(2,minmax(0,1fr)); font-size:12px; }
+.operator-final-active #operatorTechnicalBody .release-candidate-grid span { overflow-wrap:anywhere; }
+.operator-final-active #operatorTechnicalBody pre { max-height:360px; overflow:auto; }
+.operator-final-active .release-review-section details { margin-top:8px; font-size:12px; }
+.operator-final-active .release-review-section summary { color:#3f6558; }
+@media(max-width:650px) {
+  .operator-final-active #releaseCandidatePanel { padding:12px; }
+  .operator-final-active .operator-product-summary { padding:12px; }
+  .operator-final-active .operator-product-summary h2 { font-size:18px; }
+  .operator-final-active .operator-copy-picker { grid-template-columns:1fr; gap:6px; }
+  .operator-final-active #operatorTechnicalBody .release-candidate-grid { grid-template-columns:1fr; }
+}
 #originalPublicationReview { --ink:#18312e; --muted:#687773; --paper:#f4f1e9; --surface:#fffdf7; --forest:#173b36; --teal:#23766b; --mint:#d5eee5; --orange:#e86f43; --amber:#f0bd62; --red:#a84639; --line:rgba(24,49,46,.14); --shadow:0 22px 55px rgba(24,49,46,.09); color:var(--ink); font-family:"Segoe UI Variable","Microsoft YaHei UI",system-ui,sans-serif; }
 .original-review-active #productDetail { display:none; }
 .original-round-nav { display:flex; flex-wrap:wrap; gap:8px; margin:18px 0; }

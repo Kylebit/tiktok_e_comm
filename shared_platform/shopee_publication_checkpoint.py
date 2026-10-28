@@ -26,6 +26,20 @@ def _digest(value: object) -> str:
     return "sha256:" + hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
 
+def _scoped_path(run_root: Path, labels: Sequence[str]) -> Path:
+    scope = "-".join(label.split(":", 1)[1] for label in labels)
+    return run_root / f"shopee-publication-checkpoint.{scope}.json"
+
+
+def _read_checkpoint(path: Path) -> dict[str, Any]:
+    body = json.loads(path.read_text(encoding="utf-8"))
+    supplied = body.pop("checkpoint_digest", None)
+    if supplied != _digest(body):
+        raise ValueError("Shopee checkpoint identity or digest conflicts")
+    body["checkpoint_digest"] = supplied
+    return body
+
+
 def _safe_message(value: object) -> str:
     text = " ".join(str(value or "").split())
     lowered = text.casefold()
@@ -103,7 +117,13 @@ class ShopeePublicationCheckpointStore:
             or any(not _SAFE_LABEL.fullmatch(label) for label in self.identity["target_labels"])
         ):
             raise ValueError("Shopee checkpoint identity is invalid")
-        self.path = self.root / self.identity["offer_id"] / str(self.identity["revision"]) / self.identity["run_id"] / "shopee-publication-checkpoint.json"
+        run_root = self.root / self.identity["offer_id"] / str(self.identity["revision"]) / self.identity["run_id"]
+        self.legacy_path = run_root / "shopee-publication-checkpoint.json"
+        self.path = _scoped_path(run_root, self.identity["target_labels"])
+        # Validate persisted state before the executor can enter a provider boundary.
+        # Legacy bytes remain immutable; the first later record writes only the
+        # exact ordered target scope's new path.
+        self.load()
 
     def _initial(self) -> dict[str, Any]:
         body = {"schema_version": SCHEMA_VERSION, **deepcopy(self.identity), "targets": {}, "events": []}
@@ -111,13 +131,18 @@ class ShopeePublicationCheckpointStore:
         return body
 
     def load(self) -> dict[str, Any]:
-        if not self.path.is_file():
+        path = self.path if self.path.is_file() else self.legacy_path
+        if not path.is_file():
             return self._initial()
-        body = json.loads(self.path.read_text(encoding="utf-8"))
-        supplied = body.pop("checkpoint_digest", None)
-        if supplied != _digest(body) or any(body.get(key) != value for key, value in self.identity.items()):
+        body = _read_checkpoint(path)
+        if any(body.get(key) != value for key, value in self.identity.items() if key != "target_labels"):
             raise ValueError("Shopee checkpoint identity or digest conflicts")
-        body["checkpoint_digest"] = supplied
+        if body.get("target_labels") != self.identity["target_labels"]:
+            if path != self.legacy_path:
+                raise ValueError("Shopee checkpoint identity or digest conflicts")
+            # A valid same-run legacy journal for another exact target is not
+            # this scope's state. Never borrow its task/item IDs or overwrite it.
+            return self._initial()
         return body
 
     def record(self, stage: str, row: Mapping[str, object]) -> None:
@@ -213,26 +238,40 @@ def public_shopee_progress_for_run(
 
     if run.get("platform_scope") != ["SHOPEE"]:
         return None
-    path = (
-        Path(root)
-        / str(run.get("offer_id") or "")
-        / str(run.get("revision") or "")
-        / str(run.get("run_id") or "")
-        / "shopee-publication-checkpoint.json"
+    run_root = (
+        Path(root) / str(run.get("offer_id") or "")
+        / str(run.get("revision") or "") / str(run.get("run_id") or "")
     )
-    if not path.is_file():
+    legacy = run_root / "shopee-publication-checkpoint.json"
+    scoped = sorted(run_root.glob("shopee-publication-checkpoint.*.json"))
+    if not legacy.is_file() and not scoped:
         return None
-    body = json.loads(path.read_text(encoding="utf-8"))
-    supplied = body.pop("checkpoint_digest", None)
-    if supplied != _digest(body):
-        raise ValueError("Shopee checkpoint digest conflicts")
-    if any(
-        body.get(key) != run.get(key)
-        for key in ("run_id", "report_id", "offer_id", "revision", "plan_id")
-    ) or body.get("snapshot_digest") != run.get("snapshot_digest"):
-        raise ValueError("Shopee checkpoint run identity conflicts")
-    targets = body.get("targets") if isinstance(body.get("targets"), Mapping) else {}
-    labels = body.get("target_labels") if isinstance(body.get("target_labels"), list) else []
+    targets: dict[str, Any] = {}
+    labels: list[str] = []
+    events: list[Mapping[str, object]] = []
+    scoped_labels: set[str] = set()
+    for path in ([legacy] if legacy.is_file() else []) + scoped:
+        part = _read_checkpoint(path)
+        if any(part.get(key) != run.get(key) for key in ("run_id", "report_id", "offer_id", "revision", "plan_id")) or part.get("snapshot_digest") != run.get("snapshot_digest"):
+            raise ValueError("Shopee checkpoint run identity conflicts")
+        part_labels = part.get("target_labels")
+        if not isinstance(part_labels, list) or not part_labels or len(set(part_labels)) != len(part_labels) or any(not isinstance(label, str) or not _SAFE_LABEL.fullmatch(label) for label in part_labels):
+            raise ValueError("Shopee checkpoint target scope conflicts")
+        if path != legacy:
+            if path != _scoped_path(run_root, part_labels) or scoped_labels.intersection(part_labels):
+                raise ValueError("Shopee checkpoint target scope conflicts")
+            scoped_labels.update(part_labels)
+            events = [event for event in events if event.get("target_label") not in part_labels]
+        part_targets = part.get("targets")
+        if not isinstance(part_targets, Mapping) or not set(part_targets).issubset(part_labels):
+            raise ValueError("Shopee checkpoint target scope conflicts")
+        # A scoped successor supersedes only the same labels' legacy projection.
+        for label in part_labels:
+            if label not in labels:
+                labels.append(label)
+            targets[label] = part_targets.get(label, {})
+        events.extend(part.get("events", []))
+    body = {"events": events}
     return {
         "schema_version": "shopee-publication-progress/v1",
         "event_count": len(body.get("events", [])),

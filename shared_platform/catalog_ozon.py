@@ -70,7 +70,9 @@ def save_manual(path,raw,value,expected_version):
     finally:connection.close()
 
 
-def project(path,packet,*,fault=None):
+def project(path,packet,*,fault=None,canonical_authority=None):
+    from shared_platform.publication_canonical_aliases import validate_projection_authority, register_binding
+    strict_alias=validate_projection_authority(packet,canonical_authority)
     if packet.get('schema')!='catalog-ozon-observation/v1' or not packet.get('rows'):raise ValueError('ozon_observation_required')
     snapshot_hash=packet.get('snapshot_digest')
     snapshot_hash=snapshot_hash.removeprefix('sha256:') if isinstance(snapshot_hash,str) else ''
@@ -96,6 +98,9 @@ def project(path,packet,*,fault=None):
         results=[]
         for i,value,listing in prepared:
             connection.execute('INSERT INTO catalog_ozon_products VALUES(?,?,?,?,?) ON CONFLICT(account_id,product_id) DO UPDATE SET document_json=excluded.document_json,source_ref=excluded.source_ref',(*_key(i),i['offer_id'],canonical(listing),packet['snapshot_digest']))
+            if strict_alias:
+                source=next(row for row in packet['rows'] if row['identity']==i)
+                register_binding(connection,source,receipt,packet=packet,authority=canonical_authority)
             if fault:fault('after_observation')
             old=read_cost(connection,i)
             if old:

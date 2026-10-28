@@ -65,6 +65,8 @@ Require a valid `round1-approved-snapshot/v1` and matching current Product Cente
 
 Paid execution requires the existing applicable policy loaded by `shared_platform.publication_autopilot`. Its attributed authority, allowed purposes and product cap must cover this action. Record the selected model, current price, purpose and QA plan in the candidate evidence. Continue without an approval prompt when existing authority covers the exact paid purpose and budget. A new paid purpose, provider, or scope outside that authority requires explicit authorization before the request.
 
+For this user's requested image work, apply the [standing image-production paid authority](references/standing-image-paid-authority.md): necessary image-production payments are already authorized, so do not ask for payment permission again. Bind that decision to the current product, applicable policy, budget/counter and source; it preserves ledger recovery and the single final marketplace review. New projects use explicit user authority, never the historical example below.
+
 The bundled `historical-autopilot-policy.example.json` is inactive source evidence. Its original names, date and ACTIVE state are not current authority. Do not activate it as default configuration. Offline fixtures and green tests never establish live generation authority.
 
 ## Execute one phase
@@ -98,6 +100,13 @@ Reports separate planned requests for the current phase, occupied, attempted, un
 For SUBMITTING, UNKNOWN or post-submit timeout, inspect local request/checkpoint state. Existing task IDs resume by querying, never by creating again. Raw chat replies are durable before parsing and can be parsed again locally. Timeout without raw reply requires upstream reconciliation; changing prompt or retry number is not authorization to resend.
 
 Use the local recovery CLI in `references/paid-recovery.md`. It checks exact product/request/attempt/revision, source hashes, verifier, timestamp and evidence reference. It does not discover or prove external billing facts. Preserve bad and legacy bytes; never manufacture a no-charge conclusion.
+
+For an explicit, receipt-bound decision accepting possible duplicate charges for
+exact missing brand-image roles, the same recovery reference describes the narrow
+one-successor grant. It retains the old UNKNOWNs and their occupied slots, permits
+at most one new request per listed role within the same cap, and never chains a
+second successor after another unknown. It is separate from no-charge recovery
+and does not grant marketplace execution authority.
 
 ## Rework and technical rebuild
 

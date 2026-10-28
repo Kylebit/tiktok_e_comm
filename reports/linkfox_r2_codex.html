@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LinkFox 场景的开源 / 自托管替代调研</title>
+<style>
+  :root {
+    --bg: #f4f7fb;
+    --card: #ffffff;
+    --ink: #0f172a;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --accent: #0f766e;
+    --accent-soft: #ccfbf1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 500px at 10% -10%, #dbeafe 0%, transparent 55%),
+      radial-gradient(900px 400px at 100% 0%, #ccfbf1 0%, transparent 50%),
+      var(--bg);
+    line-height: 1.7;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 32px 20px 64px; }
+  .hero {
+    background: linear-gradient(135deg, #0f766e 0%, #1d4ed8 100%);
+    color: #fff;
+    border-radius: 18px;
+    padding: 28px;
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+    margin-bottom: 20px;
+  }
+  .hero h1 { margin: 0 0 10px; font-size: 27px; line-height: 1.35; }
+  .hero .sub { opacity: 0.92; font-size: 14px; }
+  .badge {
+    display: inline-block;
+    background: rgba(255,255,255,0.18);
+    border: 1px solid rgba(255,255,255,0.28);
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 22px;
+    margin: 14px 0;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  }
+  .toc-title { font-weight: 700; margin-bottom: 8px; color: var(--accent); }
+  .toc ol { margin: 0; padding-left: 20px; }
+  .toc a { color: #1e293b; text-decoration: none; }
+  .toc a:hover { color: var(--accent); text-decoration: underline; }
+  h1 { font-size: 26px; }
+  h2 {
+    margin: 28px 0 12px;
+    font-size: 21px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--accent-soft);
+    scroll-margin-top: 16px;
+  }
+  h3 { margin: 18px 0 8px; font-size: 16px; color: #334155; }
+  h4 { margin: 14px 0 6px; font-size: 14px; color: #475569; }
+  p { margin: 8px 0; }
+  blockquote {
+    margin: 10px 0;
+    padding: 10px 16px;
+    border-left: 4px solid var(--accent);
+    background: #f0fdfa;
+    border-radius: 0 10px 10px 0;
+    color: #134e4a;
+  }
+  blockquote p { margin: 4px 0; }
+  ul, ol { margin: 8px 0 8px 20px; }
+  li { margin: 4px 0; }
+  code {
+    font-family: Consolas, "Courier New", monospace;
+    background: #f1f5f9;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 14px 16px;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; }
+  a { color: #1d4ed8; }
+  .table-wrap { overflow-x: auto; margin: 10px 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f8fafc; color: #334155; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 22px 0; }
+  .foot { margin-top: 28px; color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="badge">Orbit Codex · 开源 GitHub 替代 LinkFox 调研</div>
+      <h1>LinkFox 场景的开源 / 自托管替代调研</h1>
+      <div class="sub">1688 货源 / 图生图 / 虚拟试穿 / Agent-Skills 生态 的开源可自托管替代（含映射表与缺口）· 2026-07-22 · HTML 交付</div>
+    </header>
+    <nav class="toc card"><div class="toc-title">目录</div><ol><li><a href="#sec1">结论摘要</a></li><li><a href="#sec2">1. 1688 货源、检索与采购</a></li><li><a href="#sec3">2. 图像生成、商品图编辑与虚拟试穿</a></li><li><a href="#sec4">3. Agent Skills / MCP 生态与可复用入口</a></li><li><a href="#sec5">LinkFox 功能 → 开源替代映射</a></li><li><a href="#sec6">核验方法与引用</a></li></ol></nav>
+    <article class="card">
+['<h1>LinkFox 场景的开源 / 自托管替代调研</h1>', '<p>调研日期：2026-07-22。范围是 GitHub 上公开可取得的代码、Skill 与 MCP 项目；<code>★</code> 为本次查看 GitHub 页面时的约数，随时间变化。这里的「本地可跑」只表示软件可在自有机器/容器运行，<strong>不</strong>等同于可以绕过 1688 的登录、授权、风控、接口条款或模型权利限制。</p>', '<h2 id="sec1">结论摘要</h2>', '<ul><li>图像工作流可以自托管：以 ComfyUI 为编排底座，搭配本地开源权重/节点，覆盖图生图、换背景、局部重绘和部分试穿；不必调用付费图像 API。</li><li>1688 的关键词、图搜、店铺/供应商商品查询有可复用的开源 Skill，但可靠的路径是 <strong>1688 开放平台凭据</strong>。它不是零成本 API；“完全免授权、稳定下单”的成熟开源替代目前没有。</li><li>采购下单是最不能直接自动化的环节：公开的 Playwright/MCP 能驱动已登录浏览器，但无法替代账户授权、风控、人机验证与最终付款确认。建议只做“候选收集 → 人审 → 人工确认下单”。</li><li>Skill 生态已有开放的 <code>SKILL.md</code>/MCP 载体及目录，但电商/1688 垂直 Skill 的供给远少于开发工具类；应把经过审计的 1688 Skill fork 到私有仓库维护。</li></ul>', '<h2 id="sec2">1. 1688 货源、检索与采购</h2>', '<div class="table-wrap"><table><tr><th>项目</th><th>一句话功能与对应 LinkFox 功能</th><th>协议；成熟度（本次核验）</th><th>是否真能本地跑 / 关键限制</th></tr><tr><td><a href="https://github.com/openclaw/skills/tree/main/skills/1688aiinfra/1688-product-search" target="_blank" rel="noopener">openclaw/skills：1688-product-search</a></td><td><code>SKILL.md</code> + Python 脚本封装类目、关键词、图片、详情、相关商品、店铺商品等 1688 跨境开放接口；对应“1688 搜索、以图搜图、供应商/同店商品查询”。</td><td>仓库 MIT，约 ★4.5k；归档的是 clawhub 技能版本，仓库明确提示可能含恶意/可疑 Skill，故应逐文件审计后 fork。该 Skill 文件标注 v1.0.3。</td><td><strong>能本地运行</strong>，但必须提供 <code>ALI1688_APP_KEY</code>、<code>APP_SECRET</code> 和 refresh/access token；图片上传对非 1688 图片成功率有限。最贴近需求的首选。</td></tr><tr><td><a href="https://github.com/netkaruma/search1688api" target="_blank" rel="noopener">netkaruma/search1688api</a></td><td>Python 库，通过文字和图片在 1688/Alibaba 搜索商品；对应“找货 / 图搜同款”。</td><td>GitHub 1688 topic 的公开项目，最近更新显示为 2026-03；应在接入前再次查看 LICENSE（本次检索摘要未能确认 SPDX）。</td><td><strong>代码可本地跑</strong>，但其搜索 API/会话依赖需自行验证；未确认许可前不建议直接商用嵌入。</td></tr><tr><td><a href="https://github.com/ihmily/1688-Decryptor" target="_blank" rel="noopener">ihmily/1688-Decryptor</a></td><td>研究 1688/淘宝请求签名参数；仅可作为理解旧接口的参考。</td><td>Python，topic 页显示最近更新 2025-04；许可、可用性需逐仓核实。</td><td>可本地研究，<strong>不推荐用于生产</strong>：逆向接口易失效且可能违反平台规则，不能作为官方 API 替代。</td></tr><tr><td><a href="https://github.com/microsoft/playwright-mcp" target="_blank" rel="noopener">microsoft/playwright-mcp</a></td><td>给 MCP Agent 提供浏览器导航、点击、填表等能力；对应“已登录 1688 的人工辅助询价、加购、生成待下单单”。</td><td>Apache-2.0；约 ★35.4k、565 commits，维护活跃。</td><td><strong>能本地/容器跑</strong>。它只是浏览器控制层；需用户合法登录，遇验证码/支付/风控必须转人工，禁止把它表述为稳定无头下单器。</td></tr><tr><td><a href="https://github.com/oxylabs/1688-scraper" target="_blank" rel="noopener">Oxylabs/1688-scraper</a></td><td>1688 商品数据抓取 API 示例；对应“商品搜索/详情采集”。</td><td>GitHub topic 当前列出，最近更新显示 2026-04；服务本身是商业抓取 API。</td><td>示例可跑，但结果依赖付费 Oxylabs，<strong>不符合尽量不依赖付费 API 的主方案</strong>，故仅作对比，不推荐。</td></tr></table></div>', '<h3>1688 的可行集成边界</h3>', '<p><code>1688-product-search</code> 的说明明确列出了官方 <code>keywordQuery</code>、<code>imageQuery</code>、<code>queryProductDetail</code>、<code>querySellerOfferList</code> 等端点和环境变量；这证实“搜索/图搜/供应商商品查询”可被 Agent Skill 标准化，但也证实它依赖官方凭据，而不是免费匿名抓取。建议实现为：</p>', '<ol><li>将 Skill 的最小脚本及测试输入 fork 到本项目/私有仓库，Secrets 只放运行环境；</li><li>仅把 SKU、商品链接、offerId、店铺 ID、价格和证据图传入审批流；</li><li>让 Playwright 打开已登录页面供人工复核，采购、地址、付款及最终提交必须由人确认；</li><li>记录请求时间、账号和原始响应，限流并遵守 1688 开放平台及商家页面条款。</li></ol>', '<p><strong>明确缺口：暂无成熟、合规、可自托管且不需要账户/API 授权的 1688 自动采购下单替代。</strong> 原因是下单天然涉及身份、价格、库存、收货与支付，公开爬虫只能采集公开页，不能合法地取代授权交易接口或账户确认。</p>', '<h2 id="sec3">2. 图像生成、商品图编辑与虚拟试穿</h2>', '<div class="table-wrap"><table><tr><th>项目</th><th>一句话功能与对应 LinkFox 功能</th><th>协议；成熟度（本次核验）</th><th>是否真能本地跑 / 限制</th></tr><tr><td><a href="https://github.com/comfy-org/ComfyUI" target="_blank" rel="noopener">Comfy-Org/ComfyUI</a></td><td>节点图/队列/API 编排扩散模型、图生图、ControlNet、inpaint、放大；是商品图生产流水线底座。</td><td>GPL-3.0；约 ★122k、5,619 commits；README 写明周度发布节奏，持续维护。</td><td><strong>是</strong>。Windows portable、Linux/macOS 与 CPU 模式均有说明；本地核心可离线，模型权重另行下载且应逐个审许可证。</td></tr><tr><td><a href="https://github.com/lllyasviel/Fooocus" target="_blank" rel="noopener">lllyasviel/Fooocus</a></td><td>面向少参数操作的 SDXL 图生图、变体、inpaint/outpaint、图像提示；适合手工商品图改图。</td><td>GPL-3.0；约 ★49.1k；官方状态为“Limited LTS（仅 bug fix）”，最新 release 为 2024-08。</td><td><strong>是</strong>，Windows/Linux 可启动，官方最低 4GB NVIDIA VRAM（不同环境差异大）。易用但不宜作为持续演进的生产核心。</td></tr><tr><td><a href="https://github.com/AUTOMATIC1111/stable-diffusion-webui" target="_blank" rel="noopener">AUTOMATIC1111/stable-diffusion-webui</a></td><td>Stable Diffusion WebUI 与扩展生态，支持 img2img、inpaint、ControlNet；对应商品图生成与局部重绘。</td><td>AGPL-3.0；约 ★164k、7,689 commits，社区很大。</td><td><strong>是</strong>，但扩展/模型兼容性和安全性要单独锁版本；AGPL 对将修改后服务化有义务，需法务评估。</td></tr><tr><td><a href="https://github.com/danielgatis/rembg" target="_blank" rel="noopener">danielgatis/rembg</a></td><td>本地 CLI/HTTP/Docker 的 AI 去背景；对应“白底商品图、换背景前的抠图”。</td><td>MIT；约 ★23.9k、536 commits。</td><td><strong>是</strong>，CPU/GPU、Docker 都可；输出质量取决于所选模型，建议以商品类测试集验收。</td></tr><tr><td><a href="https://github.com/Zheng-Chong/CatVTON" target="_blank" rel="noopener">Zheng-Chong/CatVTON</a></td><td>ICLR 2025 的轻量虚拟试穿扩散模型；对应服饰“模特试穿”。</td><td>仓库含 LICENSE（接入前需按当前文件核定）；约 ★1.8k、61 commits。</td><td><strong>是</strong>，README 标称 1024×768 推理少于 8GB VRAM；属于研究实现，需评估人像/服饰品类偏差和权重许可。</td></tr><tr><td><a href="https://github.com/yisol/IDM-VTON" target="_blank" rel="noopener">yisol/IDM-VTON</a></td><td>ECCV 2024 的高保真虚拟试穿官方实现；对应服饰试穿。</td><td>研究项目，仓库含 <code>LICENSE.txt</code>；约 ★5.1k、28 commits，提交量较小。</td><td><strong>可本地推理</strong>（含 Gradio demo/脚本），但须先核对代码与预训练权重的非商用条款；不能未审许可就用于店铺商业生成。</td></tr><tr><td><a href="https://github.com/kijai/ComfyUI-IC-Light" target="_blank" rel="noopener">kijai/ComfyUI-IC-Light</a></td><td>将 IC-Light 接入 ComfyUI，按参考图控制光照；对应“商品换背景后统一棚拍光感”。</td><td>Apache-2.0；约 ★1.2k、98 commits，README 提供工作流和安装说明。上游 IC-Light 权重仍须另核许可。</td><td><strong>能本地跑</strong>（ComfyUI 节点）；这不是单独的生成平台，依赖 ComfyUI、显卡和模型，适合做工作流插件。</td></tr></table></div>', '<h3>推荐的本地商品图工作流</h3>', '<p><code>rembg（抠图） → ComfyUI（背景/光照/局部重绘/放大） → 人审 → 导出规格图</code>。服饰再分支到 CatVTON 或 IDM-VTON。ComfyUI 的 README 明确支持 inpainting、ControlNet、放大和 API，且本地核心可完全离线；因此它比把 Fooocus/A1111 当作无人值守服务更适合接入现有控制台。</p>', '<p>注意：开源代码许可证不自动授予模型、LoRA、人物肖像、商标或素材的商用权。对于 IDM-VTON/CatVTON，应把“代码可运行”和“可商用交付”分开验收。</p>', '<h2 id="sec4">3. Agent Skills / MCP 生态与可复用入口</h2>', '<div class="table-wrap"><table><tr><th>仓库</th><th>一句话功能与对应 LinkFox 功能</th><th>协议；成熟度</th><th>本地可用性与取舍</th></tr><tr><td><a href="https://github.com/openclaw/skills" target="_blank" rel="noopener">openclaw/skills</a></td><td>Skill 存档，包含前述 1688 商品搜索 Skill；对应“可安装的货源 Agent 能力”。</td><td>MIT，约 ★4.5k、196k+ commits 的归档；项目明确是 archive，且提示可能有恶意内容。</td><td>可复制 Skill 到本地运行，但<strong>不可盲装</strong>：审计 <code>SKILL.md</code>、脚本、依赖和网络目标后 fork。</td></tr><tr><td><a href="https://github.com/VoltAgent/awesome-agent-skills" target="_blank" rel="noopener">VoltAgent/awesome-agent-skills</a></td><td>跨 Claude Code、Codex、Cursor 等的精选 Skill 目录，可发现图像、MCP、网页自动化能力。</td><td>约 ★（页面动态）；有持续 PR，定位为人工精选目录。许可证应以仓库当前 LICENSE 为准。</td><td>可本地 clone/按目标 Agent 路径安装；是“发现索引”，不是 1688 成品业务 Skill。</td></tr><tr><td><a href="https://github.com/junminhong/awesome-agent-skills" target="_blank" rel="noopener">junminhong/awesome-agent-skills</a></td><td>含 Business &amp; Marketing、Creative &amp; Media 分类的技能/资源目录；对应“从通用 Skill 中组合电商图文流程”。</td><td>公开维护的 curated list；许可证与动态数据应以仓库页为准。</td><td>可本地使用条目，不提供平台交易权限；适合寻找并改造而不是直接上生产。</td></tr><tr><td><a href="https://github.com/skillcreatorai/Awesome-Agent-Skills" target="_blank" rel="noopener">skillcreatorai/Awesome-Agent-Skills</a></td><td>提供统一 CLI/目录，覆盖 Cursor、Claude、VS Code 等 Skill 安装位置；对应“把内部电商 Skill 分发给多个 Agent”。</td><td>公开仓库；含可安装的 <code>SKILL.md</code> 结构。许可证、star 与更新应在锁定版本时复核。</td><td><strong>能本地使用</strong>；推荐只把它作为格式与分发参考，不把未审第三方 skill 直接接触账号/采购数据。</td></tr><tr><td><a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener">modelcontextprotocol/servers</a></td><td>MCP 参考服务器集合；对应“为内部货源/图像服务包一层标准工具接口”。</td><td>MIT；官方示例/参考实现，部分服务器可能标为 archive 或实验性质。</td><td><strong>能本地跑</strong>，适合作为自建 <code>1688-sourcing-mcp</code> 的协议参考，不提供 1688 商务能力本身。</td></tr></table></div>', '<h3>生态判断</h3>', '<p>有现成的“图像处理”“浏览器自动化”“Skill 安装/发现”能力，也有一个直接的 1688 搜索 Skill；但没有发现一个同时满足 <strong>1688 免授权采购 + 商品图生成 + 商业可用试穿 + 订单自动支付</strong> 的成熟开源总成。把这些能力拆为可审计的 MCP/Skill，比引入来源不明的全能 agent 更稳妥。</p>', '<h2 id="sec5">LinkFox 功能 → 开源替代映射</h2>', '<div class="table-wrap"><table><tr><th>LinkFox 目标功能</th><th>首选开源替代</th><th>接入方式</th><th>是否可无付费 API</th><th>生产建议</th></tr><tr><td>1688 关键词搜索、详情</td><td><code>openclaw/skills</code> 的 <code>1688-product-search</code></td><td>审计后 fork 为本地 Skill/MCP</td><td>软件可；<strong>官方 1688 凭据不可省</strong></td><td>推荐，走官方授权</td></tr><tr><td>以图搜图</td><td>同一 1688 Skill 的 <code>imageQuery</code></td><td>上传/传入合规图源 URL</td><td>同上，外部图成功率不保证</td><td>推荐，失败降级为关键词</td></tr><tr><td>供应商/同店商品查询</td><td>同一 Skill 的 <code>querySellerOfferList</code></td><td>从商品详情取 seller 标识</td><td>同上</td><td>推荐，保留原始链接与证据</td></tr><tr><td>采购加购/下单</td><td>Playwright MCP + 已登录浏览器</td><td>Agent 辅助填写，人工完成确认与支付</td><td>可不付 API，但需合法账户</td><td>仅半自动；没有成熟合规的全自动替代</td></tr><tr><td>商品图图生图、换背景、局部重绘</td><td>ComfyUI + 本地模型；Fooocus/A1111 作备选 UI</td><td>HTTP/队列/工作流 JSON</td><td><strong>可以</strong></td><td>首选 ComfyUI，锁定工作流与模型版本</td></tr><tr><td>白底抠图</td><td>rembg</td><td>CLI/Docker/HTTP</td><td><strong>可以</strong></td><td>先建立品类验收样本</td></tr><tr><td>虚拟试穿</td><td>CatVTON / IDM-VTON</td><td>本地 GPU 推理</td><td><strong>可以运行</strong>，但要核模型商用许可</td><td>研究/灰度，不可未经许可直接商用</td></tr><tr><td>让多个 Agent 复用能力</td><td>SKILL.md + MCP；awesome 目录作发现源</td><td>内部 Git + 审计 + 最小权限</td><td><strong>可以</strong></td><td>私有 fork、Secrets 隔离、人工审批</td></tr></table></div>', '<h2 id="sec6">核验方法与引用</h2>', '<p>本次通过 GitHub 仓库页、GitHub 1688 topic 和公开 README/Skill 文件核验；环境中 <code>gh</code> 不可用、对 <code>api.github.com</code> 的 PowerShell TLS 请求被关闭，因此没有把无法实时核对的精确 star/更新时间伪造成数据。报告中有数值的项目均以本次 GitHub 页面所示为准；对未能确认的许可证明确标注“接入前核实”。</p>', '<ul><li><a href="https://github.com/Comfy-Org/ComfyUI" target="_blank" rel="noopener">ComfyUI 仓库页</a>：GPL-3.0、约 ★122k、支持本地/离线核心、inpaint/ControlNet/API。</li><li><a href="https://github.com/lllyasviel/Fooocus" target="_blank" rel="noopener">Fooocus 仓库页</a>：GPL-3.0、约 ★49.1k、LTS bug-fix 状态及本地运行要求。</li><li><a href="https://github.com/AUTOMATIC1111/stable-diffusion-webui" target="_blank" rel="noopener">A1111 仓库页</a>：约 ★164k、AGPL-3.0。</li><li><a href="https://github.com/danielgatis/rembg" target="_blank" rel="noopener">rembg 仓库页</a>：约 ★23.9k、MIT。</li><li><a href="https://github.com/Zheng-Chong/CatVTON" target="_blank" rel="noopener">CatVTON 仓库页</a>：约 ★1.8k、论文/推理资源。</li><li><a href="https://github.com/yisol/IDM-VTON" target="_blank" rel="noopener">IDM-VTON 仓库页</a>：约 ★5.1k、官方论文实现。</li><li><a href="https://github.com/openclaw/skills/blob/main/skills/1688aiinfra/1688-product-search/SKILL.md" target="_blank" rel="noopener">OpenClaw 1688 Skill</a>：环境变量、官方端点及图片搜索限制。</li><li><a href="https://github.com/openclaw/skills" target="_blank" rel="noopener">OpenClaw Skills 仓库页</a>：MIT、约 ★4.5k，并有 archive/安全提示。</li><li><a href="https://github.com/microsoft/playwright-mcp" target="_blank" rel="noopener">Playwright MCP 仓库页</a>：约 ★35.4k，可自托管浏览器自动化。</li></ul>']
+    </article>
+    <div class="foot">源文件：linkfox_r2_codex.md · 经 8790 静态服务可直开</div>
+  </div>
+</body>
+</html>

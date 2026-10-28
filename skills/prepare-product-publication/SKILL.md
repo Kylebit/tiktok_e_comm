@@ -5,6 +5,21 @@ description: "Prepare an auditable round-1 candidate for one Product Center Offe
 
 # Prepare Product Publication
 
+### Gallery completeness fallback
+
+Apply an applicable product-specific image rule before the generic fallback;
+retain any stronger requirement. Without a specific rule, require at least
+seven distinct, qualified image artifacts per brand (fourteen for two brands),
+with meaningful cover, detail, scene and evidence-role coverage. Count actual
+artifact identities, not repeated shop routes, re-encodings or role aliases.
+Unknown size or installation facts must remain unknown: use explicitly bound,
+source-supported proportion/construction substitutions, never invented numbers,
+mounting parts or claims. An insufficient plan or gallery blocks the final
+candidate; finish preparation and automatic QA before the single protected
+human prepublication decision. A frozen image-plan successor must preserve and
+verify all other R1 facts, targets, copy, prices, stock and companion scope;
+do not overwrite historical snapshots or reset paid/COMMON budgets.
+
 ## Explicit source binding
 
 For a direct Agent CLI, select a complete Git source and explicit settings/data/

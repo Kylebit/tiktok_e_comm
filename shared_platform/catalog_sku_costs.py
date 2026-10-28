@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 from shared_platform.catalog_cost_projection import amount, digest, _table, _owners, _key, CatalogProjectionError
 from shared_platform.internal_catalog_sku import internal_sku,aliases_for
+from shared_platform.publication_canonical_aliases import canonical_for_identity,read_alias_registry
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS catalog_sku_costs (
@@ -19,6 +20,9 @@ CREATE TABLE IF NOT EXISTS catalog_sku_cost_history (
 def members(conn,sku=None):
     rows=[]
     aliases=aliases_for(sku) if sku is not None else []
+    registry=read_alias_registry(conn)
+    if sku is not None:
+        aliases=sorted(set(aliases)|{r['provider_sku'] for r in registry.rows() if r['canonical_sku']==sku})
     clause=" AND trim(p.seller_sku,' '||char(9)||char(13)||char(10)) IN ("+','.join('?' for _ in aliases)+')' if aliases else ''
     shop_columns = {row['name'] for row in conn.execute('PRAGMA table_info(shops)')}
     region = "COALESCE(s.region,'')" if 'region' in shop_columns else "''"
@@ -26,23 +30,26 @@ def members(conn,sku=None):
         r=dict(r);i=dict(platform='tiktok',shop_key=str(r['shop_cipher']),product_id=str(r['product_id']),variant_id=str(r['sku_id']),seller_sku=r['seller_sku'] or '')
         pair=[str(r.get('global_product_id') or ''),str(r.get('global_sku_id') or '')]
         old_key='tiktok-global:'+digest(pair) if all(pair) else 'unbound:'+digest({k:i[k] for k in ('platform','shop_key','product_id','variant_id')})
-        code=internal_sku(i['seller_sku']);key='internal:'+digest(code) if code else 'unbound:'+digest({k:i[k] for k in ('platform','shop_key','product_id','variant_id')})
+        code=canonical_for_identity(conn,i,registry=registry)
+        if sku is not None and code!=sku:continue
+        key='internal:'+digest(code) if code else 'unbound:'+digest({k:i[k] for k in ('platform','shop_key','product_id','variant_id')})
         rows.append(dict(identity=i,entity_key=key,legacy_entity_key=old_key,internal_sku=code,binding='INTERNAL_SKU' if code else 'MISSING_SKU',name=r.get('product_name') or '',spec=r.get('sku_name') or '',image_url=r.get('image_url') or '',region=r['catalog_region']))
     clause=" WHERE trim(seller_sku,' '||char(9)||char(13)||char(10)) IN ("+','.join('?' for _ in aliases)+')' if aliases else ''
     for r in conn.execute('SELECT * FROM shopee_products'+clause,aliases):
         r=dict(r);i=dict(platform='shopee',shop_key=str(r['shop_id']),product_id=str(r['item_id']),variant_id=str(r['model_id']),seller_sku=r['seller_sku'] or '')
-        old_key='unbound:'+digest({k:i[k] for k in ('platform','shop_key','product_id','variant_id')});code=internal_sku(i['seller_sku'])
+        old_key='unbound:'+digest({k:i[k] for k in ('platform','shop_key','product_id','variant_id')});code=canonical_for_identity(conn,i,registry=registry)
+        if sku is not None and code!=sku:continue
         rows.append(dict(identity=i,entity_key='internal:'+digest(code) if code else old_key,legacy_entity_key=old_key,internal_sku=code,binding='INTERNAL_SKU' if code else 'MISSING_SKU',name=r.get('product_name') or '',spec=r.get('model_name') or '',image_url=r.get('image_url') or '',region=r.get('region') or ''))
     if _table(conn,'catalog_ozon_products'):
         from shared_platform.catalog_ozon import identity
         for r in conn.execute('SELECT * FROM catalog_ozon_products'):
             i=identity(dict(platform='ozon',identity_kind='product_offer',shop_key=r['account_id'],product_id=r['product_id'],offer_id=r['offer_id'],seller_sku=r['offer_id']))
-            code=internal_sku(i['seller_sku'])
+            code=canonical_for_identity(conn,i,registry=registry)
             if sku is not None and code!=sku:continue
             listing=json.loads(r['document_json']);images=listing.get('images') or []
             cost=conn.execute('SELECT * FROM catalog_ozon_costs WHERE account_id=? AND product_id=?',(i['shop_key'],i['product_id'])).fetchone() if _table(conn,'catalog_ozon_costs') else None
             old_key='ozon:'+digest(i)
-            rows.append(dict(identity=i,entity_key='internal:'+digest(code),legacy_entity_key=old_key,internal_sku=code,binding='INTERNAL_SKU',name=listing.get('name') or '',spec='',image_url=images[0] if images else '',region='RU',ozon_cost=dict(cost) if cost else None))
+            rows.append(dict(identity=i,entity_key='internal:'+digest(code) if code else old_key,legacy_entity_key=old_key,internal_sku=code,binding='INTERNAL_SKU' if code else 'MISSING_SKU',name=listing.get('name') or '',spec='',image_url=images[0] if images else '',region='RU',ozon_cost=dict(cost) if cost else None))
     from shared_platform.catalog_archive import archived_members,identity_key
     current={identity_key(row['identity']) for row in rows}
     for archived in archived_members(conn,sku):
@@ -105,7 +112,7 @@ def read_current(conn,identity):
     current=conn.execute('SELECT * FROM catalog_sku_costs WHERE entity_key=?',(key,)).fetchone() if key and _table(conn,'catalog_sku_costs') else None
     if current:return {**identity,'amount':current['amount'],'version':current['version'],'source_kind':'MANUAL','source_ref':'canonical:'+key}
     if key:
-        i=identity;code=internal_sku(i['seller_sku'])
+        i=identity;code=canonical_for_identity(conn,i)
         rows=[r for r in members(conn,code if code else None) if r['entity_key']==key]
         resolved=state(conn,key,rows)
         if resolved['status']=='CONFLICT':return {**i,**resolved,'source_kind':'CONFLICT','source_ref':'canonical-conflict:'+key}
@@ -117,14 +124,15 @@ def entity_for_identity(conn,i):
     if i['platform']=='ozon':
         if not _table(conn,'catalog_ozon_products'):return None
         row=conn.execute('SELECT offer_id FROM catalog_ozon_products WHERE account_id=? AND product_id=?',(i['shop_key'],i['product_id'])).fetchone()
-        return 'internal:'+digest(internal_sku(i['seller_sku'])) if row and row['offer_id']==i['offer_id'] else None
+        code=canonical_for_identity(conn,i)
+        return 'internal:'+digest(code) if row and row['offer_id']==i['offer_id'] and code else None
     if i['platform']=='tiktok':
         r=conn.execute('SELECT seller_sku FROM products WHERE shop_cipher=? AND product_id=? AND sku_id=?',(i['shop_key'],i['product_id'],i['variant_id'])).fetchone()
         if not r or (r['seller_sku'] or '')!=i['seller_sku']:return None
     else:
         r=conn.execute('SELECT seller_sku FROM shopee_products WHERE shop_id=? AND item_id=? AND model_id=?',(i['shop_key'],i['product_id'],i['variant_id'])).fetchone()
         if not r or (r['seller_sku'] or '')!=i['seller_sku']:return None
-    code=internal_sku(i['seller_sku'])
+    code=canonical_for_identity(conn,i)
     return 'internal:'+digest(code) if code else 'unbound:'+digest({k:i[k] for k in ('platform','shop_key','product_id','variant_id')})
 
 

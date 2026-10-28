@@ -421,6 +421,12 @@ def _target_command(
     label = target["target_label"]
     target_images = publication_images_for_target(frozen, label)
     target_content = publication_content_for_target(frozen, label)
+    localized_variants = target_content.get('variants')
+    localized_by_model = None
+    if localized_variants is not None:
+        from domains.product_operations.approved_publication_snapshot import _localized_variant_displays
+        localized_by_model = {row['model_sku']:row['display_name'] for row in _localized_variant_displays(
+            localized_variants, expected_models=[row['model_sku'] for row in frozen['skus']])}
     base_images = list(frozen["product"]["images"])
     if len(base_images) != len(target_images):
         raise TikTokV4ExecutionContractError(
@@ -445,7 +451,8 @@ def _target_command(
             "variant_key": frozen_sku["variant_key"],
             "seller_sku": frozen_sku["seller_sku"],
             "model_sku": frozen_sku["model_sku"],
-            "specification": deepcopy(frozen_sku["specification"]),
+            "specification": ({"option": localized_by_model[frozen_sku["model_sku"]]}
+                if localized_by_model is not None else deepcopy(frozen_sku["specification"])),
             "price": price["amount"],
             "currency": price["currency"],
             "parcel": deepcopy(frozen_sku["parcel"]),
@@ -1066,11 +1073,17 @@ def _readback_fact(
             )
         for row in rows:
             identity = row.get("identity")
+            shop_binding=row.get('shop_binding')
+            official_shop_bound=(isinstance(shop_binding,Mapping)
+                and shop_binding.get('schema_version')=='official-tiktok-shop-binding/v1'
+                and shop_binding.get('control_shop_id')==control.get('shop_id')
+                and isinstance(identity,Mapping) and shop_binding.get('shop_cipher')==identity.get('shop_key')
+                and all(type(shop_binding.get(k)) is str and shop_binding[k] for k in ('official_shop_id','region','name')))
             if (
                 row.get("target_label") != label
                 or not isinstance(identity, Mapping)
                 or identity.get("platform") != "tiktok"
-                or identity.get("shop_key") != control.get("shop_id")
+                or (identity.get("shop_key") != control.get("shop_id") and not official_shop_bound)
                 or (row.get("model_sku"), row.get("variant_key"))
                 not in frozen_skus
             ):

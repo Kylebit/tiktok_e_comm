@@ -292,6 +292,10 @@ def _publication_fact_body(payload: Mapping[str, Any]) -> dict[str, Any]:
     if selected_variants != variants or set(commercial) != set(variants):
         raise ApprovedPublicationSnapshotError("SKU coverage conflicts")
 
+    if content_by_target is not None:
+        for content in content_by_target.values():
+            if 'variants' in content:
+                _localized_variant_displays(content['variants'], expected_models=models)
     prices_by_model = _prices(
         payload.get("pricing"),
         target_labels=[row["target_label"] for row in targets],
@@ -362,6 +366,11 @@ def _publication_fact_body(payload: Mapping[str, Any]) -> dict[str, Any]:
         product["stock_policy"] = stock_policy
     if ozon_stock_decision is not None:
         product["ozon_stock_decision"] = ozon_stock_decision
+    if product_facts.get('ozon_card_structure') is not None:
+        from shared_platform.publication_ozon_card_structure import validate_structure
+        product['ozon_card_structure'] = validate_structure(product_facts['ozon_card_structure'],
+            offer_id=offer_id, targets=[t['target_label'] for t in targets],
+            models=[s['model_sku'] for s in skus], variant_keys=[s['variant_key'] for s in skus])
     if postpublish_promotion_policy is not None:
         product["postpublish_promotion_policy"] = postpublish_promotion_policy
     if source_conformance is not None:
@@ -526,6 +535,7 @@ def _validate_publication_facts(body: Mapping[str, Any]) -> None:
         "source_conformance",
         "stock_policy",
         "ozon_stock_decision",
+        "ozon_card_structure",
         "postpublish_promotion_policy",
         "verified_claims",
         "warehouse_inventory_by_target",
@@ -580,6 +590,11 @@ def _validate_publication_facts(body: Mapping[str, Any]) -> None:
         targets=targets,
     )
     _target_categories(body.get("categories_by_target"), targets=targets)
+    if product.get('ozon_card_structure') is not None:
+        from shared_platform.publication_ozon_card_structure import validate_structure
+        validate_structure(product['ozon_card_structure'], offer_id=offer_id,
+            targets=target_labels, models=[s['model_sku'] for s in body['skus']],
+            variant_keys=[s['variant_key'] for s in body['skus']])
 
     digests = _mapping(body.get("digests"), "snapshot digests")
     required_digests = {
@@ -595,6 +610,11 @@ def _validate_publication_facts(body: Mapping[str, Any]) -> None:
         raise ApprovedPublicationSnapshotError("snapshot source digest conflicts")
 
     rows = _mapping_list(body.get("skus"), "snapshot skus")
+    frozen_copy = product.get('content_by_target') or {}
+    expected_models = [row.get('model_sku') for row in rows]
+    for content in frozen_copy.values():
+        if 'variants' in content:
+            _localized_variant_displays(content['variants'], expected_models=expected_models)
     if not rows:
         raise ApprovedPublicationSnapshotError("snapshot requires at least one SKU")
     sellers: set[str] = set()
@@ -1250,7 +1270,10 @@ def _target_categories(
                 )
             else:
                 raw_category = _mapping(row.get("category"), f"{label} provider category")
-                if set(raw_category) != {"id", "name", "path"}:
+                allowed = ({"id", "name", "path"},)
+                if platform == "ozon":
+                    allowed += ({"id", "name", "path", "type_id"},)
+                if set(raw_category) not in allowed:
                     raise ApprovedPublicationSnapshotError(
                         f"{label} provider category fields are invalid"
                     )
@@ -1258,6 +1281,11 @@ def _target_categories(
                 category_name = _text(
                     raw_category.get("name"), f"{label} category name"
                 )
+                type_id = None
+                if "type_id" in raw_category:
+                    type_id = _digits(raw_category["type_id"], f"{label} type_id")
+                    if int(type_id) <= 0:
+                        raise ApprovedPublicationSnapshotError(f"{label} type_id must be positive")
                 raw_path = _mapping_list(
                     raw_category.get("path"), f"{label} category path"
                 )
@@ -1285,6 +1313,7 @@ def _target_categories(
                     "id": category_id,
                     "name": category_name,
                     "path": path,
+                    **({"type_id": type_id} if type_id is not None else {}),
                 }
         result[label] = {
             "target_label": target_label,
@@ -1364,7 +1393,7 @@ def publication_images_for_target(
 
 def publication_content_for_target(
     snapshot: Mapping[str, Any], target_label: str
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Return exact frozen title, description and locale for one target.
 
     Older v4 snapshots did not carry per-target content. They remain readable
@@ -1391,13 +1420,33 @@ def publication_content_for_target(
     return dict(normalized[label])
 
 
+def _localized_variant_displays(value, *, expected_models=None):
+    """Exact per-Model-SKU target copy, detached from global specification."""
+    rows = _mapping_list(value, 'localized variant displays')
+    if not rows:
+        raise ApprovedPublicationSnapshotError('localized variant displays are empty')
+    result = []
+    seen = set()
+    for row in rows:
+        if set(row) != {'model_sku','display_name'}:
+            raise ApprovedPublicationSnapshotError('localized variant display fields are invalid')
+        model = _digits(row['model_sku'], 'localized variant Model SKU')
+        if model in seen:
+            raise ApprovedPublicationSnapshotError('localized variant Model SKU is ambiguous')
+        seen.add(model)
+        result.append({'model_sku':model,'display_name':_text(row['display_name'], 'localized variant display')})
+    if expected_models is not None and seen != set(expected_models):
+        raise ApprovedPublicationSnapshotError('localized variant Model SKU coverage drifted')
+    return result
+
+
 def _target_content(
     value: object,
     *,
     targets: list[dict[str, str]],
     base_title: str,
     base_description: str,
-) -> dict[str, dict[str, str]] | None:
+) -> dict[str, dict[str, Any]] | None:
     if value is None:
         return None
     rows = _mapping(value, "content_by_target")
@@ -1406,10 +1455,10 @@ def _target_content(
         raise ApprovedPublicationSnapshotError(
             "localized content target coverage drifted"
         )
-    normalized: dict[str, dict[str, str]] = {}
+    normalized: dict[str, dict[str, Any]] = {}
     for label in sorted(expected):
         row = _mapping(rows[label], f"{label} localized content")
-        if set(row) != {"locale", "title", "description"}:
+        if set(row) not in ({"locale", "title", "description"}, {"locale", "title", "description", "variants"}):
             raise ApprovedPublicationSnapshotError(
                 f"{label} localized content fields are invalid"
             )
@@ -1420,6 +1469,8 @@ def _target_content(
                 row.get("description"), f"{label} content description"
             ),
         }
+        if 'variants' in row:
+            normalized[label]['variants'] = _localized_variant_displays(row['variants'])
     return normalized
 
 

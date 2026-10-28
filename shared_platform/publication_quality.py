@@ -201,15 +201,31 @@ def evaluate_publication_quality(
     checks: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     if family is None:
+        # No category pack means a seven-image fallback, not an image-QA opt-out.
+        # Durable artifact/role checks are separately bound to canonical R2.
+        from shared_platform.publication_gallery_contract import DEFAULT_MINIMUM
+        for target in snapshot.get('publication_targets') or []:
+            label = str(target.get('target_label') or '')
+            if label == 'miaoshou:COMMON':
+                continue  # A retained COMMON receipt is historical, not a new gallery.
+            images = _target_images(snapshot, label)
+            ok = len(images) >= DEFAULT_MINIMUM and len(images) == len(set(images))
+            checks.append({'code': 'IMAGE_SET_COMPLETE', 'status': 'PASSED' if ok else 'FAILED',
+                           'target_label': label, 'observed_count': len(set(images)),
+                           'required_count': DEFAULT_MINIMUM})
+            if not ok:
+                errors.append(_error('IMAGE_SET_INCOMPLETE',
+                    f'{label} 无专用品类图片规则，至少需要 {DEFAULT_MINIMUM} 张不重复合格图。',
+                    stage='IMAGE_QA', target_label=label))
         return {
             "schema_version": QUALITY_SCHEMA,
-            "status": "NOT_APPLICABLE",
+            "status": "FAILED" if errors else "PASSED",
             "product_family": None,
             "rule_pack_version": rules["rule_pack_version"] if rules is not None else None,
             "rule_pack_digest": hashlib.sha256(_canonical_json(rules).encode("utf-8")).hexdigest() if rules is not None else None,
-            "checks": [],
-            "errors": [],
-            "summary": {"passed": 0, "failed": 0, "not_applicable": 1},
+            "checks": checks,
+            "errors": errors,
+            "summary": {"passed": sum(row['status']=='PASSED' for row in checks), "failed": len(errors), "not_applicable": 0},
         }
 
     targets = snapshot.get("publication_targets")

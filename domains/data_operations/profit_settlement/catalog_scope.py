@@ -2,7 +2,7 @@
 
 
 def catalog_scope_issue(metadata, *, platform, shop_id, site, currency,
-                        product_id="", seller_sku="", variant_id="", require_identity=False):
+                        product_id="", seller_sku="", variant_id="", canonical_sku="", require_identity=False):
     identity = metadata.get("identity") or {}
     text = lambda value: str(value).strip() if value is not None else ""
     if not identity:
@@ -15,6 +15,7 @@ def catalog_scope_issue(metadata, *, platform, shop_id, site, currency,
         or product_id and text(product_id) != identity.get("product_id")
         or seller_sku and text(seller_sku) != identity.get("seller_sku")
         or variant_id and text(variant_id) != identity.get("variant_id")
+        or canonical_sku and text(canonical_sku) != metadata.get('canonical_sku')
     ):
         return "catalog_scope_mismatch"
     if require_identity and not all((platform, shop_id, site, currency,

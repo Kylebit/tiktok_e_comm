@@ -47,8 +47,8 @@
    }
   }catch(error){output.textContent='历史记录读取失败，当前执行继续保持暂停。';}
  }
- if(location.pathname==='/knowledge')return;
- fetch('/api/orbit/operations-runtime',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(profile=>{
+ if(location.pathname==='/knowledge'||document.body.dataset.overview==='true')return;
+ fetch('/api/orbit/home/runtime',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(profile=>{
   if(profile?.execution_mode==='web-only'){
    const notice=document.createElement('div');notice.id='orbitMaintenanceNotice';notice.setAttribute('role','status');
    notice.textContent=profile.environment==='preview'

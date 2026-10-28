@@ -430,6 +430,36 @@ def _approved_required_attributes(
             return [{"attribute_id": _WALLPAPER_SEASONAL_ATTRIBUTE_ID,
                      "attribute_value_list": [{"value_id": _WALLPAPER_NON_SEASONAL_VALUE_ID,
                                                "original_value_name": "No"}]}], []
+    if isinstance(decision, Mapping) and decision.get("status") == "EVIDENCE_BOUND":
+        # This is an inert native source receipt, not a human APPROVED flag.
+        # Validate its complete binding before consuming the selected values.
+        fields = {"status", "category", "required_attributes", "source_decision_digest", "decision_digest"}
+        category = decision.get("category")
+        unsigned = {key: value for key, value in decision.items() if key != "decision_digest"}
+        expected = "sha256:" + hashlib.sha256(json.dumps(
+            {"schema_version": "shopee-global-category-decision/v1", **unsigned},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")).hexdigest()
+        if (set(decision) != fields
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(decision.get("source_decision_digest") or ""))
+                or decision.get("decision_digest") != expected
+                or not isinstance(category, Mapping)
+                or not isinstance(command.get("approved_category"), Mapping)
+                or any(category.get(key) != command["approved_category"].get(key) for key in ("id", "name"))
+                or str(category.get("id") or "") != selected_category_id):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee evidence-bound attributes are invalid")
+        from modules.shopee.global_plan_candidate import (
+            _revalidate_attribute_rows, ShopeeGlobalPlanCandidateError,
+        )
+        try:
+            selected = _revalidate_attribute_rows(
+                decision["required_attributes"], attribute_tree=tuple(official_rows),
+            )
+        except (ShopeeGlobalPlanCandidateError, KeyError, TypeError, ValueError) as error:
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee evidence-bound attribute values drifted") from error
+        if {row["attribute_id"] for row in selected} != set(mandatory):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee approved attributes drifted")
+        return deepcopy(selected), []
     if not isinstance(decision, Mapping) or decision.get("status") != "APPROVED":
         return [], [
             {
@@ -542,7 +572,74 @@ def _default_official_fact_reader(
         if candidate["id"] == selected["id"]:
             candidate["required_attributes"] = required
             candidate["missing_required_attributes"] = missing
-    brands = _read_all_brands(transport, int(selected["id"]))
+    # A frozen NoBrand entity needs positive active-category membership,
+    # not a claim that the complete brand catalogue has been enumerated.
+    brand_policy = (command.get("policy") or {}).get("brand")
+    brand_observation = None
+    if (isinstance(brand_policy, Mapping)
+            and brand_policy.get("policy_version") == "shopee-global-fixed-no-brand/v1"):
+        if (type(brand_policy.get("brand_id")) is not int
+                or brand_policy["brand_id"] != 0
+                or brand_policy.get("original_brand_name") != "NoBrand"):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee frozen NoBrand policy is invalid")
+        from modules.shopee.global_plan_candidate import (
+            BRAND_LIST_PATH, _mapping_list, _nonempty_string,
+            _nonnegative_int, _official_get, _positive_int, _response_mapping,
+        )
+        response = _response_mapping(_official_get(transport, BRAND_LIST_PATH, {
+            "category_id": int(selected["id"]), "page_size": 100,
+            "offset": 0, "status": 1, "language": "en",
+        }), "shopee_brand_list_invalid")
+        compact_keys = {"brand_list", "total_count", "has_next_page"}
+        live_keys = {"brand_list", "has_next_page", "next_offset", "is_mandatory", "input_type"}
+        compact = set(response) in (compact_keys, compact_keys | {"next_offset"})
+        live = set(response) == live_keys
+        if (compact == live or type(response["has_next_page"]) is not bool):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee brand metadata is malformed")
+        if live:
+            # Required means the field must be supplied; it does not invalidate
+            # an explicit official NoBrand row returned by this active query.
+            if type(response["is_mandatory"]) is not bool:
+                raise ShopeeGlobalV4LiveRuntimeError("Shopee brand metadata is malformed")
+            _nonempty_string(response["input_type"], "shopee_brand_list_invalid")
+        if response["has_next_page"]:
+            _positive_int(response.get("next_offset"), "shopee_brand_pagination_invalid")
+        page = _mapping_list(response["brand_list"], "shopee_brand_list_invalid")
+        if len(page) > 100:
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee brand page exceeds requested size")
+        seen = {}
+        matches = []
+        for row in page:
+            keys = {"brand_id", "original_brand_name"} | ({"display_brand_name"} if live else set())
+            if set(row) != keys:
+                raise ShopeeGlobalV4LiveRuntimeError("Shopee brand row is malformed")
+            identity = _nonnegative_int(row["brand_id"], "shopee_brand_list_invalid")
+            name = _nonempty_string(row["original_brand_name"], "shopee_brand_list_invalid")
+            display = _nonempty_string(row["display_brand_name"], "shopee_brand_list_invalid") if live else None
+            signature = (name, display)
+            if identity in seen and (not live or seen[identity] != signature):
+                raise ShopeeGlobalV4LiveRuntimeError("Shopee brand identity conflicts")
+            seen[identity] = signature
+            if identity == brand_policy["brand_id"]:
+                matches.append({"brand_id": identity, "original_brand_name": name})
+        if compact:
+            total = _nonnegative_int(response["total_count"], "shopee_brand_list_invalid")
+            if (total < len(seen) or (not response["has_next_page"] and total != len(seen))):
+                raise ShopeeGlobalV4LiveRuntimeError("Shopee brand total is inconsistent")
+        if (len(matches) != 1
+                or matches[0]["original_brand_name"] != brand_policy["original_brand_name"]):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee frozen NoBrand is not uniquely active")
+        brands = tuple(matches)
+        brand_observation = {
+            "selection": "FROZEN_ID_EXACT_NAME_PRESENT_IN_ACTIVE_FIRST_PAGE",
+            "category_id": int(selected["id"]), "status": 1,
+            "offset": 0, "page_size": 100,
+            "has_next_page": response["has_next_page"],
+            "next_offset": response.get("next_offset"),
+            "full_directory_enumerated": False,
+        }
+    else:
+        brands = _read_all_brands(transport, int(selected["id"]))
     no_brand = [
         row
         for row in brands
@@ -569,6 +666,7 @@ def _default_official_fact_reader(
             "location_id": str(warehouses[0]["location_id"]),
             "display_name": str(warehouses[0]["warehouse_name"]),
         },
+        **({"brand_observation": brand_observation} if brand_observation is not None else {}),
     }
 
 

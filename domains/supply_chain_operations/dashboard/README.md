@@ -1,10 +1,14 @@
 # 东南亚四国逐 SKU 备货决策台
 
-这是供应链运营域内的纯本地、只读决策页面。它不会连接雅仓、TikTok、Shopee 或数据库，也不会自动生成采购单。
+这是供应链运营域内的纯本地决策页面。数量与备注只保存到浏览器本地；页面不会连接雅仓、TikTok、Shopee 或数据库，也不会自动生成采购单。
+
+四国汇总以国家为首列，保留主图、两套建议、可编辑计划件数和备注；任一建议达到 10 件即保留，恰好 10 件不会过滤。计划口径明确标为趋势、30日实绩或人工调整，编辑不改变预测。下载按钮输出一张带嵌入主图、独立来源日期和待核状态的可编辑 HTML 表，覆盖四国且不受屏幕筛选影响；文件可继续编辑后再次下载。旧来源上的编辑不会自动套用到新快照，其他页并发改动会阻止覆盖并保留草稿。
+
+采集使用 Skill 的 [显式只读入口](../skills/manage-seaya-replenishment/references/current-entry.md)。D 个人工作区与 E 正式服务的来源不同，独立候选不会自动采用到任一入口。源码内仍是下面明确标注的历史快照；最新读取证据须完整且通过接续验收后另行应用。
 
 正式双台账口径：建议件数只使用有效订单数据与雅仓可用库存/可信在途；节省金额只使用结算数据。结算、escrow 释放和打款时间不得代替订单发生时间计算 7/15/30 天动销。当前静态快照中仍为结算口径的历史销量只能作为旧版参考，在订单快照完成刷新前不得视为正式补货数量。
 
-“资料待补”的具体 SKU 会显示“手动补齐”入口，可填写包装长/宽/高、重量、采购成本及可选来源备注。批次日期统一在 `inbound-batches.html` 确认；一次覆盖完整批次的预计可售日期，并同步影响该批次内全部 SKU，不会改变其他批次。补货主页面只显示批次结果和独立页面入口。两类数据都只写入当前浏览器的 `localStorage`，保存后即时同步，并可随时清除恢复原始快照或系统估算。
+“资料待补”的具体 SKU 会显示“手动补齐”入口，可填写包装长/宽/高、重量、采购成本、明确参数来源及估算依据。未核实参数默认标为估算、待核，不能冒充实测或报价；缺少这些资料仍会计算数量。批次日期统一在 `inbound-batches.html` 确认；一次覆盖完整批次的预计可售日期，并同步影响该批次内全部 SKU，不会改变其他批次。补货主页面只显示批次结果和独立页面入口。两类数据都只写入当前浏览器的 `localStorage`，保存后即时同步，并可随时清除恢复原始快照或系统估算。
 
 批次供给必须满足 `batch_id + seller_sku + quantity + estimated_sellable_date`，且同一 SKU 的全部批次数量之和必须与雅仓聚合在途对平。多批次分摊不完整时，聚合在途暂不进入可用供应；页面仍显示批次和可修改日期，并明确标注待核对数量。单一运输中批次的国家可把该 SKU 聚合在途安全归属于唯一批次。
 
@@ -42,10 +46,10 @@
 在本目录运行：
 
 ```powershell
-C:\Users\Windows11\Desktop\Agent_PR\tiktok_e_comm\.venv\Scripts\python.exe -m http.server 8874
+D:\Users\Windows11\Desktop\Agent_PR\tiktok_e_comm\.venv\Scripts\python.exe -m http.server 0 --bind 127.0.0.1
 ```
 
-然后打开 `http://127.0.0.1:8874/`。
+然后打开启动输出中的独立端口。这是静态私有预览，不启动正式运营服务，也不读取平台凭据。
 
 当前数据截点为 2026-09-02。四国独立快照合计 91 次订单读取：TikTok 有效订单 MY 520、TH 1,610、VN 209、PH 144；Shopee 有效订单 MY 76、TH 815、VN 17、PH 44。取消、未付款、测试、替换和暂停订单不计需求；Shopee 部分取消数量显式扣除，退货数量单独保留。雅仓库存共读取 105 条：MY 31、TH 42、VN 15、PH 17；可用库存分别为 2,011、3,075、523、28 件，占用分别为 5、25、1、0 件，在途分别为 0、1,270、0、510 件，冻结均为 0。两个在途批次均已重新读取全部明细页并精确对账：`THSL4038-60638` 为 11 行 / 8 SKU / 1,270 件，`PHPH4038-59553` 为 13 行 / 11 SKU / 510 件，最新厂商节点仍为 2026-08-31 清关中。头程采用用户批准的统一口径人民币 1 元/件。收益仍使用原结算事实：泰国 Shopee 结算快照没有 SKU 级跨境运费字段，因此该部分节省按 0 计，不伪造收益。
 
@@ -64,11 +68,27 @@ Country-isolation hardening:
 
 Four-country summary:
 
-- The `四国汇总 >10` tab calculates MY, TH, VN, and PH independently, then places only rows with `recommended > 10` into one table.
-- The threshold is strict: a recommendation of exactly 10 units is excluded.
+- The `四国汇总 ≥10` tab calculates MY, TH, VN, and PH independently, then places rows with either scenario recommendation `>= 10` into one table.
+- The threshold is inclusive: retain a row when either independent scenario is at least 10 units, including exactly 10.
 - The active-inbound headline counts every fully reconciled batch in the source plan, independently of this row threshold; any batch, country or inventory total mismatch shows a pending reconciliation state instead of a partial amount. It describes the source snapshot, not current live stock.
 - Every summary row retains its country badge, main image, SKU, demand, local inventory, arrival calculation, recommendation type, quantity, and benefit evidence.
 - The same SKU may appear once per country because no demand or inventory is netted across borders.
+
+## Original Orbit integration
+
+The operational display remains the existing `/supply-chain/` route in
+`modules/products/server.py`, with this dashboard as its consumer. Prepare and
+admit the original `data.js` / `inbound-plan.js` pair through the existing
+captured or audited store. A standalone exported HTML is a decision attachment;
+it does not replace that route or prove adoption by the running formal service.
+Do not create a substitute frontend or overwrite its frozen admitted generation.
+
+When auditing a running formal service, a plain HTML read must not execute the
+shared shell: the shell requests `/api/orbit/operations-runtime`, whose stable
+handler calls `engine.dashboard()` and expires leases. Use targeted static
+response reads or the original Handler in an isolated fixture instead. Keep
+production deployment, personal Skill adoption and complete business acceptance
+separate from code and browser tests.
 
 ## Batch confirmation and evidence
 

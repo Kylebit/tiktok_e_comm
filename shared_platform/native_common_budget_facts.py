@@ -12,6 +12,7 @@ import json
 import sqlite3
 
 from shared_platform.round1_category_evidence import digest
+from shared_platform.manual_common_creation import common_detail_id
 
 SCHEMA = 'native-common-preparation-source/v1'
 COMMON = 'miaoshou:COMMON'
@@ -81,7 +82,27 @@ def read_preparation_source(store, documents, state):
             or type(reference) is not str or not reference):
         raise ValueError('COMMON_NATIVE_PREPARATION_SOURCE_UNAVAILABLE')
     r1 = documents['round1_snapshot']
-    if rounds.validate_round2_input(r1['offer_id'], state) != r1:
+    from shared_platform.original_prepared_continuation import (
+        OriginalPreparedTaskContinuation, configured_original_continuation,
+    )
+    reports_root = None
+    continuation = configured_original_continuation(r1['offer_id'])
+    if continuation is not None:
+        from shared_platform.publication_r3_image_bridge import R2_DOCUMENTS, validate_r2_identity
+        if (type(continuation) is not OriginalPreparedTaskContinuation
+                or store.path.resolve() != continuation.release_store.path.resolve()):
+            raise ValueError('COMMON_ORIGINAL_PREPARATION_BINDING_CHANGED')
+        reports_root = continuation.r2_profile.root / 'reports/product-preparation'
+        expected = {reports_root / r1['offer_id'] / name for name in R2_DOCUMENTS.values()}
+        refs = continuation.pins.documents
+        if len(refs) != len(R2_DOCUMENTS) or {ref.path.resolve() for ref in refs} != expected:
+            raise ValueError('COMMON_ORIGINAL_EXACT_R2_DOCUMENTS_REQUIRED')
+        pinned = {key: json.loads(next(ref for ref in refs if ref.path.name == name).read(continuation.r2_profile.root))
+                  for key, name in R2_DOCUMENTS.items()}
+        if (pinned != documents
+                or validate_r2_identity(pinned) != json.loads(continuation.pins.r2_identity_json)):
+            raise ValueError('COMMON_ORIGINAL_PREPARATION_DOCUMENTS_CHANGED')
+    if rounds.validate_round2_input(r1['offer_id'], state, reports_root=reports_root) != r1:
         raise ValueError('COMMON_NATIVE_PREPARATION_SNAPSHOT_CHANGED')
     try:
         with store._connect_readonly() as db:
@@ -136,7 +157,7 @@ def validate_preparation_source(store, source):
         raise ValueError('COMMON_NATIVE_PREPARATION_SOURCE_UNAVAILABLE') from error
 
 
-def _locally_checked_readback(record, target, payload):
+def _locally_checked_readback(record, target, payload, db):
     if not record or not record.transport_observation or not record.lineage_bytes:
         return False
     evidence = json.loads(record.evidence_bytes)
@@ -145,7 +166,7 @@ def _locally_checked_readback(record, target, payload):
         and evidence.get('verified') is True and type(checks) is dict
         and _READBACK_CHECKS.issubset(checks) and all(value is True for value in checks.values())
         and evidence.get('offer_id') == payload['product_id']
-        and str(target.get('external_id')) == payload['product_id']
+        and str(target.get('external_id')) == common_detail_id(payload,connection=db)
         and evidence.get('image_count') == len(payload.get('images') or [])
         and json.loads(record.record_bytes).get('verified_at'))
 
@@ -202,7 +223,7 @@ def census_same_snapshot(store, db, payload, source_facts):
             return {**result, 'reason': 'COMMON_LOCAL_CENSUS_LIMIT_EXCEEDED'}
         readback = readbacks.get(run_id)
         evidence = json.loads(readback.evidence_bytes) if readback else None
-        native = _locally_checked_readback(readback, target, plans[runs[run_id]['plan_id']])
+        native = _locally_checked_readback(readback, target, plans[runs[run_id]['plan_id']], db)
         current_confirmed = bool(native and target['status'] == 'SUCCEEDED'
             and evidence.get('mode') != 'readback_reuse_no_write'
             and evidence.get('external_writes_performed') == ['miaoshou:COMMON:immutable_plan_write'])
@@ -226,11 +247,11 @@ def census_same_snapshot(store, db, payload, source_facts):
             old_plan = plans.get(old_run.get('plan_id')) or {}
             old_target = targets.get(predecessor.get('run_id')) or {}
             old_readback = readbacks.get(predecessor.get('run_id'))
-            current_reuse = bool(_locally_checked_readback(old_readback, old_target, old_plan)
+            current_reuse = bool(_locally_checked_readback(old_readback, old_target, old_plan, db)
                 and old_run.get('plan_id') == predecessor.get('plan_id')
                 and old_plan.get('product_id') == source['offer_id']
                 and old_target.get('status') == predecessor.get('common_status') == 'SUCCEEDED'
-                and str(old_target.get('external_id')) == str(predecessor.get('common_external_id')) == source['offer_id']
+                and str(old_target.get('external_id')) == str(predecessor.get('common_external_id')) == common_detail_id(old_plan,connection=db)
                 and old_readback.evidence_digest == predecessor.get('common_readback_evidence_digest')
                 and json.loads(old_readback.record_bytes)['verified_at'] == predecessor.get('common_readback_verified_at')
                 and json.loads(next(record.record_bytes for record in records

@@ -94,15 +94,29 @@ def _publication_operation_id(plan_id, target_labels, retry_attempt=None, recove
 
 
 def begin_publication(plan, target_labels, root, *, retry_attempt=None, recovery_continuation=None):
-    engine = engine_for(root)
+    from shared_platform.prepared_target_consumer import configured_target_consumer
+    consumer = configured_target_consumer(plan.get('product_id'))
+    if consumer is not None:
+        if Path(root).resolve() != consumer.service_root:
+            raise ValueError('PREPARED_TARGET_SERVICE_ROOT_CHANGED')
+        engine = consumer.engine
+    else:
+        engine = engine_for(root)
     if engine is None:
         return None
+    engine.assert_publication_scope_consumable(plan.get('product_id'), payload=plan.get('payload'), target_labels=target_labels)
     from shared_platform.internal_catalog_sku import internal_sku
     sku = internal_sku(plan.get('seller_sku'))
     if not sku.isdigit() or len(sku) != 4:
         raise ValueError('publication coordination needs authoritative internal SKU')
     operation = _publication_operation_id(plan['plan_id'], target_labels, retry_attempt, recovery_continuation)
-    owners = [t['task_id'] for t in engine.dashboard()['tasks'] if t['template'] == 'publication' and t['scope'].get('offer_id') == str(plan.get('product_id')) and t['scope'].get('skus') == [sku] and set(t['scope'].get('shops', [])) == set(plan.get('targets', [])) and t['execution_state'] not in {'completed', 'cancelled'}]
+    if consumer is not None:
+        # Preserve the original 15-shop task; the exact durable cancellation
+        # controls its 14-shop dispatch. Never manufacture an unowned operation
+        # because the historical scope differs from the retained target set.
+        owners = [consumer.pins.task_id]
+    else:
+        owners = [t['task_id'] for t in engine.dashboard()['tasks'] if t['template'] == 'publication' and t['scope'].get('offer_id') == str(plan.get('product_id')) and t['scope'].get('skus') == [sku] and set(t['scope'].get('shops', [])) == set(plan.get('targets', [])) and t['execution_state'] not in {'completed', 'cancelled'}]
     if len(owners) > 1:
         raise ValueError('multiple publication tasks own the same frozen scope')
     result = engine.begin_domain_operation(operation, skus=[sku], shops=list(target_labels), owner_task_id=owners[0] if owners else None)
@@ -434,16 +448,26 @@ def finish_known_zero_shopee_recovery(
 
 
 def begin_common(plan, root):
-    engine = engine_for(root)
+    from shared_platform.prepared_target_consumer import configured_target_consumer
+    consumer = configured_target_consumer(plan.get('product_id'))
+    if consumer is not None:
+        if Path(root).resolve() != consumer.service_root:
+            raise ValueError('PREPARED_TARGET_SERVICE_ROOT_CHANGED')
+        engine = consumer.engine
+    else:
+        engine = engine_for(root)
     if engine is None:return None
     from shared_platform.internal_catalog_sku import internal_sku
     payload=plan.get('payload') or {}
+    engine.assert_publication_scope_consumable(plan.get('product_id'), payload=payload, target_labels=['miaoshou:COMMON'])
     sku=internal_sku(payload.get('seller_sku'))
     stage=payload.get('r3_stage_binding') or {}
     shops=[s for s in stage.get('marketplace_targets',[]) if s!='miaoshou:COMMON']
+    if consumer is not None:
+        shops=consumer.read_effective_scope(plan.get('product_id'))['shops']
     if len(sku)!=4 or not sku.isdigit() or not shops or plan.get('targets')!=['miaoshou:COMMON']:
         raise ValueError('COMMON coordination requires exact frozen SKU and marketplace scope')
-    owners=[t for t in engine.dashboard()['tasks'] if t['template']=='publication'
+    owners=[{'task_id':consumer.pins.task_id}] if consumer is not None else [t for t in engine.dashboard()['tasks'] if t['template']=='publication'
             and t['scope'].get('offer_id')==str(plan.get('product_id'))
             and t['scope'].get('skus')==[sku]
             and {s for s in t['scope'].get('shops',[]) if s!='miaoshou:COMMON'}==set(shops)

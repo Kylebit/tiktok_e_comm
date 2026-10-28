@@ -53,10 +53,26 @@ def build_brand_image_prompt(
         "four_piece_layout": "Create a square language-neutral quantity layout showing exactly four separate matching pieces of the supplied product. Preserve the exact verified design and product form. Do not show dimensions, SKU IDs, extra pieces, packaging, adhesive backing, prose or unverified claims.",
         "washable_reusable_use": "Create a square practical care-and-reuse scene showing one supplied product being gently rinsed with clean water and prepared for reuse. Use this role only when washable and reusable are verified in the reviewed brief. Preserve the exact product form and design; do not add detergent, tools, text, badges, adhesive backing or unverified performance claims.",
         "installation": "Create a square English master preparation card with five concise labels only: Measure, Plan, Mark, Cut, Align. Do not depict or claim adhesive backing, peeling, waterproofing, removability, or installation ease.",
+        "refrigerator_cover_daisy": "Create a square ecommerce cover showing only the selected Daisy refrigerator-top cover on an unbranded refrigerator. Show its complete top-to-side drape and visible hanging pocket section in a clear three-quarter view. Preserve the exact supplied daisy print; do not substitute the Feather or Starry Sky option.",
+        "refrigerator_cover_feather": "Create a square single-variant view of the selected Feather refrigerator-top cover. Use a near-side camera view distinct from the Daisy cover, retaining the exact feather print, complete visible hanging panel and white edge binding. Do not substitute another pattern.",
+        "refrigerator_cover_starry_sky": "Create a square single-variant view of the selected Starry Sky refrigerator-top cover in a quiet kitchen corner. Preserve its exact supplied planets and stars, palette, spacing and hanging pocket construction. Do not substitute another pattern.",
+        "refrigerator_pocket_detail": "Create a square close view of the selected refrigerator-cover pocket panel, showing a few small wooden kitchen utensils as example staging only. Preserve the source-visible pocket seams, white trim, opening and pattern alignment. Do not imply the utensils are included or invent a pocket count.",
+        "refrigerator_top_drape_construction": "Create a square higher-angle construction view of the selected refrigerator cover showing its continuous top-to-side drape, visible panel proportions and white edge binding. Use source-supported proportions without dimension lines, numeric measurements or installation hardware.",
+        "refrigerator_kitchen_scene": "Create a square wider kitchen scene with the selected refrigerator-top cover clearly visible on an unbranded refrigerator. Use a composition distinct from the variant and detail views. Preserve the supplied silhouette and print; do not imply universal fit or invent mounting parts.",
+        "refrigerator_pattern_alternatives": "Create a square comparison with three clearly separated, equally scaled views of the supplied Daisy, Feather and Starry Sky refrigerator covers. They are separately selectable alternatives, not a three-piece set. Do not join their fabrics, combine prints on one item or imply three items are supplied together.",
+        "refrigerator_empty_pocket_finish": "Create a square close view of the selected refrigerator cover's empty pocket opening and white trim. Preserve only source-visible seams and fabric appearance; do not invent microscopic weave, material fibers or extra layers. Keep it visually distinct from the loaded-pocket example.",
     }
     instruction = role_rules.get(resolved_role)
     if not instruction:
         raise ValueError(f"unsupported brand image role: {role}")
+    if resolved_role.startswith("refrigerator_"):
+        instruction += (
+            " No added text, labels, logos, badges or dimensions. Preserve intrinsic printed lettering "
+            "such as Daisy or STAR exactly where it belongs in the supplied product pattern; "
+            "it is physical artwork, not explanatory copy to remove or translate. "
+            "Remove third-party appliance branding and energy stickers without changing the cover. "
+            "Do not invent waterproof, heat-resistant, non-slip, washable or fiber-composition claims."
+        )
     if is_wall_sticker:
         instruction = {
             "cover": "Create a square ecommerce cover showing the exact wall sticker already installed in a styled real room. The installed sticker is the visual hero and occupies about 45-60% of the frame. Show enough furniture for scale, but never show a wallpaper roll, loose printed sheet, packaging, flat lay, white-background packshot, text, badge or watermark.",

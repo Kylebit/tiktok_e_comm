@@ -1357,8 +1357,11 @@ def _immutable_miaoshou_common_draft(payload: dict[str, Any]) -> dict[str, Any]:
         or not all(url.startswith("https://") for url in [*images, *videos])
     ):
         raise RuntimeError("immutable COMMON release facts are incomplete")
+    from shared_platform.manual_common_creation import common_detail_id
+    from shared_platform.native_common_colormap_correction import dto
     return {
-        "commonCollectBoxDetailId": int(payload["product_id"]),
+        **dto(payload),
+        "commonCollectBoxDetailId": int(common_detail_id(payload)),
         "title": title,
         "itemNum": seller_sku,
         "weight": float(facts.get("weight_kg") or 0),
@@ -1397,14 +1400,21 @@ def _r3_common_official_identity_matches(payload: dict[str, Any], detail: dict[s
     Some legacy responses omit these fields. The request remains bound to the
     approved COMMON ID; an absent field is not invented as a provider fact.
     """
+    from shared_platform.manual_common_creation import common_detail_id
+    provider_id=common_detail_id(payload)
     expected = {
-        "commonCollectBoxDetailId": str(payload['product_id']),
-        "commonCollectBoxId": str(payload['product_id']),
-        "id": str(payload['product_id']),
+        "commonCollectBoxDetailId": provider_id,
+        "commonCollectBoxId": provider_id,
+        "id": provider_id,
         "sourceOfferId": str(payload['product_facts']['source_offer_id']),
         "offerId": str(payload['product_facts']['source_offer_id']),
         "sourceProductId": str(payload['product_facts']['source_offer_id']),
     }
+    if (payload.get('r3_stage_binding') or {}).get('manual_common_binding'):
+        # Manual intake has no invented supplier sourceItemId. Its immutable
+        # native CREATE record plus exact returned provider ID owns this join.
+        expected={k:v for k,v in expected.items() if k not in {'sourceOfferId','offerId','sourceProductId'}}
+        expected['itemNum']=str(payload['seller_sku'])
     return all(key not in detail or str(detail[key]) == value for key, value in expected.items())
 
 
@@ -1440,11 +1450,13 @@ def readback_miaoshou_common(
 ) -> dict[str, Any]:
     """Read and compare COMMON without editing Miaoshou or local state."""
 
+    from shared_platform.manual_common_creation import common_detail_id
+    provider_id=common_detail_id(payload)
     if observation_reader is not None:
         from modules.miaoshou.client import NativeCommonDetailObserver, CommonDetailObservation
         if type(observation_reader) is not NativeCommonDetailObserver or post is not None:
             raise ValueError('COMMON_SERVICE_OBSERVATION_READER_REQUIRED')
-        observation = observation_reader.observe(payload['product_id'])
+        observation = observation_reader.observe(provider_id)
         if type(observation) is not CommonDetailObservation:
             raise ValueError('COMMON_SERVICE_OBSERVATION_REQUIRED')
         post = lambda path, body: observation.response()
@@ -1457,7 +1469,7 @@ def readback_miaoshou_common(
     expected = _immutable_miaoshou_common_draft(payload)
     response = post(
         MIAOSHOU_COMMON_DETAIL_PATH,
-        {"commonCollectBoxDetailId": int(payload["product_id"])},
+        {"commonCollectBoxDetailId": int(provider_id)},
     )
     if response.get("result") != "success":
         raise RuntimeError(
@@ -1505,7 +1517,7 @@ def readback_miaoshou_common(
         or detail.get("commonCollectBoxId")
         or detail.get("id")
     )
-    expected_detail_id = int(payload["product_id"])
+    expected_detail_id = int(provider_id)
     actual_source_offer_id = (
         detail.get("sourceOfferId")
         or detail.get("offerId")
@@ -1561,6 +1573,9 @@ def readback_miaoshou_common(
             or str(response_detail_id) == str(expected_detail_id)
         ),
     }
+    if 'colorMap' in expected:
+        checks['color_map'] = detail.get('colorMap') == expected['colorMap']
+        checks['color_prop_name'] = detail.get('colorPropName') == expected['colorPropName']
     frozen_numbers = _r3_common_frozen_sku_numbers(payload)
     if frozen_numbers is not None:
         checks['selected_sku_numbers'] = (
@@ -1647,6 +1662,9 @@ def readback_miaoshou_common(
             "actual": response_detail_id if response_detail_id is not None else expected_detail_id,
         },
     }
+    if 'colorMap' in expected:
+        comparison['color_map']={'expected':expected['colorMap'],'actual':detail.get('colorMap')}
+        comparison['color_prop_name']={'expected':expected['colorPropName'],'actual':detail.get('colorPropName')}
     field_diffs = {
         field: comparison[field]
         for field, passed in checks.items()
@@ -1669,6 +1687,7 @@ def readback_miaoshou_common(
         "verified": all(checks.values()),
         "mode": "readback_reuse_no_write",
         "offer_id": str(payload["product_id"]),
+        **({'common_detail_id':provider_id} if (payload.get('r3_stage_binding') or {}).get('manual_common_binding') else {}),
         "checks": checks,
         "field_diffs": field_diffs,
         "_comparison": comparison,
@@ -1698,7 +1717,7 @@ def bind_native_common_readback(source: dict[str, Any], evidence: dict[str, Any]
             raise ValueError('COMMON_OBSERVATION_SOURCE_REQUIRED')
         return dict(evidence)
     from modules.miaoshou.client import validate_common_observation_receipt
-    validate_common_observation_receipt(packet, detail_id=source.get('offer_id'))
+    validate_common_observation_receipt(packet, detail_id=source.get('common_detail_id') or source.get('offer_id'))
     original = {k:v for k,v in source.items()
                 if k not in ('native_common_observation', 'stored_common_lineage')}
     if packet.get('comparison_sha256') != _miaoshou_value_digest(original):
@@ -1727,6 +1746,9 @@ def _build_immutable_common_edit(payload, current):
         if isinstance(current.get("skuMap"), dict)
         else {}
     )
+    if not current_sku_map and (payload.get('r3_stage_binding') or {}).get('manual_common_binding'):
+        from shared_platform.manual_common_creation import new_common_variant_rows
+        current_sku_map = new_common_variant_rows(payload,current) or {}
     selected_sku_keys = {
         str(value).strip(";")
         for value in (draft.get("selectedSkuKeys") or ())
@@ -1800,6 +1822,9 @@ def _build_immutable_common_edit(payload, current):
     ):
         updated[field] = draft[field]
     updated["skuMap"] = updated_skus
+    if 'colorMap' in draft:
+        updated['colorPropName']=draft['colorPropName']
+        updated['colorMap']=draft['colorMap']
     workbench._filter_miaoshou_variant_maps(updated, updated_skus)  # noqa: SLF001
     return updated
 

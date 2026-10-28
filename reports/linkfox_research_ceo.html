@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LinkFox 深度调研 与 &quot;迷你 LinkFox&quot; 自建方案（肉肉 / CEO 视角）</title>
+<style>
+  :root {
+    --bg: #f4f7fb;
+    --card: #ffffff;
+    --ink: #0f172a;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --accent: #0f766e;
+    --accent-soft: #ccfbf1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 500px at 10% -10%, #dbeafe 0%, transparent 55%),
+      radial-gradient(900px 400px at 100% 0%, #ccfbf1 0%, transparent 50%),
+      var(--bg);
+    line-height: 1.7;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 32px 20px 64px; }
+  .hero {
+    background: linear-gradient(135deg, #0f766e 0%, #1d4ed8 100%);
+    color: #fff;
+    border-radius: 18px;
+    padding: 28px;
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+    margin-bottom: 20px;
+  }
+  .hero h1 { margin: 0 0 10px; font-size: 27px; line-height: 1.35; }
+  .hero .sub { opacity: 0.92; font-size: 14px; }
+  .badge {
+    display: inline-block;
+    background: rgba(255,255,255,0.18);
+    border: 1px solid rgba(255,255,255,0.28);
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 22px;
+    margin: 14px 0;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  }
+  .toc-title { font-weight: 700; margin-bottom: 8px; color: var(--accent); }
+  .toc ol { margin: 0; padding-left: 20px; }
+  .toc a { color: #1e293b; text-decoration: none; }
+  .toc a:hover { color: var(--accent); text-decoration: underline; }
+  h1 { font-size: 26px; }
+  h2 {
+    margin: 28px 0 12px;
+    font-size: 21px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--accent-soft);
+    scroll-margin-top: 16px;
+  }
+  h3 { margin: 18px 0 8px; font-size: 16px; color: #334155; }
+  h4 { margin: 14px 0 6px; font-size: 14px; color: #475569; }
+  p { margin: 8px 0; }
+  blockquote {
+    margin: 10px 0;
+    padding: 10px 16px;
+    border-left: 4px solid var(--accent);
+    background: #f0fdfa;
+    border-radius: 0 10px 10px 0;
+    color: #134e4a;
+  }
+  blockquote p { margin: 4px 0; }
+  ul, ol { margin: 8px 0 8px 20px; }
+  li { margin: 4px 0; }
+  code {
+    font-family: Consolas, "Courier New", monospace;
+    background: #f1f5f9;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 14px 16px;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; }
+  a { color: #1d4ed8; }
+  .table-wrap { overflow-x: auto; margin: 10px 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f8fafc; color: #334155; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 22px 0; }
+  .foot { margin-top: 28px; color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="badge">Orbit Hive · 三方调研（CEO 总控视角）</div>
+      <h1>LinkFox 深度调研 与 &quot;迷你 LinkFox&quot; 自建方案（肉肉 / CEO 视角）</h1>
+      <div class="sub">全面调研 LinkFox AI：商品图功能 / Skills 体系 / 自建平替方案 · 2026-07-22 · HTML 交付</div>
+    </header>
+    <nav class="toc card"><div class="toc-title">目录</div><ol><li><a href="#sec1">0. 一句话结论</a></li><li><a href="#sec2">1. LinkFox 是什么（产品定位）</a></li><li><a href="#sec3">2. 商品图生成功能全貌（你最关心的部分）</a></li><li><a href="#sec4">3. 内置 Skills / 工作流 / 自动化（Topic 2 核心）</a></li><li><a href="#sec5">4. 定价与成本</a></li><li><a href="#sec6">5. 自建&quot;迷你 LinkFox&quot;技术方案（MVP）</a></li><li><a href="#sec7">6. 风险与合规</a></li><li><a href="#sec8">7. 需 Boss 拍板（决定下一步怎么建）</a></li></ol></nav>
+    <article class="card">
+['<h1>LinkFox 深度调研 与 &quot;迷你 LinkFox&quot; 自建方案（肉肉 / CEO 视角）</h1>', '<blockquote><p>调研时间：2026-07-22</p><p>调研方法：WebSearch + WebFetch 直抓 linkfox.com / ai.linkfox.com / GitHub / ClawHub / 第三方测评（trade-wind、airukou、chooseai、csdn 等）。本机 <code>linkfox.com</code> 直连被网络限制，但 WebFetch/搜索商通道可正常取回官网内容，故功能描述均有据。</p><p>本文件为三方调研中&quot;肉肉（CEO）&quot;的那一份；另两份由 Orbit Codex（商品图功能）、Orbit Cursor（skill 与自建架构）产出，最终由 CEO 汇总。</p></blockquote>', '<hr/>', '<h2 id="sec1">0. 一句话结论</h2>', '<p>LinkFox 本质是一个<strong>&quot;跨境电商 AI Agent OS&quot;</strong>：以&quot;作图&amp;视频 / Agent / Skills / Claw&quot;四大引擎覆盖选品→作图→上架→运营全链路。你最看重的&quot;商品套图/服装模特&quot;属于<strong>作图&amp;视频引擎</strong>，技术上完全可以用 <strong>ComfyUI + SDXL + IP-Adapter + ControlNet + OOTDiffusion/InstantID</strong> 在本地（你这台 RTX 4060 就能跑）复刻 80% 以上能力，单张边际成本从 LinkFox 的 ~1 元降到近乎 0。真正的壁垒在它的 <strong>190 个 API 技能（数据源）</strong> 和 <strong>Claw 对话式任务编排</strong>，这部分可选择性复用其开放 skill 或用自己的数据通道替代。</p>', '<hr/>', '<h2 id="sec2">1. LinkFox 是什么（产品定位）</h2>', '<ul><li>官网：https://linkfox.com/ 、https://www.linkfox.com/ 、https://ai.linkfox.com/</li><li>定位：<strong>跨境电商 AI 运营助手 / AI Agent OS</strong>，从 0 到 1 覆盖运营全链路。</li><li>四大 AI 引擎（2026 发布会口径）：</li></ul>', '<ol><li><strong>作图&amp;视频</strong>：多场景套图 / AI 模特 / 商品视频</li><li><strong>Agent</strong>：智能选品 / 竞品拆解 / 自动化报告</li><li><strong>Skills</strong>：精选跨境技能（选品/数据/营销/生图/视频），见第 3 节</li><li><strong>Claw（跨境 OpenClaw）</strong>：对话即执行，深度集成 Skill，复杂任务自动协同</li></ol>', '<ul><li>六大核心模块：选品洞察、竞品分析、快速上架、文案优化、自动化运营、广告优化。</li><li>形态：Web 端 + 浏览器插件（Chrome 插件，任意网页以图生图/抠图/优化 Listing）+ 开发者 API。<strong>无手机 App</strong>（缺点之一）。</li></ul>', '<hr/>', '<h2 id="sec3">2. 商品图生成功能全貌（你最关心的部分）</h2>', '<blockquote><p>数据来源：linkfox.com 官网、ai.linkfox.com 活动/落地页、airukou/chooseai/trade-wind 第三方测评。</p></blockquote>', '<div class="table-wrap"><table><tr><th>功能</th><th>输入</th><th>输出</th><th>适配平台</th><th>技术要点</th></tr><tr><td><strong>商品套图</strong></td><td>一张白底图 / 商品图</td><td>A+图、卖点图、场景图、特写图（电商全场景）</td><td>Amazon / Shopify / TikTok / Temu 等</td><td>文生图+图生图，预设电商模板</td></tr><tr><td><strong>服装套图 / AI 模特</strong></td><td>服装图（人台/平铺）</td><td>AI 模特上身图、多姿势/多背景/多风格</td><td>服装类目全平台</td><td>虚拟试穿 + 人脸/姿态一致（见 2.1）</td></tr><tr><td><strong>智能修图</strong></td><td>商品图</td><td>精修图（更强一致性+语义理解）</td><td>通用</td><td>非破坏性编辑，保持商品外形不变形</td></tr><tr><td><strong>场景裂变</strong></td><td>一张场景参考图</td><td>3 秒裂变多张相似场景图</td><td>通用</td><td>img2img + 风格保持，快速扩量</td></tr><tr><td><strong>相似图裂变</strong></td><td>参考图</td><td>风格复刻/相似创意图</td><td>通用</td><td>避免侵权前提下借鉴爆款</td></tr><tr><td><strong>AI 自由绘图</strong></td><td>文字描述</td><td>创意图/海报</td><td>通用</td><td>咒语反推、多图融合</td></tr><tr><td><strong>精细抠图</strong></td><td>任意图</td><td>无毛边/无白边 PNG</td><td>通用</td><td>一键自动抠图（SAM 类）</td></tr><tr><td><strong>AI 商品图替换</strong></td><td>参考图 + 商品图</td><td>自动替换合成图</td><td>通用</td><td>参考构图 + 商品植入</td></tr><tr><td><strong>视频复刻 / 视频制作</strong></td><td>静态图或描述</td><td>商品短视频/广告视频</td><td>广告/社媒</td><td>图生视频，参考爆款复刻</td></tr><tr><td><strong>AI 文案生成</strong></td><td>商品信息</td><td>多语言 Listing 标题/五点（GPT-4 级）</td><td>全平台</td><td>嵌入作图流程，图文一体</td></tr></table></div>', '<h3>2.1 &quot;AI 模特换装 / 不变形&quot;的技术原理（关键差异化）</h3>', '<p>LinkFox 相对 Midjourney 的核心卖点是<strong>&quot;非破坏性、保持商品外形不变&quot;</strong>。从开源同类方案反推其技术栈：</p>', '<ul><li><strong>人物/服装分割</strong>：SAM（Segment Anything）或 RMBG 自动抠出模特与服装区域，生成 mask。</li><li><strong>姿态锁定</strong>：ControlNet（OpenPose / Canny 边缘）把人体姿态、轮廓固定，避免生成时变形。</li><li><strong>局部重绘（inpainting）</strong>：仅在服装 mask 区域做扩散生成，其余区域保留原图（这是&quot;不变形&quot;的关键）。</li><li><strong>服装纹理迁移</strong>：风格模型（CNN/CLIP 视觉编码器）提取参考服装的颜色/纹理，注入去噪 UNet。</li><li><strong>人脸一致</strong>：InsightFace + <strong>PuLID / InstantID</strong> 锁定&quot;同一张脸&quot;，实现多姿势模特图。</li><li><strong>服装虚拟试穿专用模型</strong>：<strong>OOTDiffusion</strong>（专做 garment-to-model 试穿）是开源最优解。</li><li>推理速度参考：RTX4090 上 SDXL 1024² 约 <strong>1.8 秒/张</strong>（CSDN 实测）；本机 RTX 4060（8GB）约 5–15 秒/张，完全可用。</li></ul>', '<h3>2.2 已知短板（也是自建可碾压的点）</h3>', '<ul><li>仅 Web 端，无 App。</li><li>复杂<strong>透明/玻璃制品</strong>边缘光影仍有优化空间（LinkFox 自己也被指出）。</li><li>免费 AI 作图仅试用 5 次（chooseai）；付费才批量/高清/去水印/API。</li><li>场景模板不算特别全，细节偶有瑕疵。</li></ul>', '<hr/>', '<h2 id="sec4">3. 内置 Skills / 工作流 / 自动化（Topic 2 核心）</h2>', '<h3>3.1 开放技能集 linkfox-skills（重点！）</h3>', '<ul><li>GitHub：https://github.com/linkfox-ai/linkfox-skills</li><li><strong>文档称 118 个 API 驱动 skill，最新提交已更新到 190 个</strong>（2026-07-13 commit: &quot;update 190 skills&quot;）。</li><li>基于 <strong>Agent Skills 开放标准</strong>，一行命令安装：</li></ul>', '<p>  ```</p>', '<p>  npx skills add linkfox-ai/linkfox-skills            # 全部</p>', '<p>  npx skills add linkfox-ai/linkfox-skills --agent cursor   # 指定装到 Cursor</p>', '<p>  ```</p>', '<ul><li><strong>兼容平台</strong>：Claude Code、OpenClaw、Cursor、GitHub Copilot、VS Code Copilot、Gemini CLI、OpenHands 等 30+。</li><li><strong>需 LinkFox API Key</strong>（<code>LINKFOXAGENT_API_KEY</code>，调用其 Agent API <code>agent-api.linkfox.com</code>）。</li><li>技能分类（覆盖跨境电商全链路）：</li><li>选品/搜索：Amazon、1688、eBay、Walmart、TikTok(EchoTik/FastMoss)、Ozon(Mpstats)、Keepa、Jiimore、JungleScout、SellerSprite、SIF、Sorftime、Shopee(YouYing)、Google Trends</li><li>广告：Amazon Ads 报表、Temu/Shopee 广告</li><li>专利/合规：PatSnap、Eureka、Ruiguan（版权/商标/实用专利检测）</li><li>图文视频：AI Multimodal（图生图/识图 OCR）、AIGC Image/Video Gen</li><li>店铺运营：Temu/Shopify/Etsy 订单、物流、促销</li></ul>', '<h3>3.2 LinkFox Agent / Claw</h3>', '<ul><li><strong>LinkFox Agent</strong>：67→79 个工具（ClawHub 上 linkfoxagent skill），覆盖选品、竞品、评论挖掘、专利、1688 寻源、AI 生图、识图、PDF 分析、实时联网搜索、销量/价格趋势追踪、Amazon 机会报告。</li><li><strong>LinkFox Claw（跨境 OpenClaw）</strong>：对话即执行，把自然语言目标自动拆解成多 skill 协同的复杂任务（如&quot;全网同步上架&quot;自动完成 Amazon→Temu→Walmart 文案适配+图片调整）。即&quot;Agent 编排层&quot;。</li></ul>', '<h3>3.3 工作流 / 自动化</h3>', '<ul><li>三种执行模式：<strong>逐步执行 / 自动执行 / 定时任务</strong>（智选测款 7 步流程可定时跑）。</li><li><strong>浏览器插件</strong>：任意网页以图生图、抠图、优化 Listing、用户画像调研；智能获取页面上下文辅助生成。</li><li><strong>企业能力</strong>：私有模板、企业资料库、资产安全/权限、数据保存 3 年、多人协作。</li></ul>', '<hr/>', '<h2 id="sec5">4. 定价与成本</h2>', '<div class="table-wrap"><table><tr><th>档位</th><th>算力额度（年付示例）</th><th>月费起点</th><th>说明</th></tr><tr><td>免费版</td><td>每月有限免费算力/体验点</td><td>¥0</td><td>AI 作图试用 5 次（chooseai）</td></tr><tr><td>基础版</td><td>年付约 42,000 + 2,000 = 44,000 算力</td><td><strong>¥69/月起</strong></td><td>轻量起步</td></tr><tr><td>高级版</td><td>年付约 252,000 + 23,000 = 275,000 算力</td><td>更高</td><td>专业卖家</td></tr><tr><td>团队版</td><td>432,000 ~ 1,728,000 算力</td><td>按席位</td><td>多人协作 + Agent 试用</td></tr></table></div>', '<ul><li><strong>单张图成本</strong>：你实测约 <strong>1 元/张人民币</strong>（与&quot;基础版月费 69、约 69 张即回本&quot;口径一致；算力也用于视频/其他，故图实际消耗略低于此）。</li><li>免费增值 + 订阅制；企业版支持<strong>批量生图</strong>（chooseai 指出批量功能仅企业版）。</li></ul>', '<h3>4.1 与自建成本对比（核心省钱逻辑）</h3>', '<ul><li><strong>本地（你这台 RTX 4060，已有，0 硬件成本）</strong>：SDXL 出图边际成本≈电费，约 <strong>¥0.001–0.005/张</strong>；即便按 1 万张摊销也远低于 1 元。</li><li><strong>升级本地显卡（RTX 4090 ~¥13k–15k）</strong>：1.8s/张、可上 Flux 高清；按 5 万张摊销 ≈ ¥0.3/张，仍远低于 LinkFox。</li><li><strong>云 GPU（autoDL/Runpod）</strong>：4090 ~¥2–3/时 ≈ 2000 张/时 ⇒ ~¥0.001–0.002/张；4060 云 ~¥1/时 ⇒ ~¥0.005/张。</li><li><strong>结论</strong>：只要月出图量上几百张，自建本地 1–3 个月即回本 LinkFox 年费；量越大省得越多。LinkFox 的价值在&quot;开箱即用 + 190 skill 数据 + Claw 编排&quot;，不在图像生成本身。</li></ul>', '<hr/>', '<h2 id="sec6">5. 自建&quot;迷你 LinkFox&quot;技术方案（MVP）</h2>', '<h3>5.1 硬件（已具备）</h3>', '<ul><li>本机 <strong>NVIDIA RTX 4060 8GB</strong> → 可本地跑 SDXL + 单 ControlNet/IP-Adapter；8GB 偏紧，用 Low VRAM / FP16 优化即可。</li><li>若追求服装模特/Flux 高清，建议升级到 <strong>RTX 4090 24GB</strong>（一次性 ¥13k–15k）或走云 GPU。</li></ul>', '<h3>5.2 图像引擎栈（开源，可平替作图&amp;视频引擎）</h3>', '<ul><li><strong>编排引擎</strong>：<strong>ComfyUI</strong>（节点工作流 + REST API + 可存 JSON 工作流复用），本地部署。</li><li><strong>基础模型</strong>：<strong>SDXL</strong>（8GB 友好）；升级显卡可上 <strong>Flux</strong> 提质感。</li><li><strong>一致性</strong>：<strong>IP-Adapter</strong>（品牌/产品风格一致）+ <strong>ControlNet</strong>（OpenPose 锁姿态、Canny 锁轮廓）。</li><li><strong>AI 模特/换装</strong>：<strong>OOTDiffusion</strong>（服装虚拟试穿）+ <strong>PuLID / InstantID</strong>（锁脸一致）。</li><li><strong>抠图</strong>：<strong>SAM / RMBG</strong> 节点。</li><li><strong>提速</strong>：SDXL-Turbo / LCM 采样；<strong>Qwen-Image</strong> 增强中文语义理解。</li><li><strong>操作员界面</strong>：<strong>Fooocus / Z-Image</strong>（中文开箱、一键出图）作为前台，ComfyUI 在后台当引擎；或自建 Web UI 接入我们的 Orbit 栈。</li><li><strong>场景裂变 / 相似图裂变</strong>：img2img + IP-Adapter + 变体 prompt 自动批量。</li><li>参考落地案例（CSDN）：家居/服饰品牌用 ComfyUI 把&quot;白底图→场景图/模特图&quot;做成 90 秒/款的工业流水线，输出统一品牌调性。</li></ul>', '<h3>5.3 非图像侧（Skills / 数据 / 编排）</h3>', '<ul><li><strong>方案 A（复用 LinkFox 开放技能）</strong>：<code>npx skills add linkfox-ai/linkfox-skills --agent cursor</code>，需 <code>LINKFOXAGENT_API_KEY</code>（仍有按量成本，但比整包订阅灵活）。</li><li><strong>方案 B（完全自建，推荐与我们现有栈结合）</strong>：我们已有 <strong>EchoTik（TikTok）、Ozon/Mpstats、SellerSprite</strong> 等数据通道，可自己封装&quot;选品/竞品/关键词&quot;skill，不依赖 LinkFox Key。</li><li><strong>编排层</strong>：用我们已有的 <strong>Orchestrator + A2A frame</strong>（8773）当&quot;Claw&quot;替代，自然语言目标 → 拆解 → 调图像工作流 + 数据 skill。</li></ul>', '<h3>5.4 分阶段路线图</h3>', '<ul><li><strong>P0</strong>：本机装 ComfyUI + SDXL，跑通&quot;白底图→多场景商品套图&quot;单工作流。</li><li><strong>P1</strong>：加 OOTDiffusion + PuLID，做&quot;服装套图/AI 模特&quot;。</li><li><strong>P2</strong>：场景裂变 / 精细抠图 / 智能修图 节点化。</li><li><strong>P3</strong>：Fooocus 式中文 Web UI + 批量 + 品牌 LoRA（kohya_ss 训练）。</li><li><strong>P4</strong>：接入数据 skill（复用 linkfox-skills 或自有通道）+ Orchestrator 编排，形成&quot;迷你 LinkFox&quot;。</li></ul>', '<hr/>', '<h2 id="sec7">6. 风险与合规</h2>', '<ul><li><strong>显存</strong>：8GB 限制模型尺寸（不能上 Flux 全量、ControlNet 不能叠太多）→ 质量/速度权衡，必要时上云或升级卡。</li><li><strong>品牌一致性</strong>：需训品牌 LoRA，有调参成本。</li><li><strong>模型商用版权</strong>：SDXL / ComfyUI 开源可商用；但部分社区模型标 NC（非商用），OOTDiffusion 等需查 license；上线前核验。</li><li><strong>透明/玻璃制品边缘</strong>：LinkFox 也头疼，自建同样需额外修边缘节点。</li><li><strong>数据壁垒</strong>：LinkFox 190 skill 背后的 Keepa/SellerSprite/Mpstats 等需各自 API Key，自建也要接这些源（我们已有部分）。</li></ul>', '<hr/>', '<h2 id="sec8">7. 需 Boss 拍板（决定下一步怎么建）</h2>', '<ol><li><strong>运行位置</strong>：本地 RTX 4060（免费但 8GB 受限） vs 升级 4090 vs 云 GPU？</li><li><strong>月出图量预估</strong>：决定本地是否够用、是否值得升级硬件。</li><li><strong>数据侧</strong>：复用 LinkFox 开放 skill（要 API Key、有成本）还是完全用我们已有的 EchoTik/Ozon 自建？</li><li><strong>优先级</strong>：先做商品套图 / 服装模特 / 场景裂变 哪块？</li></ol>', '<hr/>', '<h3>主要信息源</h3>', '<ul><li>https://linkfox.com/ 、https://www.linkfox.com/ 、https://ai.linkfox.com/</li><li>https://github.com/linkfox-ai/linkfox-skills （190 skills）</li><li>https://clawhub.ai/linkfox-ai/linkfoxagent （LinkFox Agent 67–79 工具）</li><li>https://tool.trade-wind.co/tools/06510f27-... （LinkFox 功能/价格测评）</li><li>https://www.airukou.cn/tool/linkfox （LinkFox 功能/价格/优劣）</li><li>https://www.chooseai.net/news/1373 （LinkFox vs Claid vs Flair 对比）</li><li>CSDN：ComfyUI 电商落地、RTX4090 虚拟试衣速度、OOTDiffusion/PuLID 换装原理</li></ul>']
+    </article>
+    <div class="foot">源文件：linkfox_research_ceo.md · 经 8790 静态服务可直开</div>
+  </div>
+</body>
+</html>

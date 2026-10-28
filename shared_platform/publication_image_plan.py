@@ -11,7 +11,8 @@ GENERIC_REQUIRED_ROLES = (
     ("scene_1", "生成第一张真实使用场景图，商品必须是画面主体。"),
     ("scene_2", "生成第二张明显不同的真实使用场景图。"),
     ("scene_3", "生成第三张明显不同的真实使用场景图。"),
-    ("size", "生成一张仅使用已核实尺寸和数量事实的尺寸图。"),
+    ("size", "仅使用已核实尺寸；未知时改为有源图依据的结构比例图，不编数字，并在冻结计划记录角色替代。"),
+    ("instructions", "仅使用已核实使用或安装方法；未知时改为有源图依据的部件构造图，并在冻结计划记录角色替代。"),
 )
 GENERIC_OPTIONAL_ROLE = (
     "instructions",
@@ -33,8 +34,8 @@ def build_generic_image_plan(
     if has_homebloom:
         brand_ids.append("homebloom-sea")
     roles = list(GENERIC_REQUIRED_ROLES)
-    if include_instructions:
-        roles.append(GENERIC_OPTIONAL_ROLE)
+    # Seven meaningful roles are the no-specific-rule minimum. The historical
+    # keyword remains accepted; it must not produce a duplicate eighth role.
     guidance = [
         {
             "platform": platform,

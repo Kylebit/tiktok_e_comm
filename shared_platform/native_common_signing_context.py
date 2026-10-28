@@ -20,6 +20,7 @@ from shared_platform.r3_common_source_facts import NativeCommonSourceReader
 from shared_platform.release_store import ReleaseStore, ReleaseStoreError
 from shared_platform.native_common_budget_facts import _validate_plan_source
 from shared_platform.native_common_retained_completion import read_retained_completion
+from shared_platform.manual_common_creation import common_detail_id
 
 
 @dataclass(frozen=True)
@@ -76,7 +77,8 @@ class NativeCommonSigningContextReader:
         self._config, self._store = config, store
 
     def _signing_input(self):
-        raw = _read(self._config.root, 'config/miaoshou.local.json')
+        from shared_platform.publication_runtime_config import common_signing_bytes
+        raw = common_signing_bytes(self._config)
         value = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_unique_object)
         if (type(value) is not dict or type(value.get('app_id')) is not str
                 or not value['app_id'].strip() or type(value.get('app_secret')) is not str
@@ -119,7 +121,7 @@ class NativeCommonSigningContextReader:
                 packet = evidence['native_common_observation']
                 if (packet['credential_scope_digest'] != app_scope
                         or packet['endpoint'] != OPEN_BASE_URL + COMMON_DETAIL_OBSERVATION_PATH
-                        or packet['detail_id'] != source['offer_id']
+                        or packet['detail_id'] != common_detail_id(payload,store=self._store,connection=db)
                         or completion.preparation_root_id != facts.preparation_root_id
                         or completion.account_identity_digest != facts.r1_source_account_digest
                         or not re.fullmatch(r'[0-9a-f]{64}', completion.readback_digest)):
@@ -154,7 +156,8 @@ class NativeCommonSigningContextReader:
             from modules.miaoshou.client import NativeCommonDetailObserver, MiaoshouBusinessRejectedError
             from modules.products.release_adapters import readback_miaoshou_common
             before = self._signing_input()
-            raw = _read(self._config.root, 'config/miaoshou.local.json')
+            from shared_platform.publication_runtime_config import common_signing_bytes
+            raw = common_signing_bytes(self._config)
             value = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_unique_object)
             if hashlib.sha256(raw).digest() != before[0] or before[1] != facts.common_signing_context_digest:
                 raise ValueError('COMMON_SIGNING_CONFIG_CHANGED_DURING_READ')
@@ -163,7 +166,7 @@ class NativeCommonSigningContextReader:
                 observation_reader=NativeCommonDetailObserver(value))
             packet = evidence['native_common_observation']
             if (packet['credential_scope_digest'] != facts.common_signing_context_digest
-                    or packet['detail_id'] != facts.offer_id
+                    or packet['detail_id'] != common_detail_id(json.loads(row['payload_json']),connection=db)
                     or packet['endpoint'] != OPEN_BASE_URL + COMMON_DETAIL_OBSERVATION_PATH
                     or self._signing_input() != before):
                 raise ValueError('COMMON_SIGNING_CURRENT_CONTEXT_CHANGED')

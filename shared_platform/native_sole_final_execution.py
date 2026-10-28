@@ -71,6 +71,12 @@ class _NativeExecution:
         if 'miaoshou:COMMON' in plan['targets']:
             raise ApprovalBlocked('NATIVE_SOLE_FINAL_MARKETPLACE_TARGETS_REQUIRED')
         registry=release_adapters.production_adapter_registry()
+        if getattr(self.runtime._operations,'agent_prepared_common',None) is not None:
+            from shared_platform.agent_prepared_v4_targets import registry_for_adopted
+            registry=registry_for_adopted(self,plan,registry)
+        else:
+            from shared_platform.native_prepared_v4_targets import registry_for_original
+            registry=registry_for_original(self,plan,registry)
         rows=[]
         for label in plan['targets']:
             channel,site=label.split(':',1)
@@ -112,7 +118,7 @@ An installed native row or a request dict cannot create this execution scope.
     return True
 
 
-def execute_decision(service,decision_id,*,runtime=None):
+def execute_decision(service,decision_id,*,runtime=None,promotion_targets=None):
     from modules.products import server
     if type(service) is not NativeSoleFinalDecisionService:
         raise ApprovalBlocked('NATIVE_SOLE_FINAL_SERVICE_CONSUMER_REQUIRED')
@@ -139,6 +145,9 @@ def execute_decision(service,decision_id,*,runtime=None):
             'confirmation_token':plan['confirmation_token'],'confirm_publish':True}
         # The existing executor holds its original non-reentrant execution lock.
         # It creates/reuses the run inside that lock after this gate succeeds.
+        if promotion_targets is not None:
+            from shared_platform.native_companion_promotions import execute_active
+            return execute_active(active,data,promotion_targets)
         code,result=server._publish_selected_release(data,native_gate=active)
         return code,{**result,'native_decision_id':receipt['decision_id'],
             'approval_saved':True,'new_human_review_required':False}

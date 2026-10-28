@@ -33,6 +33,13 @@ def _fail(reason):
     raise ReleaseAuthorizationError(reason)
 
 
+def _provider_id(db, facts):
+    from shared_platform.manual_common_creation import common_detail_id
+    row=db.execute('SELECT payload_json FROM release_plans WHERE plan_id=?',(facts.plan_id,)).fetchone()
+    if row is None:_fail('COMMON_TECHNICAL_PLAN_MISSING')
+    return common_detail_id(json.loads(row['payload_json']),connection=db)
+
+
 @dataclass(frozen=True)
 class _TransactionFacts:
     """Internal transaction inputs, not proof or a public authority constructor.
@@ -131,7 +138,8 @@ def _service_facts(store, db, plan_id):
                          (plan_id,)).fetchone() if _schema_installed(db) else None
     own_reserved = (current['run_id'] if current is not None and current['approval_id'] is None
                     and current['technical_execution_state'] == 'RESERVED' else None)
-    if any(record.get('run_id') != own_reserved for record in census['unresolved_attempts']) or any(
+    from shared_platform.native_common_baseline_successor import unresolved_after_authorized_successor
+    if any(record.get('run_id') != own_reserved for record in unresolved_after_authorized_successor(store,db,payload,census)) or any(
             row.get('same_preparation_root') is True for row in census['unclassified_history']):
         _fail('COMMON_PRIOR_ATTEMPT_RECONCILIATION_REQUIRED')
     from modules.products import server
@@ -261,11 +269,15 @@ def _reserve_in_transaction(store, db, facts, *, readonly_reuse=False):
     census = census_same_snapshot(store, db, json.loads(plan['payload_json']), observed)
     if census['status'] != 'LOCAL_PERSISTED_CENSUS':
         _fail('COMMON_HISTORICAL_WRITE_BUDGET_UNKNOWN')
-    if census['unresolved_attempts']:
+    from shared_platform.native_common_baseline_successor import context,unresolved_after_authorized_successor,retained_run_ids
+    successor=context(store,db,json.loads(plan['payload_json']))
+    if unresolved_after_authorized_successor(store,db,json.loads(plan['payload_json']),census):
         _fail('COMMON_PRIOR_ATTEMPT_RECONCILIATION_REQUIRED')
     confirmed = census['local_observed_confirmed_writes']
     reusable = False
     for run in _native_runs(db, facts.offer_id):
+        if run['run_id'] in retained_run_ids(successor):
+            continue  # Explicit new risk, never relabel the original UNKNOWN.
         if run['approval_id'] is not None:
             # Genuine coverage must account for old human-bound records; this
             # core never infers that legacy terminal evidence means zero writes.
@@ -402,7 +414,7 @@ def _complete_retained_in_transaction(store, db, facts, run_id):
             or evidence.get('offer_id') != facts.offer_id
             or evidence.get('image_count') != len(json.loads(plan['payload_json']).get('images') or [])
             or not raw['verified_at']
-            or target['external_id'] not in (None, facts.offer_id)):
+            or target['external_id'] not in (None, _provider_id(db,facts))):
         _fail('COMMON_TECHNICAL_READBACK_COMPARISON_INVALID')
     write = evidence.get('external_writes_performed') == ['miaoshou:COMMON:immutable_plan_write']
     reuse = evidence.get('mode') == 'readback_reuse_no_write' and evidence.get('external_writes_performed') == []
@@ -430,7 +442,7 @@ def _complete_retained_in_transaction(store, db, facts, run_id):
                 or old_readback['verified_at'] != predecessor.get('common_readback_verified_at')
                 or old_plan['payload_digest'] != predecessor.get('payload_digest')
                 or old_target['status'] != predecessor.get('common_status') or old_target['status'] != 'SUCCEEDED'
-                or not str(old_target['external_id']) == str(predecessor.get('common_external_id')) == facts.offer_id):
+                or not str(old_target['external_id']) == str(predecessor.get('common_external_id')) == _provider_id(db,facts)):
             _fail('COMMON_TECHNICAL_REUSE_PREDECESSOR_CHANGED')
         old_evidence = json.loads(old_readback['evidence_json'])
         if (sha256(old_readback['evidence_json'].encode()).hexdigest() != old_readback['evidence_digest']
@@ -446,7 +458,7 @@ def _complete_retained_in_transaction(store, db, facts, run_id):
     if changed.rowcount != 1:
         _fail('COMMON_TECHNICAL_RECOVERY_CAS_LOST')
     db.execute('UPDATE release_target_runs SET status=\'SUCCEEDED\',external_id=?,updated_at=?,completed_at=? '
-               'WHERE run_id=? AND target_label=?', (facts.offer_id, now, now, run_id, COMMON))
+               'WHERE run_id=? AND target_label=?', (_provider_id(db,facts), now, now, run_id, COMMON))
     return _receipt(db.execute('SELECT * FROM release_runs WHERE run_id=?', (run_id,)).fetchone())
 
 
@@ -543,7 +555,7 @@ def _retain_edit_acceptance(store, plan_id, run_id, attempt, body, packet):
         if (run['technical_execution_state'] != 'UNKNOWN' or target['status'] != 'RUNNING'
                 or type(attempt) is not int or target['attempts'] != attempt
                 or context is None or packet['credential_scope_digest'] != context['common_signing_context_digest']
-                or str(body.get('commonCollectBoxDetailId')) != facts.offer_id):
+                or str(body.get('commonCollectBoxDetailId')) != _provider_id(db,facts)):
             _fail('COMMON_TECHNICAL_EDIT_CAPTURE_BINDING_CHANGED')
         _validate_accepted_request(db, facts, body)
         evidence = {'schema_version':'native-common-accepted-edit/v1',
@@ -560,8 +572,37 @@ def _retain_edit_acceptance(store, plan_id, run_id, attempt, body, packet):
             db.execute('INSERT INTO release_target_submissions '
                 '(run_id,target_label,external_id,evidence_json,evidence_digest,status,submitted_at) '
                 'VALUES (?,?,?,?,?,\'SUBMITTED_UNVERIFIED\',?)',
-                (run_id, COMMON, facts.offer_id, raw, sha256(raw.encode()).hexdigest(), _utc_now()))
+                (run_id, COMMON, _provider_id(db,facts), raw, sha256(raw.encode()).hexdigest(), _utc_now()))
         return sha256(raw.encode()).hexdigest()
+
+
+def _retain_edit_outcome(store,plan_id,run_id,attempt,body,summary):
+    """An observed response is neither acceptance nor a zero-write certificate."""
+    from shared_platform.native_common_edit_boundary import native_edit_response_capture,EDIT_PATH
+    capture=native_edit_response_capture(EDIT_PATH)
+    if (capture is None or capture[1]._store is not store or capture[1]._plan_id!=plan_id
+        or capture[1]._native_claim!=(run_id,attempt) or capture[2]!=body):
+        _fail('COMMON_TECHNICAL_EDIT_CAPTURE_REQUIRED')
+    expected={'schema_version','outcome','http_status','provider_result','provider_code','provider_field_path',
+        'provider_reason','request_canonical_sha256','response_canonical_sha256','decoded_business_bytes_sha256','wire_sha256'}
+    if (type(summary) is not dict or set(summary)!=expected or summary['schema_version']!='native-common-edit-outcome/v1'
+        or summary['request_canonical_sha256']!=sha256(_bytes(body)).hexdigest()
+        or summary['outcome'] not in {'ACCEPTED','BUSINESS_REJECTED','HTTP_ERROR','TRANSPORT_UNKNOWN','UNPARSEABLE_RESPONSE'}):
+        _fail('COMMON_TECHNICAL_EDIT_OUTCOME_INVALID')
+    with _existing_transaction(store) as db:
+        facts=_facts_for_existing_run(db,plan_id,run_id)
+        run=db.execute('SELECT * FROM release_runs WHERE run_id=?',(run_id,)).fetchone()
+        target=db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?',(run_id,COMMON)).fetchone()
+        if run['technical_execution_state']!='UNKNOWN' or target['attempts']!=attempt or target['status']!='RUNNING':
+            _fail('COMMON_TECHNICAL_EDIT_CAPTURE_BINDING_CHANGED')
+        _validate_accepted_request(db,facts,body)
+        value={**summary,'run_id':run_id,'attempt':attempt,'binding':facts.binding(),
+            'request_attempted':True,'zero_write_proven':False,'execution_authority':False}
+        raw=_bytes(value).decode()
+        # This existing event table is append-only evidence and contains no raw
+        # response/body/header. Accepted proof remains in its original table.
+        db.execute('INSERT INTO release_target_failure_events VALUES (?,?,?,?,?,?)',
+            (run_id,COMMON,attempt,raw,sha256(raw.encode()).hexdigest(),_utc_now()))
 
 
 def _validate_accepted_request(db, facts, body):
@@ -570,7 +611,7 @@ def _validate_accepted_request(db, facts, body):
     if (type(body) is not dict or set(body) !=
             {'commonCollectBoxDetailId','editCommonCollectBoxDetail','ossMd5'}
             or type(body['commonCollectBoxDetailId']) is not int
-            or str(body['commonCollectBoxDetailId']) != facts.offer_id
+            or str(body['commonCollectBoxDetailId']) != _provider_id(db,facts)
             or type(body['ossMd5']) is not str or not body['ossMd5'] or len(body['ossMd5']) > 4096
             or type(body['editCommonCollectBoxDetail']) is not dict):
         _fail('COMMON_TECHNICAL_ACCEPTED_REQUEST_SCHEMA_CHANGED')
@@ -600,14 +641,14 @@ def _accepted_edit_in_transaction(db, facts, run, attempt):
                 or value['run_id'] != run['run_id'] or value['target_label'] != COMMON
                 or type(value['attempt']) is not int or value['attempt'] != attempt
                 or value['binding'] != facts.binding() or value['submission_accepted'] is not True
-                or value['execution_authority'] is not False or row['external_id'] != facts.offer_id
+                or value['execution_authority'] is not False or row['external_id'] != _provider_id(db,facts)
                 or row['status'] != 'SUBMITTED_UNVERIFIED' or facts.native_account_context is None
                 or value['edit_wire']['credential_scope_digest'] !=
                    facts.native_account_context['common_signing_context_digest']):
             raise ValueError('binding')
         body = _validate_edit_wire(value['edit_wire'])
         if (sha256(_bytes(body)).hexdigest() != value['request_canonical_sha256']
-                or str(body.get('commonCollectBoxDetailId')) != facts.offer_id):
+                or str(body.get('commonCollectBoxDetailId')) != _provider_id(db,facts)):
             raise ValueError('request')
         _validate_accepted_request(db, facts, body)
         return value

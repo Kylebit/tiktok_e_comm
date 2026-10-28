@@ -59,7 +59,7 @@ def read_retained_completion(reader, db, common_plan_id, common_run_id):
         raise DomainReviewBlocked('COMMON_TECHNICAL_COMPLETION_UNPROVEN')
     targets = db.execute('SELECT * FROM release_target_runs WHERE run_id=?', (common_run_id,)).fetchall()
     if (len(targets) != 1 or targets[0]['target_label'] != technical.COMMON
-            or targets[0]['status'] != 'SUCCEEDED' or targets[0]['external_id'] != facts.offer_id):
+            or targets[0]['status'] != 'SUCCEEDED' or targets[0]['external_id'] != technical._provider_id(db,facts)):
         raise DomainReviewBlocked('COMMON_TECHNICAL_COMPLETION_TARGET_CHANGED')
     target = dict(targets[0])
     readback = db.execute('SELECT * FROM release_target_readbacks WHERE run_id=? AND target_label=?',
@@ -108,7 +108,7 @@ def read_retained_completion(reader, db, common_plan_id, common_run_id):
         if (old.state != 'CONFIRMED_WRITE' or old.payload_digest != predecessor['payload_digest']
                 or old.readback_digest != predecessor['common_readback_evidence_digest']
                 or old_readback['verified_at'] != predecessor['common_readback_verified_at']
-                or predecessor['common_status'] != 'SUCCEEDED' or predecessor['common_external_id'] != facts.offer_id
+                or predecessor['common_status'] != 'SUCCEEDED' or predecessor['common_external_id'] != technical._provider_id(db,facts)
                 or old.offer_id != facts.offer_id or old.account_identity_digest != facts.account_identity_digest
                 or old.preparation_root_id != facts.root_id
                 or old_binding['mutation_sha256'] != binding['mutation_sha256']):

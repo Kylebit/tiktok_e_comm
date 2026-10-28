@@ -1,0 +1,168 @@
+{
+  "schema_version": "orbithive-b4b-discount-source-disposition/v1",
+  "base": "99902cccd121689fe969c70ad70a35ab65af267e",
+  "source_file_count": 11,
+  "canonical_skill_file_count": 11,
+  "source_records": [
+    {
+      "path": "skills/apply-product-discounts/SKILL.md",
+      "source_path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/restore-check/integration/skills/apply-product-discounts/SKILL.md",
+      "source_sha256": "864c588adb8fab028fa25f345486f14244cc3ec3f0078095c83cbfb4ee2e2bcb",
+      "canonical_sha256": "2472d0e1fcfcfc1c1b87e349a1b8fbde1d62662ff201495e6701675bce928cac",
+      "source_lines": 110,
+      "canonical_lines": 62,
+      "exact_source_bytes": false,
+      "lf_equivalent": false,
+      "disposition": "SEMANTIC_MIGRATION_CURRENT_CAPABILITY"
+    },
+    {
+      "path": "skills/apply-product-discounts/agents/openai.yaml",
+      "source_path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/restore-check/integration/skills/apply-product-discounts/agents/openai.yaml",
+      "source_sha256": "cb3f8f449bc06fe5ffb02ad2cb30d606ba341cb198f86a257367bc0d4f47c617",
+      "canonical_sha256": "b62bb7be9a97f7ba4411a9c7d98bfacca3e37466e2d2676fdaa021f4e00a9845",
+      "source_lines": 4,
+      "canonical_lines": 4,
+      "exact_source_bytes": false,
+      "lf_equivalent": false,
+      "disposition": "SEMANTIC_MIGRATION_CURRENT_CAPABILITY"
+    },
+    {
+      "path": "skills/apply-product-discounts/references/miaoshou.md",
+      "source_path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/restore-check/integration/skills/apply-product-discounts/references/miaoshou.md",
+      "source_sha256": "2744c789db319d674d0652da83260459af82a762caf9428efccd222f8830075d",
+      "canonical_sha256": "2744c789db319d674d0652da83260459af82a762caf9428efccd222f8830075d",
+      "source_lines": 52,
+      "canonical_lines": 52,
+      "exact_source_bytes": true,
+      "lf_equivalent": true,
+      "disposition": "KEEP_HISTORICAL_BROWSER_REFERENCE"
+    },
+    {
+      "path": "skills/apply-product-discounts/scripts/audit_existing_discount_evidence.py",
+      "source_path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/restore-check/integration/skills/apply-product-discounts/scripts/audit_existing_discount_evidence.py",
+      "source_sha256": "add454a1a3a8ba3ba03427b87a07aeedce65ceec145ef0da0d63543e3bac8baa",
+      "canonical_sha256": "1bc26f23cb884881fe3e7a2a7e7d6c3bec73bbec9c39e34e97492ff33bb423d6",
+      "source_lines": 125,
+      "canonical_lines": 184,
+      "exact_source_bytes": false,
+      "lf_equivalent": false,
+      "disposition": "SEMANTIC_REPAIR_READONLY_PAGINATION_EXACT_LOCAL_MODEL_KEY_REFERENCE"
+    },
+    {
+      "path": "skills/apply-product-discounts/scripts/build_batch_discount_plan.py",
+      "source_path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/restore-check/integration/skills/apply-product-discounts/scripts/build_batch_discount_plan.py",
+      "source_sha256": "eb7b984d4e3065c15f34f7f26458dcf0edfa922f3497976f61001f9f91a2508d",
+      "canonical_sha256": "072ef7d3049de5708f630d98a8b0adbd22d5285c72e909ac2a84257b6ef09d15",
+      "source_lines": 350,
+      "canonical_lines": 358,
+      "exact_source_bytes": false,
+      "lf_equivalent": false,
+      "disposition": "REFERENCE_ONLY_NO_APPROVED_BATCH"
+    },
+    {
+      "path": "skills/apply-product-discounts/scripts/build_shopee_identity_recovery_plan.py",
+      "source_path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/restore-check/integration/skills/apply-product-discounts/scripts/build_shopee_identity_recovery_plan.py",
+      "source_sha256": "9ebda780968d8681367775bb8533ae5b6585c207a221d6589e8fd018781e274b",
+      "canonical_sha256": "1a4d90b551a1eefe7da676554162e3c29bb5d28aefeec7055ea00427d176ae8d",
+      "source_lines": 124,
+      "canonical_lines": 129,
+      "exact_source_bytes": false,
+      "lf_equivalent": false,
+      "disposition": "REFERENCE_ONLY_PRESERVE_OLD_SKUS_EXACT_TARGET_PRODUCT"
+    },
+    {
+      "path": "skills/apply-product-discounts/scripts/execute_official_discount_plan.py",
+      "source_path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/restore-check/integration/skills/apply-product-discounts/scripts/execute_official_discount_plan.py",
+      "source_sha256": "d9c1863a860295098aab70a8e871d55cf826b21ba7d4ab2a470cfd7c1237ca52",
+      "canonical_sha256": "cb879fa59b3189e0e455c159a3b525e585b23c9d3f56f246625b0e9c11ec41fe",
+      "source_lines": 459,
+      "canonical_lines": 47,
+      "exact_source_bytes": false,
+      "lf_equivalent": false,
+      "disposition": "RETIRED_DIRECT_WRITER_MIGRATION_GUARD_CAPABILITY_REMAINS_REQUIRED"
+    },
+    {
+      "path": "skills/apply-product-discounts/scripts/export_miaoshou_browser_batch.py",
+      "source_path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/restore-check/integration/skills/apply-product-discounts/scripts/export_miaoshou_browser_batch.py",
+      "source_sha256": "0a877c744e5ccf5193a701c7260bb15da8c678d178954061b9e52cd70dfe3816",
+      "canonical_sha256": "564476a13ab982a9fa7a8f61bc2ed624de0d37f24775feb19c4c286104ddafca",
+      "source_lines": 46,
+      "canonical_lines": 50,
+      "exact_source_bytes": false,
+      "lf_equivalent": false,
+      "disposition": "REFERENCE_ONLY_PRESERVE_BLOCKED_AND_MISSING_TARGETS"
+    },
+    {
+      "path": "skills/apply-product-discounts/scripts/inspect_discount_plan.py",
+      "source_path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/restore-check/integration/skills/apply-product-discounts/scripts/inspect_discount_plan.py",
+      "source_sha256": "6a6056363e8017661c881e6c9e606f8525202e1efd0b7b00871d18c90954612f",
+      "canonical_sha256": "dab60f8c07dcaa790cae8da74d418789659044df629b40540b11ab94e341f8ed",
+      "source_lines": 61,
+      "canonical_lines": 70,
+      "exact_source_bytes": false,
+      "lf_equivalent": false,
+      "disposition": "SEMANTIC_INSPECTION_NOT_AUTHORITY"
+    },
+    {
+      "path": "skills/apply-product-discounts/scripts/inspect_shopee_model_identity.py",
+      "source_path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/restore-check/integration/skills/apply-product-discounts/scripts/inspect_shopee_model_identity.py",
+      "source_sha256": "b3abfa7f750e9aec652909e8b57fc13a74b24d0242f616eab3211042152438e2",
+      "canonical_sha256": "b3abfa7f750e9aec652909e8b57fc13a74b24d0242f616eab3211042152438e2",
+      "source_lines": 88,
+      "canonical_lines": 88,
+      "exact_source_bytes": true,
+      "lf_equivalent": true,
+      "disposition": "KEEP_OFFICIAL_IDENTITY_DIAGNOSTIC_CLIENT_MAY_REFRESH_LOCAL_AUTH"
+    },
+    {
+      "path": "skills/apply-product-discounts/scripts/recover_miaoshou_product_identity.py",
+      "source_path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/restore-check/integration/skills/apply-product-discounts/scripts/recover_miaoshou_product_identity.py",
+      "source_sha256": "4cc5c4bc23803fb6755d8aa1d1a3e0c6b7527434008a689681556be26fc72980",
+      "canonical_sha256": "422f250ea4ea4752bda82207359f1cfdcb135011d896c7b48acf37251cb307e1",
+      "source_lines": 103,
+      "canonical_lines": 110,
+      "exact_source_bytes": false,
+      "lf_equivalent": false,
+      "disposition": "SIMILARITY_IS_REFERENCE_NOT_IDENTITY_WITH_LOCAL_CLI_HELP"
+    }
+  ],
+  "production_delta": [
+    {
+      "path": "domains/channel_operations/oneclick_release_adapters.py",
+      "base_blob_sha256": "de896785bc703620eaf5ddc67c90bbdc4673f04b9a8b32c4b999a198b9545773",
+      "canonical_sha256": "4100dcea6cc76050045afe6bde6a835f35cadce3d100d879fabfcb455df67a91",
+      "canonical_git_lf_sha256": "4100dcea6cc76050045afe6bde6a835f35cadce3d100d879fabfcb455df67a91",
+      "frozen_source_sha256": "387221bf26fd3de157e1216980765ecbb00944803d36edc5039f13dd06adbcc4"
+    },
+    {
+      "path": "domains/channel_operations/pricing_preview.py",
+      "base_blob_sha256": "0e62fffa19d8edb312a8aa35a5e91cf18db996a91f9c554b9853bb90538cd9dc",
+      "canonical_sha256": "2fec176dcd7c1581d2de17a4fb069d53b7681a18eb54fc3e25b3e44036cfd2a6",
+      "canonical_git_lf_sha256": "2fec176dcd7c1581d2de17a4fb069d53b7681a18eb54fc3e25b3e44036cfd2a6",
+      "frozen_source_sha256": "93f22ff8e2f208b74155116198066fd40e6835d40b9f8c0cd05c94bac5d31801"
+    },
+    {
+      "path": "modules/tiktok/oneclick_promotion.py",
+      "base_blob_sha256": "388d098afb66ffa63ad44624290b973813aaafd694c10316d084754fec6e14a9",
+      "canonical_sha256": "3a3867d19867f345889851068a2137789d1acb6f4b4f2e46a708ee9bd1317582",
+      "canonical_git_lf_sha256": "3a3867d19867f345889851068a2137789d1acb6f4b4f2e46a708ee9bd1317582",
+      "frozen_source_sha256": "65d78e6d70e8cb61fd6ff28fd3d6022fa3d95e430ff9ab317cab2e2222729603"
+    },
+    {
+      "path": "shared_platform/postpublish_promotions.py",
+      "base_blob_sha256": "f2901fb8ca927d6d53b8e9db40a3212b7e7460714830c0ab60dcf68fe9f8601d",
+      "canonical_sha256": "19574603b6faf9f6299c84d928a5489945eee74598068988a3467b05274c0f95",
+      "canonical_git_lf_sha256": "19574603b6faf9f6299c84d928a5489945eee74598068988a3467b05274c0f95",
+      "frozen_source_sha256": "05be7aae9197304967d40e7e4c70ce57c6718e621ff23c20f84fbf5c05a98c03"
+    },
+    {
+      "path": "shared_platform/oneclick_release_controlplane.py",
+      "base_blob_sha256": "0c432ff4fa2e9e4e3c0bb9469f9350a3ddadf024c5de0e6314980b1dab86ea5e",
+      "canonical_sha256": "77611a82bac80f08efb23314c72b1aae593dc8edce9951a936df775026f61638",
+      "canonical_git_lf_sha256": "96dee45dba2265a0f74ded24b6e093af2e23cb3dcc1e79361899151be9d84e96"
+    }
+  ],
+  "personal_skill_install_changed": false,
+  "scope": "Segment canonical hashes for later T00 manifest composition; no claim personal parity or full B4B completion",
+  "reader_correction_base": "2e23d61170a0b5e2b84d01bdfc7d62565c062638"
+}

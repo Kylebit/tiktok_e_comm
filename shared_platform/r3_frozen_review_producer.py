@@ -66,8 +66,45 @@ class DomainReviewGraph:
     common_readback_digest: str
 
 
+def _retained_approved_copy_shape(db, marketplace_plan):
+    """Select historical serialization only from the same approved DB snapshot."""
+    if db is None:
+        return None
+    from shared_platform.release_store import _plan_from_row, _validated_publication_snapshot_row
+    row = db.execute("SELECT * FROM release_plans WHERE plan_id=?",
+                     (marketplace_plan["plan_id"],)).fetchone()
+    if row is None or row["status"] != "APPROVED":
+        return None
+    stored = _plan_from_row(row)
+    if (stored["payload_digest"] != marketplace_plan["payload_digest"]
+            or _bytes(stored["payload"]) != _bytes(marketplace_plan["payload"])):
+        raise DomainReviewBlocked("DOMAIN_STORED_PLAN_BYTES_CHANGED")
+    approval = db.execute("SELECT 1 FROM release_approvals WHERE plan_id=? AND payload_digest=? "
+                          "AND status='APPROVED' AND user_approved=1",
+                          (stored["plan_id"], stored["payload_digest"])).fetchone()
+    snapshot_row = db.execute("SELECT * FROM approved_publication_snapshots WHERE plan_id=?",
+                              (stored["plan_id"],)).fetchone()
+    if approval is None or snapshot_row is None:
+        raise DomainReviewBlocked("DOMAIN_APPROVED_SNAPSHOT_REQUIRED")
+    snapshot = _validated_publication_snapshot_row(snapshot_row, plan=stored)
+    copies = snapshot["product"]["content_by_target"]
+    if set(copies) != set(stored["targets"]):
+        raise DomainReviewBlocked("DOMAIN_APPROVED_COPY_TARGETS_CHANGED")
+    legacy = []
+    for label, copy in copies.items():
+        expected = {"title", "description", "locale"}
+        if label.startswith("tiktok:") and "variants" in copy:
+            expected.add("variants")
+        if set(copy) != expected:
+            raise DomainReviewBlocked("DOMAIN_APPROVED_COPY_SHAPE_UNSUPPORTED")
+        if label.startswith("tiktok:") and "variants" not in copy:
+            legacy.append(label)
+    from shared_platform.publication_r3_image_bridge import _RetainedApprovedCopyShape
+    return _RetainedApprovedCopyShape(stored["plan_id"], snapshot["snapshot_digest"], tuple(legacy))
+
+
 def rebuild_domain_review_graph(common_plan, common_run, marketplace_plan, *, native_completion=None,
-                                category_store=None, category_connection=None):
+                                category_store=None, category_connection=None, target_consumer=None):
     """Pure service seam; input values must come from domain storage, not HTTP.
 
     Checksums alone are insufficient: the retained marketplace payload and its
@@ -85,6 +122,20 @@ def rebuild_domain_review_graph(common_plan, common_run, marketplace_plan, *, na
         identity = validate_r2_identity(documents)
         r1 = documents["round1_snapshot"]
         targets = _target_labels([label for label in r1["canonical_targets"] if label != "miaoshou:COMMON"])
+        reduction = None
+        if target_consumer is not None:
+            from shared_platform.prepared_target_consumer import PreparedTargetReductionConsumer
+            from shared_platform.prepared_target_reduction import select_marketplace_targets
+            if type(target_consumer) is not PreparedTargetReductionConsumer:
+                raise DomainReviewBlocked('PREPARED_TARGET_CONCRETE_CONSUMER_REQUIRED')
+            reduction = target_consumer.read_verified(r1['offer_id'], r2_identity=identity)
+            if binding.get('target_reduction') != reduction:
+                raise DomainReviewBlocked('PREPARED_TARGET_STORED_GRAPH_RECORD_CHANGED')
+            targets = _target_labels(select_marketplace_targets(list(targets), offer_id=r1['offer_id'],
+                                                              r2_identity=target_consumer.reduction_identity(identity, payload_binding=binding), reduction=reduction))
+        elif binding.get('target_reduction') is not None or binding.get('image_successor') is not None:
+            # A self-consistent embedded cancellation is still not admission.
+            raise DomainReviewBlocked('DOMAIN_PLAN_SOURCE_SCOPE_CHANGED: durable target consumer required')
         if common_plan["status"] != "APPROVED":
             from shared_platform.native_common_retained_completion import RetainedCommonCompletion
             if (common_plan["status"] != PLAN_PENDING_APPROVAL or type(native_completion) is not RetainedCommonCompletion
@@ -113,12 +164,14 @@ def rebuild_domain_review_graph(common_plan, common_run, marketplace_plan, *, na
                 or common_targets[0]["status"] != "SUCCEEDED"
                 or common_targets[0]["readback"] != binding["common_readback"]):
             raise DomainReviewBlocked("COMMON_OFFICIAL_FIELD_READBACK_UNPROVEN")
+        retained_copy_shape = _retained_approved_copy_shape(category_connection, marketplace_plan)
         material = build_marketplace_review_material(
             documents, common_plan, common_run, policy=binding["policy"],
             incidents=binding["incident_registry"],
             promotion_policy=payload.get("approved_postpublish_promotion_policy"),
             ozon_stock_decision=payload["product_facts"].get("ozon_stock_decision"),
-            category_store=category_store, category_connection=category_connection)
+            category_store=category_store, category_connection=category_connection,
+            target_reduction=reduction, _retained_copy_shape=retained_copy_shape)
         rebuilt = preview_release_plan(material["payload"])
         if (rebuilt["plan_id"] != marketplace_plan["plan_id"]
                 or rebuilt["payload_digest"] != marketplace_plan["payload_digest"]
@@ -151,7 +204,7 @@ def rebuild_domain_review_graph(common_plan, common_run, marketplace_plan, *, na
         raise DomainReviewBlocked("DOMAIN_SOURCE_GRAPH_INVALID: " + str(error)) from error
 
 
-def read_stored_domain_graph(db, marketplace_plan_id, *, native_reader=None, category_store=None):
+def read_stored_domain_graph(db, marketplace_plan_id, *, native_reader=None, category_store=None, target_consumer=None):
     """Reconstruct in the caller's existing SQLite snapshot, without writes."""
     if not db.in_transaction:
         raise DomainReviewBlocked("DOMAIN_SQLITE_SNAPSHOT_REQUIRED")
@@ -166,6 +219,9 @@ def read_stored_domain_graph(db, marketplace_plan_id, *, native_reader=None, cat
         return _plan_from_row(row)
     try:
         market = read_plan(marketplace_plan_id)
+        if target_consumer is None:
+            from shared_platform.prepared_target_consumer import configured_target_consumer
+            target_consumer = configured_target_consumer(market['product_id'])
         binding = market["payload"]["r3_marketplace_binding"]
         common = read_plan(binding["common_plan_id"])
         row = db.execute("SELECT * FROM release_runs WHERE run_id=? AND plan_id=?",
@@ -191,7 +247,7 @@ def read_stored_domain_graph(db, marketplace_plan_id, *, native_reader=None, cat
             completion = read_retained_completion(native_reader, db, common["plan_id"], run["run_id"])
         return rebuild_domain_review_graph(common, run, market, native_completion=completion,
             category_store=native_reader.store if native_reader is not None else category_store,
-            category_connection=db)
+            category_connection=db, target_consumer=target_consumer)
     except DomainReviewBlocked:
         raise
     except (ValueError, TypeError, KeyError, AttributeError, ReleaseStoreError) as error:

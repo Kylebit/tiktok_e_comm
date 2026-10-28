@@ -34,6 +34,33 @@ class OzonApprovedPublicationError(ValueError):
     """The frozen facts cannot produce an exact Ozon request."""
 
 
+class OzonStockReadbackUnavailable(OzonApprovedPublicationError):
+    """Raw stock response without an exact quantity; never represents zero.
+
+    Only the protected native stock-only ledger can supply the private admission
+    callback. A response shape, caller Boolean or this exception alone is not a
+    permission to mutate an unavailable baseline.
+    """
+    def __init__(self, *, offer_ids, warehouse_id, response, admission=None):
+        super().__init__("Ozon stock quantity is UNAVAILABLE_NOT_ZERO")
+        self.offer_ids = offer_ids
+        self.warehouse_id = warehouse_id
+        self.response = deepcopy(response)
+        self._admission = admission
+
+    def observation(self):
+        return {"status": "UNAVAILABLE_NOT_ZERO", "offer_ids": list(self.offer_ids),
+                "warehouse_id": self.warehouse_id, "raw_response": deepcopy(self.response)}
+
+    def authorize_absolute_200(self, updates):
+        if (type(self.response) is not dict or self.response !=
+                {"products": [], "has_next": False, "cursor": ""}
+                or type(self.response.get("has_next")) is not bool
+                or not callable(self._admission)):
+            raise OzonApprovedPublicationError("absolute stock admission is unavailable")
+        return self._admission(self.offer_ids, self.warehouse_id, deepcopy(updates))
+
+
 @dataclass(frozen=True)
 class OzonDispatchFact:
     """Credential-free fact returned by the thin official import transport."""
@@ -272,6 +299,11 @@ def _official_profile(value: object) -> dict[str, Any]:
     }
     if normalized["required_attributes"]["product_type"]["dictionary_value_id"] != type_id:
         raise OzonApprovedPublicationError("Ozon product type dictionary conflicts")
+    if 'independent_card_attributes' in profile:
+        if ((category_id, type_id) != (53968796, 970663046)
+                or profile['independent_card_attributes'] != {'model_name':9048,'quantity_per_pack':8513}):
+            raise OzonApprovedPublicationError('Ozon independent card metadata conflicts')
+        normalized['independent_card_attributes'] = deepcopy(profile['independent_card_attributes'])
     return normalized
 
 
@@ -445,6 +477,34 @@ def project_ozon_v4_variants(
     raw_skus = _sequence(snapshot.get("skus"), "approved SKUs")
     if not raw_skus:
         raise OzonApprovedPublicationError("approved Ozon SKU coverage is empty")
+    frozen_category = snapshot["categories_by_target"][OZON_TARGET].get("category")
+    effective_type_id = (
+        official_profile["type_id"] if official_profile is not None
+        else frozen_category.get("type_id") if isinstance(frozen_category, Mapping)
+        else None
+    )
+    independent_cards = None
+    structure = None
+    if product.get('ozon_card_structure') is not None:
+        from shared_platform.publication_ozon_card_structure import require_verified_snapshot_structure
+        try:
+            structure = require_verified_snapshot_structure(snapshot)
+        except ValueError as error:
+            raise OzonApprovedPublicationError("OZON_SINGLE_CARD_PATTERN_VARIATION_UNVERIFIED") from error
+        if category['id'] != structure['category_id'] or str(effective_type_id) != structure['type_id']:
+            raise OzonApprovedPublicationError('OZON_STRUCTURE_OFFICIAL_CATEGORY_CHANGED')
+    if (category["id"] == "53968796"
+            and str(effective_type_id) == "970663046" and len(raw_skus) > 1):
+        # The retained official type exposes quantity-per-pack as its only
+        # variative aspect. One-piece flower patterns cannot be represented
+        # by invented different quantities or by assuming model9048 merges.
+        # Keep the multi-variant one-card request blocked before any import.
+        if structure is None:
+            raise OzonApprovedPublicationError("OZON_SINGLE_CARD_PATTERN_VARIATION_UNVERIFIED")
+        if (official_profile is None or official_profile.get('independent_card_attributes')
+                != {'model_name':9048,'quantity_per_pack':8513}):
+            raise OzonApprovedPublicationError('OZON_INDEPENDENT_CARD_OFFICIAL_METADATA_REQUIRED')
+        independent_cards = {c['model_sku']:c for c in structure['cards']}
 
     variants: list[dict[str, Any]] = []
     seen_models: set[str] = set()
@@ -498,6 +558,11 @@ def project_ozon_v4_variants(
             routed_by_base.get(url, url)
             for url in _https_urls(sku.get("variant_images"), "approved Ozon variant images")
         ]
+        if independent_cards is not None:
+            from shared_platform.publication_r3_image_bridge import independent_card_gallery
+            complete_gallery = independent_card_gallery(snapshot, sku, structure)
+            if complete_gallery is not None:
+                images = complete_gallery
         variants.append(
             {
                 "schema_version": "ozon-approved-import-variant/v1",
@@ -505,6 +570,8 @@ def project_ozon_v4_variants(
                 "offer_id": model_sku,
                 "approved_seller_sku": seller_sku,
                 "variant_key": variant_key,
+                **({'independent_card': {k:v for k,v in independent_cards[model_sku].items()
+                    if k not in {'canonical_sku','variant_key'}}} if independent_cards is not None else {}),
                 "specification": specification,
                 "title": title,
                 "description": description,
@@ -590,8 +657,9 @@ def _classify_variant(
     expected_type_id = (
         str(profile.get("type_id") or "") if isinstance(profile, Mapping) else ""
     )
+    from shared_platform.native_ozon_three_card_media_recovery import title_matches
     checks = (
-        observed.get("name") == expected["title"],
+        title_matches(expected, observed),
         observed.get("description") == expected["description"],
         _same_decimal(observed.get("price"), expected["price"]),
         _same_decimal(observed.get("old_price"), expected["old_price"]),
@@ -603,6 +671,9 @@ def _classify_variant(
         or str(observed.get("type_id") or "") == expected_type_id,
         _same_parcel(observed, expected["parcel"]),
     )
+    if expected.get('independent_card') is not None:
+        from shared_platform.publication_ozon_card_structure import card_readback_matches
+        checks += (card_readback_matches(expected['independent_card'], observed),)
     if all(checks):
         return "PUBLISHED"
     # A successful import acknowledgement is asynchronous.  Ozon can expose
@@ -724,6 +795,21 @@ def _complete_governed_stock(
         return (json.dumps({"warehouse_id":warehouse_id,"stock":"FROZEN_EACH_SKU"},separators=(",",":"))
             if warehouse_id is not None else "Ozon stock equals the frozen quantity for every approved SKU")
 
+    updates = tuple(
+        {"offer_id": variant["offer_id"], "stock": variant["stock_quantity"],
+         **({"warehouse_id": variant["stock_warehouse_id"]}
+            if "stock_warehouse_id" in variant else {})}
+        for variant in variants
+    )
+    unavailable_observations = {}
+    def stock_result(*args, **kwargs):
+        value = _result(*args, **kwargs)
+        if unavailable_observations:
+            # The actual canonical result is retained by the original native
+            # failure/submission evidence path; this is not a fixture log.
+            value["targets"][0]["evidence"]["stock_readonly_observations"] = deepcopy(unavailable_observations)
+        return value
+
     try:
         current_stock = readback_stocks(offer_ids)
         current_warehouse = warehouse_identity(current_stock)
@@ -735,7 +821,7 @@ def _complete_governed_stock(
         if prepare_stock_update is not None and current_warehouse is None:
             raise ValueError("live stock readback warehouse is unavailable")
         if _exact_stock_readback(current_stock, variants=variants):
-            return _result(
+            return stock_result(
                 "PUBLISHED",
                 dispatch_attempted=prior_dispatch_attempted,
                 readback_completed=True,
@@ -745,8 +831,24 @@ def _complete_governed_stock(
                 provider_code="ozon_stock_verified",
                 provider_reason=verified_reason(current_warehouse),
             )
+    except OzonStockReadbackUnavailable as error:
+        unavailable_observations["baseline"] = error.observation()
+        try:
+            if type(error) is not OzonStockReadbackUnavailable or prepare_stock_update is None or before_stock_update is None:
+                raise OzonApprovedPublicationError("native absolute stock callbacks required")
+            current_warehouse = error.authorize_absolute_200(updates)
+            if (type(current_warehouse) is not int or current_warehouse <= 0
+                    or current_warehouse != error.warehouse_id
+                    or (expected_warehouse is not None and current_warehouse != expected_warehouse)):
+                raise OzonApprovedPublicationError("absolute stock warehouse changed")
+        except Exception:
+            return stock_result("PROCESSING", dispatch_attempted=prior_dispatch_attempted,
+                readback_completed=False, external_write_count=prior_external_write_count,
+                requires_human_action=prior_external_write_count is None, stage="STOCK_READBACK",
+                provider_code="ozon_stock_reconciliation_required",
+                provider_reason="Ozon stock readback is unavailable; no stock update was attempted")
     except Exception:
-        return _result(
+        return stock_result(
             "PROCESSING",
             dispatch_attempted=prior_dispatch_attempted,
             readback_completed=False,
@@ -757,18 +859,6 @@ def _complete_governed_stock(
             provider_reason="Ozon stock readback is unavailable; no stock update was attempted",
         )
 
-    updates = tuple(
-        {
-            "offer_id": variant["offer_id"],
-            "stock": variant["stock_quantity"],
-            **(
-                {"warehouse_id": variant["stock_warehouse_id"]}
-                if "stock_warehouse_id" in variant
-                else {}
-            ),
-        }
-        for variant in variants
-    )
     submit_stock = None
     if prepare_stock_update is not None:
         try:
@@ -776,7 +866,7 @@ def _complete_governed_stock(
             if type(submit_stock) is not PreparedStockUpdate or submit_stock.warehouse_id != current_warehouse:
                 raise TypeError("stock preparation must retain the exact readback warehouse")
         except Exception:
-            return _result("PROCESSING" if prior_external_write_count is None else "FAILED",
+            return stock_result("PROCESSING" if prior_external_write_count is None else "FAILED",
                 dispatch_attempted=prior_dispatch_attempted, readback_completed=True,
                 external_write_count=prior_external_write_count, requires_human_action=True,
                 stage="PREPARATION", provider_code="ozon_stock_not_attempted",
@@ -785,7 +875,7 @@ def _complete_governed_stock(
         try:
             before_stock_update(updates)
         except Exception:
-            return _result(
+            return stock_result(
                 "PROCESSING" if prior_external_write_count is None else "FAILED",
                 dispatch_attempted=prior_dispatch_attempted,
                 readback_completed=True,
@@ -803,7 +893,7 @@ def _complete_governed_stock(
         fact = OzonStockDispatchFact(outcome="UNKNOWN")
 
     if fact.outcome == "PRE_SUBMIT_FAILED":
-        return _result(
+        return stock_result(
             "FAILED",
             dispatch_attempted=prior_dispatch_attempted,
             readback_completed=False,
@@ -814,7 +904,7 @@ def _complete_governed_stock(
             provider_reason=fact.provider_reason or "Ozon stock update preparation failed",
         )
     if fact.outcome == "REJECTED":
-        return _result(
+        return stock_result(
             "FAILED",
             dispatch_attempted=True,
             readback_completed=False,
@@ -835,10 +925,13 @@ def _complete_governed_stock(
         exact = _exact_stock_readback(verified_stock, variants=variants)
         if submit_stock is not None:
             exact = exact and warehouse_identity(verified_stock) == submit_stock.warehouse_id
+    except OzonStockReadbackUnavailable as error:
+        unavailable_observations["post"] = error.observation()
+        exact = False
     except Exception:
         exact = False
     if exact:
-        return _result(
+        return stock_result(
             "PUBLISHED",
             dispatch_attempted=True,
             readback_completed=True,
@@ -848,7 +941,7 @@ def _complete_governed_stock(
             provider_code="ozon_stock_verified",
             provider_reason=verified_reason(submit_stock.warehouse_id if submit_stock is not None else None),
         )
-    return _result(
+    return stock_result(
         "PROCESSING",
         dispatch_attempted=True,
         readback_completed=False,
@@ -890,7 +983,12 @@ def execute_ozon_v4_publication(
             official_profile_resolver=official_profile_resolver,
             localized_copy_resolver=localized_copy_resolver,
         )
-    except (OzonApprovedPublicationError, TypeError, ValueError):
+    except (OzonApprovedPublicationError, TypeError, ValueError) as error:
+        if str(error) == "OZON_SINGLE_CARD_PATTERN_VARIATION_UNVERIFIED":
+            return _result("FAILED", dispatch_attempted=False,
+                readback_completed=False, external_write_count=0, requires_human_action=True,
+                stage="PREPARATION", provider_code="ozon_single_card_variation_unverified",
+                provider_reason="The official refrigerator-accessory type does not provide a verified pattern variation for the requested single card")
         return _result(
             "FAILED",
             dispatch_attempted=False,

@@ -336,6 +336,10 @@ def resolve_offer_key(value: str) -> str:
 
 
 def _state_path(offer_id: str) -> Path:
+    from shared_platform.original_prepared_continuation import configured_original_continuation
+    continuation = configured_original_continuation(offer_id)
+    if continuation is not None:
+        return continuation.r2_profile.root / 'data/new_product_workbench' / f'{offer_id}.json'
     return STATE_DIR / f"{offer_id}.json"
 
 
@@ -5291,6 +5295,12 @@ R1_PATH_BINDING_CONTRACT = 'orbit-r1-paths/v2'
 
 
 def _load_source(offer_id: str, *, state_dir=None, data_root=None, source_outputs_root=None) -> dict[str, Any]:
+    if all(value is None for value in (state_dir, data_root, source_outputs_root)):
+        from shared_platform.original_prepared_continuation import configured_original_continuation
+        continuation = configured_original_continuation(offer_id)
+        if continuation is not None:
+            data_root = continuation.r2_profile.root / 'data'
+            state_dir, source_outputs_root = data_root / 'new_product_workbench', data_root / 'outputs'
     try:
         scrape = load_scrape(offer_id, sourcing_dir=Path(data_root)/'sourcing') if data_root is not None else load_scrape(offer_id)
     except FileNotFoundError:

@@ -523,13 +523,9 @@ def freeze(server, data, *, approve=False):
         return status(server, data['offer_id'], document['reference'])
 
 
-def _auto_recheck(server, document, decision):
-    """Re-read the prepared inputs and the exact technical state transition."""
-    from modules.sourcing import new_product_workbench as workbench
-    from shared_platform.round1_category_observations import resolve_record
-
+def _auto_same_state(document, state, decision):
+    """Prove the original technical CAS without asserting a human actor."""
     scope = document['scope']
-    state = workbench.load_state(scope['offer_id'])
     before = document['state_before']
     if state == before:
         phase = 'PREPARED'
@@ -549,6 +545,17 @@ def _auto_recheck(server, document, decision):
                 or approval.get('input_fingerprint') != document['approval_fingerprint']):
             raise Round1WorkspaceError('R1_AUTO_STATE_CONFLICT')
         phase = 'APPROVED'
+    return phase
+
+
+def _auto_recheck(server, document, decision):
+    """Re-read the prepared inputs and the exact technical state transition."""
+    from modules.sourcing import new_product_workbench as workbench
+    from shared_platform.round1_category_observations import resolve_record
+
+    scope = document['scope']
+    state = workbench.load_state(scope['offer_id'])
+    phase = _auto_same_state(document, state, decision)
     if server._local_product_approval_actor() != document['actor']:
         raise Round1WorkspaceError('R1_ACTOR_CHANGED')
     candidate_input = _checked_candidate_input(document)

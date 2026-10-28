@@ -10,10 +10,14 @@ from domains.product_operations import validate_approved_publication_snapshot
 
 
 class CatalogPublicationSync:
-    def __init__(self, catalog_path, outbox_root):
+    def __init__(self, catalog_path, outbox_root, *, canonical_authority=None):
+        from shared_platform.publication_canonical_aliases import _FrozenAliasAuthority
+        if canonical_authority is not None and type(canonical_authority) is not _FrozenAliasAuthority:
+            raise ValueError('CANONICAL_SERVER_AUTHORITY_REQUIRED')
         self.catalog_path = Path(catalog_path)
         self.root = Path(outbox_root)
         self.failures = []
+        self.canonical_authority = canonical_authority
 
     def _path(self, receipt_id):
         if type(receipt_id) is not str or not re.fullmatch('[a-f0-9]{64}', receipt_id):
@@ -117,6 +121,8 @@ class CatalogPublicationSync:
         Projection failure leaves the durable observation available to local
         recovery. Failure here must not reclassify marketplace publication.
         """
+        if any('canonical_binding' in row for row in observations):
+            raise ValueError('CANONICAL_CALLER_BINDING_DENIED')
         snapshot = validate_approved_publication_snapshot(request.snapshot).payload()
         approved = {s['model_sku']: s for s in snapshot['skus']}
         targets = {t['target_label'] for t in snapshot['publication_targets']}
@@ -141,6 +147,8 @@ class CatalogPublicationSync:
             for model_sku in approved:
                 if (target,model_sku) not in seen:
                     rows.append({'authority':'UNAVAILABLE','verified':False,'target_label':target,'model_sku':model_sku,'reason':'official_variant_readback_missing'})
+        if self.canonical_authority is not None:
+            rows=self.canonical_authority.bind_rows(rows,snapshot_digest=snapshot['snapshot_digest'],target_labels=request.target_labels)
         receipt_id = digest({'run_id':request.run_id,'snapshot':snapshot['snapshot_digest'],'platform':request.platform,'rows':observations})
         packet={'schema':'catalog-publication-observation/v1','receipt_id':receipt_id,'snapshot_digest':snapshot['snapshot_digest'],'offer_id':snapshot['offer_id'],'product_revision':snapshot['product_revision'],'rows':rows}
         if request.platform=='OZON':
@@ -174,7 +182,7 @@ class CatalogPublicationSync:
         if digest(value['packet'])!=value['packet_digest'] or value['packet']['receipt_id']!=receipt_id:
             raise ValueError('catalog_outbox_integrity_error')
         try:
-            result=project(self.catalog_path,value['packet'])
+            result=project(self.catalog_path,value['packet'],canonical_authority=self.canonical_authority)
             value.update(state=result['status'],result=result)
         except Exception as error:
             value.update(state='PENDING_LOCAL_PROJECTION',error=type(error).__name__)

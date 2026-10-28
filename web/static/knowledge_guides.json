@@ -69,8 +69,8 @@
         "checksums": [
           {
             "label": "本工程英文 Skill 原始字节",
-            "sha256": "a8f178cdf95e2d3a3f1425e49f7c0433dbbddd63a41d8d3d69c4142408b5e13c",
-            "observed_at": "2026-10-01"
+            "sha256": "098b466cab3c676246b92cbefbbbc67dcfdf267fad78c3ff637f80ba9f0af566",
+            "observed_at": "2026-10-05"
           },
           {
             "label": "本机安装版原始字节",
@@ -79,8 +79,8 @@
           },
           {
             "label": "配置清单记录的本工程 LF 规范化文本",
-            "sha256": "33e20c172e39202baa760c71ba9e926d0eac8c6255984a8b66018ef59d097be6",
-            "observed_at": "2026-10-01"
+            "sha256": "58805eddf9174084e9a946cbab3c540e471256f0a1033935c573f6d5ede87798",
+            "observed_at": "2026-10-05"
           }
         ],
         "historical_checksums": [
@@ -100,7 +100,7 @@
             "observed_at": "2026-09-28"
           }
         ],
-        "project_snapshot_observed_at": "2026-10-01"
+        "project_snapshot_observed_at": "2026-10-05"
       },
       "scenarios": ["判断 MY、TH、VN、PH 哪些商品要补货或首次备货", "检查过期快照、缺货订单、在途到货时间与物流资料缺项"],
       "inputs": ["完整库存／仓库／SKU 身份和采集时间、在途批次及逐 SKU 数量", "同国家的有效订单快照、已批准运输和费用政策；经济分析另需结算事实"],

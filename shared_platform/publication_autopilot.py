@@ -467,6 +467,14 @@ def _build_final_review_manifest(
     bridge_locales = bridge_locales if isinstance(bridge_locales, Mapping) else {}
     frozen_content = product.get("content_by_target")
     frozen_content = frozen_content if isinstance(frozen_content, Mapping) else {}
+    card_galleries = {}
+    structure = product.get('ozon_card_structure')
+    if isinstance(structure, Mapping):
+        from shared_platform.publication_r3_image_bridge import independent_card_gallery
+        for sku in skus:
+            images = independent_card_gallery(snapshot, sku, structure)
+            if images is not None:
+                card_galleries[sku['model_sku']] = images
 
     shopee_master = snapshot.get("shopee_global_master")
     shopee_master = shopee_master if isinstance(shopee_master, Mapping) else {}
@@ -532,6 +540,11 @@ def _build_final_review_manifest(
             variant["shopee_variant_image"] = deepcopy(
                 shopee_variant_images[model]
             )
+        if model in card_galleries:
+            # The base hero identifies a role; each target below freezes its own routed URL.
+            variant['hero_images_by_target'] = {t['target_label']:
+                _target_images(snapshot, t['target_label'])[product['images'].index(raw['variant_images'][0])]
+                for t in targets}
         variants.append(variant)
 
     copy_groups: dict[str, dict[str, Any]] = {}
@@ -556,9 +569,14 @@ def _build_final_review_manifest(
             or _text(frozen_copy.get("locale"))
             or "frozen-master"
         )
-        copy_key = _canonical_digest(
-            {"title": title, "description": description, "language": language}
-        )
+        copy_fields = {"title": title, "description": description, "language": language}
+        # Only explicit frozen target displays enter this review. Never restore
+        # a missing old snapshot field implicitly from mutable/retained R1.
+        if 'variants' in frozen_copy:
+            from domains.product_operations.approved_publication_snapshot import _localized_variant_displays
+            copy_fields['variants'] = _localized_variant_displays(frozen_copy['variants'],
+                expected_models=list(sku_by_model))
+        copy_key = _canonical_digest(copy_fields)
         copy_id = f"copy-{copy_key[:12]}"
         if copy_id not in copy_groups:
             copy_groups[copy_id] = {
@@ -566,6 +584,7 @@ def _build_final_review_manifest(
                 "language": language,
                 "title": title,
                 "description": description,
+                **({'variants': deepcopy(copy_fields['variants'])} if 'variants' in copy_fields else {}),
                 "target_labels": [],
             }
         copy_groups[copy_id]["target_labels"].append(label)
@@ -651,6 +670,33 @@ def _build_final_review_manifest(
                 "prices": prices,
             }
         )
+        structure = product.get('ozon_card_structure')
+        if isinstance(structure, Mapping):
+            target_rows[-1]['listing_structure'] = (
+                {'mode':'THREE_INDEPENDENT_B_CARDS','card_count':3,'variants_per_card':1,
+                 'quantity_per_pack':1,'cards':deepcopy(structure['cards']),
+                 'successor_digest':structure['successor_digest'],
+                 'structure_digest':structure['structure_digest'],
+                 'note_zh':'Ozon 单独建立 3 条新 B 链接，每条一个花型、每件 1 片；原 A 保留。'}
+                if label == 'ozon:RU' else
+                {'mode':'ONE_PRODUCT_THREE_VARIANTS','card_count':1,'variants_per_card':3,
+                 'note_zh':'本店一条新 B 链接，包含全部 3 个花型规格；原 A 保留。'})
+            if label == 'ozon:RU' and card_galleries:
+                by_url = {row['url']:row for row in route_items}
+                for card in target_rows[-1]['listing_structure']['cards']:
+                    urls = card_galleries[card['model_sku']]
+                    if len(by_url) != 8 or set(urls) != set(by_url):
+                        raise ValueError('OZON_REVIEW_FROZEN_CARD_GALLERY_CHANGED')
+                    card['images'] = [{**deepcopy(by_url[url]), 'position':index}
+                        for index,url in enumerate(urls,1)]
+                    card['hero_image_url'] = urls[0]
+                    card['image_count'] = len(urls)
+        retained = (facts.get("category") or {}).get("retained_metadata_projection")
+        if isinstance(retained, Mapping):
+            target_rows[-1]["category"]["source_status"] = retained["source_status"]
+            target_rows[-1]["category"]["technical_attribute_candidates"] = deepcopy(retained["required_attributes"])
+            target_rows[-1]["category"]["final_marketplace_approval"] = False
+            target_rows[-1]["category"]["note_zh"] = "原官方 metadata 的技术候选；GB 的值 1 是官方单选枚举，不是制造批号。只有本页后续受保护的唯一终审才可批准发布。"
         allocations = product.get("warehouse_inventory_by_target")
         allocation = allocations.get(label) if isinstance(allocations, Mapping) else None
         if _text(target.get("platform")).upper() == "TIKTOK" and isinstance(allocation, Mapping):
@@ -691,6 +737,10 @@ def _build_final_review_manifest(
     }
     if isinstance(product.get("stock_policy"), Mapping):
         manifest["product"]["stock_policy"] = deepcopy(dict(product["stock_policy"]))
+    if isinstance(product.get('ozon_card_structure'), Mapping):
+        manifest['product']['ozon_card_structure'] = deepcopy(product['ozon_card_structure'])
+    if card_galleries and isinstance(durable_evidence, Mapping) and durable_evidence.get('variant_image_projection') is not None:
+        manifest['variant_image_projection'] = deepcopy(durable_evidence['variant_image_projection'])
     if isinstance(product.get("source_conformance"), Mapping):
         manifest["product"]["source_conformance"] = deepcopy(
             dict(product["source_conformance"])
@@ -1165,7 +1215,8 @@ def _compile_release_facts(
     exact_dual_brand_plan = _text(snapshot.get("plan_id")).startswith(
         f"dual-brand:{_text(snapshot.get('offer_id'))}:"
     )
-    if durable_quality_evidence["status"] == "NOT_AVAILABLE" and exact_dual_brand_plan:
+    if durable_quality_evidence["status"] == "NOT_AVAILABLE" and (
+            exact_dual_brand_plan or any(row.get('target_label') != 'miaoshou:COMMON' for row in targets)):
         blockers.append(
             _blocker(
                 "DURABLE_EVIDENCE_REQUIRED",

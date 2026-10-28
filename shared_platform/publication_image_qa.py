@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -24,6 +25,22 @@ class PublicationImageQAError(ValueError):
     pass
 
 
+def is_completed_image_asset(row: Mapping[str, Any]) -> bool:
+    """Accept the mature reuse producer's truthful zero-request source status."""
+    if row.get("status") == "COMPLETED":
+        return True
+    return (
+        row.get("status") == "REUSED_FROM_MIAOSHOU"
+        and row.get("provider") == "MIAOSHOU_EXISTING"
+        and type(row.get("external_generation_count")) is int
+        and row["external_generation_count"] == 0
+        and type(row.get("source_position")) is int
+        and row["source_position"] > 0
+        and str(row.get("public_url") or "").startswith("https://")
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", str(row.get("artifact_digest") or "")) is not None
+    )
+
+
 def _rows(value: object, key: str) -> list[dict[str, Any]]:
     if not isinstance(value, Mapping):
         return []
@@ -37,7 +54,7 @@ def _artifact_digests(*documents: Mapping[str, Any]) -> list[str]:
             digest = str(row.get("artifact_digest") or "")
             if digest.startswith("sha256:"):
                 values.append(digest)
-    return sorted(values)
+    return sorted(set(values))
 
 
 def build_automated_image_qa(
@@ -70,7 +87,7 @@ def build_automated_image_qa(
         expected_count > 0
         and len(generated) == expected_count
         and len(generated_keys) == len(set(generated_keys))
-        and all(row.get("status") == "COMPLETED" for row in generated)
+        and all(is_completed_image_asset(row) for row in generated)
     )
 
     tasks = _rows(translation, "approved_tasks")

@@ -1,0 +1,195 @@
+{
+  "schema_version": "shopee-settlement-source-preflight/v1",
+  "as_of": "2026-09-09",
+  "mode": "READ_ONLY",
+  "period": {
+    "start": "2026-07-01",
+    "end": "2026-07-31",
+    "inclusion_field": "escrow_release_time",
+    "interval": "site-local calendar days, start inclusive, end inclusive",
+    "site_timezones": {
+      "MY": "Asia/Kuala_Lumpur",
+      "PH": "Asia/Manila",
+      "TH": "Asia/Bangkok",
+      "VN": "Asia/Ho_Chi_Minh"
+    }
+  },
+  "live_runtime": {
+    "url": "http://127.0.0.1:49289",
+    "service": "orbit-hive-local-console",
+    "code_root": "D:\\OrbitHive\\candidate-20260908\\integration-profit",
+    "commit": "42af5e638b2491e316779bb392b618294a235097",
+    "runtime_state": "READY",
+    "configuration_source_matches": true,
+    "settings_path": "D:\\OrbitHive\\candidate-20260908\\profit-live-state\\settings.json",
+    "local_settlement_file_count": 0,
+    "saved_shopee_report_count": 0,
+    "fx_state": "degraded_local_defaults"
+  },
+  "historical_credential_chain": {
+    "settings_path": "D:\\Users\\Windows11\\Desktop\\Agent_PR\\tiktok_e_comm\\config\\settings.json",
+    "token_path": "D:\\Users\\Windows11\\Desktop\\Agent_PR\\tiktok_e_comm\\shopee_tokens.json",
+    "environment": "live",
+    "partner_id_present": true,
+    "partner_key_present": true,
+    "token_store_mtime_ns": 1788793385735299700,
+    "credential_refresh_performed": false,
+    "shops": [
+      {
+        "site": "MY",
+        "shop_id": 1561117812,
+        "shop_name": "LivelyHive",
+        "access_token_present": true,
+        "refresh_token_present": true,
+        "expire_at_utc": "2026-09-07T19:02:08+00:00",
+        "valid_without_refresh": false
+      },
+      {
+        "site": "PH",
+        "shop_id": 1527371343,
+        "shop_name": "LivelyHive",
+        "access_token_present": true,
+        "refresh_token_present": true,
+        "expire_at_utc": "2026-09-07T19:02:58+00:00",
+        "valid_without_refresh": false
+      },
+      {
+        "site": "TH",
+        "shop_id": 1561124013,
+        "shop_name": "LivelyHive",
+        "access_token_present": true,
+        "refresh_token_present": true,
+        "expire_at_utc": "2026-09-07T19:03:02+00:00",
+        "valid_without_refresh": false
+      },
+      {
+        "site": "VN",
+        "shop_id": 1723948773,
+        "shop_name": "WangLuck6.vn",
+        "access_token_present": true,
+        "refresh_token_present": true,
+        "expire_at_utc": "2026-09-07T19:03:05+00:00",
+        "valid_without_refresh": false
+      }
+    ]
+  },
+  "official_readback": {
+    "status": "BLOCKED_EXPIRED_TOKEN_REFRESH_NOT_AUTHORIZED_FOR_PREFLIGHT",
+    "endpoint": "payment/get_escrow_list",
+    "external_api_read_count": 0,
+    "credential_refresh_count": 0,
+    "platform_write_count": 0,
+    "chargeable_call_count": 0,
+    "reason": "All four historical access tokens are expired. The only available path would refresh and rewrite the token store, which this preflight explicitly forbids."
+  },
+  "historical_sources": {
+    "directory": "D:\\Users\\Windows11\\Desktop\\Agent_PR\\tiktok_e_comm\\outputs",
+    "shopee_escrow_file_count": 47,
+    "regions_present": [
+      "TH"
+    ],
+    "regions_missing": [
+      "MY",
+      "PH",
+      "VN"
+    ],
+    "TH": {
+      "fact_class": "historical_actual",
+      "source": "shopee_api_escrow",
+      "july_unique_settled_order_count": 781,
+      "release_counts_site_local": {
+        "2026-07-01": 54,
+        "2026-07-07": 103,
+        "2026-07-14": 215,
+        "2026-07-21": 195,
+        "2026-07-31": 214
+      },
+      "last_july_release_date": "2026-07-31",
+      "last_july_release_unique_order_count": 214,
+      "representative_source_file": "shopee_escrow_TH_20260718_20260731.json",
+      "representative_source_sha256": "d37e4ef610e11ff2d62c8fdcc7b9e1e1a5a62d3108353dbd14de5e1021e9b24e",
+      "representative_source_file_size": 375001,
+      "representative_source_pulled_at_utc": "2026-07-31T23:34:50.287835+00:00",
+      "representative_source_file_mtime_utc": "2026-07-31T23:34:50.297834+00:00",
+      "representative_source_line_count": 428,
+      "representative_source_unique_order_count": 409,
+      "representative_source_release_line_counts_site_local": {
+        "2026-07-21": 202,
+        "2026-07-31": 226
+      },
+      "representative_source_release_unique_order_counts_site_local": {
+        "2026-07-21": 195,
+        "2026-07-31": 214
+      },
+      "coverage_assessment": "historical actual evidence present; neither this file nor the overlapping union proves complete July coverage"
+    }
+  },
+  "representative_snapshot_audit": {
+    "producer_endpoints_from_source_code": [
+      "payment/get_escrow_list",
+      "payment/get_escrow_detail"
+    ],
+    "producer_list_page_size": 100,
+    "producer_pagination_logic": "increment page_no while response.more is true; defensive stop after page 200",
+    "pagination_completion_receipt_retained": false,
+    "raw_list_response_retained": false,
+    "raw_detail_response_retained": false,
+    "request_bounds_retained_as_epoch_seconds": false,
+    "generator_code_version_retained": false,
+    "timezone_retained": false,
+    "legacy_boundary_behavior": "file naming bounds were constructed in UTC, not site-local time; release_time text was also rendered in UTC",
+    "safe_time_interpretation": "use release_ts as an instant and convert to Asia/Bangkok before July filtering",
+    "producer_within_run_order_dedupe": "order_sn, retaining the greatest escrow_release_time",
+    "audit_union_order_count_dedupe": "order_sn after converting release_ts to site-local date",
+    "same_order_same_sku_line_identity_available": false,
+    "actual_fields_recoverable": [
+      "region",
+      "currency",
+      "order_sn",
+      "seller_sku",
+      "product_name",
+      "quantity",
+      "release_ts",
+      "sale_local",
+      "settlement_local",
+      "commission_fee",
+      "service_fee",
+      "source"
+    ],
+    "embedded_fields_not_safe_as_historical_authority": [
+      "unit_cost_cny",
+      "product_cost_cny",
+      "product_cost"
+    ],
+    "missing_for_full_profit_audit": [
+      "order_created_at",
+      "order_line_id_or_model_id",
+      "buyer_payment_authoritative_component",
+      "complete_fee_tax_shipping_discount_refund_components",
+      "product_weight",
+      "product_image_identity",
+      "cost_snapshot_id_and_cost_as_of",
+      "fx_snapshot_id_and_fx_as_of",
+      "request_page_count_and_terminal_more_false_receipt",
+      "generator_code_version"
+    ],
+    "cost_presence": {
+      "line_count": 428,
+      "lines_with_embedded_cost": 404,
+      "lines_without_embedded_cost": 24
+    }
+  },
+  "classification": {
+    "TH": "HISTORICAL_ACTUAL_PENDING_COMPLETENESS_RECONCILIATION",
+    "MY": "MISSING_SHOPEE_SETTLEMENT_SOURCE",
+    "PH": "MISSING_SHOPEE_SETTLEMENT_SOURCE",
+    "VN": "MISSING_SHOPEE_SETTLEMENT_SOURCE",
+    "estimated_rows_accepted_as_actual": 0
+  },
+  "screen_interpretation": {
+    "displayed_filter": "order_created_at",
+    "audit_period_field": "escrow_release_time",
+    "finding": "An order-date badge ending on 2026-07-25 does not mean settlement ended on that date. This recovered TH source records 214 unique orders released on 2026-07-31 local time; it is not evidence about MY, PH, or VN and is not yet a completeness proof."
+  },
+  "external_writes": 0
+}

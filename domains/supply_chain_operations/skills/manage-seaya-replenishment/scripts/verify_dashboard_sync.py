@@ -31,6 +31,8 @@ TRACKED = (
     DOMAIN_ROOT / "transport_history.py",
     SKILL_ROOT / "SKILL.md",
     SKILL_ROOT / "references" / "decision-contract.md",
+    SKILL_ROOT / "references" / "current-entry.md",
+    SKILL_ROOT / "scripts" / "read_orders_explicit.py",
 )
 
 

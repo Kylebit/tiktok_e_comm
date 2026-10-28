@@ -14,6 +14,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import re
+import hashlib
+import json
 from typing import Any, Protocol
 
 from domains.product_operations.approved_publication_snapshot import publication_content_for_target
@@ -218,6 +220,19 @@ def project_shopee_global_v4_command(
         raise ShopeeGlobalV4Error(
             "Shopee approved target category coverage is unavailable or ambiguous"
         )
+    category_decision = _mapping(master.get("category_decision"), "Shopee category decision")
+    if category_decision.get("status") == "EVIDENCE_BOUND":
+        source_digest = category_decision.get("source_decision_digest")
+        bound_category = _mapping(category_decision.get("category"), "Shopee bound category")
+        for label, row in categories_by_target.items():
+            if not str(label).startswith("shopee:"):
+                continue
+            original = _mapping(row.get("decision"), "Shopee frozen target decision")
+            category = row["category"]
+            if (original.get("status") != "APPROVED" or original.get("decision_digest") != source_digest
+                    or category.get("id") != bound_category.get("id")
+                    or category.get("name") != bound_category.get("name")):
+                raise ShopeeGlobalV4Error("Shopee evidence-bound source receipt conflicts with frozen targets")
     price_source = deepcopy(
         _mapping(master.get("price_source"), "Shopee master price source")
     )
@@ -379,7 +394,7 @@ def _validate_preparation(
     status = decision.get("status")
     if status == "DEFERRED_TO_SKILL" and facts.get("recommendation_count") != 1:
         raise ShopeeGlobalV4Error("Shopee category recommendation is ambiguous")
-    if status not in {"DEFERRED_TO_SKILL", "APPROVED"}:
+    if status not in {"DEFERRED_TO_SKILL", "APPROVED", "EVIDENCE_BOUND"}:
         raise ShopeeGlobalV4Error("Shopee category decision is not executable")
     category = _mapping(facts.get("category"), "Shopee official category")
     normalized_category = {
@@ -400,7 +415,24 @@ def _validate_preparation(
         raise ShopeeGlobalV4Error("Shopee required attributes are malformed")
     approved_category = decision.get("category")
     approved_attributes = decision.get("required_attributes")
-    if status == "APPROVED" and (
+    if status == "EVIDENCE_BOUND":
+        # Native R3 freezes this inert evidence receipt; it is not a separate
+        # human APPROVED decision. Verify its original canonical binding and
+        # then compare the entire live official category/attribute selection.
+        expected = {"status", "category", "required_attributes", "source_decision_digest", "decision_digest"}
+        source = decision.get("source_decision_digest")
+        canonical = {"schema_version": "shopee-global-category-decision/v1",
+                     **{k: v for k, v in decision.items() if k != "decision_digest"}}
+        digest = "sha256:" + hashlib.sha256(json.dumps(canonical, ensure_ascii=False,
+                    sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        approved = _mapping(command.get("approved_category"), "Shopee frozen category")
+        if (set(decision) != expected or type(source) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", source) is None
+                or decision.get("decision_digest") != digest
+                or approved.get("id") != normalized_category["id"]
+                or approved.get("name") != normalized_category["name"]):
+            raise ShopeeGlobalV4Error("Shopee evidence-bound category receipt is invalid")
+    if status in {"APPROVED", "EVIDENCE_BOUND"} and (
         normalized_category != approved_category or attributes != approved_attributes
     ):
         raise ShopeeGlobalV4Error("Shopee approved category facts drifted")
@@ -487,12 +519,28 @@ def _verify_readback(
                 raise ShopeeGlobalV4Error("Shopee expected category facts are invalid")
             attribute_id = str(expected.get("attribute_id") or "").strip()
             expected_values = expected["attribute_value_list"]
-            expected_ids = {str(row.get("value_id") or "").strip() for row in expected_values if isinstance(row, Mapping)}
+            def attribute_values(rows):
+                normalized = []
+                for row in rows:
+                    if not isinstance(row, Mapping) or type(row.get("value_id")) is not int:
+                        raise ShopeeGlobalV4Error("Shopee official required attributes drifted")
+                    value_id = row["value_id"]
+                    if value_id == 0:
+                        # Free-text dimensions have a real zero identity. Their
+                        # literal and absence/presence of units are material.
+                        text = row.get("original_value_name")
+                        if not isinstance(text, str) or not text.strip():
+                            raise ShopeeGlobalV4Error("Shopee official required attributes drifted")
+                        normalized.append((value_id, text, row.get("value_unit") or ""))
+                    else:
+                        normalized.append((value_id,))
+                return sorted(normalized)
+            expected_ids = attribute_values(expected_values)
             matches = [row for row in observed_attributes if str(row.get("attribute_id") or "").strip() == attribute_id]
             if len(matches) != 1 or not expected_ids:
                 raise ShopeeGlobalV4Error("Shopee official required attributes drifted")
             values = matches[0].get("attribute_value_list")
-            if not isinstance(values, list) or {str(row.get("value_id") or "").strip() for row in values if isinstance(row, Mapping)} != expected_ids:
+            if not isinstance(values, list) or attribute_values(values) != expected_ids:
                 raise ShopeeGlobalV4Error("Shopee official required attributes drifted")
 
     approved_image_urls = list(product["images"])
@@ -1007,8 +1055,14 @@ class ShopeeGlobalV4Resolver:
             item=item,
             model_response=models,
             expected_image_ids=bindings,
-            expected_category=(preparation["category"] if preparation["category"]["id"] == "101157" else None),
-            expected_required_attributes=(preparation["required_attributes"] if preparation["category"]["id"] == "101157" else None),
+            expected_category=(preparation["category"] if (
+                preparation["category"]["id"] == "101157"
+                or command["category_decision"].get("status") in {"APPROVED", "EVIDENCE_BOUND"}
+            ) else None),
+            expected_required_attributes=(preparation["required_attributes"] if (
+                preparation["category"]["id"] == "101157"
+                or command["category_decision"].get("status") in {"APPROVED", "EVIDENCE_BOUND"}
+            ) else None),
         )
         return global_item_id
 

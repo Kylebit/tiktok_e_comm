@@ -51,7 +51,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "8944ee8a1f216d5d39d112521abce38cb717daabfe519dea3b5f40916552fff5"
       }
     },
@@ -101,7 +101,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "b8aaf4c2a0eabb55b92ee76fcc45762ad8fe5c1d84199c813a836d8536138497"
       }
     },
@@ -174,7 +174,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "0473797c6e1fdba54d557abd42aad4c4de0e8e401198059a0ca1580ecccfeaab",
         "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md",
         "historical_pending_owner": "B4B"
@@ -233,7 +233,7 @@
         },
         "source_kind": "r4-retained",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "471f43f347b3928dca44ec51cc07c988ef4811ccfb3bfab14d6049aee8ac2376",
         "integration_evidence": "docs/audits/B00_B4B_DISCOUNT_INTEGRATION.md",
         "historical_pending_owner": "B4B"
@@ -275,7 +275,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "42fe6f13bae0b08fccebeb357f289ba1e6abcda721aa79da5ef25fee40a48884"
       }
     },
@@ -317,7 +317,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "6324507faab2b6bf9a0eb6af1f64d63496b7b4b433c35d00162af0ac82273605"
       }
     },
@@ -356,28 +356,30 @@
       "file_digests": {
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/agents/openai.yaml": "627b10875c3b6ba901798de61ac09abbffc6604fe59b066e7eee122cc733e11c",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/audited-manual-snapshot.md": "3d02ed9ce93633c21deae459cbb1a0b838c75918d9edd810f545566f1319157f",
-        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/captured-refresh.md": "ac143bc385591f723c7a9484f7ce22e47b983c48a62f80a09e1fbf2531927e35",
-        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/dashboard-sync.json": "da4fad9bb1eb2f0c416135cd98a9d807d61c1604571cdf3a97be2cfbb1ae6189",
-        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/decision-contract.md": "fe11fe5d632c7240f7d29ac10e758643d41b98b25fcf47cf9a62a79a172d3968",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/captured-refresh.md": "f0ea75acd1658284bfc8313a270a1f18789db762c07d2715b2adc8a8a0ff72cf",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/current-entry.md": "819252c77d28277d189f1f25fabd39cac7469598910e1771a3ae6fd184a0a610",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/dashboard-sync.json": "c6b0eb644b06511ccc36b1fa3305ec9ebf676e30bafb053a6c834be980f2b57c",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/decision-contract.md": "0bd8f05ea8aa046a1d58a4ea08c0f6f3ea761920230f04b5df8d32d8c99f69db",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/execution-readiness.md": "4c8d9e4af9abce5b666a27ee4b5ed0980798e24558629d7d081cee9f8bdedbaa",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/private-storage.md": "a0c11055dc08ebf9d029613f16c3b54b5e390cbc076dd25ba3222ca5c8da3c43",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/session-recovery.md": "fc0c49e2573cba40c24e087b3a4c4f8fcc1a690d0d46df0beb82b0bc5ae38716",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/apply_inventory_snapshot.py": "3fca676fbeaaeb4aef574a5dc8ce214141cac9fbc487c02cdbcdf1409cc476c4",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/apply_order_demand.py": "82373b243c43eede6f833cfc8e1b52924675d0e284a226e51b15a999724c503b",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/apply_shopee_demand.py": "6f2027a8734c377a17140c5657a573076ce2979c8ff493737a0213d3295a3ac9",
-        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/captured_refresh.py": "9a88433d92a4464804043706c90bfac4b67601fc2fd0daf322dc9f47eb352ac0",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/captured_refresh.py": "c2218bc1fbef1d4a54ed5bd044c18add584142426493dc95aa065c77905485bd",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/extract_current_seed.py": "0721ffc746d53dcec75ebdcdfd949057a19e922cbdc1e1bce0d1e686dc5e8ed6",
-        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/install_local_skill.ps1": "98f081e1338293196434224f76207035c0be52c50c38c792281502ff09e226d3",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/install_local_skill.ps1": "f6aa9a88120b0065ea4a4d6a5676e712d0b3d9d435f2939311d8f9fb13bf26e0",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/private_storage.py": "26ab52075881beacd819c233c101cdb049d0bffe85faf532225be2a7c1a94626",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/provision_private_directory.py": "0d3a213d5eb619070a7a84cef85f0606d71ba9f4686c2464dd952b9866a3ca03",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/pull_order_demand.py": "f715736fb1ed8a75ce8a9a36d115b0537f4c569c8bdb88c5e539db989fb50a4e",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/read_orders_explicit.py": "eb714fe995b2a5f05717a7c807eba7ad1d54003575f88a768769988eb0eb76e8",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/refresh_supply_chain.py": "845559dc56354a7d0bf2daf7e69b731c5be4d0280f012d38608a8ff3759262b7",
-        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/seaya_capture.py": "6ddd1b12fe884db6c5a58e8f6d277ebaa6cf3b04acea86337f68fd3966551779",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/seaya_capture.py": "8752f37b36691faf0edc3907c856b728b64fe1bc0c11b34f8b1c2e631a328cf4",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/SEAYA_CAPTURE_CONTRACT.md": "3e1ae03d0bf7eba61f6198eab47ecf096ce6dc446c8f69e2dd751d586fa9707e",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/session_recovery.py": "bd0ad2a4b5bcdc82537e8ffc812d7d507aa98625d7f32125a7e3688f42b734cb",
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/validate_inventory_snapshot.py": "f7fafa6a93ac936ca354458d478fedd93e7273c0c2d5f18bad6bd8fad43cb621",
-        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/verify_dashboard_sync.py": "8483c34674db6cddd43ada52a960cdc0d4a484c085e138900c371103f4e953a5",
-        "domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md": "100f7f84b93ed2825ab96dc39ed5c0acf151ec86699775edee9155d2a0d1cff2"
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/verify_dashboard_sync.py": "44ce3d10cf3a9d775e850e3071ef04038b14176e37bd7298f4b8534ad52a569d",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md": "58805eddf9174084e9a946cbab3c540e471256f0a1033935c573f6d5ede87798"
       },
       "source": {
         "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
@@ -385,8 +387,8 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
-        "composed_file_digest": "18e4e842805202b5403c0df1bd4ad62d49fa56389c66c76b5c33441d1ab3cc55"
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
+        "composed_file_digest": "325b89bb084815edd881820555985ca53d92daed991359e0ea1117e9e85bb860"
       }
     },
     {
@@ -455,7 +457,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "50488e054393013181dbaf9fa815f62bff8b640ade4f664a1d8b4202d3a212fa"
       }
     },
@@ -496,7 +498,7 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "8e2047ff5cc6b3b107dd1ca96a9469a5809bb2cf85f4014fceadbe49cbb9ad0b"
       }
     },
@@ -533,7 +535,7 @@
         },
         "source_kind": "external-skill-retained",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -567,7 +569,7 @@
         },
         "source_kind": "external-skill-retained",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -599,7 +601,10 @@
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/SKILL.md"
       ],
       "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/assets/icon.png": "9555e38ee18d8429cce025c5699290fd374de6e23ccba9bffbad87a05c54f450",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/assets/icon.svg": "929437951692a1edc53100c5435686b123d12dee7d3a603bc22a7095ccd0c006",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/references/api_reference.md": "0e7dacbe38213f309555f895b8c6076a682465f884cf54612e9cef40cdbee9cd",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/resources/config.json.example": "9369a547b232d8df9f54d2a2cfca918e7b48a71f0c2a82ab7ebb3948901d91b3",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/scripts/shop_list.py": "3cc11af273e5c6d89f8eba861c7815499a3eae806ebfe56c00fee065c84c06d9",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-shop-query/SKILL.md": "d245ef06a447d2bd7df62832aba04da29f95b9565f7cd5c733e11f35e50301c0"
       },
@@ -609,8 +614,8 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
-        "composed_file_digest": "423ddca2a81da4f81588c21d757774093501325776b4d8b51859ec4b341d5027"
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
+        "composed_file_digest": "d06f30a8cead78a724374fcbea8f9ed62b607f1750e9cdffb0a1f82e347a7f35"
       }
     },
     {
@@ -640,7 +645,10 @@
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/SKILL.md"
       ],
       "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/assets/icon.png": "021ed3539540663ecb7049b5d9f42b519abefd2d968f9514046da78ddcddd4be",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/assets/icon.svg": "3eb19368dcfa38662ef443a255ebd857c32c96be980cc017d550e430be090308",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/references/api-spec.md": "e59a8cfcf11670db075823a0adc1a45ee610f04e2fd818e764008977b9d21e1f",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/resources/config.json.example": "647211b43dc10624f4878ea56d7357c1953da99c9979ed54b47ea861b0ee872a",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-source-import/SKILL.md": "c5bfa888fc3f46ea2a84f36d87fc7cba50d40856f133c07d025fe6fc1957b3e7"
       },
       "source": {
@@ -649,8 +657,8 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
-        "composed_file_digest": "ce12bf46a720895be0aa603ac44e6c5bb033e446ff1190dd69120b57c2e58639"
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
+        "composed_file_digest": "a8c52d99b5752c56ae65f426d5ca8aa4f7303198b97938de56381ccacd2f0ddd"
       }
     },
     {
@@ -681,7 +689,10 @@
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/SKILL.md"
       ],
       "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/assets/icon.png": "70aae0c5918ec80f91588063c61995f3425831fb848ef3fbf20ec73568364a62",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/assets/icon.svg": "9853c2ced8b7a5bbec6200a1c91a6c9ba53967e7b2301c38763c01aefe856f13",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/references/api_reference.md": "ea2a8f9ffdd9898d6b55a682c1e2f71ff1b46f03fd96034115b2171fb2ced1b3",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/resources/config.json.example": "9369a547b232d8df9f54d2a2cfca918e7b48a71f0c2a82ab7ebb3948901d91b3",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/scripts/claim_to_platform.py": "6865168d67c29e1455e4c050255ebbd070a23cbaef79c4e78b8c63609346c6ed",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-product-claim/SKILL.md": "4a47c5b23fc8704a033e538a55cc6ef16bc8c2f432366135e63fa9a4e202063d"
       },
@@ -691,8 +702,8 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
-        "composed_file_digest": "3d072774812ecc6bc18a7a446060caf7d509654cd1c2af6f6bf2951d132c726f"
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
+        "composed_file_digest": "f62e7cf06604fdef31b3bdee88e42353e5a3e9bbb3e693cbf06868484500f342"
       }
     },
     {
@@ -723,7 +734,10 @@
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/SKILL.md"
       ],
       "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/assets/icon.png": "f044b3cade55e090ae1fd35e634342ce718a62a8db1709650c0c99e7ae0177a9",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/assets/icon.svg": "699f8773aca1de6d2834a882748866300d6822e0b3058f2846c95abf5640556d",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/references/api_reference.md": "669738e21fdb0faf9738bf535dea59bcd908e5676aadea2fdeff7b8f9f04a218",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/resources/config.json.example": "9369a547b232d8df9f54d2a2cfca918e7b48a71f0c2a82ab7ebb3948901d91b3",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/scripts/collectbox_crud.py": "c95d3527fee50f41c6bea1de7294b72e75b044ced5128b7234c10969ae05723f",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-common-collectbox-manage/SKILL.md": "9e406ecbe35854ca3348ab650fbe38fe69447292aaf56ea6c4206fdc93f91b2a"
       },
@@ -733,8 +747,8 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
-        "composed_file_digest": "e12df6d10e5a82a9f7b9b5f183e6279be6d21b47cdf283bd8023789c235996e4"
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
+        "composed_file_digest": "21a2419d89c24d92e2dcec600f320a3d9990c28330b6ff22704798702fd104df"
       }
     },
     {
@@ -764,6 +778,9 @@
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/SKILL.md"
       ],
       "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/assets/icon.png": "23b911ba26ccf69280d37d06f2ff2beefe2dfa02c3fd53802a70d8e5ab63bd98",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/assets/icon.svg": "faa7869e1d444fdc5f8fde2fe5a8370cd359cfaf42eca2494c1ce536ffc0d6bb",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/resources/config.json.example": "4a55932d8a86c494f3ea906ca984ff73b038ee8785de867998877403bc84552d",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/scripts/tiktok_category_match.py": "61869e81f703ca988051c4cdb0e082d39391bcb44f1884a19e239842762a939d",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-category-recommend/SKILL.md": "c1ace8e122270707e58fdab5ee50450cfdeb940aad5c98b2dd1e7b43367804d9"
       },
@@ -773,8 +790,8 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
-        "composed_file_digest": "41d782f11b1e09bc69f0b513a208aa8832453bb869723a5770c051138f48fb18"
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
+        "composed_file_digest": "2a9e08a68c86d92d6c2735165ee2ef6a8710a8b3189b48719d484cd674782abb"
       }
     },
     {
@@ -805,7 +822,10 @@
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/SKILL.md"
       ],
       "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/assets/icon.png": "818ccfe147190266abb28e806f832c55f111e85a3a664f8a5839e17de839dabd",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/assets/icon.svg": "1d05bcf050077dee9384e9e368b83f8ca982da796a68e4db9e4c25fc7fe9c6c3",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/references/api-spec.md": "7a1a84e3ea2c6aedfcd72df1317fce14ff8b83db0d81dcb52d6af264056a5837",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/resources/config.json.example": "9369a547b232d8df9f54d2a2cfca918e7b48a71f0c2a82ab7ebb3948901d91b3",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/scripts/tiktok_collectbox.py": "3ca510e094bdc00aa87a49303df9a02d20b6db05dc5690605a00d38ae757857a",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-edit/SKILL.md": "9d5a1f23fc2b40626ebd23011bef4effc1d84e027cf0ba86ae36890865687b5d"
       },
@@ -815,8 +835,8 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
-        "composed_file_digest": "2c454ae236385c99745f00b334554ae3a8aa24e35b4903ec7adbdfe52d6cd569"
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
+        "composed_file_digest": "38b48742bd5a4435b8cb83a9efd2c175fad444384a3e83289864ffb923f9af1d"
       }
     },
     {
@@ -847,7 +867,10 @@
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/SKILL.md"
       ],
       "file_digests": {
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/assets/icon.png": "859593a9cc77607f23548a8a58e4be62ef70c354248c4f0103cabae3d2db0fe3",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/assets/icon.svg": "7fe0392162acb9dcf9e860326d82ad83bd814cd81243dbf7507b4401a739eb9a",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/references/api_reference.md": "ac4019f6001a3514f120a5a8303e142ef47abd112aab062ce6515d28d9a1885f",
+        "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/resources/config.json.example": "9369a547b232d8df9f54d2a2cfca918e7b48a71f0c2a82ab7ebb3948901d91b3",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/scripts/tiktok_publish.py": "4cb6fbee619821b85ed2f92ea783ff4b17077306d73fccc97a3bb6f0370791bd",
         "docs/miaoshou-skills/miaoshou-erp-common-collectbox-manage/miaoshou-erp-tiktok-product-publish/SKILL.md": "452de4019465f30249e3ffa75e1c136bfd0a511c4424fc62f3e7a8aa8c596437"
       },
@@ -857,8 +880,8 @@
         "preserved_file_digests": {},
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
-        "composed_file_digest": "91f9264421192e312e6102a744f294f3eff53e849107b299c3a44307f4cbeabe"
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
+        "composed_file_digest": "f9d1754c9ebab20e84bcea5fbcd35d376e58ad109159c55463ea7a320e33ac59"
       }
     },
     {
@@ -892,7 +915,7 @@
         },
         "source_kind": "external-skill-retained",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -927,7 +950,7 @@
         },
         "source_kind": "external-skill-retained",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -964,7 +987,7 @@
         "basis_commit": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
         "all_file_digest": "8b5efd88def68004515fbc87c3b4856311640a4d28c7c74d33f97c71bb23c737",
         "source_kind": "T00-retained-C-script-adaptation",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "0b0390ac4d66c9ca491921e0f124f0ff1179674117aaf56e9799072eebb0fe87",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only"
       }
@@ -1002,7 +1025,7 @@
         "all_file_digest": "31ad7a6f0781a62a9c09f1968cc4ca555eddc1f9027ef8102128d7fbc5550cdb",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "7bb149b41e4494f76e00be9679e6a143430fec0ccb040f6c772dd02982f1f146",
         "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
       }
@@ -1036,7 +1059,7 @@
         "all_file_digest": "1fd7907d5d30364a70e764fc1da7b41c7920a3f620b52aaac893d8160dbc79e9",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "1fd7907d5d30364a70e764fc1da7b41c7920a3f620b52aaac893d8160dbc79e9"
       }
     },
@@ -1073,7 +1096,7 @@
         "all_file_digest": "6d558c11e85dade9b612049aa0ef21065f410c20e9f524dcfdbb9fbe4e45815a",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "9af4ecd21b4cb31ca7af47e680e76580490e18831aea340ecdc9c069f60ceeb3",
         "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
       }
@@ -1096,7 +1119,7 @@
         "AGENTS.md"
       ],
       "file_digests": {
-        "AGENTS.md": "5525cb4f0b7f3ab4ce62c40fb6e88326be03f4e7db287feb74ede13c1c62f907",
+        "AGENTS.md": "7349d2b6ca74f36862b983e57ef7dc2c749a5b1b9de9c854b5de303b6eec1f8d",
         "modules/ozon/config.py": "9a04abe1165a7bbbcb3c28b203fc82069af9e5f33a12749bfeecb905c34924f4",
         "modules/ozon/webapp_bridge.py": "70b5574ca702e8e400e6a6cfb0b43ea161f1f90327a40590179353a839f8ea01"
       },
@@ -1111,8 +1134,8 @@
         "all_file_digest": "1623746f0f321e60effaa941f75eb319ae0fb8b7aa995af770deb542c82825fb",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
-        "composed_file_digest": "d260d6f7c131c33e13c62eb6950c772d66cdec7e3f3f1ef4ff04e4e0ffd49dcc",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
+        "composed_file_digest": "ce6370c01344b68463a53715d720bbd4fffff443045d73da2ab9296ab38ba035",
         "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
       }
     },
@@ -1145,7 +1168,7 @@
         "all_file_digest": "2b96c873a7e6cc53e450d87794fcfbca5a979a499f9ee8304095332c56b87fe7",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "28481a064516ca96343e93c1b507d6a1dfb4684e684675e3b85da67802b39de4",
         "integration_evidence": "docs/audits/B00_B4B_R3_CORE_CONTRACTS.md"
       }
@@ -1166,7 +1189,7 @@
         "domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md"
       ],
       "file_digests": {
-        "domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md": "100f7f84b93ed2825ab96dc39ed5c0acf151ec86699775edee9155d2a0d1cff2"
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md": "58805eddf9174084e9a946cbab3c540e471256f0a1033935c573f6d5ede87798"
       },
       "python_dependencies": [],
       "dependencies": [
@@ -1179,8 +1202,8 @@
         "all_file_digest": "13d3c4ff6beb473959356059aaded3c7347fb92a70d060c30172b14418783277",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
-        "composed_file_digest": "e68e9a9449248d3b2ac8b9f205e61b3c8c594d6f95c1b1dd5e15d280d6086cce"
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
+        "composed_file_digest": "7391be501b6ef94440e5033e8807d4aca00eb65202c9f198dfa44b4986f65422"
       }
     },
     {
@@ -1214,7 +1237,7 @@
         "all_file_digest": "25419d0ff7444ab55d45e6d49a38cb1c4229898f9a00ae61f5c113265e7bee07",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "9212ea42599c1e22390d0bc9861c33c2af7c5eae05a32635132fce8baf2c544b"
       }
     },
@@ -1250,7 +1273,7 @@
         "all_file_digest": "0c534857a0f65cedf17b29e6cda56e66780b9e7d9cc1b9e85ac40ac4dfa019eb",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "0c534857a0f65cedf17b29e6cda56e66780b9e7d9cc1b9e85ac40ac4dfa019eb"
       }
     },
@@ -1287,7 +1310,7 @@
         "all_file_digest": "82483c3256ef301dc1b25294107e31ceabd13a18f5eef58cb9eda94e1e681c6e",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "82483c3256ef301dc1b25294107e31ceabd13a18f5eef58cb9eda94e1e681c6e"
       }
     },
@@ -1322,7 +1345,7 @@
         "all_file_digest": "b1e66b9f9889cb6a86cd45cb13fb913951ef5c273d92d122287b35d247e95cf0",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "b1e66b9f9889cb6a86cd45cb13fb913951ef5c273d92d122287b35d247e95cf0"
       }
     },
@@ -1357,7 +1380,7 @@
         "all_file_digest": "70a928af83b3b74c5f82e0066c3c752a3cdd913251aee3ac322b71ee948a46d9",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "70a928af83b3b74c5f82e0066c3c752a3cdd913251aee3ac322b71ee948a46d9"
       }
     },
@@ -1390,7 +1413,7 @@
         "all_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "source_kind": "external-or-retired",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -1425,7 +1448,7 @@
         "all_file_digest": "c8b319ad839a6094dd4db729a98367a2d70903e1e81465d5fd691d7d4548386d",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "c8b319ad839a6094dd4db729a98367a2d70903e1e81465d5fd691d7d4548386d"
       }
     },
@@ -1460,7 +1483,7 @@
         "all_file_digest": "114703b11d5dbc6571bdc0204eb220a15b2c747a5e01ad89ac397462976f7a8f",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "114703b11d5dbc6571bdc0204eb220a15b2c747a5e01ad89ac397462976f7a8f"
       }
     },
@@ -1489,7 +1512,7 @@
         "all_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "source_kind": "external-or-retired",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -1522,7 +1545,7 @@
         "all_file_digest": "e2a0cb9c6e0e0d4d7d017a4c63d0476350ae1904407be633a50bb9bce64e272a",
         "source_kind": "candidate",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "e2a0cb9c6e0e0d4d7d017a4c63d0476350ae1904407be633a50bb9bce64e272a"
       }
     },
@@ -1564,7 +1587,7 @@
       "source": {
         "basis_commit": "7d6d7c82b953b1f8ea5cf5ddcd1d1ccdc27c05c3",
         "source_kind": "accepted-K00-limited-knowledge",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "0a5cc43d215c1cc6ad213b003d3d17e5c378fe36c1ca628000cd2b3ba9f466ea",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only"
       }
@@ -1588,7 +1611,7 @@
         "all_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "source_kind": "external-or-retired",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
       }
     },
@@ -1621,13 +1644,13 @@
       "source": {
         "basis_commit": "efecb016fc74f5c78c269d4272a9ed294edf91f4",
         "source_kind": "accepted-T00-D-standalone-closure-client",
-        "composition_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+        "composition_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
         "composed_file_digest": "26a0d68c100b19c1c108e95c0e1707bedf5dfa69279fe494642c8355da1e541c",
         "final_commit_binding": "composition basis plus generated current file_digests; historical source fields are provenance only"
       }
     }
   ],
-  "source_basis_commit": "b9d4a7dd3a6f6b34067d94413fa0702c8a006846",
+  "source_basis_commit": "dacb5d289b2017152a2e7aee37720053078f7c1d",
   "hash_format": "utf8-lf-text/raw-binary-sha256",
   "excluded_from_capability_counts": [
     "pytest artifacts",

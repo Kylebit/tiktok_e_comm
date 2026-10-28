@@ -1,0 +1,98 @@
+{
+  "schema": "orbithive-b00-b5a-supply-selection/v1",
+  "work_order": "WO-20260905-ORBIT-B00-B5A",
+  "prepared_at": "2026-09-05",
+  "owner_lane": "04",
+  "base": {
+    "repository": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-integration-20260905",
+    "commit": "b72a8d1d048862da08a9a9bca333425abbed857c"
+  },
+  "candidate": {
+    "worktree": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-b5-supply-20260905",
+    "branch": "codex/orbithive-b5-supply-20260905"
+  },
+  "frozen_source": {
+    "repository": "D:/Users/Windows11/Desktop/Agent_PR/_codex_worktrees/04-supply-chain-ops",
+    "commit": "ce2306be6091e52d20093d8574c1fd806ebb0bf5",
+    "domain_tree": "8fbf07b0ff8a6897948a0103473b79ff925b1f2b"
+  },
+  "selection": [
+    {
+      "path": "domains/supply_chain_operations/inbound_timeline.py",
+      "source_object": "ce2306be6091e52d20093d8574c1fd806ebb0bf5:domains/supply_chain_operations/inbound_timeline.py",
+      "git_blob": "3c5eaee5f449a92a6628691abee2b57df351de3a",
+      "reason": "Preserves batch-exact time-phased supply plus local-fulfilled and cross-border-fallback exposure metrics."
+    },
+    {
+      "path": "domains/supply_chain_operations/dashboard",
+      "source_object": "ce2306be6091e52d20093d8574c1fd806ebb0bf5:domains/supply_chain_operations/dashboard",
+      "git_tree": "87231a10136762e0fa7dfed66d529b7b00af3245",
+      "reason": "Atomic HTML/JS/data contract with independent clocks, stale gate, exact batch ETA lineage and two demand scenarios."
+    },
+    {
+      "path": "domains/supply_chain_operations/dashboard/assets",
+      "source_object": "ce2306be6091e52d20093d8574c1fd806ebb0bf5:domains/supply_chain_operations/dashboard/assets",
+      "git_tree": "20b817089ed2306070d3d6df2edd447f4e1b29fd",
+      "tracked_file_count": 224,
+      "reason": "Complete tracked SKU-image set; retains 13 images missing from the accepted base."
+    },
+    {
+      "path": "domains/supply_chain_operations/skills/manage-seaya-replenishment",
+      "source_object": "ce2306be6091e52d20093d8574c1fd806ebb0bf5:domains/supply_chain_operations/skills/manage-seaya-replenishment",
+      "git_tree": "4822d0cabc9334c1a69fd8694e60590a64c02980",
+      "reason": "Preserves the source Skill, decision contract, sync manifest and local apply scripts as one versioned package."
+    },
+    {
+      "path": "tests/test_apply_inventory_snapshot.py",
+      "source_object": "ce2306be6091e52d20093d8574c1fd806ebb0bf5:tests/test_apply_inventory_snapshot.py",
+      "git_blob": "1a72964f173d1575513334178a940c5e5bdba170",
+      "reason": "Paired regression for complete identity and conflict-aware duplicate inventory positions."
+    },
+    {
+      "path": "tests/test_inbound_timeline_dashboard.py",
+      "source_object": "ce2306be6091e52d20093d8574c1fd806ebb0bf5:tests/test_inbound_timeline_dashboard.py",
+      "git_blob": "fecc3f510bf7ee1cf5d4892b6247c187bc55e8a3",
+      "reason": "Paired regression for batch ETA, time-phased arrivals and cross-border fallback."
+    },
+    {
+      "path": "tests/test_supply_chain_dashboard.py",
+      "source_object": "ce2306be6091e52d20093d8574c1fd806ebb0bf5:tests/test_supply_chain_dashboard.py",
+      "git_blob": "95dffd4b1c06c4d4bb5dbbe9284be6b5478d0c38",
+      "reason": "Paired regression for the coordinated dashboard contract and exact-country SKU presentation."
+    }
+  ],
+  "excluded": [
+    {
+      "path": "domains/supply_chain_operations/skills/manage-seaya-replenishment/%SystemDrive%/ProgramData/Microsoft/Windows/Caches",
+      "reason": "Three untracked cache database files are absent from the frozen Git tree and must not enter the candidate."
+    },
+    {
+      "path": "all other ce2306be paths",
+      "reason": "Outside the B5A atomic group or already byte-identical to the accepted base."
+    }
+  ],
+  "dated_evidence": {
+    "state": "HISTORICAL_SNAPSHOT_NOT_CURRENT_INVENTORY",
+    "captured_date": "2026-09-02",
+    "policy": "Retained verbatim for behavioral preservation in B5A; must not be described as current stock and is scheduled for later evidence/policy separation under T00/R00."
+  },
+  "preserved_behaviors": [
+    "exact SKU identity without truncation",
+    "identical duplicate position counted once and conflicting duplicate blocked",
+    "independent inventory and order clocks with BLOCKED_STALE_INVENTORY",
+    "batch-level ETA source and confirmation lineage",
+    "inbound excluded until exact expected sellable date",
+    "local fulfillment and cross-border fallback exposure rather than invented lost sales",
+    "date-weighted and complete-30-day demand scenarios using identical supply events",
+    "settlement facts excluded from replenishment quantity"
+  ],
+  "not_in_scope": [
+    "U00 navigation or shared-platform wiring",
+    "automation path or concurrency changes",
+    "installed Skill junction changes",
+    "live Seaya or channel reads",
+    "database or platform writes",
+    "new replenishment algorithm changes"
+  ],
+  "external_writes": 0
+}

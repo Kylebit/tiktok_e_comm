@@ -1,0 +1,189 @@
+{
+  "schema_version": "orbithive-b00-composition/v1",
+  "work_order": "WO-20260905-ORBIT-B00-C1",
+  "status": "DELIVERED_FOR_COORDINATOR_ACCEPTANCE",
+  "created_utc": "2026-09-05T05:04:26.587614+00:00",
+  "base": "fae95b44f607bd8965172a7acd5ba690d500a306",
+  "tested_code_head": "f3e8a18cce69d798b4a66aab848be4f2519ccb9d",
+  "base_contains": [
+    "B2A",
+    "B2B",
+    "B2A strict warehouse/display-name correction"
+  ],
+  "source_to_replayed_commits": [
+    {
+      "package": "S00",
+      "source": "3505cb95533f3b4e211d7eee2ac73ff615dd8aca",
+      "source_parent": "b72a8d1d048862da08a9a9bca333425abbed857c",
+      "replayed": "7d82aa69f1d4258d0f4a6e700bb0f2f6fe710836",
+      "files": [
+        "core/static_files.py",
+        "docs/audits/S00_STATIC_BOUNDARY.md",
+        "modules/ozon/rus_server.py",
+        "modules/products/server.py",
+        "modules/sourcing/new_product_server.py",
+        "tests/test_static_http_boundary.py",
+        "tests/test_static_path_resolver.py"
+      ],
+      "stable_patch_id": "6db10c1412318b307f3bb267cf9340b9ba5bb4af"
+    },
+    {
+      "package": "B5A",
+      "source": "b1f7ab60a5f55dfcdd3c2163358885e73b22414f",
+      "source_parent": "b72a8d1d048862da08a9a9bca333425abbed857c",
+      "replayed": "2d35fdda0d8f82ea4d365f65919514c5c1450a06",
+      "files": [
+        "docs/audits/B00_B5A_SUPPLY_SELECTION.json",
+        "domains/supply_chain_operations/dashboard/README.md",
+        "domains/supply_chain_operations/dashboard/app.js",
+        "domains/supply_chain_operations/dashboard/assets/sku-0105.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0121.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0123.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0155.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0208.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0432.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0920.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0944.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0953.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0956.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0966.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0978.jpg",
+        "domains/supply_chain_operations/dashboard/assets/sku-0979.jpg",
+        "domains/supply_chain_operations/dashboard/data.js",
+        "domains/supply_chain_operations/dashboard/inbound-batches.html",
+        "domains/supply_chain_operations/dashboard/inbound-batches.js",
+        "domains/supply_chain_operations/dashboard/inbound-plan.js",
+        "domains/supply_chain_operations/dashboard/inbound-timeline.js",
+        "domains/supply_chain_operations/dashboard/index.html",
+        "domains/supply_chain_operations/dashboard/styles.css",
+        "domains/supply_chain_operations/dashboard/transport-history.js",
+        "domains/supply_chain_operations/inbound_timeline.py",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/SKILL.md",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/dashboard-sync.json",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/decision-contract.md",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/apply_inventory_snapshot.py",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/apply_order_demand.py",
+        "tests/test_apply_inventory_snapshot.py",
+        "tests/test_inbound_timeline_dashboard.py",
+        "tests/test_supply_chain_dashboard.py"
+      ],
+      "stable_patch_id": "f966fcc71f9580581bb22fbf2b928448bd50836a"
+    },
+    {
+      "package": "T00-A",
+      "source": "367637f8eddf92ff1be7e60548dd5604d578c1d2",
+      "source_parent": "b1f7ab60a5f55dfcdd3c2163358885e73b22414f",
+      "replayed": "f3e8a18cce69d798b4a66aab848be4f2519ccb9d",
+      "files": [
+        "docs/audits/T00_SUPPLY_MANIFEST.md",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/references/dashboard-sync.json",
+        "domains/supply_chain_operations/skills/manage-seaya-replenishment/scripts/verify_dashboard_sync.py",
+        "tests/test_dashboard_sync_portability.py"
+      ],
+      "stable_patch_id": "a8225268f6d2767447238d7299325e8110e09e24"
+    }
+  ],
+  "merge_method": "sequential cherry-pick without conflicts or manual source edits",
+  "all_replays_stable_patch_id_equal_to_source": true,
+  "preserved": {
+    "supply_dashboard_asset_git_blobs": 224,
+    "supply_dashboard_asset_physical_bytes_equal_to_git_blobs": true,
+    "supply_snapshot_date": "2026-09-02",
+    "supply_snapshot_state": "HISTORICAL_SNAPSHOT_NOT_CURRENT_INVENTORY",
+    "static_handlers": {
+      "modules/products/server.py": {
+        "helper_call_lines": [
+          13613
+        ],
+        "do_GET_AST_equals_S00": true
+      },
+      "modules/sourcing/new_product_server.py": {
+        "helper_call_lines": [
+          407
+        ],
+        "do_GET_AST_equals_S00": true
+      },
+      "modules/ozon/rus_server.py": {
+        "helper_call_lines": [
+          178
+        ],
+        "do_GET_AST_equals_S00": true
+      }
+    },
+    "B2B_server_warehouse_seam_AST_equal_to_base": true,
+    "B2B_shared_and_B2A_typed_loader_blobs": {
+      "shared_platform/release_store.py": "a75eb7c8299c8e68fde00e96c68ddbc7b2de3fcd",
+      "shared_platform/release_control.py": "fd4b84e3ee3e3d89a2e746f7407db8bf4ba0ca06",
+      "shared_platform/product_snapshot.py": "04084e91e416a9db6a7efc795e5848a0abf0f63a",
+      "shared_platform/approved_publication_snapshot_projection.py": "4b5c93482bb892ce293d65c789da982329e83030",
+      "domains/product_operations/approved_publication_snapshot.py": "054e292052d4e1b405a148f016f414bedead6687",
+      "domains/product_operations/approved_publication_snapshot_inputs.py": "d5618b612584705eb922e0d65e5f7708375ee1ea"
+    }
+  },
+  "dashboard_sync": {
+    "schema_version": "dashboard-sync/v2",
+    "digest_policy": "sha256-utf8-crlf-to-lf/v1",
+    "managed_text_paths": 13,
+    "direct_check": "passed",
+    "direct_check_bytes_and_mtime_unchanged": true,
+    "legacy_machine_byte_restore_performed": false,
+    "manifest_update_called": false
+  },
+  "validation": {
+    "test_selectors": [
+      "tests/test_b2b_shared_contracts.py",
+      "tests/test_release_store.py",
+      "tests/test_approved_publication_snapshot_integration.py",
+      "tests/test_approved_publication_snapshot_inputs.py",
+      "tests/test_approved_publication_snapshot.py",
+      "tests/test_shopee_global_master_snapshot.py",
+      "tests/test_static_http_boundary.py",
+      "tests/test_static_path_resolver.py",
+      "tests/test_product_flow_proxy_safety.py",
+      "tests/test_product_surfaces.py::test_final_product_routes_are_separate_from_internal_release_lab",
+      "tests/test_release_safety_guards.py",
+      "tests/test_apply_inventory_snapshot.py",
+      "tests/test_demand_trend.py",
+      "tests/test_inbound_timeline_dashboard.py",
+      "tests/test_manage_seaya_replenishment_skill.py",
+      "tests/test_order_demand.py",
+      "tests/test_replenishment.py",
+      "tests/test_shopee_demand.py",
+      "tests/test_supply_chain_dashboard.py",
+      "tests/test_transport_history.py",
+      "tests/test_dashboard_sync_portability.py"
+    ],
+    "collected": 486,
+    "passed": 474,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 12,
+    "skip_reason": "Windows symlink privilege unavailable",
+    "real_junction_cases_passed": 6,
+    "node_syntax_files_passed": [
+      "app.js",
+      "inbound-batches.js",
+      "inbound-plan.js",
+      "inbound-timeline.js",
+      "transport-history.js"
+    ],
+    "actual_single_combined_run": true,
+    "private_receipt": "architecture/B00_C1_RECEIPT.md/json in the audit output"
+  },
+  "known_unresolved": [
+    "Seven TikTok handler fixtures return 409: approved publication snapshot is unavailable; independently reproduced at exact B1 b72a8d1d, B2A 26290f8 and B2B; excluded from the passing set and not fixed here.",
+    "Missing autopilot entrypoints and unintegrated content/channel consumers remain outside C1.",
+    "Existing ToAPI remnants, credentials/installation sources, UI/APP and real-data verification remain for their own work packages.",
+    "No full browser/product acceptance, full-system test claim, service replacement, deployment or marketplace permission is implied."
+  ],
+  "side_effects": {
+    "external_platform_writes": 0,
+    "paid_calls": 0,
+    "production_data_writes": 0,
+    "service_replacements": 0,
+    "installed_skill_changes": 0,
+    "automation_changes": 0,
+    "push": false
+  },
+  "next_owner": "root coordinator for independent acceptance and subsequent B3/B4/S01 composition"
+}

@@ -40,7 +40,7 @@ from modules.miaoshou.tiktok_v4_drafts import (
     TikTokV4DraftTransport,
     prepare_tiktok_v4_drafts,
 )
-from modules.ozon.approved_publication_v4 import OzonDispatchFact, OzonStockDispatchFact, PreparedStockUpdate
+from modules.ozon.approved_publication_v4 import OzonDispatchFact, OzonStockDispatchFact, PreparedStockUpdate, OzonStockReadbackUnavailable
 from modules.ozon.client import ozon_post
 from modules.shopee.client import merchant_get
 from modules.catalog.sku_key import parse_search_key
@@ -99,11 +99,13 @@ def _safe_ozon_rejection(value: object) -> tuple[str, str]:
 
 
 _OZON_IMPORT_PROFILE_REGISTRY = {
+    (53968796, 970663046): "refrigerator-cover",
     (17028743, 93785): "fridge-magnet",
     (17027926, 96376): "mug-coaster",
     (17028954, 95819): "wallpaper",
     (17027906, 91971): "interior-sticker",
     (17027905, 93656): "sauna-mat",
+    (17027905, 92011): "toilet-paper-holder",
 }
 
 ProviderPost = Callable[[str, dict[str, object]], Mapping[str, object]]
@@ -138,6 +140,19 @@ _TIKTOK_SITE_BY_TARGET = {
 # Exact semantic aliases only.  They are read from the frozen main category;
 # product title/description are intentionally excluded from category choice.
 _TIKTOK_EXACT_CATEGORY_PROFILES = (
+    {
+        "aliases": frozenset({
+            "冰箱防尘盖布带侧袋", "冰箱防尘盖布", "冰箱防尘罩",
+            "fridgetopcoverwithsidestoragepockets", "fridgetopcover", "refrigeratordustcover",
+        }),
+        "primary": "700665",
+        "fallbacks": (),
+    },
+    {
+        'aliases': frozenset({'纸巾架','卫生纸架','toiletpaperholder','toiletrollholder'}),
+        'primary': '853256',
+        'fallbacks': (),
+    },
     {
         "aliases": frozenset(
             {
@@ -754,6 +769,14 @@ class _ResumableTikTokDraftTransport:
             if row.get("operation") == "SAVE_DRAFT"
         ]
         if saves and saves[-1].get("outcome") == "REJECTED":
+            from shared_platform.native_known_rejected_save_repair import _RepairLedger
+            ledger = getattr(self._request, "write_budget_ledger", None)
+            if type(ledger) is _RepairLedger:
+                events = self._store.target_events(self._request, label)
+                ledger.authorize_rejected_save(events, dict(identity), self._request)
+                prepared = self._transport.prepare_save_draft(identity=identity, draft=draft)
+                ledger.bind_prepared_save(dict(identity), prepared)
+                return prepared
             return {"checkpoint_event": deepcopy(dict(saves[-1]))}
         if any(row.get("outcome") == "UNKNOWN" for row in saves):
             return {"checkpoint_event": deepcopy(dict(saves[-1]))}
@@ -882,14 +905,14 @@ def _seed_list_rows(
     *,
     post: ProviderPost,
     path: str,
-    source_offer_id: str,
+    source_offer_id: str | None,
     common_list: bool,
     page_size: int,
     max_pages: int,
 ) -> list[Mapping[str, object]]:
     rows: list[Mapping[str, object]] = []
     for page_no in range(1, max_pages + 1):
-        filters: dict[str, object] = {"sourceItemIdKeyword": source_offer_id}
+        filters: dict[str, object] = ({"sourceItemIdKeyword": source_offer_id} if source_offer_id is not None else {})
         if common_list:
             filters = {"tabPaneName": "all", **filters}
         data = _provider_data(
@@ -1073,34 +1096,47 @@ class OfficialMiaoshouTikTokV4SeedIdentityResolver:
             source.get("source_offer_id"), "frozen source offer identity"
         )
 
-        common_rows = _seed_list_rows(
-            post=self._post,
-            path=MIAOSHOU_COMMON_LIST_PATH,
-            source_offer_id=source_offer_id,
-            common_list=True,
-            page_size=self._page_size,
-            max_pages=self._max_pages,
-        )
-        if len(common_rows) != 1:
+        manual = source.get('source_authority') == 'manual-intake'
+        if manual:
+            from shared_platform.manual_common_creation import bound_publication_common,ManualCommonCreateLedger
+            common_detail_id,creation=bound_publication_common(snapshot)
+            detail_data=_provider_data(self._post(
+                '/open/v1/product/common_collect_box/common_collect_box/get_common_collect_box_detail',
+                {'commonCollectBoxDetailId':int(common_detail_id)}),'manual COMMON detail')
+            detail=detail_data.get('editCommonCollectBoxDetail')
+            if ManualCommonCreateLedger._verify_detail(creation,detail)!=common_detail_id:
+                raise LivePublicationDependencyError('manual COMMON official identity conflicts')
+            common_rows=[]
+        else:
+            common_rows = _seed_list_rows(
+                post=self._post,
+                path=MIAOSHOU_COMMON_LIST_PATH,
+                source_offer_id=source_offer_id,
+                common_list=True,
+                page_size=self._page_size,
+                max_pages=self._max_pages,
+            )
+        if not manual and len(common_rows) != 1:
             raise LivePublicationDependencyError(
                 "source COMMON identity is unavailable or ambiguous"
             )
-        common_row = common_rows[0]
-        if _seed_source_ids(common_row, "COMMON") != {source_offer_id}:
-            raise LivePublicationDependencyError("COMMON source identity conflicts")
-        common_detail_id = _positive_provider_id(
-            common_row.get("commonCollectBoxDetailId"),
-            "COMMON detail identity",
-        )
+        if not manual:
+            common_row = common_rows[0]
+            if _seed_source_ids(common_row, "COMMON") != {source_offer_id}:
+                raise LivePublicationDependencyError("COMMON source identity conflicts")
+            common_detail_id = _positive_provider_id(
+                common_row.get("commonCollectBoxDetailId"), "COMMON detail identity")
 
         platform_rows = _seed_list_rows(
             post=self._post,
             path=MIAOSHOU_TIKTOK_LIST_PATH,
-            source_offer_id=source_offer_id,
+            source_offer_id=None if manual else source_offer_id,
             common_list=False,
             page_size=self._page_size,
             max_pages=self._max_pages,
         )
+        if manual:
+            platform_rows=[row for row in platform_rows if str(row.get('commonCollectBoxDetailId') or '')==common_detail_id]
         seen_detail_ids: set[str] = set()
         unclaimed: list[Mapping[str, object]] = []
         claimed_without_identity: list[str] = []
@@ -1779,6 +1815,13 @@ class OfficialOzonFridgeMagnetProfileResolver:
     _WALL_STICKER_TYPE_ID = 91971
     _BATH_MAT_CATEGORY_ID = 17027905
     _BATH_MAT_TYPE_ID = 93656
+    _TOILET_PAPER_HOLDER_SEMANTIC_ALIASES = frozenset(
+        {"整理用具 > 纸巾架", "toilet paper holder"}
+    )
+    _REFRIGERATOR_COVER_SEMANTIC_ALIASES = frozenset({
+        "冰箱防尘盖布带侧袋", "冰箱防尘盖布", "冰箱防尘罩",
+        "fridge top cover", "fridge top cover with side storage pockets", "refrigerator dust cover",
+    })
     _SEMANTIC_ALIASES = frozenset(
         {
             "fridge magnet",
@@ -1830,6 +1873,28 @@ class OfficialOzonFridgeMagnetProfileResolver:
             if isinstance(approved_category, Mapping)
             else ""
         )
+        product = snapshot.get("product")
+        category = product.get("main_category") if isinstance(product, Mapping) else None
+        name = str(category.get("name") or "").strip() if isinstance(category, Mapping) else ""
+        normalized = " ".join(name.casefold().split())
+        if (approved_category_id == "53968796"
+                or normalized in OfficialOzonFridgeMagnetProfileResolver._REFRIGERATOR_COVER_SEMANTIC_ALIASES):
+            if normalized not in OfficialOzonFridgeMagnetProfileResolver._REFRIGERATOR_COVER_SEMANTIC_ALIASES:
+                raise LivePublicationDependencyError("frozen Ozon refrigerator-cover semantic conflicts")
+            frozen_type = approved_category.get("type_id") if isinstance(approved_category, Mapping) else None
+            if ((approved_category_id and approved_category_id != "53968796")
+                    or (frozen_type is not None and str(frozen_type) != "970663046")):
+                raise LivePublicationDependencyError("frozen Ozon refrigerator-cover type conflicts")
+            return (53968796, 970663046, "Аксессуары, запчасти для холодильника")
+        # This category has multiple product types. Its id alone must not turn
+        # the frozen paper-holder semantic into the historical sauna-mat type.
+        if normalized in OfficialOzonFridgeMagnetProfileResolver._TOILET_PAPER_HOLDER_SEMANTIC_ALIASES:
+            if approved_category_id and approved_category_id != "17027905":
+                raise LivePublicationDependencyError("frozen Ozon holder category conflicts")
+            frozen_type = approved_category.get("type_id") if isinstance(approved_category, Mapping) else None
+            if frozen_type is not None and str(frozen_type) != "92011":
+                raise LivePublicationDependencyError("frozen Ozon holder type conflicts")
+            return (17027905, 92011, "Toilet Paper Holder")
         approved_profiles = {
             str(OfficialOzonFridgeMagnetProfileResolver._WALL_STICKER_CATEGORY_ID): (
                 OfficialOzonFridgeMagnetProfileResolver._WALL_STICKER_CATEGORY_ID,
@@ -1863,10 +1928,6 @@ class OfficialOzonFridgeMagnetProfileResolver:
                     "frozen Ozon category has no enabled import profile"
                 )
             return approved_profiles[approved_category_id]
-        product = snapshot.get("product")
-        category = product.get("main_category") if isinstance(product, Mapping) else None
-        name = str(category.get("name") or "").strip() if isinstance(category, Mapping) else ""
-        normalized = " ".join(name.casefold().split())
         if normalized in OfficialOzonFridgeMagnetProfileResolver._WALL_STICKER_SEMANTIC_ALIASES:
             return (
                 OfficialOzonFridgeMagnetProfileResolver._WALL_STICKER_CATEGORY_ID,
@@ -1918,7 +1979,8 @@ class OfficialOzonFridgeMagnetProfileResolver:
         if not isinstance(snapshot, Mapping) or snapshot.get("schema_version") != "approved-publication-snapshot/v4":
             raise LivePublicationDependencyError("approved Ozon snapshot is invalid")
         profile_category_id, type_id, type_name = self._profile_ids(snapshot)
-        tree_response = self._post(OZON_CATEGORY_TREE_PATH, {"language": "EN"})
+        language = "DEFAULT" if (profile_category_id, type_id) == (53968796, 970663046) else "EN"
+        tree_response = self._post(OZON_CATEGORY_TREE_PATH, {"language": language})
         roots = tree_response.get("result") if isinstance(tree_response, Mapping) else None
         if not isinstance(roots, list):
             raise LivePublicationDependencyError("Ozon category tree is malformed")
@@ -1959,7 +2021,7 @@ class OfficialOzonFridgeMagnetProfileResolver:
             {
                 "description_category_id": profile_category_id,
                 "type_id": type_id,
-                "language": "EN",
+                "language": language,
             },
         )
         attributes = (
@@ -1986,7 +2048,7 @@ class OfficialOzonFridgeMagnetProfileResolver:
                     "attribute_id": attribute_id,
                     "description_category_id": profile_category_id,
                     "type_id": type_id,
-                    "language": "EN",
+                    "language": language,
                     "limit": 20,
                     "value": value,
                 },
@@ -2003,6 +2065,15 @@ class OfficialOzonFridgeMagnetProfileResolver:
             expected_id=type_id,
             labels={type_name.casefold()},
         )
+        independent_card_attributes = None
+        if (profile_category_id, type_id) == (53968796, 970663046):
+            by_id = {a['id']:a for a in attributes}
+            model, quantity = by_id.get(9048, {}), by_id.get(8513, {})
+            if (model.get('type') != 'String' or model.get('dictionary_id') != 0
+                    or quantity.get('type') != 'Integer' or quantity.get('dictionary_id') != 0
+                    or quantity.get('is_aspect') is not True):
+                raise LivePublicationDependencyError('Ozon independent card metadata changed')
+            independent_card_attributes = {'model_name':9048,'quantity_per_pack':8513}
         return {
             "schema_version": "ozon-official-profile-resolution/v1",
             "resolution": "EXACT",
@@ -2011,6 +2082,8 @@ class OfficialOzonFridgeMagnetProfileResolver:
             "category_path": category_path,
             "type_id": type_id,
             "type_name": type_name,
+            **({'independent_card_attributes': independent_card_attributes}
+                if independent_card_attributes is not None else {}),
             "required_attributes": {
                 "brand": {"attribute_id": 85, **brand},
                 "model_name": {"attribute_id": 9048},
@@ -2145,6 +2218,17 @@ def build_ozon_import_item_from_frozen_variant(
     product_type = required["product_type"]
     if not isinstance(brand, Mapping) or not isinstance(product_type, Mapping):
         raise LivePublicationDependencyError("Ozon dictionary profile is malformed")
+    if profile_key[0] == 17027905 and category.get("type_id") is not None:
+        if str(category["type_id"]) != str(profile_key[1]):
+            raise LivePublicationDependencyError("frozen Ozon holder type conflicts")
+    if profile_key == (17027905, 92011):
+        if (
+            product_type.get("dictionary_value_id") != 92011
+            or str(product_type.get("value") or "").strip() != "Toilet Paper Holder"
+            or brand.get("dictionary_value_id") != 126745801
+            or str(brand.get("value") or "").strip().casefold() not in {"no brand", "нет бренда"}
+        ):
+            raise LivePublicationDependencyError("Ozon holder dictionary profile conflicts")
     weight_kg = Decimal(_normalize_number(parcel.get("weight_kg")))
     package_cm = [Decimal(_normalize_number(value)) for value in parcel["package_cm"]]
 
@@ -2161,10 +2245,17 @@ def build_ozon_import_item_from_frozen_variant(
         provider_int(value, multiplier=10, name="package dimension")
         for value in package_cm
     ]
+    independent = variant.get('independent_card')
+    if independent is not None:
+        from shared_platform.publication_ozon_card_structure import independent_card
+        if (profile_key != (53968796,970663046) or independent != independent_card(offer_id)
+                or profile.get('independent_card_attributes') != {'model_name':9048,'quantity_per_pack':8513}):
+            raise LivePublicationDependencyError('Ozon independent card facts conflict')
     return {
         "attributes": [
             attribute(85, str(brand.get("value") or ""), int(brand.get("dictionary_value_id") or 0)),
-            attribute(9048, seller_sku + "-" + profile_slug),
+            attribute(9048, independent['model_name'] if independent is not None else seller_sku + "-" + profile_slug),
+            *([attribute(8513, '1')] if independent is not None else []),
             attribute(8229, str(product_type.get("value") or ""), int(product_type.get("dictionary_value_id") or 0)),
             attribute(4180, title),
             attribute(4191, description),
@@ -2362,6 +2453,48 @@ class OfficialOzonV4Transport:
             OZON_STOCK_READBACK_PATH,
             {"offer_id": list(offer_ids), "limit": 1000},
         )
+        if isinstance(response, Mapping) and "products" in response:
+            # The retained authenticated post-write response establishes only
+            # this complete flat envelope. No paging, aliases or missing=zero.
+            if (type(response) is dict and set(response) == {"products", "has_next", "cursor"}
+                    and type(response["products"]) is list and response["products"]
+                    and response["has_next"] is False and type(response["cursor"]) is str
+                    and response["cursor"] == ""):
+                normalized_products = []
+                seen_offers, seen_products, seen_skus = set(), set(), set()
+                fields = {"offer_id", "warehouse_id", "product_id", "sku", "present",
+                          "free_stock", "reserved", "warehouse_name"}
+                for product in response["products"]:
+                    if type(product) is not dict or set(product) != fields:
+                        break
+                    offer = product["offer_id"]
+                    wid, pid, sku = (product[k] for k in ("warehouse_id", "product_id", "sku"))
+                    present, free, reserved = (product[k] for k in ("present", "free_stock", "reserved"))
+                    if (type(offer) is not str or offer not in offer_ids or offer in seen_offers
+                            or any(type(v) is not int or v <= 0 for v in (wid, pid, sku))
+                            or wid != warehouse_id or pid in seen_products or sku in seen_skus
+                            or any(type(v) is not int or v < 0 for v in (present, free, reserved))
+                            or present != free + reserved
+                            or type(product["warehouse_name"]) is not str or not product["warehouse_name"].strip()):
+                        break
+                    seen_offers.add(offer); seen_products.add(pid); seen_skus.add(sku)
+                    normalized_products.append({"offer_id": offer, "stock": present,
+                        "warehouse_id": wid, "product_id": pid, "sku": sku,
+                        "free_stock": free, "reserved": reserved,
+                        "raw_response": deepcopy(dict(response))})
+                else:
+                    if seen_offers == set(offer_ids):
+                        return normalized_products
+            # The saved official HTTP200 envelope does not attest any exact
+            # quantity. Do not invent the unobserved nonempty-products schema.
+            # Keep raw data for the original durable canonical result consumer.
+            admission = None
+            if (type(response) is dict and set(response) == {"products", "has_next", "cursor"}
+                    and type(response["products"]) is list and not response["products"]
+                    and response["has_next"] is False and response["cursor"] == ""):
+                admission = getattr(self._post, "_ozon_absolute_stock_admission", None)
+            raise OzonStockReadbackUnavailable(offer_ids=offer_ids, warehouse_id=warehouse_id,
+                response=dict(response), admission=admission)
         rows = response.get("result") if isinstance(response, Mapping) else None
         if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
             raise LivePublicationDependencyError("Ozon stock readback is malformed")
@@ -2570,10 +2703,23 @@ class OfficialOzonV4Transport:
                 raise LivePublicationDependencyError(
                     "Ozon official color image facts are invalid"
                 )
-            combined_images = list(images)
-            combined_images.extend(
-                value for value in color_images if value not in combined_images
-            )
+            primary_images = item.get("primary_image")
+            if primary_images is None:
+                primary_images = []
+            if isinstance(primary_images, str):
+                primary_images = [primary_images]
+            if not isinstance(primary_images, list) or any(
+                type(value) is not str or not value.strip() for value in primary_images
+            ):
+                raise LivePublicationDependencyError(
+                    "Ozon official primary image facts are invalid"
+                )
+            combined_images = []
+            for value in [*primary_images, *images, *color_images]:
+                if type(value) is not str or not value.strip():
+                    raise LivePublicationDependencyError("Ozon official image facts are invalid")
+                if value not in combined_images:
+                    combined_images.append(value)
             raw_attributes = attribute_row.get("attributes")
             if not isinstance(raw_attributes, list) or any(
                 not isinstance(row, Mapping) for row in raw_attributes

@@ -11,7 +11,10 @@ from shared_platform.catalog_cost_projection import project, save_manual, read_c
 @pytest.fixture
 def catalog(tmp_path, monkeypatch):
     path=tmp_path/'shop.db'
-    monkeypatch.setattr(config,'_cache',{'database':str(path)})
+    settings = tmp_path / 'synthetic-settings.json'
+    settings.write_text(json.dumps({'database': str(path)}), encoding='utf-8')
+    monkeypatch.setenv('ORBIT_HIVE_SETTINGS', str(settings))
+    config.load_settings()
     db.init_db()
     # Finish the fixture's WAL checkpoint before tests snapshot the DB bytes.
     conn = sqlite3.connect(path)

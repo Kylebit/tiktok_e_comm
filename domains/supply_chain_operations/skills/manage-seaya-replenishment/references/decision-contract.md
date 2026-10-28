@@ -68,9 +68,9 @@ Eligible order status policy:
 - exclude unpaid, cancelled, fraudulent, failed, and test orders;
 - keep refunds and returns as a separate adjustment with explicit lineage; do not silently wait for settlement or subtract an undocumented rate.
 
-The combined MY/TH/VN/PH summary is a projection over completed country decisions, not a new inventory calculation. Include a row only when its country-specific `recommended` value is a built-in positive number strictly greater than 10. Keep country + SKU as the row identity; do not merge quantities for matching SKUs across countries.
+The combined MY/TH/VN/PH summary is a projection over completed country decisions, not a new inventory calculation. Include a row when either separate country-specific suggestion is at least 10 (`recommendationMax >= 10`). Exactly 10 remains; both suggestions below 10 are excluded. Keep country + SKU as the row identity and country as the first column; do not merge quantities for matching SKUs across countries.
 
-The active-inbound headline has a different denominator: use every active batch in the complete inbound plan, including batches whose SKUs have no `>10` recommendation row. Reconcile each batch's `skuQuantities` to `totalUnits`, sum the batch allocations by exact country + SKU, compare each SKU amount to that country's inventory `inbound`, and reconcile the country batch total to both plan `totalUnits` and inventory aggregate. Equal country totals do not clear a swapped or missing SKU allocation. If any layer differs, display an unresolved headline rather than a filtered or partial number. This headline is dated source evidence, not a claim that the snapshot is current.
+The active-inbound headline has a different denominator: use every active batch in the complete inbound plan, including batches whose SKUs have no `>=10` recommendation row. Reconcile each batch's `skuQuantities` to `totalUnits`, sum the batch allocations by exact country + SKU, compare each SKU amount to that country's inventory `inbound`, and reconcile the country batch total to both plan `totalUnits` and inventory aggregate. Equal country totals do not clear a swapped or missing SKU allocation. If any layer differs, display an unresolved headline rather than a filtered or partial number. This headline is dated source evidence, not a claim that the snapshot is current.
 
 When recent 30-day demand exists:
 
@@ -187,6 +187,30 @@ The batch page must key every override by country + complete batch identity, sho
 Render `REPLENISH` and `FIRST_STOCK` rows in one sortable/filterable SKU ledger. The status label preserves the inventory distinction; separate tables must not fragment the recommendation view.
 
 It may write reversible manual logistics overrides to browser `localStorage`. It must not write Seaya, TikTok, Shopee, order systems, or business databases.
+
+## Editable final plan (2026-10-05)
+
+The ledger and downloadable HTML keep both computed suggestions intact. Planned
+quantity is a separately labelled trend/30-day/manual decision and does not enter
+`calculateCountry`. Persist integer quantities in 0–10000000 and notes up to 1000
+characters under `supply-chain-decision-sheet-v1`. Bind each country + SKU edit
+to all three source clocks, exact inventory, the inbound plan and scenario supply
+traces. A new binding ignores the old edit without modifying its stored bytes.
+Compare the complete storage token before saving; keep a rejected/failed draft
+visible and exportable. Local saving never grants business execution authority.
+
+Export all qualifying rows from all four countries, independent of current
+search/status/country filters, as one table with country first, embedded local
+main images, exact SKU, both suggestions, editable plan quantity and notes.
+Validate local image origin/format and fail incomplete exports. The standalone
+file can re-download its edits, validates quantities and treats note markup as
+text. Preserve source dates and conditional/stale warnings in the exported file.
+Estimated package/cost parameters need a source note and visible pending label;
+neither missing nor estimated economics changes the quantity forecast.
+
+The explicit no-refresh collector entry and partial evidence admission rules
+are in [current-entry.md](current-entry.md). Do not apply a TikTok-only artifact
+as a complete eight-store source, and do not advance source clocks from old files.
 
 
 ## U04 local confirmation and explicit refresh contract (2026-09-05)

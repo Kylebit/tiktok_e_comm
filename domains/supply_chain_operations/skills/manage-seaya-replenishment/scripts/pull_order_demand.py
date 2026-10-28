@@ -295,7 +295,7 @@ def _receipt_requester(platform, target, requester, envelope, shop_id):
     return call
 
 
-def capture_orders(*, targets, cutoff, days, source_id, started_at, materialized_at, sessions, requesters):
+def capture_orders(*, targets, cutoff, days, source_id, started_at, materialized_at, sessions, requesters, alias_registry=None):
     """Explicit in-memory capture through existing collectors. No auth/default IO.
 
     Caller supplies exact selected sessions and clocks; secrets never enter output.
@@ -312,6 +312,7 @@ def capture_orders(*, targets, cutoff, days, source_id, started_at, materialized
     for k in ('tiktok_shop_id','tiktok_cipher','shopee_shop_id'):_require(len({t[k] for t in targets.values()})==4,'target reused across countries')
     end=int(stamps[0].timestamp());start=end-days*86400
     source={'schema':'supply-chain-captured-source/v2','kind':'orders','sourceId':source_id,'capturedAt':cutoff,'collectionStartedAt':started_at,'materializedAt':materialized_at,'days':days,'targets':targets,'regions':{}}
+    if alias_registry is not None:source['canonicalAliasRegistryDigest']=alias_registry.digest
     for r,t in targets.items():
         source['regions'][r]={}
         for platform in ('tiktok','shopee'):
@@ -322,7 +323,7 @@ def capture_orders(*, targets, cutoff, days, source_id, started_at, materialized
             else:pull_shopee_region(t['shopee_shop_id'],sessions[r][platform],start,end,requester=requester)
             rows=captured_order_rows(env,platform,target,start,end)
             aggregate=aggregate_tiktok_orders if platform=='tiktok' else aggregate_shopee_orders
-            _,evidence=aggregate(rows,r)
+            _,evidence=aggregate(rows,r,alias_registry=alias_registry,shop_key=target)
             _require(not any(evidence.get(k,0) for k in ('orders_invalid','item_lines_unresolved','item_lines_invalid_quantity')),'unresolved order facts')
             source['regions'][r][platform]=env
     return source
@@ -341,6 +342,9 @@ def main() -> int:
         default=ROOT / "outputs" / "supply_chain_order_demand_latest.json",
     )
     args = parser.parse_args()
+    from core.db import db_path
+    from shared_platform.publication_canonical_aliases import load_alias_registry
+    alias_registry=load_alias_registry(db_path())
     regions = tuple(dict.fromkeys(str(value).upper() for value in args.regions))
     if args.days < 30 or any(region not in REGIONS for region in regions):
         raise SystemExit("days must be >=30 and regions must be MY/TH/VN/PH")
@@ -356,6 +360,7 @@ def main() -> int:
         "networkReads": 0,
         "authWrites": "Shopee refresh only when required",
         "businessWrites": 0,
+        "canonicalAliasRegistryDigest": alias_registry.digest,
     }
 
     tiktok_token = tiktok_auth.access_token()
@@ -371,7 +376,7 @@ def main() -> int:
             tiktok_token, ciphers[region], start, end
         )
         output["networkReads"] += reads
-        tk_rows, tk_evidence = aggregate_tiktok_orders(tiktok_orders, region)
+        tk_rows, tk_evidence = aggregate_tiktok_orders(tiktok_orders, region,alias_registry=alias_registry,shop_key=ciphers[region])
         tk_snapshot = finalize_order_snapshot(
             tk_rows,
             region=region,
@@ -393,7 +398,7 @@ def main() -> int:
             shop_id, shopee_token, start, end
         )
         output["networkReads"] += reads
-        sp_rows, sp_evidence = aggregate_shopee_orders(shopee_orders, region)
+        sp_rows, sp_evidence = aggregate_shopee_orders(shopee_orders, region,alias_registry=alias_registry,shop_key=str(shop_id))
         sp_snapshot = finalize_order_snapshot(
             sp_rows,
             region=region,

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LinkFox 生图能力第二轮调研（肉肉 CEO 视角 + Cursor 补位）</title>
+<style>
+  :root {
+    --bg: #f4f7fb;
+    --card: #ffffff;
+    --ink: #0f172a;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --accent: #0f766e;
+    --accent-soft: #ccfbf1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 500px at 10% -10%, #dbeafe 0%, transparent 55%),
+      radial-gradient(900px 400px at 100% 0%, #ccfbf1 0%, transparent 50%),
+      var(--bg);
+    line-height: 1.7;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 32px 20px 64px; }
+  .hero {
+    background: linear-gradient(135deg, #0f766e 0%, #1d4ed8 100%);
+    color: #fff;
+    border-radius: 18px;
+    padding: 28px;
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+    margin-bottom: 20px;
+  }
+  .hero h1 { margin: 0 0 10px; font-size: 27px; line-height: 1.35; }
+  .hero .sub { opacity: 0.92; font-size: 14px; }
+  .badge {
+    display: inline-block;
+    background: rgba(255,255,255,0.18);
+    border: 1px solid rgba(255,255,255,0.28);
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 22px;
+    margin: 14px 0;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  }
+  .toc-title { font-weight: 700; margin-bottom: 8px; color: var(--accent); }
+  .toc ol { margin: 0; padding-left: 20px; }
+  .toc a { color: #1e293b; text-decoration: none; }
+  .toc a:hover { color: var(--accent); text-decoration: underline; }
+  h1 { font-size: 26px; }
+  h2 {
+    margin: 28px 0 12px;
+    font-size: 21px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--accent-soft);
+    scroll-margin-top: 16px;
+  }
+  h3 { margin: 18px 0 8px; font-size: 16px; color: #334155; }
+  h4 { margin: 14px 0 6px; font-size: 14px; color: #475569; }
+  p { margin: 8px 0; }
+  blockquote {
+    margin: 10px 0;
+    padding: 10px 16px;
+    border-left: 4px solid var(--accent);
+    background: #f0fdfa;
+    border-radius: 0 10px 10px 0;
+    color: #134e4a;
+  }
+  blockquote p { margin: 4px 0; }
+  ul, ol { margin: 8px 0 8px 20px; }
+  li { margin: 4px 0; }
+  code {
+    font-family: Consolas, "Courier New", monospace;
+    background: #f1f5f9;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 14px 16px;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; }
+  a { color: #1d4ed8; }
+  .table-wrap { overflow-x: auto; margin: 10px 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f8fafc; color: #334155; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 22px 0; }
+  .foot { margin-top: 28px; color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="badge">Orbit Hive · 生图能力第二轮调研（CEO 肉肉）</div>
+      <h1>LinkFox 生图能力第二轮调研（肉肉 CEO 视角 + Cursor 补位）</h1>
+      <div class="sub">开源生图框架真实效果（带在线看图入口）+ GPT Image/Banana+Codex 复刻可行性（补位 Cursor）· 2026-07-22 · HTML 交付</div>
+    </header>
+    <nav class="toc card"><div class="toc-title">目录</div><ol><li><a href="#sec1">0. 一句话结论（先给 Boss）</a></li><li><a href="#sec2">1. Topic ①：开源生图框架到底能做出什么图？</a></li><li><a href="#sec3">2. Topic ③（CEO 补位 Cursor）：GPT Image / Gemini Nano Banana + Codex 能否复刻 LinkFox 生图？</a></li><li><a href="#sec4">3. 待 Boss 拍板</a></li></ol></nav>
+    <article class="card">
+['<h1>LinkFox 生图能力第二轮调研（肉肉 CEO 视角 + Cursor 补位）</h1>', '<blockquote><p>本轮 Boss 三个问题：①开源生图框架到底能做出什么图（想看现成结果）；②有没有开源 GitHub skill 能替代 LinkFox 的 1688/图生图等场景；③以 GPT Image / Gemini Nano Banana 为底座 + Codex 编排，能否复刻 LinkFox 生图功能。</p><p>分工：肉肉(CEO) 做 ① + 补位 ③；<strong>Codex</strong> 后台做 ②（开源 GitHub 替代 skill）；<strong>Cursor</strong> 已派发 ③，但其 IDE 自动执行桥（notify_on_output 唤醒）未触发，故 ③ 由 CEO 补位撰写。</p><p>时间：2026-07-22。</p></blockquote>', '<h2 id="sec1">0. 一句话结论（先给 Boss）</h2>', '<ul><li><strong>① 开源框架能做的图，已经非常能打</strong>：商品换背景、虚拟试穿、人脸一致性、批量套图，全都有成熟开源项目，且本机 RTX 4060 就能跑。想&quot;亲眼看到&quot;——文末给了<strong>可直接点击的在线图库入口</strong>（Civitai / HuggingFace Spaces / ComfyUI_examples / OpenArt）。</li><li><strong>② 开源 GitHub 替代确实存在</strong>（Codex 正在深挖，详见其报告）：1688 有开源爬虫/API 项目、图生图/换背景有 ComfyUI 节点、虚拟试穿有 OOTDiffusion、电商工作流市场 OpenArt/ComfyWorkflows 一大把。</li><li><strong>③ 能复刻，而且云模型比 LinkFox 还便宜</strong>：GPT Image ≈$0.01–0.17/张、Nano Banana ≈$0.03–0.08/张，对比 LinkFox 0.11–1 元/张；配 Codex 写脚本编排，就是一条&quot;agent 驱动的生图流水线&quot;。强一致性人脸/姿态仍建议用开源 PuLID/ControlNet 补刀。</li></ul>', '<hr/>', '<h2 id="sec2">1. Topic ①：开源生图框架到底能做出什么图？</h2>', '<h3>1.1 能力 → 真实效果 → 在哪看（速览表）</h3>', '<div class="table-wrap"><table><tr><th>能力</th><th>代表项目 / 模型</th><th>真实能达到的效果</th><th>在线看真实样例</th></tr><tr><td>商品换背景 + 光影融合</td><td>ComfyUI + SDXL + <strong>ControlNet</strong>(Depth) + <strong>IP-Adapter</strong></td><td>把易拉罐放到热带海滩，沙地贴合罐底、按光源投自然阴影；香水瓶星空电商海报，金属光泽+可调光影</td><td><a href="https://github.com/comfyanonymous/ComfyUI_examples" target="_blank" rel="noopener">ComfyUI_examples(github)</a> · <a href="https://comfy.org/es/workflows/templates-product_scene_relight-cc23c187984a" target="_blank" rel="noopener">comfy.org 模板</a></td></tr><tr><td>批量商品主图</td><td>ComfyUI 电商工作流（ADetailer/IPAdapter/ControlNet）</td><td>实测 10 张 800×800 主图：传统设计 25 分钟/8GB → ComfyUI <strong>4 分钟/3GB</strong>，风格统一</td><td><a href="https://blog.csdn.net/weixin_42497762/article/details/160230998" target="_blank" rel="noopener">CSDN 电商实战</a></td></tr><tr><td>极速换背景</td><td>ComfyUI-Background-Replacement（SDXL-Turbo + ControlNet-LoRA Depth，MIT）</td><td>&quot;几秒出 4 张&quot;批量换背景，商用产品摄影风格</td><td><a href="https://github.com/xujunbj/ComfyUI-Background-Replacement" target="_blank" rel="noopener">GitHub xujunbj/ComfyUI-Background-Replacement</a></td></tr><tr><td>虚拟试穿</td><td><strong>OOTDiffusion</strong>（levihsu，cc-by-nc-sa）</td><td>半身(VITON-HD)/全身(Dress Code)换衣，保留服装花纹细节最佳（学界 SOTA）</td><td><a href="https://huggingface.co/spaces/levihsu/OOTDiffusion" target="_blank" rel="noopener">HuggingFace Space 在线试</a> · <a href="https://arxiv.org/abs/2403.01779" target="_blank" rel="noopener">arXiv</a></td></tr><tr><td>人脸/角色一致性</td><td><strong>PuLID</strong>（ByteDance，SDXL/FLUX）</td><td>同一张脸在泳装/晚礼服等不同场景保持骨相一致（时尚走秀 demo）</td><td><a href="https://github.com/gruckion/PuLID" target="_blank" rel="noopener">PuLID Gradio demo</a> · <a href="https://github.com/PaoloC68/ComfyUI-PuLID-Flux-Chroma" target="_blank" rel="noopener">ComfyUI-PuLID-Flux-Chroma</a></td></tr><tr><td>结构可控生成</td><td><strong>ControlNet</strong>（Canny/Depth/OpenPose）</td><td>锁轮廓/空间骨架/姿势，做&quot;同结构多风格&quot;商品图</td><td><a href="https://github.com/comfyanonymous/ComfyUI_examples/tree/master/controlnet" target="_blank" rel="noopener">ComfyUI ControlNet 示例</a></td></tr></table></div>', '<h3>1.2 本机 RTX 4060 8GB 能不能跑？</h3>', '<ul><li><strong>能跑，但要调优</strong>：SDXL 量化 fp8 ≈ 4GB，加 IP-Adapter ≈ 5.5GB；若同时加载 ControlNet 会逼近 6GB 边缘、长时间运行易不稳。实测稳妥做法：纯 <code>img2img + 高 denoise(0.9)</code> 可在 6GB 机器稳定出图（结构仅留&quot;形状提示&quot;，风格由 prompt 主导），无需 ControlNet。</li><li>装 ComfyUI + 上述自定义节点即可本地批量出图，<strong>单张边际成本≈0（仅电费）</strong>，对比 LinkFox 0.11–1 元/张。代价是：首次搭建 + 模型下载（几个 GB）+ 显存调优。</li></ul>', '<h3>1.3 给 Boss 的&quot;看图入口&quot;（点开即见真实效果）</h3>', '<ol><li><strong>Civitai</strong>：SDXL / Flux 模型画廊，搜 &quot;product photography&quot; / &quot;e-commerce&quot; 看真实商品图样张。</li><li><strong>HuggingFace Spaces</strong>：<a href="https://huggingface.co/spaces/levihsu/OOTDiffusion" target="_blank" rel="noopener">OOTDiffusion 在线试穿</a>、<a href="https://github.com/gruckion/PuLID" target="_blank" rel="noopener">PuLID demo</a>、<a href="https://github.com/tencent-ailab/IP-Adapter" target="_blank" rel="noopener">IP-Adapter</a> —— 直接网页上传图试。</li><li><strong>ComfyUI_examples</strong>：<a href="https://github.com/comfyanonymous/ComfyUI_examples" target="_blank" rel="noopener">github 仓库</a>，每张示例图都带工作流元数据，拖进 ComfyUI 即复现。</li><li><strong>OpenArt.ai</strong> / <strong>ComfyWorkflows.com</strong>：工作流市场，可按&quot;电商/产品图&quot;筛选并预览。</li><li><strong>comfy.org 官方模板</strong>：<a href="https://comfy.org/es/workflows/templates-product_scene_relight-cc23c187984a" target="_blank" rel="noopener">商品+场景合成并重新打光</a>。</li></ol>', '<blockquote><p>小结：开源栈的效果不是&quot;玩具级&quot;，而是已达到电商可用。Boss 想眼见为实，点上面任一入口即可。</p></blockquote>', '<hr/>', '<h2 id="sec3">2. Topic ③（CEO 补位 Cursor）：GPT Image / Gemini Nano Banana + Codex 能否复刻 LinkFox 生图？</h2>', '<blockquote><p>说明：本问题原派给 Cursor，但其自动执行桥未触发，由 CEO 依据公开资料补位。</p></blockquote>', '<h3>2.1 两个底座模型的能力边界</h3>', '<div class="table-wrap"><table><tr><th>维度</th><th><strong>GPT Image</strong>（OpenAI gpt-image-1 / 1.5 / 2）</th><th><strong>Gemini Nano Banana</strong>（2.5 Flash Image / 2 / Pro）</th></tr><tr><td>文生图</td><td>✅</td><td>✅</td></tr><tr><td>图生图 / 编辑</td><td>✅（<code>v1/images/edits</code>，支持 mask 局部重绘）</td><td>✅（自然语言定向编辑）</td></tr><tr><td>角色/物体一致性</td><td>中等</td><td><strong>强</strong>（同人跨场景、同产品多角度一致，官方电商示例）</td></tr><tr><td>多图融合</td><td>有限</td><td>✅（≤20 张参考图合成）</td></tr><tr><td>文字渲染</td><td>中–强</td><td><strong>强</strong>（世界知识辅助，模板遵循好）</td></tr><tr><td>自然语言局部改</td><td>需 mask/指令</td><td>✅（&quot;模糊背景/去污渍/换姿势/上色&quot;一句话）</td></tr><tr><td>接入方式</td><td>OpenAI Images API / Responses API，需 <code>OPENAI_API_KEY</code></td><td>Gemini API / AI Studio / Vertex AI，需 <code>GEMINI_API_KEY</code>；AI Studio <strong>免费 100 张/天</strong></td></tr><tr><td>单张成本</td><td>$0.011(低)/$0.042(中)/$0.167(高) @1024²</td><td>$0.03–0.08/张（Nano Banana 2：1K $0.03 / 2K $0.05 / 4K $0.06）</td></tr><tr><td>水印</td><td>—</td><td>SynthID 隐形水印</td></tr></table></div>', '<h3>2.2 Codex 怎么编排（agent 驱动的生图流水线）</h3>', '<ul><li>Codex 本身<strong>不生成图</strong>，但它是 agentic coding 工具，能写 Python 调用 OpenAI / Gemini SDK、批量循环、串联多步编辑、用文件系统存中间产物——本质就是&quot;会写代码的流水线工程师&quot;。</li><li><strong>现成 skill 直接可用</strong>：</li><li><a href="https://github.com/983033995/nanobanana-codex-skill" target="_blank" rel="noopener"><code>nanobanana-codex-skill</code></a>（GitHub）：<code>npx skills add 983033995/nanobanana-codex-skill</code>，封装 Gemini Nano Banana 生成/编辑/多图合成，支持 <code>--reference</code>/<code>--input</code> 多图。</li><li><a href="https://qumge.com/zh-cn/skills/openai/codex/imagegen" target="_blank" rel="noopener"><code>openai/codex</code> 的 <code>imagegen</code> skill</a>：<code>npx skills add https://github.com/openai/codex --skill imagegen</code>，内置 <code>image_gen</code> 工具 + CLI 回退（gpt-image-1.5）。</li><li><strong>流水线示例</strong>（Codex 写一次，反复用）：</li></ul>', '<p>  ```</p>', '<p>  读商品清单 → for 每个商品:</p>', '<p>     调 Nano Banana：换背景到&quot;希腊风 cottage&quot; + 同模特多姿态（一致性）</p>', '<p>     → 调 GPT Image：局部重绘加 logo/卖点文字</p>', '<p>     → 落盘 1200x1600 / 1080x1440 多尺寸</p>', '<p>  → 批量产出商品套图</p>', '<p>  ```</p>', '<h3>2.3 LinkFox 生图功能 → 云模型 + Codex 可行性映射</h3>', '<div class="table-wrap"><table><tr><th>LinkFox 功能</th><th>云模型 + Codex 能否做</th><th>说明</th></tr><tr><td>商品套图（A+/卖点/场景/特写）</td><td>✅ 能做</td><td>Nano Banana 一致性 + Codex 批量循环，正是其官方电商场景</td></tr><tr><td>换背景</td><td>✅ 能做</td><td>两者都支持编辑/定向改背景</td></tr><tr><td>局部重绘</td><td>✅ 能做</td><td>GPT <code>images/edits</code>(mask) / Nano Banana 定向编辑</td></tr><tr><td>AI 模特换装</td><td>◐ 基本能做</td><td>Nano Banana 同人换装可；但<strong>真·衣物形变试穿</strong>用开源 OOTDiffusion 更稳</td></tr><tr><td>相似图裂变（3 秒裂变）</td><td>✅ 能做</td><td>Codex 循环 seed/prompt 批量出变体</td></tr><tr><td>智能修图</td><td>✅ 能做</td><td>两者编辑能力覆盖</td></tr><tr><td>强人脸一致性（模特脸不变）</td><td>◎ 基本够</td><td>Nano Banana 内置一致性；极致保真用开源 PuLID 或 Nano Banana Pro</td></tr><tr><td>强姿态控制（锁姿势）</td><td>◎ 弱项</td><td>云模型姿态控制弱于开源 <strong>ControlNet</strong></td></tr><tr><td>商品图文字渲染</td><td>✅ 能做</td><td>Nano Banana 文字渲染强，GPT 中上</td></tr></table></div>', '<h3>2.4 成本对比（关键）</h3>', '<div class="table-wrap"><table><tr><th>方案</th><th>单张成本</th><th>备注</th></tr><tr><td><strong>LinkFox</strong></td><td>¥0.11–1 元/张</td><td>按功能订阅/积分，部分场景偏贵</td></tr><tr><td><strong>GPT Image</strong></td><td>$0.01–0.17（≈¥0.07–1.2）</td><td>低质仅 $0.011</td></tr><tr><td><strong>Nano Banana</strong></td><td>$0.03–0.08（≈¥0.2–0.6）</td><td>AI Studio 免费 100 张/天</td></tr><tr><td><strong>本地开源(ComfyUI 栈)</strong></td><td>≈¥0（电费）</td><td>需 RTX 4060 + 搭建调优，慢</td></tr></table></div>', '<blockquote><p>结论：<strong>云模型对大多数场景比 LinkFox 更便宜或持平，且无需功能订阅</strong>；本地开源边际≈0 但需一次性搭建与显存调优。两者都明显比&quot;1 元/张&quot;的 LinkFox 套餐划算。</p></blockquote>', '<h3>2.5 推荐架构（混合）</h3>', '<ul><li><strong>日常套图 / 换背景 / 修图 / 文字</strong>：用 <strong>Nano Banana + GPT Image + Codex 编排</strong>——快、便宜、免搭建，当天就能跑。</li><li><strong>强人脸一致性 / 强姿态 / 真·虚拟试穿</strong>：用<strong>本地开源 PuLID / ControlNet / OOTDiffusion</strong> 补刀（本机 RTX 4060 可跑）。</li><li><strong>若要求完全免费</strong>：走全开源 ComfyUI 栈（SDXL + IP-Adapter + ControlNet + OOTDiffusion），一次性投入搭建。</li></ul>', '<hr/>', '<h2 id="sec4">3. 待 Boss 拍板</h2>', '<ol><li><strong>要不要我先用 Nano Banana（本机已有 skill）现场生成 2–3 张示例商品图给你&quot;亲眼看看&quot;？</strong>（注意：每次生图约 $0.03–0.08，我可先小批量示范；你点头我即生成）</li><li><strong>主路线选哪条</strong>：云模型（快/便宜/免搭建）vs 本地开源（免费/需搭建）vs 混合（推荐）？</li><li><strong>是否让 Codex 把&quot;Nano Banana + GPT Image 生图流水线&quot;写成可复用脚本沉淀进项目</strong>，以后一句话批量出套图？</li><li>Codex 的 ②（开源 GitHub 替代 skill）报告出来后，我会并入本合订本并补发飞书链接。</li></ol>', '<hr/>', '<p>*注：本报告基于公开网页/官方文档/开源仓库实测检索（2026-07-22），未做真实生图压测；成本按官方公开定价换算。Codex 的 ② 部分见其独立报告 <code>linkfox_r2_codex.md</code>。*</p>']
+    </article>
+    <div class="foot">源文件：linkfox_r2_ceo.md · 经 8790 静态服务可直开</div>
+  </div>
+</body>
+</html>

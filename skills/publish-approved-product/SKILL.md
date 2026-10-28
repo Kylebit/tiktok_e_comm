@@ -52,6 +52,21 @@ keep dependent marketplace execution blocked and continue independent authorized
 work. This Skill change cannot enable the gate or grant approval. Recheck the actual
 service before any business action; a source commit or local test is not deployment.
 
+### Gallery completeness fallback
+
+Apply an applicable product-specific image rule before the generic fallback;
+retain any stronger requirement. Without a specific rule, require at least
+seven distinct, qualified image artifacts per brand (fourteen for two brands),
+with meaningful cover, detail, scene and evidence-role coverage. Count actual
+artifact identities, not repeated shop routes, re-encodings or role aliases.
+Unknown size or installation facts must remain unknown: use explicitly bound,
+source-supported proportion/construction substitutions, never invented numbers,
+mounting parts or claims. An insufficient plan or gallery blocks the final
+candidate; finish preparation and automatic QA before the single protected
+human prepublication decision. A frozen image-plan successor must preserve and
+verify all other R1 facts, targets, copy, prices, stock and companion scope;
+do not overwrite historical snapshots or reset paid/COMMON budgets.
+
 ## One final-review gate
 
 Load `config/product_publication_autopilot_policy.json` and the confirmed
@@ -592,3 +607,25 @@ retries and requires readback reconciliation before any new mutation. A
 transient failure may retry only when confirmed writes are zero and only within
 the configured budget. Persist the classification and recovery budget in the
 target report, then project the same evidence to the frontend.
+
+
+### Frozen target variant display and exact readback
+
+Future R3 projection must carry each exact R1 target/Model-SKU localized display
+through `content_by_target.variants`, the frozen snapshot, final-review copy set
+and target command. Show those display values beside their Model SKUs in the
+same sole final review. Never substitute a global-language specification for a
+retained localized display or restore a missing field into an old approved body.
+Legacy snapshots remain readable with their original global specification; a
+missing localized field is unavailable for localized execution or a full localized
+content claim until its immutable lineage is explicitly reconciled. Do not silently
+translate, truncate or choose replacement text.
+
+Compare the publisher's single `Specification` property to the exact frozen display
+under its explicit official name representation, without accepting arbitrary names,
+extra attributes or changed values. Rich HTML/plain text may be compared by the
+strict text projection while ordered description images and gallery remain separate
+exact checks. Preserve word spaces, paragraph boundaries and punctuation: a missing
+space is real content drift. Missing warehouse rows remain MISSING_NOT_ZERO; retain
+the frozen TikTok CURRENT_PROVIDER_SKU_STOCK rule rather than substituting generic200.
+These parser/projection fixes do not approve, rewrite or republish existing content.

@@ -80,6 +80,7 @@ def build_captured_weekly(profile: Mapping[str, Any]) -> dict[str, Any]:
             ad_rate=profile.get('ad_rate', '0.22'),
             ad_rate_source='operator_global_override' if 'ad_rate' in profile else 'default_22',
             seller_sku_by_ozon_sku=profile.get('seller_sku_mapping'),
+            seller_sku_mappings_by_platform={platform:profile.get('seller_sku_mapping') or {}},
             cost_assumption_warnings=policy.warnings if allow_assumptions else (),
             cost_policy_issues=tuple(policy_issues), calculation_timezone=offset,
             platforms=(platform,), code_version='profit-captured-consumer/v1')

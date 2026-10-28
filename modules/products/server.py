@@ -9,6 +9,7 @@ import logging
 import mimetypes
 import re
 import socket
+import sqlite3
 import threading
 import time
 import hashlib
@@ -72,7 +73,7 @@ def _install_service_common_detail_observer(config):
     def factory():
         from modules.miaoshou.client import NativeCommonDetailObserver, MiaoshouLocalConfigMissing
         try:
-            raw = publication_runtime_config._read(config.root, 'config/miaoshou.local.json')
+            raw = publication_runtime_config.common_signing_bytes(config)
         except FileNotFoundError:
             raise MiaoshouLocalConfigMissing('Pinned Miaoshou local config was not found.') from None
         try:
@@ -7961,7 +7962,10 @@ def _release_dashboard_for_request(data: dict) -> tuple[dict | None, tuple[int, 
         if targets != ["miaoshou:COMMON"]:
             return None, (409, {"ok": False, "error": "COMMON_STAGE_EXACT_SCOPE_REQUIRED", "external_writes_performed": []})
         try:
-            common_documents = _load_r2_documents_for_service(offer_id)
+            from shared_platform.original_images_successor import installed_successor
+            successor = installed_successor(offer_id)
+            common_documents = (successor.predecessor_documents() if successor is not None
+                else _load_r2_documents_for_service(offer_id))
             validate_r2_identity(common_documents)
         except ValueError as error:
             return None, (409, {"ok": False, "error": str(error), "external_writes_performed": []})
@@ -8088,9 +8092,84 @@ def _common_baseline_user_status(facts, *, matrix_complete=False):
             'final_review_available':False}
 
 
-def _r3_common_stage_view(dashboard: dict, *, store=None) -> dict:
+def _native_common_request_budget(facts, census, runs, *, successor=None):
+    """Pure cap check on facts/rows already read from one native snapshot."""
+    from shared_platform import native_common_technical_execution as technical
+    from shared_platform.native_common_baseline_successor import retained_run_ids
+    retained=retained_run_ids(successor)
+    if census['status'] != 'LOCAL_PERSISTED_CENSUS':
+        raise ValueError('COMMON_HISTORICAL_WRITE_BUDGET_UNKNOWN')
+    if any(row.get('run_id') not in retained for row in census['unresolved_attempts']) or any(row.get('same_preparation_root') is True
+                                          for row in census['unclassified_history']):
+        raise ValueError('COMMON_PRIOR_ATTEMPT_RECONCILIATION_REQUIRED')
+    confirmed = census['local_observed_confirmed_writes']
+    for run in runs:
+        if run['run_id'] in retained:continue
+        if run['approval_id'] is not None:
+            continue
+        if run['technical_execution_state'] in {'RESERVED', 'READONLY_RESERVED', 'UNKNOWN'}:
+            raise ValueError('COMMON_PRIOR_ATTEMPT_RECONCILIATION_REQUIRED')
+        old = technical._binding(run)
+        if (old['account_identity_digest'] == facts.account_identity_digest
+                and old['preparation_root_id'] == facts.root_id
+                and run['technical_execution_state'] == 'CONFIRMED_WRITE'):
+            confirmed = max(confirmed, 1)
+    if type(confirmed) is not int or confirmed < 0 or facts.confirmed_cap != 1:
+        raise ValueError('COMMON_HISTORICAL_WRITE_BUDGET_UNKNOWN')
+    if confirmed >= facts.confirmed_cap:
+        raise ValueError('COMMON_CONFIRMED_WRITE_CAP_EXHAUSTED')
+    return confirmed
+
+
+def _native_common_request_preflight(plan, store):
+    """Read real native request facts and cap; reserve/EDIT still recheck them."""
+    from shared_platform import native_common_technical_execution as technical
+    from shared_platform.native_common_budget_facts import census_same_snapshot
+    from shared_platform.r3_common_source_facts import NativeCommonSourceReader
+    from shared_platform.release_store import ReleaseStore, ReleaseStoreError
+    from shared_platform.r3_frozen_review_producer import DomainReviewBlocked
+    binding = {key: plan.get(value) for key, value in (
+        ('offer_id', 'product_id'), ('plan_id', 'plan_id'), ('payload_digest', 'payload_digest'))}
+    result = {'schema_version': 'native-common-request-preflight/v1', 'binding': binding,
+              'status': 'BLOCKED', 'execution_authority': False, 'recheck_at_commit': True,
+              'execution_scope': [technical.COMMON],
+              'claim_reserved': False, 'provider_edit_permission': 'UNKNOWN',
+              'external_writes_performed': []}
+    try:
+        if type(store) is not ReleaseStore or not store.path.is_file() or plan.get('status') == 'NOT_PERSISTED':
+            raise ValueError('COMMON_SOURCE_PLAN_NOT_PERSISTED')
+        with store._connect_readonly() as db:
+            db.execute('BEGIN')
+            if not technical._schema_installed(db):
+                raise ValueError('COMMON_TECHNICAL_SCHEMA_NOT_INSTALLED')
+            facts = technical._service_facts(store, db, binding['plan_id'])
+            if (facts.offer_id != binding['offer_id'] or facts.payload_digest != binding['payload_digest']):
+                raise ValueError('COMMON_NATIVE_REQUEST_BINDING_CHANGED')
+            observed = NativeCommonSourceReader(store).read_source_facts(db, binding['plan_id'])
+            census = census_same_snapshot(store, db, plan['payload'], observed)
+            from shared_platform.native_common_baseline_successor import context
+            confirmed = _native_common_request_budget(facts, census, technical._native_runs(db, facts.offer_id),
+                successor=context(store,db,plan['payload']))
+            return {**result, 'status': 'READY', 'reason': None,
+                    'budget': {'status': census['status'], 'confirmed_write_count': confirmed,
+                               'maximum_confirmed_writes': facts.confirmed_cap}}
+    except (ValueError, TypeError, KeyError, ReleaseStoreError, DomainReviewBlocked, sqlite3.Error, OSError) as error:
+        reason = str(error)
+        if not re.fullmatch(r'COMMON_[A-Z0-9_]+', reason):
+            reason = 'COMMON_NATIVE_REQUEST_PREFLIGHT_UNAVAILABLE'
+        return {**result, 'reason': reason}
+
+
+def _r3_common_stage_view(dashboard: dict, *, store=None, _persist_native_plan=False) -> dict:
     """Read-only stage facts for both HTTP and the default workflow CLI."""
     from shared_platform.release_store import default_release_store
+    from shared_platform.original_images_successor import installed_successor
+    offer = str((dashboard.get('_r3_common_documents') or {}).get('round1_snapshot', {}).get('offer_id') or '')
+    successor = installed_successor(offer) if offer else None
+    if successor is not None:
+        if _persist_native_plan:
+            raise ValueError('ORIGINAL_IMAGES_SUCCESSOR_COMMON_READONLY_BASELINE_ONLY')
+        return successor.retained_common_view(store or default_release_store())
     payload, blockers = _release_plan_payload_from_dashboard(
         dashboard, common_store=store,
     )
@@ -8100,7 +8179,32 @@ def _r3_common_stage_view(dashboard: dict, *, store=None) -> dict:
                 "common": {"status": "BLOCKED", "execution_scope": ["miaoshou:COMMON"]}}
     if store is None:
         store = default_release_store()
+    from shared_platform.native_common_baseline_successor import select_payload
+    payload=select_payload(store,payload)
     preview = store.preview_plan(payload)
+    if _persist_native_plan:
+        from shared_platform.original_prepared_continuation import OriginalPreparedTaskContinuation, configured_original_continuation
+        continuation = configured_original_continuation(payload['product_id'])
+        from shared_platform import native_common_technical_execution as technical
+        from shared_platform.r3_common_source_facts import NativeCommonSourceReader
+        from shared_platform.release_store import ReleaseStoreError
+        from shared_platform.r3_frozen_review_producer import DomainReviewBlocked
+        try:
+            if (type(continuation) is not OriginalPreparedTaskContinuation
+                    or store.path.resolve() != continuation.release_store.path.resolve()
+                    or payload['targets'] != ['miaoshou:COMMON']
+                    or not payload['r3_stage_binding'].get('native_preparation_source')):
+                raise ValueError('COMMON_NATIVE_PREVIEW_ORIGINAL_BINDING_REQUIRED')
+            with store._connect_readonly() as db:
+                db.execute('BEGIN')
+                NativeCommonSourceReader(store).validate_context(db)
+                if not technical._schema_installed(db):
+                    raise ValueError('COMMON_TECHNICAL_SCHEMA_NOT_INSTALLED')
+            store.create_plan(payload)
+        except (ValueError, TypeError, KeyError, OSError, ReleaseStoreError, DomainReviewBlocked, sqlite3.Error) as error:
+            return {'ok': False, 'schema_version': 'publication-stages/v1',
+                    'error': str(error), 'external_writes_performed': [],
+                    'common': {'status': 'BLOCKED', 'execution_scope': ['miaoshou:COMMON']}}
     plan = store.get_plan(preview['plan_id'])
     run = store.get_run('release-run:' + plan['payload_digest'][:24]) if plan else None
     target = next((row for row in (run or {}).get('targets') or [] if row['target_label'] == 'miaoshou:COMMON'), None)
@@ -8117,7 +8221,8 @@ def _r3_common_stage_view(dashboard: dict, *, store=None) -> dict:
             state = 'RECONCILIATION_REQUIRED'
         else:
             state = target['status']
-    reconciliation = store.common_reconciliation_reference(payload['product_id'])
+    reconciliation = (store.common_reconciliation_reference(payload['product_id'],successor_payload=payload)
+        if payload.get('native_common_baseline_successor') else store.common_reconciliation_reference(payload['product_id']))
     if reconciliation:
         state = 'RECONCILIATION_REQUIRED'
         evidence_blockers.append('COMMON original provider-detail claim requires reconciliation')
@@ -8126,7 +8231,11 @@ def _r3_common_stage_view(dashboard: dict, *, store=None) -> dict:
         if failure.get('schema_version') in {'common-local-config-not-dispatched/v1', 'common-local-variant-key-not-dispatched/v1'}:
             state = 'READY_TO_SYNC'
     from shared_platform.publication_common_write_admission import inspect_common_write_admission
-    technical_admission = inspect_common_write_admission(plan or preview, store=store)
+    technical_admission = inspect_common_write_admission(plan or preview, store=store,
+                                                        policy_reader=_service_common_standing_policy_reader())
+    native_request_preflight = _native_common_request_preflight(plan, store) if plan else None
+    if native_request_preflight and native_request_preflight['status'] == 'READY' and target is None:
+        state = 'READY_TO_SYNC'
     baseline_facts, technical_run, retained_display = _retained_native_common_stage_facts(store, plan)
     marketplace = {'status':'NOT_FROZEN', 'targets':payload['r3_stage_binding']['marketplace_targets']}
     if plan and plan['status'] != 'APPROVED' and baseline_facts['status'] == 'RETAINED_NATIVE_COMMON_BASELINE':
@@ -8155,7 +8264,8 @@ def _r3_common_stage_view(dashboard: dict, *, store=None) -> dict:
             'offer_id': payload['product_id'], 'external_writes_performed': [],
             'common': {'status': state, 'plan': plan or preview, 'run': run,
                        'blockers': evidence_blockers, 'reconciliation_reference': reconciliation,
-                        'technical_admission': technical_admission,
+                       'technical_admission': technical_admission,
+                       'native_request_preflight': native_request_preflight,
                         **native_details,
                        'execution_scope': ['miaoshou:COMMON'], 'approval_source': 'ReleaseStore',
                        'r2_approval_scope': 'ROUND2_IMAGES_ONLY'},
@@ -8272,11 +8382,19 @@ def _preview_r3_marketplace_stage_configured(data: dict, configured: dict) -> tu
                         or completion.readback_digest != next(row for row in common['run']['targets']
                             if row['target_label']=='miaoshou:COMMON')['readback']['evidence_digest']):
                     raise ValueError('NATIVE_COMMON_CANDIDATE_READBACK_CHANGED')
-            payload = bridge.build_marketplace_stage_payload(dashboard['_r3_common_documents'], common['plan'], common['run'],
+            from shared_platform.prepared_target_consumer import configured_target_consumer
+            target_consumer = configured_target_consumer(str(data.get('offer_id')))
+            from shared_platform.original_images_successor import installed_successor
+            successor = installed_successor(str(data.get('offer_id')))
+            marketplace_documents = (successor.current_documents() if successor is not None
+                else dashboard['_r3_common_documents'])
+            target_reduction = target_consumer.read_verified(str(data.get('offer_id')),
+                r2_identity=bridge.validate_r2_identity(marketplace_documents)) if target_consumer else None
+            payload = bridge.build_marketplace_stage_payload(marketplace_documents, common['plan'], common['run'],
                 policy=configured['policy'], incidents=configured['incident_registry'],
                 promotion_policy=_server_owned_postpublish_promotion_policy(view['marketplace']['targets']),
                 ozon_stock_decision=ozon_stock_decision, category_store=store,
-                category_connection=category_db)
+                category_connection=category_db, target_reduction=target_reduction)
         plan = store.preview_plan(payload)
         snapshot = build_publication_preview(payload)
         from shared_platform.shopee_category_attribute_successor import (
@@ -8343,7 +8461,8 @@ def _preview_r3_marketplace_stage_configured(data: dict, configured: dict) -> tu
             # Explicit preparation persists an inert immutable candidate. GET
             # never creates it, and only the native owner-bound decision can
             # approve or execute this plan after another complete recheck.
-            view['marketplace']['plan'] = store.create_plan(payload)
+            view['marketplace']['plan'] = (successor.create_marketplace_successor(store, payload)
+                if successor is not None else store.create_plan(payload))
             from shared_platform.native_sole_final_service import check_current_rounds
             installed = globals().get('_NATIVE_FINAL_SERVICE')
             from shared_platform.native_sole_final_service import NativeSoleFinalService
@@ -8520,7 +8639,10 @@ def _publication_stages_for_request_impl(data: dict) -> tuple[int, dict]:
     # A retained provider claim is authoritative even when current dashboard
     # facts are incomplete or changed. Do not compile a replacement preview
     # before presenting the original unresolved run to read-only consumers.
-    reference = store.common_reconciliation_reference(offer)
+    active_successor=(active['payload'] if active and active['targets']==['miaoshou:COMMON']
+        and active['payload'].get('native_common_baseline_successor') else None)
+    reference = (store.common_reconciliation_reference(offer,successor_payload=active_successor)
+        if active_successor else store.common_reconciliation_reference(offer))
     if reference:
         return 200, {'ok': True, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
             'common': {'status': 'RECONCILIATION_REQUIRED', 'reconciliation_reference': reference,
@@ -8761,13 +8883,18 @@ def _resume_r3_marketplace_stage(data: dict, *, native_service=None) -> tuple[in
             'marketplace': {'status': 'APPROVAL_BINDING_REQUIRED', 'plan_id': str(data.get('plan_id') or '')}}
 
 
-def _preview_r3_common_stage(data: dict) -> tuple[int, dict]:
+def _preview_r3_common_stage(data: dict, *, _persist_native_plan=False, _manual_delegate=True) -> tuple[int, dict]:
+    adopted = globals().get('_AGENT_PREPARED_COMMON_SERVICE')
+    if _manual_delegate and _persist_native_plan and adopted is not None:
+        try:return adopted.preview(data)
+        except (ValueError,KeyError,TypeError,OSError,sqlite3.Error):
+            return 409, {'ok':False,'error':'AGENT_PREPARED_COMMON_PREVIEW_BLOCKED','external_writes_performed':[]}
     if data.get('release_stage') != 'R3_COMMON':
         return 400, {'ok': False, 'error': 'release_stage=R3_COMMON is required', 'external_writes_performed': []}
     dashboard, failure = _release_dashboard_for_request(data)
     if failure:
         return failure
-    result = _r3_common_stage_view(dashboard)
+    result = _r3_common_stage_view(dashboard, _persist_native_plan=_persist_native_plan)
     return (200 if result['ok'] else 409), result
 
 
@@ -9977,6 +10104,7 @@ def _registered_r3_post_allowed(path: str, data: dict) -> bool:
     common_routes = {
         '/api/product-workspace/release-plan/approve',
         '/api/product-workspace/r3-common/preview',
+        '/api/product-workspace/miaoshou-draft/commit',
     }
     if path in common_routes:
         if (data.get('release_stage') != 'R3_COMMON'
@@ -10364,6 +10492,12 @@ def _prepare_miaoshou_release(
     _overwrite_lock_held: bool = False,
 ) -> tuple[int, dict]:
     """Execute only the approved common-draft write and verified readback."""
+    adopted = globals().get('_AGENT_PREPARED_COMMON_SERVICE')
+    if adopted is not None:
+        try:return adopted.commit(data)
+        except (ValueError,KeyError,TypeError,OSError,RuntimeError,sqlite3.Error):
+            return 409, {'ok':False,'error':'AGENT_PREPARED_COMMON_COMMIT_REQUIRES_RECONCILIATION',
+                'external_write_outcome':'UNKNOWN_OR_NOT_DISPATCHED','repeat_create_permitted':False}
     from modules.products.release_adapters import (
         MiaoshouDraftVerificationError,
         miaoshou_common_overwrite_review,
@@ -11121,11 +11255,58 @@ _GENERIC_TIKTOK_SAFE_RETRY_MARKERS = (
 )
 
 
+def _native_tiktok_zero_evidence(proof: dict) -> bool:
+    """Consume native facts as recorded; never manufacture legacy flags."""
+    labels = {'tiktok:LH_MY', 'tiktok:LH_PH', 'tiktok:LH_TH', 'tiktok:LH_VN'}
+    label = proof.get('target_label')
+    if (proof.get('schema_version') != 'native-scoped-v4-target-result/v1' or label not in labels
+            or proof.get('status') != 'FAILED' or proof.get('known_pre_submit_zero') is not True
+            or proof.get('request_attempted') is not False or proof.get('outcome_unknown') is not False
+            or proof.get('reconciliation_required') is not False or proof.get('verified') is not False
+            or proof.get('external_writes_performed') != [] or proof.get('catalog_projection_failures') != []):
+        return False
+    canonical = proof.get('canonical_platform_result');budget = proof.get('mutation_budget')
+    identity = proof.get('checkpoint_file_identity')
+    if not all(isinstance(item, dict) for item in (canonical, budget, identity)):return False
+    rows = canonical.get('targets');attempts = budget.get('attempts');scope = budget.get('durable_scope')
+    if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+            or not isinstance(attempts, dict) or not isinstance(attempts.get('per_target'), dict)
+            or not isinstance(scope, dict)):
+        return False
+    if (canonical.get('schema_version') != 'product-publication-platform-result/v1'
+            or canonical.get('platform') != 'TIKTOK' or canonical.get('dispatch_attempted') is not False
+            or canonical.get('readback_completed') is not False or type(canonical.get('external_write_count')) is not int
+            or canonical['external_write_count'] != 0 or rows[0].get('target_label') != label
+            or rows[0].get('status') != 'FAILED' or budget.get('schema_version') != 'publication-mutation-budget/v1'
+            or budget.get('platform') != 'TIKTOK' or budget.get('execution_authority') is not False
+            or budget.get('reservations') != [] or type(attempts.get('shared')) is not int or attempts['shared'] != 0
+            or type(attempts.get('total')) is not int or attempts['total'] != 0
+            or set(attempts['per_target']) != labels
+            or any(type(v) is not int or v != 0 for v in attempts['per_target'].values())
+            or identity.get('schema_version') != 'native-final-checkpoint-file-identity/v1'
+            or scope.get('plan_id') != identity.get('plan_id')
+            or scope.get('snapshot_digest') != identity.get('execution_snapshot_digest')
+            or any(type(identity.get(k)) is not str or not identity[k] for k in
+                ('plan_id', 'release_run_id', 'decision_id', 'execution_snapshot_digest'))):
+        return False
+    encoded = json.dumps({'plan_id': scope['plan_id'], 'snapshot_digest': scope['snapshot_digest'], 'platform': 'TIKTOK'},
+        ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+    if scope.get('scope_key') != hashlib.sha256(encoded).hexdigest():return False
+    detail = rows[0].get('evidence')
+    return (isinstance(detail, dict) and detail.get('stage') == 'PREPARATION' and detail.get('status') == 'FAILED'
+        and detail.get('provider_code') == 'tiktok_preparation_failed' and detail.get('target_label') == label
+        and detail.get('request_attempted') is False and detail.get('outcome_unknown') is False
+        and type(detail.get('external_write_count')) is int and detail['external_write_count'] == 0
+        and '[phase=DRAFT_PREPARER; exception=' in str(detail.get('provider_reason') or ''))
+
+
 def _zero_write_pre_submit_evidence(value: object) -> bool:
     if not isinstance(value, dict):
         return False
     nested = value.get("evidence")
     evidence = nested if isinstance(nested, dict) else value
+    if 'known_pre_submit_zero' in evidence or evidence.get('schema_version') == 'native-scoped-v4-target-result/v1':
+        return _native_tiktok_zero_evidence(evidence)
     writes = evidence.get("external_writes_performed")
     return (
         evidence.get("pre_submit_failure") is True
@@ -11139,6 +11320,8 @@ def _generic_tiktok_safe_retry_target(target: dict) -> bool:
     """Recognize only truthful zero-write TikTok pre-submit failures."""
 
     label = str(target.get("target_label") or "")
+    if label.startswith('shopee:'):
+        return _native_shopee_global_zero_target(target)
     if (
         label not in _GENERIC_TIKTOK_SAFE_RETRY_LABELS
         or target.get("status") != "FAILED"
@@ -11154,6 +11337,23 @@ def _generic_tiktok_safe_retry_target(target: dict) -> bool:
         failure_events = []
     if not isinstance(failure_events, list):
         return False
+    native_events = [event for event in failure_events if isinstance(event, dict)
+        and isinstance(event.get('evidence'), dict) and ('known_pre_submit_zero' in event['evidence']
+            or event['evidence'].get('schema_version') == 'native-scoped-v4-target-result/v1')]
+    if native_events:
+        if (len(failure_events) != 1 or type(target.get('attempts')) is not int or target['attempts'] != 1
+                or target.get('target_scoped_operation')):return False
+        event = native_events[0];proof = event['evidence']
+        if (event.get('attempt') != 1 or proof.get('target_label') != label
+                or not _zero_write_pre_submit_evidence(proof)
+                or proof['checkpoint_file_identity']['release_run_id'] != target.get('run_id')
+                or target.get('latest_failure_evidence') not in (None, event)):
+            return False
+        try:
+            raw = json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+        except (TypeError, ValueError):
+            return False
+        return hashlib.sha256(raw).hexdigest() == event.get('evidence_digest')
     structured_safe_evidence = False
     for event in failure_events:
         if not isinstance(event, dict):
@@ -11175,6 +11375,244 @@ def _generic_tiktok_safe_retry_target(target: dict) -> bool:
     return any(
         marker in detail for marker in _GENERIC_TIKTOK_SAFE_RETRY_MARKERS
     )
+
+
+def _native_shopee_global_zero_target(target: dict) -> bool:
+    """One original GLOBAL_RESOLVER failure; this predicate grants no retry."""
+    labels = {'shopee:MY', 'shopee:PH', 'shopee:TH', 'shopee:VN'}
+    label = target.get('target_label')
+    if (label not in labels or target.get('status') != 'FAILED' or type(target.get('attempts')) is not int
+            or target['attempts'] not in (1, 2) or any(target.get(k) for k in
+                ('external_id', 'submission', 'readback', 'repair', 'target_scoped_operation', 'external_writes_performed'))):
+        return False
+    failures = target.get('failure_events')
+    attempt = target['attempts']
+    if (not isinstance(failures, list) or len(failures) != attempt or any(not isinstance(event, dict) for event in failures)
+            or [event.get('attempt') for event in failures] != list(range(1, attempt+1))):
+        return False
+    if attempt == 2:
+        pins = {'shopee:MY': '6a896e21d33b33c19bed3d33d77a85ecdd47eb2743d39b27f043ccd41dee869b',
+            'shopee:PH': 'e11fb8676e8626aa5e326dbcc553de502efaf99a701930ffff8d751d991c12df',
+            'shopee:TH': '6295f5240833b54a6541271da59013788955bb81c6c3362bf3bea908bd3d0f0e',
+            'shopee:VN': '3c8c808d349e40b02bfaa322291a7d84d853fb8ff04e5a0e3142ed6958534c64'}
+        if (target.get('run_id') != 'release-run:25e66f7250d31cbb39ff8d0e'
+                or failures[1].get('evidence_digest') != pins[label]
+                or not _native_shopee_global_zero_target({**target, 'attempts': 1,
+                    'failure_events': [failures[0]], 'latest_failure_evidence': failures[0]})):
+            return False
+    event = failures[-1];proof = event.get('evidence')
+    if not isinstance(proof, dict):return False
+    try:
+        raw = json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+    except (TypeError, ValueError):
+        return False
+    if hashlib.sha256(raw).hexdigest() != event.get('evidence_digest'):return False
+    canonical = proof.get('canonical_platform_result');budget = proof.get('mutation_budget')
+    if not isinstance(canonical, dict) or not isinstance(budget, dict):return False
+    rows = canonical.get('targets');attempts = budget.get('attempts')
+    if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+            or not isinstance(attempts, dict) or not isinstance(attempts.get('per_target'), dict)):
+        return False
+    if (proof.get('schema_version') != 'native-scoped-v4-target-result/v1' or proof.get('target_label') != label
+            or proof.get('status') != 'FAILED' or proof.get('known_pre_submit_zero') is not True
+            or proof.get('request_attempted') is not False or proof.get('outcome_unknown') is not False
+            or proof.get('reconciliation_required') is not False or proof.get('verified') is not False
+            or proof.get('external_writes_performed') != [] or proof.get('catalog_projection_failures') != []
+            or canonical.get('platform') != 'SHOPEE' or canonical.get('dispatch_attempted') is not False
+            or canonical.get('readback_completed') is not False or type(canonical.get('external_write_count')) is not int
+            or canonical['external_write_count'] != 0 or len(rows) != 1
+            or rows[0].get('target_label') != label or rows[0].get('status') != 'FAILED'
+            or budget.get('platform') != 'SHOPEE' or budget.get('reservations') != []
+            or type(attempts.get('shared')) is not int or attempts['shared'] != 0
+            or type(attempts.get('total')) is not int or attempts['total'] != 0
+            or set(attempts.get('per_target') or {}) != labels
+            or any(type(v) is not int or v != 0 for v in attempts['per_target'].values())):
+        return False
+    detail = rows[0].get('evidence')
+    return (isinstance(detail, dict) and detail.get('stage') == 'PREPARATION' and detail.get('request_attempted') is False
+        and detail.get('provider_code') == 'shopee_preparation_failed'
+        and detail.get('outcome_unknown') is False and type(detail.get('external_write_count')) is int
+        and detail['external_write_count'] == 0 and detail.get('target_label') == label
+        and '[phase=GLOBAL_RESOLVER; exception=' in str(detail.get('provider_reason') or ''))
+
+
+def _activate_native_tiktok_claimed_save(active):
+    """One exact accepted-claim continuation; never a zero-write retry."""
+    plan_id = 'r3-marketplace:8412287877065586543:07707b4b7901ca9b97b08acd'
+    decision_id = 'native-final-decision:7a10d3ac157c55c6949b663c5b63194b2c43eab81b0fee88eda6aae412838fe2'
+    if getattr(active, 'plan_id', None) != plan_id or getattr(active, 'decision_id', None) != decision_id:return ()
+    from shared_platform.native_sole_final_execution import _NativeExecution, _ACTIVE
+    if type(active) is not _NativeExecution or _ACTIVE.get() is not active:return ()
+    if getattr(active.runtime._operations, 'agent_prepared_common', None) is None:return ()
+    from shared_platform.agent_prepared_v4_targets import _scope
+    _scope(active, active.store.get_plan(plan_id))
+    from shared_platform.product_publication_live_dependencies import TikTokV4DraftCheckpointStore
+    from shared_platform.native_final_mutation_budget import _DurableLedger
+    from types import SimpleNamespace
+    exact = {
+        'tiktok:LH_MY': ('3487094129', '13295169', '221459c08d12a83185f5a84f27f6682490467ac1ce44536f09b8041ab72c6c31'),
+        'tiktok:LH_PH': ('3487101697', '7676267', 'c819344fa42baf067ac444c9ea564777af6c4b6154c956e5057d2e96b953fbda'),
+        'tiktok:LH_TH': ('3487109341', '13295228', '84b2bb91fe711aad8cb0a7a4054f82834eb0a4be8a23c6e75abf2546ed6b29cc'),
+        'tiktok:LH_VN': ('3487114463', '13295291', '8afebc4ae0959a84b38c5c38398be3de87546e703e574290f75ce531c0a0881a')}
+    plan = active.store.get_plan(plan_id)
+    run_id = 'release-run:' + plan['payload_digest'][:24]
+    with active.store._connect_readonly() as db:
+        approved = active.service._decision(db, decision_id, owner_sid=active.owner_sid)
+        snapshot = json.loads(db.execute('SELECT snapshot_json FROM approved_publication_snapshots WHERE plan_id=?', (plan_id,)).fetchone()[0])
+        review = json.loads(db.execute('SELECT review_json FROM native_sole_final_decisions WHERE decision_id=?', (decision_id,)).fetchone()[0])
+    budget = plan['payload']['r3_marketplace_binding']['reviewed_candidate_facts']['write_budget']['TIKTOK']
+    if set(budget['target_labels']) != set(exact) or budget['shared_maximum'] != 4 or budget['per_target_maximum'] != 3:return ()
+    binding = dict(plan_id=plan_id, snapshot_digest=approved['snapshot_digest'], platform='TIKTOK',
+        target_labels=budget['target_labels'], shared_maximum=4, per_target_maximum=3,
+        payload_digest=plan['payload_digest'], candidate_digest=review['candidate_digest'], decision_id=decision_id)
+    ledger = _DurableLedger(store=active.store, binding=binding, target_label=next(iter(exact)))
+    file_run = 'native-files-24c3e512eb40b27ee4b58b72a18171caf87359e8c2099676920970900eaab939'
+    request = SimpleNamespace(platform='TIKTOK', snapshot=snapshot, run_id=file_run)
+    checkpoints = TikTokV4DraftCheckpointStore(active.runtime.supervisor.root)
+    path = checkpoints._path(request)
+    cp_sha = '931c0be4dae4a1dd9f3c48b21b85412831a470bd3a8e8f445c86aa9dc37284d8'
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != cp_sha:return ()
+    checkpoint = checkpoints.load(request)
+    expected_events = [dict(target_label=label, operation=operation, outcome='ACCEPTED', detail_id=detail, shop_id=shop)
+        for label, (detail, shop, _) in exact.items() for operation in ('CREATE_DRAFT', 'CLAIM_TO_SHOP')]
+    if checkpoint['events'] != expected_events or checkpoint['external_write_count'] != 8:return ()
+    with active.store._transaction() as db:
+        active.service._decision(db, decision_id, owner_sid=active.owner_sid)
+        active.store._require_active_run(db, run_id)
+        ledger._check_schema(db);ledger._binding(db, create=False)
+        rows = ledger._rows(db)
+        if len(rows) != 8 or any((row['sequence'], row['target_label'], row['budget_scope'], row['operation'],
+                row['attempt_count'], row['outcome']) != (index+1, event['target_label'],
+                'shared' if event['operation'] == 'CREATE_DRAFT' else 'target',
+                'create_platform_draft' if event['operation'] == 'CREATE_DRAFT' else 'claim_draft', 1, 'ACCEPTED')
+                or not re.fullmatch(r'[0-9a-f]{64}', str(row['request_digest'] or ''))
+                for index, (row, event) in enumerate(zip(rows, expected_events))):return ()
+        targets = {row['target_label']: row for row in active.store._run_in_transaction(db, run_id)['targets']}
+        for label, (_, _, failure_sha) in exact.items():
+            row = targets[label];events = row.get('failure_events') or []
+            if (row['status'] != 'FAILED' or row['attempts'] != 2 or any(row.get(key) for key in
+                    ('external_id', 'submission', 'readback', 'repair', 'target_scoped_operation'))
+                    or [event['attempt'] for event in events] != [1, 2]):return ()
+            encode = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+            if any(hashlib.sha256(encode(event['evidence']).encode()).hexdigest() != event['evidence_digest'] for event in events):return ()
+            proof = events[1]['evidence'];identity = proof.get('checkpoint_file_identity') or {}
+            if (events[1]['evidence_digest'] != failure_sha or not _native_tiktok_zero_evidence(events[0]['evidence'])
+                    or proof.get('schema_version') != 'native-scoped-v4-target-result/v1'
+                    or proof.get('target_label') != label or proof.get('status') != 'FAILED'
+                    or proof.get('known_pre_submit_zero') is not False or proof.get('outcome_unknown') is not False
+                    or proof.get('reconciliation_required') is not False
+                    or identity.get('plan_id') != plan_id or identity.get('decision_id') != decision_id
+                    or identity.get('release_run_id') != run_id or identity.get('file_run_id') != file_run
+                    or identity.get('execution_snapshot_digest') != approved['snapshot_digest']):return ()
+        if hashlib.sha256(path.read_bytes()).hexdigest() != cp_sha:return ()
+        for label in exact:
+            changed = db.execute("UPDATE release_target_runs SET status='PENDING',completed_at=NULL "
+                "WHERE run_id=? AND target_label=? AND status='FAILED' AND attempts=2", (run_id, label))
+            if changed.rowcount != 1:raise ValueError('NATIVE_TIKTOK_ACCEPTED_CLAIM_TARGET_CAS_CHANGED')
+    return tuple(exact)
+
+
+def _activate_native_tiktok_zero(active, labels):
+    """Continue only this protected decision's proven original zero attempts."""
+    from shared_platform.native_sole_final_execution import _NativeExecution, _ACTIVE
+    if type(active) is not _NativeExecution or _ACTIVE.get() is not active:
+        return ()
+    if getattr(active.runtime._operations, 'agent_prepared_common', None) is None:
+        return ()
+    from shared_platform.agent_prepared_v4_targets import _scope
+    _scope(active, active.store.get_plan(active.plan_id))
+    selected = []
+    with active.store._transaction() as db:
+        approved = active.service._decision(db, active.decision_id, owner_sid=active.owner_sid)
+        plan = db.execute('SELECT payload_digest,payload_json FROM release_plans WHERE plan_id=?', (active.plan_id,)).fetchone()
+        run_id = 'release-run:' + plan['payload_digest'][:24]
+        active.store._require_active_run(db, run_id)
+        budget = json.loads(plan['payload_json'])['r3_marketplace_binding']['reviewed_candidate_facts']['write_budget']['TIKTOK']
+        for table in ('native_final_budget_reservations', 'native_final_budget_dispatches', 'native_final_budget_outcomes'):
+            if db.execute('SELECT 1 FROM native_final_budget_scopes s JOIN '+table+
+                    ' r USING(scope_key) WHERE s.plan_id=? AND s.platform=?', (active.plan_id, 'TIKTOK')).fetchone():
+                return ()
+        scope_body = {'plan_id': active.plan_id, 'snapshot_digest': approved['snapshot_digest'], 'platform': 'TIKTOK'}
+        scope_key = hashlib.sha256(json.dumps(scope_body, ensure_ascii=False, sort_keys=True,
+            separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+        for row in active.store._run_in_transaction(db, run_id)['targets']:
+            if (row['target_label'] not in labels or row['status'] != 'FAILED'
+                    or not _generic_tiktok_safe_retry_target(row)):
+                continue
+            proof = row['failure_events'][0]['evidence']
+            identity = proof['checkpoint_file_identity']
+            if (proof.get('schema_version') != 'native-scoped-v4-target-result/v1'
+                    or identity['decision_id'] != active.decision_id or identity['plan_id'] != active.plan_id
+                    or identity['execution_snapshot_digest'] != approved['snapshot_digest']
+                    or row['target_label'] not in budget['target_labels']
+                    or proof['mutation_budget']['durable_scope'] != {'plan_id': active.plan_id,
+                        'snapshot_digest': approved['snapshot_digest'], 'scope_key': scope_key}):
+                continue
+            if proof['mutation_budget'].get('limits') != {'shared_maximum': budget['shared_maximum'],
+                    'per_target_maximum': budget['per_target_maximum']}:
+                continue
+            changed = db.execute("UPDATE release_target_runs SET status='PENDING',completed_at=NULL "
+                "WHERE run_id=? AND target_label=? AND status='FAILED' AND attempts=1 AND idempotency_key=?",
+                (run_id, row['target_label'], row['idempotency_key']))
+            if changed.rowcount != 1:raise ValueError('NATIVE_TIKTOK_ZERO_TARGET_CAS_CHANGED')
+            selected.append(row['target_label'])
+    return tuple(selected)
+
+
+def _activate_native_shopee_global_zero(active):
+    """Protected same-plan continuation; retain attempt 1 and its failure bytes."""
+    from shared_platform.native_sole_final_execution import _NativeExecution, _ACTIVE
+    if type(active) is not _NativeExecution or _ACTIVE.get() is not active:
+        return ()
+    if getattr(active.runtime._operations, 'agent_prepared_common', None) is None:
+        return ()
+    from shared_platform.agent_prepared_v4_targets import _scope
+    _scope(active, active.store.get_plan(active.plan_id))
+    selected = []
+    with active.store._transaction() as db:
+        approved = active.service._decision(db, active.decision_id, owner_sid=active.owner_sid)
+        plan = db.execute('SELECT payload_digest,payload_json FROM release_plans WHERE plan_id=?', (active.plan_id,)).fetchone()
+        run_id = 'release-run:' + plan['payload_digest'][:24]
+        active.store._require_active_run(db, run_id)
+        frozen = json.loads(plan['payload_json'])['r3_marketplace_binding']['reviewed_candidate_facts']
+        budget = frozen['write_budget']['SHOPEE']
+        review = json.loads(db.execute('SELECT review_json FROM native_sole_final_decisions WHERE decision_id=?',
+            (active.decision_id,)).fetchone()[0])
+        expected = {'plan_id': active.plan_id, 'snapshot_digest': approved['snapshot_digest'], 'platform': 'SHOPEE',
+            'target_labels': budget['target_labels'], 'shared_maximum': budget['shared_maximum'],
+            'per_target_maximum': budget['per_target_maximum'], 'payload_digest': plan['payload_digest'],
+            'candidate_digest': review['candidate_digest'], 'decision_id': active.decision_id}
+        encode = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+        scope_key = hashlib.sha256(encode({k: expected[k] for k in ('plan_id', 'snapshot_digest', 'platform')}).encode()).hexdigest()
+        # A shared Global mutation also invalidates every claimed regional zero.
+        for table in ('native_final_budget_reservations', 'native_final_budget_dispatches', 'native_final_budget_outcomes'):
+            if db.execute('SELECT 1 FROM native_final_budget_scopes s JOIN '+table+
+                    ' r USING(scope_key) WHERE s.plan_id=? AND s.platform=?', (active.plan_id, 'SHOPEE')).fetchone():
+                return ()
+        run = active.store._run_in_transaction(db, run_id)
+        for row in run['targets']:
+            if row['status'] not in {'FAILED', 'PENDING'} or not _native_shopee_global_zero_target({**row, 'status': 'FAILED'}):
+                continue
+            scope = row['failure_events'][-1]['evidence']['mutation_budget'].get('durable_scope') or {}
+            binding = db.execute('SELECT * FROM native_final_budget_scopes WHERE scope_key=?', (scope.get('scope_key'),)).fetchone()
+            # No reservation means the durable ledger need not have materialized
+            # its binding row yet. Rebuild its exact deterministic identity.
+            if (scope != {'plan_id': active.plan_id, 'snapshot_digest': approved['snapshot_digest'], 'scope_key': scope_key}
+                    or row['target_label'] not in budget['target_labels']
+                    or row['failure_events'][-1]['evidence']['mutation_budget'].get('limits') != {
+                        'shared_maximum': budget['shared_maximum'], 'per_target_maximum': budget['per_target_maximum']}
+                    or (binding is not None and (binding['plan_id'] != active.plan_id or binding['platform'] != 'SHOPEE'
+                        or binding['snapshot_digest'] != approved['snapshot_digest']
+                        or binding['binding_json'] != encode(expected)
+                        or hashlib.sha256(binding['binding_json'].encode()).hexdigest() != binding['binding_sha256']))):
+                continue
+            if row['status'] == 'FAILED':
+                changed = db.execute("UPDATE release_target_runs SET status='PENDING',completed_at=NULL "
+                    "WHERE run_id=? AND target_label=? AND status='FAILED' AND attempts=? AND idempotency_key=?",
+                    (run_id, row['target_label'], row['attempts'], row['idempotency_key']))
+                if changed.rowcount != 1:raise ValueError('NATIVE_SHOPEE_GLOBAL_ZERO_TARGET_CAS_CHANGED')
+            selected.append(row['target_label'])
+    return tuple(selected)
 
 
 def _release_target_dependencies(
@@ -13719,6 +14157,48 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                 run,
                 interrupted,
             )
+        native_shopee_global_zero = ()
+        native_tiktok_claimed_save = ()
+        native_tiktok_locale_correction = ()
+        native_tiktok_locale_hold = None
+        if native_gate is not None:
+            native_shopee_global_zero = _activate_native_shopee_global_zero(native_gate)
+            native_tiktok_claimed_save = _activate_native_tiktok_claimed_save(native_gate)
+            run = store.get_run(run["run_id"]) or run
+        if native_gate is not None:
+            from shared_platform.native_tiktok_locale_draft_correction import activate_failed_targets as activate_tiktok_locale
+            from shared_platform.native_final_mutation_budget import NativeMutationBudgetHold
+            try:native_tiktok_locale_correction = activate_tiktok_locale(native_gate)
+            except NativeMutationBudgetHold as error:
+                native_tiktok_locale_hold = str(error)
+            run = store.get_run(run["run_id"]) or run
+        if native_gate is not None:
+            from shared_platform.native_known_rejected_save_repair import activate_failed_targets
+            activate_failed_targets(native_gate)
+            run = store.get_run(run["run_id"]) or run
+        if native_gate is not None:
+            from shared_platform.native_shopee_known_zero_recovery import activate_failed_targets as activate_shopee_zero
+            activate_shopee_zero(native_gate)
+            run = store.get_run(run["run_id"]) or run
+        if native_gate is not None:
+            from shared_platform.native_accepted_save_core_repair import activate_failed_targets as activate_accepted_core
+            activate_accepted_core(native_gate)
+            run = store.get_run(run["run_id"]) or run
+        if native_gate is not None:
+            from shared_platform.native_ozon_existing_media_recovery import activate_failed_targets as activate_ozon_media
+            activate_ozon_media(native_gate)
+            run = store.get_run(run["run_id"]) or run
+        three_card_media_hold = None
+        if native_gate is not None:
+            from shared_platform.native_ozon_three_card_media_recovery import activate_failed_targets as activate_three_card_media
+            from shared_platform.native_final_mutation_budget import NativeMutationBudgetHold
+            try:activate_three_card_media(native_gate)
+            except NativeMutationBudgetHold as error:
+                code = str(error)
+                three_card_media_hold = (code if re.fullmatch(r'OZON_THREE_MEDIA_[A-Z0-9_]{1,100}', code)
+                    else 'OZON_THREE_MEDIA_RECONCILIATION_REQUIRED')
+            run = store.get_run(run["run_id"]) or run
+        native_tiktok_zero = ()
         failed_targets = [
             row
             for row in (run.get("targets") or ())
@@ -13728,11 +14208,21 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
             safe_retry_targets = [
                 str(row.get("target_label") or "")
                 for row in failed_targets
-                if _generic_tiktok_safe_retry_target(row)
+                if not str(row.get('target_label') or '').startswith('shopee:')
+                and _generic_tiktok_safe_retry_target(row)
             ]
             if safe_retry_targets:
+                if native_gate is not None:
+                    native_labels = [row['target_label'] for row in failed_targets
+                        if row['target_label'] in safe_retry_targets and any(
+                            isinstance(event.get('evidence'), dict)
+                            and event['evidence'].get('schema_version') == 'native-scoped-v4-target-result/v1'
+                            for event in row.get('failure_events') or ())]
+                    native_tiktok_zero = _activate_native_tiktok_zero(native_gate, native_labels)
+                    safe_retry_targets = [label for label in safe_retry_targets if label not in native_labels]
+                    run = store.get_run(run['run_id']) or run
                 try:
-                    run = store.retry_failed_targets(
+                    if safe_retry_targets:run = store.retry_failed_targets(
                         run["run_id"],
                         safe_retry_targets,
                     )
@@ -13753,6 +14243,43 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
             target_rows=target_rows,
             registry=registry,
         )
+        recovery_actions = [{**action, 'action_kind': 'NATIVE_SHOPEE_GLOBAL_ZERO_CONTINUATION', 'runnable': True,
+            'reason_code': 'original_global_resolver_zero_before_any_mutation'}
+            if action.get('target_label') in native_shopee_global_zero else action for action in recovery_actions]
+        recovery_actions = [{**action, 'action_kind': 'NATIVE_TIKTOK_ZERO_CONTINUATION', 'runnable': True,
+            'reason_code': 'original_native_draft_preparer_zero_before_any_mutation'}
+            if action.get('target_label') in native_tiktok_zero else action for action in recovery_actions]
+        recovery_actions = [{**action, 'action_kind': 'NATIVE_TIKTOK_ACCEPTED_CLAIM_SAVE_CONTINUATION', 'runnable': True,
+            'reason_code': 'original_four_accepted_drafts_claims_reused_before_first_SAVE'}
+            if action.get('target_label') in native_tiktok_claimed_save else action for action in recovery_actions]
+        recovery_actions = [{**action, 'action_kind': 'NATIVE_TIKTOK_LOCALIZED_DRAFT_CORRECTION', 'runnable': True,
+            'reason_code': 'same_approved_draft_one_corrective_SAVE_then_original_unsent_publish_slot'}
+            if action.get('target_label') in native_tiktok_locale_correction else action for action in recovery_actions]
+        if native_tiktok_locale_hold:
+            recovery_actions = [{**action, 'runnable': False, 'reason_code': native_tiktok_locale_hold}
+                if str(action.get('target_label') or '').startswith('tiktok:') else action for action in recovery_actions]
+        if native_gate is not None:
+            from shared_platform.native_known_rejected_save_repair import recovery_actions as repair_recovery_actions
+            recovery_actions = repair_recovery_actions(native_gate, run, recovery_actions)
+        if native_gate is not None:
+            from shared_platform.native_shopee_known_zero_recovery import recovery_actions as shopee_zero_actions
+            recovery_actions = shopee_zero_actions(native_gate, run, recovery_actions)
+        if native_gate is not None:
+            from shared_platform.native_accepted_save_core_repair import recovery_actions as accepted_core_actions
+            recovery_actions = accepted_core_actions(native_gate, run, recovery_actions)
+        if native_gate is not None:
+            from shared_platform.native_ozon_existing_media_recovery import recovery_actions as ozon_media_actions
+            recovery_actions = ozon_media_actions(native_gate, run, recovery_actions)
+        if native_gate is not None:
+            from shared_platform.native_ozon_three_card_media_recovery import recovery_actions as three_card_media_actions
+            from shared_platform.native_final_mutation_budget import NativeMutationBudgetHold
+            try:recovery_actions = three_card_media_actions(native_gate, run, recovery_actions)
+            except NativeMutationBudgetHold:
+                recovery_actions = [{**action, 'runnable': False, 'reason_code': 'existing_three_card_media_reconciliation_required'}
+                    if action.get('target_label') == 'ozon:RU' else action for action in recovery_actions]
+            if three_card_media_hold:
+                recovery_actions = [{**action, 'runnable': False, 'reason_code': three_card_media_hold}
+                    if action.get('target_label') == 'ozon:RU' else action for action in recovery_actions]
         if not any(action.get("runnable") is True for action in recovery_actions):
             if run.get("status") in {
                 "SUCCEEDED",
@@ -13815,7 +14342,9 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
             if (
                 label == "miaoshou:COMMON"
                 or durable_target.get("status")
-                in {"SUCCEEDED", "SUBMITTED_UNVERIFIED", "MANUALLY_VERIFIED"}
+                in {"SUCCEEDED", "MANUALLY_VERIFIED"}
+                or (durable_target.get('status') == 'SUBMITTED_UNVERIFIED'
+                    and recovery_action_by_label.get(label, {}).get('action_kind') != 'NATIVE_OZON_THREE_CARD_STOCK_CONTINUATION')
                 or (
                     recovery_action_by_label.get(label, {}).get("runnable")
                     is not True
@@ -13872,7 +14401,9 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                 ),
                 None,
             )
-            if not current_target or current_target.get("status") != "PENDING":
+            if not current_target or (current_target.get("status") != "PENDING" and not (
+                recovery_action_by_label.get(label, {}).get('action_kind') == 'NATIVE_OZON_THREE_CARD_STOCK_CONTINUATION'
+                and current_target.get('storage_status') == 'PENDING' and current_target.get('attempts') == 1)):
                 continue
             plan_target = target_by_label.get(label) or {}
             registration = registry.get(str(plan_target.get("adapter") or ""))
@@ -15510,7 +16041,7 @@ def _placeholder_image_bytes(message: str = "image unavailable") -> bytes:
 
 class Handler(BaseHTTPRequestHandler):
     def _operations(self, method):
-        if not urlparse(self.path).path.startswith(("/api/orbit/tasks", "/api/orbit/operations-runtime")):
+        if not urlparse(self.path).path.startswith(("/api/orbit/tasks", "/api/orbit/operations-runtime", "/api/orbit/home")):
             return False
         from shared_platform.operations_http import handle
         from shared_platform.operations_service import get_runtime
@@ -17337,7 +17868,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/product-workspace/release-plan/approve":
                 status, payload = _approve_release_plan_locally(data)
             elif path == "/api/product-workspace/r3-common/preview":
-                status, payload = _preview_r3_common_stage(data)
+                status, payload = _preview_r3_common_stage(data, _persist_native_plan=True)
             elif path == "/api/product-workspace/r3-marketplace/preview":
                 status, payload = _preview_r3_marketplace_stage(data)
             elif path == "/api/product-workspace/r3-marketplace/approve":

@@ -21,6 +21,7 @@ from typing import Callable, Protocol
 
 from domains.product_operations.approved_publication_snapshot import (
     ApprovedPublicationSnapshotError,
+    _publication_stock_policy,
     publication_content_for_target,
     publication_images_for_target,
     validate_approved_publication_snapshot,
@@ -32,7 +33,10 @@ from modules.miaoshou.client import (
     sanitize_provider_field_path,
     sanitize_provider_reason,
 )
-from modules.miaoshou.tiktok_publisher import EXPECTED_SHOP_ID_BY_TARGET
+from modules.miaoshou.tiktok_publisher import (
+    EXPECTED_SHOP_ID_BY_TARGET,
+    MiaoshouTikTokTransport,
+)
 from modules.miaoshou.tiktok_variant_binding import (
     TikTokVariantBindingError,
     approved_variant_key_bindings,
@@ -495,6 +499,13 @@ def _draft_payload(
 ) -> dict[str, object]:
     label = target["target_label"]
     target_content = publication_content_for_target(frozen, label)
+    localized = target_content.get("variants")
+    localized_by_model = None
+    if localized is not None:
+        from domains.product_operations.approved_publication_snapshot import _localized_variant_displays
+        localized_by_model = {row["model_sku"]: row["display_name"]
+            for row in _localized_variant_displays(localized,
+                expected_models=[row["model_sku"] for row in frozen["skus"]])}
     target_images = publication_images_for_target(frozen, label)
     base_images = list(frozen["product"]["images"])
     if len(base_images) != len(target_images):
@@ -507,7 +518,8 @@ def _draft_payload(
             "variant_key": row["variant_key"],
             "seller_sku": row["seller_sku"],
             "model_sku": row["model_sku"],
-            "specification": deepcopy(row["specification"]),
+            "specification": ({"option": localized_by_model[row["model_sku"]]}
+                if localized_by_model is not None else deepcopy(row["specification"])),
             "price": row["prices"][label]["amount"],
             "currency": row["prices"][label]["currency"],
             "parcel": deepcopy(row["parcel"]),
@@ -541,6 +553,8 @@ def _draft_payload(
         "category": deepcopy(dict(category)),
         "parent_parcel": parent,
         "skus": skus,
+        **({"stock_policy": deepcopy(frozen["product"]["stock_policy"])}
+            if "stock_policy" in frozen["product"] else {}),
         **(
             {"warehouse_inventory": warehouse_inventory}
             if warehouse_inventory is not None
@@ -993,6 +1007,22 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
                         category_id=str(desired["cid"]),
                     )
                 current.update(desired)
+                display_target = {
+                    "expected_variant_model_skus": {
+                        str(row["variant_key"]).strip().strip(";"): row["model_sku"]
+                        for row in draft["skus"]
+                    },
+                    "expected_variant_specifications": {
+                        str(row["variant_key"]).strip().strip(";"): row["specification"]
+                        for row in draft["skus"]
+                    },
+                }
+                expected_display = MiaoshouTikTokTransport._bound_variant_specifications(
+                    display_target, current, current["skuMap"]
+                )
+                MiaoshouTikTokTransport._apply_variant_specifications(
+                    current, expected_display
+                )
                 body = {
                     **identity_fields,
                     info_field: current,
@@ -1255,6 +1285,14 @@ def _provider_bound_sku_map(
     approved_warehouse_map: Mapping[str, str] | None = None,
     approved_total: int | None = None,
 ) -> dict[object, object]:
+    try:
+        stock_policy = _publication_stock_policy(draft.get("stock_policy"))
+    except ApprovedPublicationSnapshotError as error:
+        raise TikTokV4DraftPreparationError(str(error)) from None
+    approved_default_stock = stock_policy["quantity_per_sku"] if stock_policy is not None else None
+    if (approved_total is not None and approved_default_stock is not None
+            and approved_total != approved_default_stock):
+        raise TikTokV4DraftPreparationError("Miaoshou approved stock and warehouse allocation conflict")
     skus = draft.get("skus")
     current_map = current.get("skuMap")
     if (
@@ -1310,7 +1348,8 @@ def _provider_bound_sku_map(
             raise TikTokV4DraftPreparationError(
                 "Miaoshou SKU binding is incomplete"
             )
-        stock = approved_total if approved_total is not None else current_row.get("stock")
+        stock = (approved_total if approved_total is not None else approved_default_stock
+            if approved_default_stock is not None else current_row.get("stock"))
         if (
             isinstance(stock, bool)
             or not str(stock or "").isdigit()

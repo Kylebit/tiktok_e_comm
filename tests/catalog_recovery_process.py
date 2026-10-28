@@ -59,7 +59,11 @@ importlib.machinery.SourceFileLoader.get_code=source_code
 scenario=json.loads((TEMP/'scenario.json').read_text())
 mapping_before=(TEMP/'map.json').read_bytes() if (TEMP/'map.json').exists() else None
 from core import config
-config._cache={'database':str(TEMP/'shop.db'),'shopee':{'global_sku_map':str(TEMP/'map.json')}}
+settings = TEMP / 'synthetic-settings.json'
+settings.write_text(json.dumps({'database':str(TEMP/'shop.db'),
+                               'shopee':{'global_sku_map':str(TEMP/'map.json')}}))
+os.environ['ORBIT_HIVE_SETTINGS'] = str(settings)
+config.load_settings()
 if scenario.get('platform')=='OZON':
     sys.path.insert(0,str(ROOT/'tests'))
     from ozon_recovery_process import run

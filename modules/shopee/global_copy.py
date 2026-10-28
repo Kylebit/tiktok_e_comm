@@ -25,7 +25,8 @@ _VIET_RE = re.compile(
 _MALAY_HINT_RE = re.compile(
     r"\b(yang|untuk|dengan|adalah|kertas|dinding|pelekat|diri|reka|bentuk|"
     r"hiasan|rumah|mudah|dipakai|sesuai|pengubahsuaian|dan|atau|sebuah|"
-    r"kepada|warna|saiz|bahan|produk|kualiti|penghantaran)\b",
+    r"kepada|warna|saiz|bahan|produk|kualiti|penghantaran|"
+    r"pemegang|tandas|kayu|bilik|mandi|peti|sejuk|poket|corak|ialah)\b",
     re.I,
 )
 _CANONICAL_MATERIAL_RE = re.compile(

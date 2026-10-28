@@ -20,6 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def entry_http(tmp_path, monkeypatch):
     import core.config as config
+    # This fixture supplies CONFIG_PATH and a matching synthetic cache below.
+    # Do not inherit a runner's explicit settings selection from another source.
+    monkeypatch.delenv('ORBIT_HIVE_SETTINGS', raising=False)
     blocked = []
 
     def forbidden(*args, **kwargs):
@@ -54,6 +57,11 @@ def entry_http(tmp_path, monkeypatch):
     profile.write_text(json.dumps({'profile_id': 'u00-isolated-fixture', 'settings_path': str(settings), 'stores': stores}), encoding='utf-8')
     monkeypatch.setenv('ORBIT_RUNTIME_PROFILE', str(profile))
     module = importlib.import_module('modules.products.server')
+    # The fixture never scans a workstation's personal Skill directory. Current
+    # installation identity is unknown; the dated repository notice is separate.
+    from shared_platform import skill_identity
+    monkeypatch.setattr(skill_identity, 'public_skill_identities',
+                        lambda **_: {'skills': {}, 'observed_at': 'SYNTHETIC-UNVERIFIED'})
     from shared_platform.runtime_identity import capture_runtime_identity
     monkeypatch.setattr(module, 'RUNTIME_IDENTITY', capture_runtime_identity('orbit-hive-local-console', root=ROOT, web_root=ROOT/'web'))
     assert Path(module.__file__).resolve().is_relative_to(ROOT)

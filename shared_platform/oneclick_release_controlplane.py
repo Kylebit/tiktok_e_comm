@@ -35,6 +35,11 @@ from shared_platform.postpublish_promotions import (
 from shared_platform.release_store import ReleaseStore
 
 
+def _promotion_write_class(target_label):
+    return ('shopee:promotion:discount' if str(target_label).startswith('promotion:shopee:')
+            else TIKTOK_PROMOTION_WRITE_CLASS)
+
+
 PREPARED_COMMAND_SCHEMA = "release-target-prepared-command/v2"
 BATCH_PREPARATION_SCHEMA = "release-batch-preparation/v2"
 PUBLIC_STATUS_SCHEMA = "oneclick-release-status/v2"
@@ -837,7 +842,10 @@ class OneClickReleaseStore:
         run: Mapping[str, Any],
         product_revision: int,
         registry: Mapping[str, AdapterRegistration],
+        active_target_labels: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
+        from shared_platform import native_companion_promotions as native_promotions
+        native_promotions.check_ensure(self.path,plan,run,active_target_labels)
         identity = _batch_identity(
             plan=plan,
             run=run,
@@ -851,6 +859,9 @@ class OneClickReleaseStore:
                 (identity["plan_id"],),
             ).fetchone()
             if existing:
+                native_promotions.check_job(connection,existing['job_id'])
+                if active_target_labels is not None and existing['adapter_policy_digest']!=identity['adapter_policy_digest']:
+                    raise SystemicIdentityError('native promotion adapter policy changed; reconciliation required')
                 _require_job_immutable_identity(existing, identity)
                 if (
                     int(existing["batch_sequence"] or 0) == 0
@@ -898,7 +909,11 @@ class OneClickReleaseStore:
                     != identity["adapter_policy_digest"]
                     or _mvp_registry_enabled(registry)
                 ):
-                    active_labels = set(identity["execution_targets"])
+                    active_labels = (
+                        {r["target_label"] for r in connection.execute(
+                            "SELECT target_label FROM oneclick_release_targets WHERE job_id=? AND active_for_batch=1",
+                            (existing["job_id"],))}
+                        if active_target_labels is not None else set(identity["execution_targets"]))
                     connection.execute(
                         """
                         UPDATE oneclick_release_jobs
@@ -937,6 +952,7 @@ class OneClickReleaseStore:
                                 label,
                             ),
                         )
+                native_promotions.bind_job(connection,existing,self,active_target_labels,now)
                 return self._project_job_in_transaction(
                     connection,
                     existing["job_id"],
@@ -976,9 +992,9 @@ class OneClickReleaseStore:
                 """
                 INSERT INTO oneclick_release_targets (
                     job_id, target_label, ordinal, storefront, control_target,
-                    status,
+                    status, active_for_batch,
                     adapter_name, adapter_policy_digest, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -1000,6 +1016,7 @@ class OneClickReleaseStore:
                             )
                             else _initial_public_status(rows[label])
                         ),
+                        int(active_target_labels is None or label in active_target_labels),
                         _adapter_name_for_target(label, registry),
                         _policy_digest_for_target(label, registry),
                         now,
@@ -1008,6 +1025,7 @@ class OneClickReleaseStore:
                     for ordinal, label in enumerate(execution_targets)
                 ],
             )
+            native_promotions.bind_job(connection,identity,self,active_target_labels,now)
             self._event(
                 connection,
                 identity["job_id"],
@@ -1058,6 +1076,10 @@ class OneClickReleaseStore:
                 raise OneClickControlPlaneError(
                     "one-click job was not found"
                 )
+            from shared_platform import native_companion_promotions as native_promotions
+            native_promotions.check_job(connection,job_id)
+            if native_promotions.before_start(connection,job,target_labels,self,now):
+                return self._project_job_in_transaction(connection,job_id)
             if connection.execute(
                 """
                 SELECT 1 FROM oneclick_release_targets
@@ -1200,14 +1222,15 @@ class OneClickReleaseStore:
                     """,
                     (now, job["run_id"], label),
                 )
-            connection.execute(
-                """
-                UPDATE release_runs
-                SET status = 'PENDING', completed_at = NULL, updated_at = ?
-                WHERE run_id = ?
-                """,
-                (now, job["run_id"]),
-            )
+            if active_labels:
+                connection.execute(
+                    """
+                    UPDATE release_runs
+                    SET status = 'PENDING', completed_at = NULL, updated_at = ?
+                    WHERE run_id = ?
+                    """,
+                    (now, job["run_id"]),
+                )
             connection.execute(
                 """
                 UPDATE oneclick_release_jobs
@@ -2320,7 +2343,7 @@ class OneClickReleaseStore:
                 expected_progress_classes = (
                     ()
                     if write_boundary == "POST_RESPONSE_REJECTED"
-                    else (TIKTOK_PROMOTION_WRITE_CLASS,)
+                    else (_promotion_write_class(target["target_label"]),)
                 )
                 if additions != expected_progress_classes:
                     raise AdapterContractError(
@@ -2435,7 +2458,7 @@ class OneClickReleaseStore:
                     else:
                         expected_occurrence = "promotion_apply-1"
                         expected_classes = (
-                            TIKTOK_PROMOTION_WRITE_CLASS,
+                            _promotion_write_class(target["target_label"]),
                         )
                     if (
                         stage_value != expected_occurrence
@@ -3056,12 +3079,14 @@ class OneClickReleaseStore:
             """,
             (request.run_id, request.job_id, prerequisite),
         ).fetchone()
+        from shared_platform.native_companion_promotions import transaction_prerequisite
+        native_prerequisite=transaction_prerequisite(connection,request.job_id,request.target_label)
         command_prerequisite = request.command.get("prerequisite")
         proof_prerequisite = request.proof.get("prerequisite")
         if (
             not prerequisite_row
-            or prerequisite_row["action_status"]
-            not in {SUCCEEDED, SUCCEEDED_MANUAL_REVIEW}
+            or (native_prerequisite is None and prerequisite_row["action_status"]
+                not in {SUCCEEDED, SUCCEEDED_MANUAL_REVIEW})
             or prerequisite_row["canonical_status"] != SUCCEEDED
             or type(prerequisite_row["external_id"]) is not str
             or not prerequisite_row["external_id"].strip()
@@ -3115,7 +3140,7 @@ class OneClickReleaseStore:
                 result.submission_accepted is True
                 and result.readback_verified is True
                 and result_exact == 1
-                and result.external_writes == (TIKTOK_PROMOTION_WRITE_CLASS,)
+                and result.external_writes == (_promotion_write_class(request.target_label),)
             )
             command_payload = request.command.get("payload")
             observed = result.evidence
@@ -3138,7 +3163,9 @@ class OneClickReleaseStore:
                     and (result_exact, result_lower, result_upper) == (0, 0, 0)
                     and _stored_write_count_bounds(target) == (0, 0, 0)
                     and not cumulative and pending_intent is None
-                    and observed.get("schema_version") == "tiktok-promotion-readback/v1"
+                    and observed.get("schema_version") == (
+                        "shopee-promotion-readback/v1" if request.target_label.startswith("promotion:shopee:")
+                        else "tiktok-promotion-readback/v1")
                     and observed.get("existing_membership_exact") is True
                     and observed.get("official_readback_exact") is True
                     and _is_digest(expected_membership["activity_identity_digest"])
@@ -3404,6 +3431,13 @@ class OneClickReleaseStore:
             connection,
             request.job_id,
         )
+
+    def record_existing_promotion_price_acceptance(self, *, authorization_ref,
+                                                  expected_outcome_receipt_digests):
+        """Accept observed prices in the original ledger without another ADD."""
+        from shared_platform.promotion_price_variance_acceptance import record_existing_price_acceptance
+        return record_existing_price_acceptance(self, authorization_ref=authorization_ref,
+            expected_outcome_receipt_digests=expected_outcome_receipt_digests)
 
     def record_manual_acceptance(
         self,
@@ -4345,6 +4379,8 @@ class OneClickReleaseStore:
         job = self._raw_job(job_id)
         if not job:
             raise OneClickControlPlaneError("one-click job was not found")
+        from shared_platform.native_companion_promotions import check_access
+        check_access(self.path,job_id)
         release = ReleaseStore(self.path)
         plan = release.get_plan(job["plan_id"])
         run = release.get_run(job["run_id"])
@@ -4423,6 +4459,10 @@ class OneClickReleaseStore:
         job: Mapping[str, Any],
         registry: Mapping[str, AdapterRegistration],
     ) -> None:
+        from shared_platform.native_companion_promotions import _held,transaction_prerequisite
+        scope=_held()
+        if scope is not None:
+            for action in scope['targets']:transaction_prerequisite(connection,job['job_id'],action)
         plan = connection.execute(
             "SELECT * FROM release_plans WHERE plan_id = ?",
             (job["plan_id"],),
@@ -4605,7 +4645,8 @@ class OneClickReleaseStore:
             """,
             (job_id,),
         ).fetchall()
-        statuses = [row["status"] for row in rows]
+        from shared_platform.promotion_price_variance_acceptance import accepted_existing_price
+        statuses = [SUCCEEDED if accepted_existing_price(connection, row) else row["status"] for row in rows]
         status_by_label = {
             row["target_label"]: row["status"]
             for row in rows
@@ -4773,6 +4814,20 @@ class OneClickReleaseStore:
             )
             for row in rows
         ]
+        from shared_platform.promotion_price_variance_acceptance import accepted_existing_price
+        for target, row in zip(all_targets, rows):
+            accepted = accepted_existing_price(connection, row)
+            if accepted:
+                target['business_completion'] = {
+                    'status': 'USER_ACCEPTED_EXISTING_PRICE_VARIANCE',
+                    'accepted_price': accepted['accepted_price'], 'currency': accepted['currency'],
+                    'original_frozen_price': accepted['original_frozen_price'],
+                    'exact_original_frozen_price_verified': False,
+                    'original_attempt_status': row['status'],
+                    'write_occupancy_preserved': True,
+                    'acceptance_digest': _digest_json(accepted)}
+                target['next_action'] = None
+                target['requires_human'] = False
         _attach_shared_control_dependency_summaries(all_targets)
         outcomes = {
             row["target_label"]: row
@@ -4941,14 +4996,13 @@ class OneClickReleaseStore:
                 "postpublish_recovery_required": [
                     row["target_label"]
                     for row in postpublish_actions
-                    if row["status"]
-                    in {
+                    if row["status"] != SUCCEEDED and not row.get("business_completion")
+                    and (row["status"] in {
                         FAILED_PRE_SUBMIT,
                         RECONCILIATION_REQUIRED,
                         BLOCKED_AUTH,
                         BLOCKED_CAPABILITY,
-                    }
-                    or row["dependency"]["state"] == "BLOCKED"
+                    } or row["dependency"]["state"] == "BLOCKED")
                 ],
             },
             "targets": targets,
@@ -5815,6 +5869,9 @@ def _execution_target_labels(
 ) -> list[str]:
     """Add server-owned controls without changing approved storefront identity."""
 
+    from shared_platform.native_companion_promotions import execution_targets
+    native_targets=execution_targets(targets,immutable_plan_payload)
+    if native_targets is not None:return native_targets
     if any(is_postpublish_promotion_target(label) for label in targets):
         raise SystemicIdentityError(
             "server-owned promotion action cannot be a storefront target"
@@ -5949,6 +6006,9 @@ def _promotion_prerequisite_context(
         raise SystemicIdentityError(
             "post-publish promotion prerequisite is invalid"
         )
+    from shared_platform.native_companion_promotions import prerequisite_context
+    native=prerequisite_context(context,action_target)
+    if native is not None:return native
     oneclick_rows = {
         row["target_label"]: row
         for row in context.get("targets", ())
@@ -6317,6 +6377,9 @@ def _adapter_name_for_target(
     label: str,
     registry: Mapping[str, AdapterRegistration] | None = None,
 ) -> str:
+    from shared_platform.native_companion_promotions import _held
+    if _held() is not None and is_postpublish_promotion_target(label):
+        return "postpublish_promotion"
     if label == SHOPEE_GLOBAL_TARGET:
         return "shopee_cnsc_publish"
     if (
@@ -7620,6 +7683,9 @@ def _dependency_state(
     mvp_unblocked: bool = False,
 ) -> dict[str, Any]:
     label = _exact_text(target_label, "dependency target_label")
+    from shared_platform.native_companion_promotions import dependency
+    native=dependency(label)
+    if native is not None:return native
     if mvp_unblocked:
         return {
             "policy_version": MVP_DEPENDENCY_POLICY_VERSION,

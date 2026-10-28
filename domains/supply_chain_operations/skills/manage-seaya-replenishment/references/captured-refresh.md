@@ -1,5 +1,43 @@
 # Captured refresh: local source to dashboard output
 
+## Retained global observations and buffered demand (local source v3)
+
+`seaya_capture.capture_global_browser` accepts
+`seaya-global-browser-evidence/v1`. Its original CSV, exact account username
+witness, all-warehouse scope, global page numbers/counts and terminal observation
+remain bound together. Rows were not retained by provider page: require
+`rowToPageBinding=NOT_RETAINED` and `atomicSnapshot=false`. Four warehouse
+envelopes are expressly local partitions of those retained global rows, never
+provider cursor receipts. `capturedAt` is the last observed page, not a provider
+cutoff. Independent inventory/inbound clocks and the later account witness remain
+visible; a numeric tenant ID is not claimed.
+
+For the narrow proven-empty active inbound case, the complete unfiltered global
+list must contain only COMPLETED/VOIDED batches with unique exact IDs and totals,
+and every inventory row must have zero inbound. Preserve all terminal rows in
+private evidence. Active or unknown statuses require their original full detail
+contract; never coerce them to zero. The v3 inventory/inbound pair is recomputed
+from its embedded evidence at the existing captured-stage boundary.
+
+Orders source v3 retains the original complete channel block/page/detail
+transcripts. `demandWindowPolicy=completed_local_calendar_30_v1` uses the 30 local
+calendar dates before the partial cutoff day. The 31-day rolling transport window
+is only a coverage buffer; its total units remain unchanged and are not divided
+by 30. Existing trend weights apply to the last 7, preceding 8 and preceding 15
+complete dates. v1/v2 demand behavior remains unchanged. Optional
+`platformCollectionClocks` binds both original platform cutoff/start/materialized
+triples; they must reconcile with the composite earliest start/latest completion.
+
+`mappingExceptions` must reconcile exactly with each unresolved raw item by
+country, platform, order ID, line index and item digest. Invalid quantities still
+block. An exact unknown SKU line remains in the private source; mapped facts may
+continue as conditional quantities, never as complete mapping or proven zeros.
+The served dashboard receives only a hashed order reference. Original raw order
+numbers are not emitted in the display pair. Global non-atomic conditions,
+independent clocks and mapping caveats appear in the original page and its
+editable attachment. COMPLETE remains an engineering data-pair state, not
+business acceptance, live readiness, procurement authority or formal adoption.
+
 Use the same `scripts/refresh_supply_chain.py` entry as preflight. Paths below
 refer to the canonical Skill unless explicitly rooted at the project. This path
 reads already captured, redacted files; it never discovers accounts, authenticates,

@@ -933,7 +933,7 @@ def _normalize_compact_attribute_rows(
         value_ids: set[int] = set()
         for value in values:
             if (
-                set(value) - {"value_id", "original_value_name", "value_unit"}
+                set(value) - {"value_id", "original_value_name", "value_unit", "child_attribute_digest"}
                 or not {"value_id", "original_value_name"}.issubset(value)
             ):
                 raise _error("shopee_attribute_tree_invalid", "CONTENT")
@@ -955,6 +955,11 @@ def _normalize_compact_attribute_rows(
                     value["value_unit"],
                     "shopee_attribute_tree_invalid",
                 )
+            if "child_attribute_digest" in value:
+                child_digest = value["child_attribute_digest"]
+                if type(child_digest) is not str or len(child_digest) != 64 or any(c not in "0123456789abcdef" for c in child_digest):
+                    raise _error("shopee_attribute_tree_invalid", "CONTENT")
+                normalized_value["child_attribute_digest"] = child_digest
             value_rows.append(normalized_value)
         normalized.append(
             {

@@ -39,6 +39,12 @@ _TIKTOK_TARGET_SITES = {
     "tiktok:HB_VN": "VN",
 }
 _TIKTOK_CATEGORY_IDS = {
+    "冰箱防尘盖布带侧袋": "700665",
+    "冰箱防尘盖布": "700665",
+    "冰箱防尘罩": "700665",
+    "fridgetopcoverwithsidestoragepockets": "700665",
+    "fridgetopcover": "700665",
+    "refrigeratordustcover": "700665",
     "贴饰>墙贴": "600338",
     "墙贴": "600338",
     "wallsticker": "600338",

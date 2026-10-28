@@ -31,7 +31,10 @@ def _server(profile, server_module):
     if server_module is None:
         from modules.products import server as server_module
     if Path(server_module.ROOT).resolve()!=Path(profile.root).resolve():
-        raise ValueError('COMMON 服务与当前任务代码根不一致')
+        from shared_platform.original_prepared_continuation import _INSTALLED
+        if _INSTALLED is None or profile != _INSTALLED.original_profile:
+            raise ValueError('COMMON 服务与当前任务代码根不一致')
+        _INSTALLED.verify_sources()
     return server_module
 
 
@@ -46,7 +49,7 @@ def _read(server, task):
     return view
 
 
-def _binding(task, common):
+def _binding(task, common, *, adopted_record=None):
     plan=common.get('plan') or {};payload=plan.get('payload') or {}
     sku=internal_sku(plan.get('seller_sku') or payload.get('seller_sku'))
     stage=payload.get('r3_stage_binding') or {}
@@ -55,6 +58,12 @@ def _binding(task, common):
     checkpoints=[task.get('checkpoint') or {},*[(s.get('checkpoint') or {}) for s in task.get('steps',[])]]
     frozen_r1=next((c['native_r1'] for c in checkpoints if c.get('native_r1')),None)
     frozen_r2=next((c['native_r2'] for c in checkpoints if c.get('native_r2')),None)
+    expected_skus=[sku]
+    if adopted_record is not None:
+        facts=adopted_record['facts']
+        if (adopted_record['task_id']!=task['task_id'] or facts['seller_sku']!=str(plan.get('seller_sku') or payload.get('seller_sku'))):
+            raise ValueError('COMMON_ADOPTION_VARIANT_BINDING_CHANGED')
+        sku=facts['internal_sku'];expected_skus=sorted(facts['aliases'])
     if frozen_r1 is None and frozen_r2 is None:
         # Registered reviewed products retain the same immutable identities under
         # their existing adapter's receipt names; do not invent native receipts.
@@ -78,7 +87,7 @@ def _binding(task, common):
                 frozen_r1 and frozen_r1.get('prepared_reference')
                 and (stage.get('native_preparation_source') or {}).get('prepared_reference')))
             or len(set(stage_targets))!=len(stage_targets)
-            or task['scope'].get('skus')!=[sku] or len(sku)!=4 or not sku.isdigit()
+            or task['scope'].get('skus')!=expected_skus or len(sku)!=4 or not sku.isdigit()
             or not stage.get('round1_snapshot_digest')):
         raise ValueError('COMMON 计划未绑定当前商品、内部 SKU、R1 与完整目标范围')
     if (not frozen_r1 or frozen_r1.get('snapshot_digest')!=stage['round1_snapshot_digest']
@@ -96,7 +105,13 @@ def _verified_binding(task, common, profile):
     from shared_platform import round1_workspace
     from shared_platform.round1_category_evidence import digest
 
-    binding = _binding(task, common)
+    adopted_record=None
+    if (task.get('checkpoint') or {}).get('native_r1_adoption') is not None:
+        from shared_platform.agent_prepared_publication_adoption import verify
+        current=native.read_frozen(task,profile)
+        adopted_record=verify(task,profile,offer=current['offer_id'],targets=current['targets'],
+            prepared_reference=current['prepared_reference'],snapshot_digest=current['snapshot_digest'])
+    binding = _binding(task, common, adopted_record=adopted_record)
     source = {'schema_version': 'common-preparation-source/v1',
               'status': 'UNKNOWN', 'execution_authority': False}
     checkpoints = [task.get('checkpoint') or {},

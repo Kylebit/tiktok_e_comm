@@ -1,0 +1,49 @@
+{
+  "schema": "offline-official-holder-facts/v1",
+  "scope": "Historical official metadata replay only; no account-to-shop join or business readiness assertion",
+  "common_id": "4039931504",
+  "supplier_offer_id": "1050277205528",
+  "frozen_category_semantic": "整理用具 > 纸巾架",
+  "native_account_to_miaoshou_shop": "UNKNOWN",
+  "sources": [
+    {
+      "path": "C:/Users/Windows11/Documents/Codex/2026-10-04/task/4039931504-preparation/official-category-followup-20261004T1720Z/ozon-toilet-paper-holder-attributes-readback.json",
+      "sha256": "8195496318a50f3afb7a810c1908d56f808811530e2ba883901c6d1b9536e38b",
+      "observed_at": "2026-10-05T01:29:19.538485+08:00"
+    },
+    {
+      "path": "C:/Users/Windows11/Documents/Codex/2026-10-04/task/4039931504-preparation/official-category-followup-20261004T1720Z/ozon-holder-required-dictionary-readback.json",
+      "sha256": "085dedb10465d4095cb79b1a65aef5954a02e0ecc25ae2ef001d49a6256f1b4d",
+      "observed_at": "2026-10-05T01:32:42.487864+08:00"
+    },
+    {
+      "path": "C:/Users/Windows11/Documents/Codex/2026-10-04/task/direct-r2-current-product-compat-20261009/reports/product-preparation/4039931504/round1-approved-snapshot.json",
+      "sha256": "69d92dfbed492c06ce034d487ca771ed7e76fef4ae2401f5f9f5aa759a9a51aa"
+    }
+  ],
+  "tree": {
+    "result": [{
+      "description_category_id": 17027494,
+      "category_name": "House & Garden",
+      "disabled": false,
+      "children": [{
+        "description_category_id": 17027905,
+        "category_name": "Sauna & Bath Accessories",
+        "disabled": false,
+        "children": [{"type_id": 92011, "type_name": "Toilet Paper Holder", "disabled": false, "children": []}]
+      }]
+    }]
+  },
+  "attributes": {"result": [
+    {"id": 9048, "name": "Model name (to be combined into a single product card)", "is_required": true, "dictionary_id": 0},
+    {"id": 8229, "name": "Type", "is_required": true, "dictionary_id": 1960},
+    {"id": 85, "name": "Brand", "is_required": true, "dictionary_id": 28732849},
+    {"id": 4383, "name": "Product weight, g", "is_required": false, "source_value": null, "value_frozen": false},
+    {"id": 8415, "name": "Length, cm", "is_required": false, "source_value": null, "value_frozen": false},
+    {"id": 8416, "name": "Width, cm", "is_required": false, "source_value": null, "value_frozen": false}
+  ]},
+  "dictionaries": {
+    "85": {"result": [{"id": 971284881, "value": "NO BRAND JUST HIGH QUALITY"}, {"id": 126745801, "value": "Нет бренда"}]},
+    "8229": {"result": [{"id": 92011, "value": "Toilet Paper Holder"}]}
+  }
+}

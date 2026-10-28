@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LinkFox AI 商品图功能调研</title>
+<style>
+  :root {
+    --bg: #f4f7fb;
+    --card: #ffffff;
+    --ink: #0f172a;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --accent: #0f766e;
+    --accent-soft: #ccfbf1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 500px at 10% -10%, #dbeafe 0%, transparent 55%),
+      radial-gradient(900px 400px at 100% 0%, #ccfbf1 0%, transparent 50%),
+      var(--bg);
+    line-height: 1.7;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 32px 20px 64px; }
+  .hero {
+    background: linear-gradient(135deg, #0f766e 0%, #1d4ed8 100%);
+    color: #fff;
+    border-radius: 18px;
+    padding: 28px;
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+    margin-bottom: 20px;
+  }
+  .hero h1 { margin: 0 0 10px; font-size: 27px; line-height: 1.35; }
+  .hero .sub { opacity: 0.92; font-size: 14px; }
+  .badge {
+    display: inline-block;
+    background: rgba(255,255,255,0.18);
+    border: 1px solid rgba(255,255,255,0.28);
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 22px;
+    margin: 14px 0;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  }
+  .toc-title { font-weight: 700; margin-bottom: 8px; color: var(--accent); }
+  .toc ol { margin: 0; padding-left: 20px; }
+  .toc a { color: #1e293b; text-decoration: none; }
+  .toc a:hover { color: var(--accent); text-decoration: underline; }
+  h1 { font-size: 26px; }
+  h2 {
+    margin: 28px 0 12px;
+    font-size: 21px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--accent-soft);
+    scroll-margin-top: 16px;
+  }
+  h3 { margin: 18px 0 8px; font-size: 16px; color: #334155; }
+  h4 { margin: 14px 0 6px; font-size: 14px; color: #475569; }
+  p { margin: 8px 0; }
+  blockquote {
+    margin: 10px 0;
+    padding: 10px 16px;
+    border-left: 4px solid var(--accent);
+    background: #f0fdfa;
+    border-radius: 0 10px 10px 0;
+    color: #134e4a;
+  }
+  blockquote p { margin: 4px 0; }
+  ul, ol { margin: 8px 0 8px 20px; }
+  li { margin: 4px 0; }
+  code {
+    font-family: Consolas, "Courier New", monospace;
+    background: #f1f5f9;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 14px 16px;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; }
+  a { color: #1d4ed8; }
+  .table-wrap { overflow-x: auto; margin: 10px 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f8fafc; color: #334155; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 22px 0; }
+  .foot { margin-top: 28px; color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="badge">Orbit Codex · 商品图功能调研</div>
+      <h1>LinkFox AI 商品图功能调研</h1>
+      <div class="sub">Codex 真抓官网价格页/功能页，结构化梳理 LinkFox 商品图能力 · 2026-07-22 · HTML 交付</div>
+    </header>
+    <nav class="toc card"><div class="toc-title">目录</div><ol><li><a href="#sec1">结论摘要</a></li><li><a href="#sec2">取证来源与边界</a></li><li><a href="#sec3">商品图能力地图</a></li><li><a href="#sec4">套餐、算力与成本口径</a></li><li><a href="#sec5">与自建小系统的取舍</a></li><li><a href="#sec6">图像/视频以外的能力边界</a></li><li><a href="#sec7">风险与验收清单</a></li></ol></nav>
+    <article class="card">
+['<h1>LinkFox AI 商品图功能调研</h1>', '<p>调研日期：2026-07-22。范围为 LinkFox 的公开官网页面；未登录产品控制台，也没有对生成质量、平台发布流程或实际扣费做实测。下文的“可做”指官网公开列出的能力；“节省成本/提升效率”等措辞若来自官网，均标为厂商宣传，不作为独立验证结论。</p>', '<h2 id="sec1">结论摘要</h2>', '<p>LinkFox 的差异点不只是单张文生图，而是把跨境电商商品素材组织成一条工作流：商品套图、服装/模特图、场景/商品替换、批量生成、修图，以及图转视频/视频复刻。对小团队而言，最值得买的是现成的电商套图结构、服装图流程、批处理、素材库和统一计费；这些正是自建小系统需要最多产品化工作的部分。基础图像生成、抠图、扩图和提示词管理本身则较容易用通用模型或 API 替代。</p>', '<h2 id="sec2">取证来源与边界</h2>', '<div class="table-wrap"><table><tr><th>来源</th><th>本次用于确认的内容</th></tr><tr><td><a href="https://www.linkfox.com/price" target="_blank" rel="noopener">LinkFox 官方定价与功能对比</a></td><td>套餐、算力、并发、功能目录、团队 API 入口</td></tr><tr><td><a href="https://ai.linkfox.com/listing" target="_blank" rel="noopener">LinkFox 多店铺 Listing 与视觉页</a></td><td>商品套图、批量生图、场景图、商品/模特视频、AI 模特和服装上身的公开描述</td></tr><tr><td><a href="https://ai.linkfox.com/solutions/multipleStores/" target="_blank" rel="noopener">LinkFox 多店铺解决方案</a></td><td>批量抠图、商品图合成、商品替换、场景裂变等定位</td></tr><tr><td><a href="https://ai.linkfox.com/solutions/clothing" target="_blank" rel="noopener">LinkFox 服装解决方案</a></td><td>真人/人台/平铺服装相关的模特和场景工作流定位</td></tr></table></div>', '<p>官网内容会随产品迭代和促销变化。尤其价格、赠送额度、单功能算力消耗、可选国家/平台，以及“生成即上架”的实际连接器范围，采购前应在登录后的订单页和产品控制台复核。</p>', '<h2 id="sec3">商品图能力地图</h2>', '<div class="table-wrap"><table><tr><th>能力组</th><th>官网列出的功能/操作</th><th>典型输入</th><th>公开可见的输出与用途</th><th>证据与注意事项</th></tr><tr><td>商品套图</td><td>商品套图、商品图、商品替换、场景裂变、手持商品、图片翻译</td><td>商品主图；部分场景还会需要品牌/文案信息</td><td>A+ 图、卖点图、场景图、特写图等完整 Listing 图片组合</td><td>Listing 页明确写出“一张商品图”可生成 A+、卖点、场景、特写图，并称可识别品牌元素保持风格一致；这是功能定位，非质量保证。<a href="https://ai.linkfox.com/listing" target="_blank" rel="noopener">官方 Listing 页</a></td></tr><tr><td>商品图设计器</td><td>商品图设计、模板；基础版及以上为无限模板/设计器</td><td>商品素材、模板、文字/设计参数</td><td>可编辑的商品图排版与模板化交付</td><td>定价页列出商品图设计器、模板及不同套餐的数量限制。<a href="https://www.linkfox.com/price" target="_blank" rel="noopener">官方定价页</a></td></tr><tr><td>服装套图与 AI 模特</td><td>服装套图、真人换模特、模特换场景、AI 穿衣、姿势裂变、AI 穿戴</td><td>真人试穿、人台或平铺服装图；目标模特/场景/姿势参数</td><td>适配不同市场的模特图、服装上身图、姿势图和场景图</td><td>官网称销售国家、语言、平台可自定义，并公开展示真人换模特、人台换模特、平铺服装穿衣等案例分类。<a href="https://ai.linkfox.com/listing" target="_blank" rel="noopener">Listing 页</a> <a href="https://ai.linkfox.com/solutions/clothing" target="_blank" rel="noopener">服装方案页</a></td></tr><tr><td>场景与相似变化</td><td>商品换背景、场景图推荐、场景裂变、相似图裂变</td><td>商品图、参考场景图或品类信息</td><td>商品置入场景、同类场景/相似素材变体</td><td>官网将其描述为按品类推荐场景、生成同类场景，以及多店铺场景裂变；“无版权担忧”等是厂商宣传，不应代替法务审查。<a href="https://ai.linkfox.com/listing" target="_blank" rel="noopener">Listing 页</a> <a href="https://ai.linkfox.com/solutions/multipleStores/" target="_blank" rel="noopener">多店铺方案页</a></td></tr><tr><td>智能修图</td><td>智能修图、长图复刻、局部重绘、局部消除、一键换色、裁剪、高清放大、智能扩图、商品精修、色差/印花/手部修复</td><td>原图，必要时加局部选区和文字指令</td><td>修复、去除/补全局部、改色、放大、扩边后的图片</td><td>功能名来自官方套餐的详细对比；每项的准确输入控件、格式限制和扣点需在控制台验证。<a href="https://www.linkfox.com/price" target="_blank" rel="noopener">官方定价页</a></td></tr><tr><td>抠图</td><td>精细抠图、批量自动抠图</td><td>单张或多张原始商品图</td><td>透明底/去背景商品素材，供设计器或场景合成继续使用</td><td>多店铺方案页强调批量上传与主体识别；这是公开功能描述。<a href="https://ai.linkfox.com/solutions/multipleStores/" target="_blank" rel="noopener">多店铺方案页</a></td></tr><tr><td>POD/创意素材</td><td>场景素材、相似图裂变、AI 自由绘图、素材贴合、印花提取</td><td>提示词、参考图或印花/商品素材</td><td>POD 场景、相似变体、自由绘图与可贴合/提取的素材</td><td>官方定价页将其归为 POD 素材目录。公开页面不足以确认每项的编辑步骤与商用授权范围。<a href="https://www.linkfox.com/price" target="_blank" rel="noopener">官方定价页</a></td></tr><tr><td>图像与视频</td><td>图转视频、带货口播、视频拼接、视频复刻；商品视频、模特视频</td><td>单张商品/模特图，或源视频（视功能而定）</td><td>商品动态展示、模特动态展示、拼接/复刻视频</td><td>Listing 页明确称商品视频可由一张商品图生成；其他视频功能名见定价页。未实测时长、分辨率、音频能力或平台直发能力。<a href="https://ai.linkfox.com/listing" target="_blank" rel="noopener">Listing 页</a> <a href="https://www.linkfox.com/price" target="_blank" rel="noopener">官方定价页</a></td></tr></table></div>', '<h3>输入、输出与平台的实际含义</h3>', '<ol><li><strong>主输入是商品资产而非纯文本。</strong> 公开页面反复以“商品图”“平铺服装”“真人/人台试穿图”作为起点；提示词、目标场景、国家、语言、平台等更像是约束参数。</li><li><strong>主输出是电商素材包。</strong> 商品套图的公开输出类别为 A+、卖点、场景和特写；服装流程则补充模特、姿势、上身和背景。批量生图与团队素材库服务于多 SKU、多店铺重复上架。</li><li><strong>平台能力要谨慎解读。</strong> 官网将产品定位为跨境 Listing 与视觉生产，并称销售国家、语言、平台可自定义；这支持“按目标平台规格/文案语境生成素材”的理解。公开页面没有逐一证明 Amazon、Shopify、TikTok、Temu 均可由商品图功能自动发布。因此这些平台应视为潜在目标渠道，而非已核实的逐个平台直连承诺。</li><li><strong>品牌一致性是声明，不是检测结论。</strong> 官网称自动识别品牌元素并保持风格一致；实际仍应通过一组 SKU 进行抽样，检查 Logo、文字、产品结构和色差是否出现幻觉或变形。</li></ol>', '<h2 id="sec4">套餐、算力与成本口径</h2>', '<p>以下均为 2026-07-22 访问的官方年付页面展示值；页面同时显示促销价/原价，最终应以结算页为准。</p>', '<div class="table-wrap"><table><tr><th>档位</th><th>官网展示的核心额度</th><th>公开并发/下载限制</th><th>官网给出的产能换算</th><th>可核算的口径</th></tr><tr><td>免费版</td><td>7 天、250 点算力</td><td>1 个同时生图任务；高清带水印；2 个商品图设计器和模板</td><td>约 25 张图片</td><td>250 / 25 = <strong>约 10 点/普通图片等价</strong>；该值不代表所有功能都固定 10 点。</td></tr><tr><td>基础版</td><td>662.40 元/年（页面同时列原价 1548.00 元/年）；42,000 点/年</td><td>10 个同时任务；高清无水印；设计器/模板无限</td><td>约 4,200 张图片或 140 个视频</td><td>图片等价约 10 点/张；视频等价约 300 点/个。若按当前展示优惠价粗算，图片等价约 <strong>0.158 元/张</strong>，视频等价约 <strong>4.73 元/个</strong>；这是套餐均摊，不是按次报价。</td></tr><tr><td>高级版</td><td>2,870.40 元/年（页面同时列原价 7,068.00 元/年）；252,000 点/年</td><td>30 个同时任务；高清无水印</td><td>约 25,200 张图片或 840 个视频</td><td>官方的图片/视频换算与基础版一致；优先级、并发和总额度更高。</td></tr><tr><td>团队版起步</td><td>4,790.40 元/年起；432,000 点/年；5 个成员起</td><td>页面列为最优先作图、批量功能、企业资料库、共享素材/算力</td><td>约 43,200 张图片或 1,440 个视频</td><td>适合需要共享资产、配额和并发的团队。另有 864,000 / 1,728,000 点的年付包。</td></tr><tr><td>算力加油包</td><td>18 元/1,000 点</td><td>跟随主套餐有效期</td><td>未单列图片数</td><td>若按上述普通图片等价 10 点计算，约 <strong>0.18 元/图片等价</strong>；功能实际扣点可能不同。</td></tr></table></div>', '<p>定价页还显示团队版用户可申请高并发 API，并给出“图片 URL + prompt + outputNum”调用示例。这说明批量接入可以走 API，但<strong>API 仅面向团队版</strong>，且公开页面没有给出完整 API 定价、限流或 SLA。<a href="https://www.linkfox.com/price" target="_blank" rel="noopener">官方定价页</a></p>', '<h2 id="sec5">与自建小系统的取舍</h2>', '<h3>LinkFox 更有价值的部分</h3>', '<ul><li><strong>电商工作流已产品化：</strong> 套图结构、A+/卖点/场景/特写分类、服装上身和模特替换，比“调用一个生图模型”多了应用层规则。</li><li><strong>资产与批处理：</strong> 多图打包计费、批量生图、团队素材库、算力共享和模板，能减少运营人员在 SKU 间复制提示词和整理文件的时间。</li><li><strong>多模态链路集中：</strong> 商品图、模特图、修图、抠图和视频都在同一积分体系内；团队版还提供 API，适合把成熟的批量任务接进已有系统。</li><li><strong>运营定制项：</strong> 公开页面提到国家、语言、平台、品牌风格和品类场景等约束，贴近跨境上架场景。</li></ul>', '<h3>更容易自行替代的部分</h3>', '<ul><li>通用文/图生图、背景替换、放大、抠图、局部重绘、批量任务队列、提示词保存和下载归档。</li><li>若团队已有图像 API、对象存储和审核后台，可以以单功能 API 拼装出“上传 - 生成 - 人工审核 - 导出”的最小闭环。</li></ul>', '<h3>自建时常被低估的成本</h3>', '<ul><li>套图模板、品类/场景提示词、服装和商品结构保真、品牌一致性、失败重试、配额、审计、批量资产管理和人工质检界面。</li><li>Marketplace 合规、素材/肖像/商标权利、生成结果中的文字与产品规格正确性，以及不同平台的图片尺寸和政策变化。</li><li>自建模型/API 并不自动降低成本：需要把推理、存储、队列、可观测性、内容安全和运营人力一并核算。</li></ul>', '<h3>建议的决策方式</h3>', '<p>先用 20--50 个真实 SKU 做对照：记录每个 SKU 的可用率、人工修图分钟数、单张实际扣点、首图与套图的通过率、品牌/文字错误率及平台审核结果。若现成流程显著降低人工审图和排版时间，订阅价值主要来自工作流；若只需要单张背景图或简单抠图，通用 API/自建管道通常更可控。</p>', '<h2 id="sec6">图像/视频以外的能力边界</h2>', '<p>除作图与视频外，官网还列出作图 Agent、AI 会话、敏感词检测、Amazon 小组件、自动识别页面信息、内置运营模板和 AI 智能分析等相邻运营能力。<a href="https://www.linkfox.com/price" target="_blank" rel="noopener">官方定价页</a> 本调研没有评估其选品、竞品研究、Listing 文案、自动发布或数据分析的准确性；它们不应被视为商品图生成效果的证明。</p>', '<h2 id="sec7">风险与验收清单</h2>', '<ol><li>在付费前确认所需功能的<strong>实际单次扣点</strong>、图像尺寸、并发、保存期限和导出格式；不要只按“约生成”倒推。</li><li>用包含 Logo、文字、复杂材质、手部、服装花纹和多角度商品的样本验收结构保真；对外发布前保留人工审核。</li><li>明确上传素材、模特/肖像、商标和生成背景的授权边界；“AI 生成”不自动等于满足所有平台或法域的合规要求。</li><li>若需要程序化批量生成，确认团队版 API 的认证、限流、失败回调、数据保留、费用和 SLA，再把它纳入生产链路。</li></ol>']
+    </article>
+    <div class="foot">源文件：linkfox_research_codex.md · 经 8790 静态服务可直开</div>
+  </div>
+</body>
+</html>

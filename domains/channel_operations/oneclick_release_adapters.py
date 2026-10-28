@@ -762,7 +762,10 @@ def production_adapter_registry(
             target_labels=all_promotion_action_targets(),
             prepare=_prepare_postpublish_promotion,
             dispatch=_dispatch_postpublish_promotion,
-            policy_digest=promotion_adapter_policy_digest(),
+            policy_digest=_digest({
+                "tiktok":promotion_adapter_policy_digest(),
+                "shopee":__import__("modules.shopee.oneclick_promotion",fromlist=["promotion_read_policy_digest"]).promotion_read_policy_digest(),
+            }),
             prepare_is_read_only=True,
             consumes_prepared_command=True,
             preserves_idempotency_key=True,
@@ -782,6 +785,9 @@ def _prepare_postpublish_promotion(request: object) -> Mapping[str, object]:
     )
 
     try:
+        if str(getattr(request,'target_label','')).startswith('promotion:shopee:'):
+            from modules.shopee.oneclick_promotion import prepare_postpublish_promotion as prepare_shopee
+            return prepare_shopee(request)
         return prepare_postpublish_promotion(request)
     except TikTokPromotionBlocked as error:
         return {
@@ -825,6 +831,9 @@ def _dispatch_postpublish_promotion(
     )
 
     try:
+        if str(getattr(request,'target_label','')).startswith('promotion:shopee:'):
+            from modules.shopee.oneclick_promotion import dispatch_postpublish_promotion as dispatch_shopee
+            return dispatch_shopee(request)
         return dispatch_postpublish_promotion(request)
     except TikTokPromotionPreDispatchError as error:
         raise PreDispatchInvocationError(str(error)) from error

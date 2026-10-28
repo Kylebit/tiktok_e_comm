@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Mapping
 
@@ -20,6 +21,18 @@ STORE_ENV = {
     "workbench": "ORBIT_WORKBENCH_STORE_PATH",
     "ozon": "ORBIT_OZON_DATA_ROOT",
 }
+
+
+def prebind_release_store(deployment: Mapping[str, object]) -> Path:
+    """Pin the existing release ledger before any application-module import."""
+    path = _absolute(deployment.get("release_store_path"), field="release_store_path", must_exist=True)
+    if not path.is_file():
+        raise ValueError("RELEASE_STORE_EXISTING_FILE_REQUIRED")
+    imported = sys.modules.get("shared_platform.release_store")
+    if imported is not None and Path(imported.DEFAULT_RELEASE_STORE_PATH).resolve() != path:
+        raise ValueError("RELEASE_STORE_IMPORTED_BEFORE_RUNTIME_PIN")
+    os.environ[STORE_ENV["release"]] = str(path)
+    return path
 
 
 def prebind_workbench_store(deployment: Mapping[str, object]) -> Path:
@@ -40,7 +53,7 @@ def _absolute(value: object, *, field: str, must_exist: bool = False) -> Path:
     return path.resolve(strict=must_exist)
 
 
-def configure_stable_runtime(deployment: Mapping[str, object], *, expected_workbench_store_path: Path | None = None) -> dict:
+def configure_stable_runtime(deployment: Mapping[str, object], *, expected_workbench_store_path: Path | None = None, expected_release_store_path: Path | None = None) -> dict:
     """Write/reuse the public identity profile and export every path pin."""
     code_root = _absolute(deployment.get("code_root"), field="code_root", must_exist=True)
     profile_path = _absolute(
@@ -79,6 +92,11 @@ def configure_stable_runtime(deployment: Mapping[str, object], *, expected_workb
         or os.environ.get(STORE_ENV["workbench"]) != str(expected_workbench_store_path)
     ):
         raise ValueError("WORKBENCH_STORE_PIN_DRIFT")
+    if expected_release_store_path is not None and (
+        stores["release"] != expected_release_store_path
+        or os.environ.get(STORE_ENV["release"]) != str(expected_release_store_path)
+    ):
+        raise ValueError("RELEASE_STORE_PIN_DRIFT")
     profile = {
         "profile_id": str(deployment.get("runtime_profile_id") or "").strip(),
         "settings_path": str(settings_path),

@@ -606,7 +606,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "miaoshou_external_write_count": 0,
         "marketplace_write_count": 0,
     }
-    module = _image_skill_module()
+    from shared_platform import publication_r3_image_bridge as module
     if args.execute_miaoshou:
         if not args.confirm_miaoshou_write and not autopilot_authorizes(
             "miaoshou_common_baseline_sync"
@@ -722,7 +722,9 @@ def _execute_product_center_stage(args: argparse.Namespace) -> tuple[int, dict[s
     else:
         data.update(release_stage="R3_COMMON", publication_targets=["miaoshou:COMMON"])
         path = "/api/product-workspace/r3-common/preview"
-    status, result = request_publication_stage(path, data=data, base_url=args.base_url)
+    timeout=getattr(args,'request_timeout',15)
+    if not 1<=timeout<=300:raise ValueError('request timeout must be between 1 and 300 seconds')
+    status, result = request_publication_stage(path, data=data, base_url=args.base_url,timeout=timeout)
     return status, dict(result, http_status=status)
 
 
@@ -733,6 +735,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confirm-miaoshou-write", action="store_true")
     parser.add_argument("--finalize-release-handoff", action="store_true")
     parser.add_argument("--base-url")
+    parser.add_argument("--request-timeout",type=float,default=15,help="Client wait seconds, at most300; never grants retry")
     parser.add_argument("--plan-id")
     parser.add_argument("--confirmation-token")
     parser.add_argument("--preview-digest")

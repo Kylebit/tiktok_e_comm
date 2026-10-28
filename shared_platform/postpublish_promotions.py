@@ -299,6 +299,11 @@ def approved_promotion_action_policy(
     if not legacy:
         policy["discount_percent"] = _approved_target_discount_percent(
             immutable_plan_payload, policy["prerequisite_target"], expected_currency=policy["currency"])
+        row = immutable_plan_payload.get("pricing", {}).get("selected_targets", {}).get(policy["prerequisite_target"])
+        if isinstance(row, Mapping) and "store_prices" not in row:
+            from shared_platform.native_approved_discount_prices import retained_discount_price
+            retained = retained_discount_price(immutable_plan_payload, policy["prerequisite_target"], expected_currency=policy["currency"])
+            policy["retained_discount_price_binding_digest"] = retained["binding_digest"]
     return {
         "schema_version": "approved-postpublish-promotion-action-policy/v1",
         **policy,
@@ -328,6 +333,9 @@ def _approved_target_discount_percent(
     pricing = payload.get("pricing")
     selected = pricing.get("selected_targets") if isinstance(pricing, Mapping) else None
     row = selected.get(target) if isinstance(selected, Mapping) else None
+    if isinstance(row, Mapping) and "store_prices" not in row:
+        from shared_platform.native_approved_discount_prices import retained_discount_price
+        return retained_discount_price(payload, target, expected_currency=expected_currency)["discount_percent"]
     prices = row.get("store_prices") if isinstance(row, Mapping) else None
     if (
         not isinstance(prices, list)

@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS workbench_domain_operations (
 CREATE TABLE IF NOT EXISTS workbench_domain_locks (
  resource TEXT PRIMARY KEY, operation_id TEXT NOT NULL REFERENCES workbench_domain_operations(operation_id)
 );
+CREATE TABLE IF NOT EXISTS workbench_publication_scope_reductions (
+ task_id TEXT PRIMARY KEY REFERENCES workbench_execution(task_id),
+ request_digest TEXT NOT NULL, record_json TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS workbench_publication_scope_reductions_no_update
+BEFORE UPDATE ON workbench_publication_scope_reductions
+BEGIN SELECT RAISE(ABORT, 'publication scope reduction is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS workbench_publication_scope_reductions_no_delete
+BEFORE DELETE ON workbench_publication_scope_reductions
+BEGIN SELECT RAISE(ABORT, 'publication scope reduction is immutable'); END;
 """
 
 
@@ -466,6 +476,21 @@ class WorkbenchEngine:
                                      (row["task_id"],)).fetchone()
             task["request_scope"] = json.loads(requested["request_scope_json"]) if requested else None
         task.update(template=row["template"], execution_state=row["state"], current_step=task["steps"][min(row["step_index"], len(task["steps"]) - 1)]["key"], required_action=json.loads(row["action_json"]) if row["action_json"] else None, result_url=row["result_url"], worker=row["worker"], **self._review_identity(conn, row["task_id"]))
+        reduction = (conn.execute('SELECT record_json FROM workbench_publication_scope_reductions WHERE task_id=?',
+                                 (row['task_id'],)).fetchone() if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workbench_publication_scope_reductions'").fetchone() else None)
+        if reduction:
+            record = json.loads(reduction['record_json'])
+            task['effective_scope'] = record['effective_scope']
+            task['target_cancellations'] = [record['authority']['removed_target']]
+            reinstated = (conn.execute('SELECT record_json FROM workbench_publication_target_reinstatements WHERE task_id=?',
+                (row['task_id'],)).fetchone() if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workbench_publication_target_reinstatements'").fetchone() else None)
+            if reinstated:
+                from shared_platform.prepared_target_reinstatement import validate_reinstatement
+                successor = validate_reinstatement(json.loads(reinstated['record_json']), record)
+                task['effective_scope'] = successor['effective_scope']
+                task['target_reinstatements'] = [successor['restored_target']]
+            task['scope_reduction_consumer_required'] = self._target_consumer(row['task_id']) is None
+            task['effective_scope'] = {**task['effective_scope'], 'skus': task['scope'].get('skus', [])}
         claimed = conn.execute("SELECT detail_json,created_at FROM workbench_events WHERE task_id=? AND event_type='claimed' ORDER BY id DESC LIMIT 1", (row["task_id"],)).fetchone()
         task["last_executor"] = json.loads(claimed["detail_json"]).get("worker") if claimed else None
         task["last_claimed_at"] = claimed["created_at"] if claimed else None
@@ -488,6 +513,12 @@ class WorkbenchEngine:
             task["execution_state"] = "external_task"
             task["executor_connected"] = False
             task["blocked_reason"] = "由已关联任务执行；状态以所示观测时间为准"
+            return task
+        if reduction and task['scope_reduction_consumer_required']:
+            task['executor_connected'] = False
+            task['allowed_actions']['retry'] = False
+            task['execution_state'] = 'scope_reduction_pending_consumer'
+            task['blocked_reason'] = '取消店铺已记录；等待原正式消费者接纳缩减范围'
             return task
         if row["state"] == "queued" and not connected and task["review_mode"] == "legacy":
             task["execution_state"] = "executor_offline"
@@ -567,6 +598,72 @@ class WorkbenchEngine:
         finally:
             conn.close()
 
+    @contextmanager
+    def readonly_snapshot(self):
+        """Read an authenticated in-memory image; never open/expire the ledger."""
+        import sqlite3
+        if not hasattr(sqlite3.Connection, 'deserialize'):
+            raise ReceiptSnapshotUnavailable('SQLite deserialize is unavailable')
+        image = _receipt_database_image(self.store.path)
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.deserialize(image)
+            conn.execute('PRAGMA query_only=ON')
+            conn.execute('BEGIN')
+            yield conn
+        finally:
+            conn.close()
+
+    def read_task_snapshot(self, task_id):
+        with self.readonly_snapshot() as conn:
+            task = self._project(conn, self._row(conn, task_id))
+            events = [dict(row) for row in conn.execute(
+                'SELECT id,task_id,event_type,detail_json,created_at FROM workbench_events WHERE task_id=? ORDER BY id DESC',
+                (task_id,))]
+            for event in events:
+                event['detail'] = json.loads(event.pop('detail_json'))
+            return {'task': task, 'events': events}
+
+    def read_dashboard_snapshot(self):
+        with self.readonly_snapshot() as conn:
+            tasks = [self._project(conn, dict(r)) for r in conn.execute("SELECT * FROM workbench_execution ORDER BY rowid DESC").fetchall()]
+            live = [dict(r) for r in conn.execute("SELECT * FROM workbench_executors WHERE expires>?", (self.clock(),)).fetchall() if json.loads(r["version_json"]) == self.release]
+            connected_templates = sorted({template for row in live for template in json.loads(row["templates_json"])})
+            guard = conn.execute("SELECT COUNT(*) AS unresolved, "
+                                 "COALESCE(SUM(CASE WHEN owner_task_id IS NULL THEN 1 ELSE 0 END),0) AS unattached "
+                                 "FROM workbench_domain_operations WHERE state<>'completed'").fetchone()
+            locked = conn.execute("SELECT COUNT(*) FROM workbench_domain_locks AS l "
+                                  "JOIN workbench_domain_operations AS o ON o.operation_id=l.operation_id "
+                                  "WHERE o.state<>'completed'").fetchone()[0]
+            unresolved_rows = conn.execute(
+                "SELECT o.operation_id,o.owner_task_id,o.state,o.created_at,"
+                "o.resources_json,COUNT(l.resource) AS locked_resources "
+                "FROM workbench_domain_operations AS o "
+                "LEFT JOIN workbench_domain_locks AS l ON l.operation_id=o.operation_id "
+                "WHERE o.state<>'completed' "
+                "GROUP BY o.operation_id ORDER BY o.created_at,o.operation_id LIMIT 20"
+            ).fetchall()
+            unresolved = []
+            for row in unresolved_rows:
+                resources = json.loads(row['resources_json'])
+                identities = [_product_resource_identity(resource) for resource in resources]
+                targets = [identity for identity in identities if identity is not None]
+                unresolved.append({"operation_id": row["operation_id"],
+                                   "owner_task_id": row["owner_task_id"],
+                                   "state": row["state"], "created_at": row["created_at"],
+                                   "resource_count": len(resources),
+                                   "locked_resource_count": row["locked_resources"],
+                                   "affected_targets": targets[:30],
+                                   "affected_targets_truncated": len(targets) > 30,
+                                   "unparsed_resource_count": len(resources) - len(targets)})
+        return {"tasks": tasks, "templates": [{"key": k, **v, "steps": [{"key": a, "label": b} for a, b in v["steps"]]} for k, v in TEMPLATES.items()], "executor": {"connected": bool(live), "templates": connected_templates}, "release": self.release,
+                "domain_guard": {"unresolved_operation_count": guard["unresolved"],
+                                 "unattached_operation_count": guard["unattached"],
+                                 "locked_resource_count": locked},
+                "domain_operations": unresolved,
+                "domain_operations_truncated": guard["unresolved"] > len(unresolved)}
+
     def dashboard(self):
         with self.transaction() as conn:
             self._expire(conn)
@@ -615,6 +712,13 @@ class WorkbenchEngine:
 
     def claim(self, task_id, worker, ttl=60):
         with self.transaction() as conn:
+            # Existing adapters consume the immutable original scope. They must
+            # not replay it after cancellation, nor silently inherit approval.
+            if conn.execute('SELECT 1 FROM workbench_publication_scope_reductions WHERE task_id=?',
+                            (task_id,)).fetchone():
+                consumer = self._target_consumer(task_id)
+                if consumer is None or worker != consumer.pins.original_worker:
+                    return None
             self._expire(conn)
             row = self._row(conn, task_id)
             if conn.execute("SELECT 1 FROM workbench_external_tasks WHERE task_id=?", (task_id,)).fetchone():
@@ -630,7 +734,9 @@ class WorkbenchEngine:
                 return None
             scope = json.loads(row["scope_json"])
             # Profit consumes immutable snapshots and does not lock product mutations.
-            resources = [] if row["template"] == "profit" else ["product:" + _json([shop, sku]) for shop in scope["shops"] for sku in scope["skus"]]
+            consumer = self._target_consumer(task_id) if row['template'] == 'publication' else None
+            lock_shops = consumer.read_effective_scope(scope.get('offer_id'))['shops'] if consumer else scope['shops']
+            resources = [] if row["template"] == "profit" else ["product:" + _json([shop, sku]) for shop in lock_shops for sku in scope["skus"]]
             if row["template"] == "publication" and scope.get("offer_id"):
                 resources.append("product-offer:" + scope["offer_id"])
             for resource in resources:
@@ -798,6 +904,23 @@ class WorkbenchEngine:
             self._event(conn, task_id, "step_completed", {"step": steps[index - 1]["key"], "checkpoint": checkpoint})
         return self.get(task_id)
 
+    def yield_prepared_lease(self, task_id, token):
+        """Finish local preparation ownership without inventing a user gate.
+
+        A live lease, no external action and no unresolved domain operation are
+        required. The successor executor must claim the queued task normally.
+        """
+        with self.transaction() as conn:
+            row = self._lease(conn, task_id, token)
+            if (row['external_started'] or row['action_json']
+                    or conn.execute("SELECT 1 FROM workbench_domain_operations WHERE owner_task_id=? AND state<>'completed'", (task_id,)).fetchone()):
+                raise ValueError('prepared lease has unresolved external or domain work')
+            self._state(conn, task_id, 'queued')
+            conn.execute('UPDATE workbench_execution SET worker=NULL,lease_token=NULL,lease_until=NULL WHERE task_id=?', (task_id,))
+            conn.execute('DELETE FROM workbench_resource_locks WHERE task_id=?', (task_id,))
+            self._event(conn, task_id, 'prepared_lease_yielded', {'worker': row['worker'], 'external_write_count': 0})
+        return self.get(task_id)
+
     def wait_for_user(self, task_id, token, *, kind, label, reason, url="", receipt_binding=None):
         if kind not in {"input", "review", "observe"} or not label:
             raise ValueError("specific user action required")
@@ -928,9 +1051,23 @@ class WorkbenchEngine:
 
     def accept_domain_receipt(self, task_id, receipt, verifier):
         # verifier must re-read domain-owned evidence; never supplied by HTTP.
+        from shared_platform.native_common_baseline_successor import prepare_domain_receipt
+        prepared=prepare_domain_receipt(self,task_id,receipt,verifier)
         with self.transaction() as conn:
             row = self._row(conn, task_id)
             self._require_version(row)
+            if prepared is not None:
+                expected=prepared['task']
+                steps=json.loads(row['steps_json'])
+                if (expected['task_id']!=task_id or json.loads(row['version_json'])!=expected['version']
+                    or json.loads(row['scope_json'])!=expected['scope']
+                    or json.loads(row['checkpoint_json'])!=expected['checkpoint']
+                    or row['state']!=expected['state'] or not 0<=row['step_index']<len(steps)
+                    or steps[row['step_index']]['key']!=expected['step']
+                    or json.loads(row['action_json'] or 'null')!=expected['action']
+                    or row['worker'] is not None or expected['worker'] is not None
+                    or row['lease_token'] is not None or row['lease_until'] is not None or row['external_started']):
+                    raise ValueError('DOMAIN_RECEIPT_CURRENT_TASK_CHANGED')
             if self._review_identity(conn, task_id)["review_mode"] != "legacy":
                 raise ValueError("final review requires its original decision receipt")
             digest = hashlib.sha256(_json(receipt).encode()).hexdigest()
@@ -943,7 +1080,9 @@ class WorkbenchEngine:
                     raise ValueError("receipt identity conflict")
                 return False
             action = json.loads(row["action_json"] or "{}")
-            if row["state"] not in {"waiting_user", "waiting_domain"} or action.get("kind") not in {"review", "observe", "input"} or not action.get("receipt_binding") or not verifier(receipt, action["receipt_binding"]):
+            if (row["state"] not in {"waiting_user", "waiting_domain"} or action.get("kind") not in {"review", "observe", "input"}
+                or not action.get("receipt_binding") or not ((receipt==prepared['receipt'] and action['receipt_binding']==prepared['binding'])
+                    if prepared is not None else verifier(receipt,action['receipt_binding']))):
                 raise ValueError("domain receipt is not verified for current frozen scope")
             conn.execute("INSERT INTO workbench_receipts VALUES(?,?,?)", (key, task_id, digest))
             conn.execute("UPDATE workbench_execution SET action_json=NULL WHERE task_id=?", (task_id,))
@@ -977,7 +1116,10 @@ class WorkbenchEngine:
     def user_action(self, task_id, action, payload=None):
         payload = payload or {}
         with self.transaction() as conn:
-            self._expire(conn)
+            # Expiry cannot prove that a writer stopped. A cancellation must
+            # inspect the retained lifecycle before any recovery mutation.
+            if action != "cancel":
+                self._expire(conn)
             row = self._row(conn, task_id)
             if conn.execute("SELECT 1 FROM workbench_external_tasks WHERE task_id=?", (task_id,)).fetchone():
                 raise ValueError("关联任务须由其现有执行者处理，不能在此重复启动或取消")
@@ -1000,7 +1142,9 @@ class WorkbenchEngine:
                 self._state(conn, task_id, "queued")
                 self._event(conn, task_id, "input_provided", {"note": note})
             elif action == "cancel":
-                if row["state"] in {"running", "waiting_domain", "reconciliation_required", "completed", "cancelled"} or row["external_started"]:
+                if (row["state"] in {"running", "waiting_domain", "reconciliation_required", "completed", "cancelled"}
+                        or row["external_started"] or row["worker"] is not None
+                        or row["lease_token"] is not None or row["lease_until"] is not None):
                     raise ValueError("stop or reconcile active execution before cancellation")
                 self._state(conn, task_id, "cancelled")
                 if self._review_identity(conn, task_id)["review_mode"] != "legacy":
@@ -1010,6 +1154,10 @@ class WorkbenchEngine:
             else:
                 raise ValueError("unsupported action")
             self._event(conn, task_id, "user_" + action, {})
+            if action == "cancel":
+                # get() also expires unrelated writers; return this transaction's
+                # projection without starting another recovery transaction.
+                return self._project(conn, self._row(conn, task_id))
         return self.get(task_id)
 
     def attach_external(self, task_id, *, external_id, owner, observed_at, observed_status, evidence_ref=""):
@@ -1028,6 +1176,109 @@ class WorkbenchEngine:
             conn.execute("INSERT OR REPLACE INTO workbench_external_tasks VALUES(?,?)", (task_id, _json(external)))
             self._event(conn, task_id, "external_task_observed", external)
         return self.get(task_id)
+
+    def _target_consumer(self, task_id):
+        from shared_platform.prepared_target_consumer import configured_target_consumer
+        import sqlite3
+        with sqlite3.connect(self.store.path.resolve().as_uri() + '?mode=ro', uri=True) as db:
+            db.row_factory = sqlite3.Row
+            db.execute('PRAGMA query_only=ON')
+            db.execute('BEGIN')
+            row = db.execute('SELECT scope_json FROM workbench_execution WHERE task_id=?', (task_id,)).fetchone()
+        if row is None:
+            return None
+        consumer = configured_target_consumer(json.loads(row['scope_json']).get('offer_id'))
+        if (consumer is None or consumer.pins.task_id != task_id
+                or consumer.engine.store.path.resolve() != self.store.path.resolve() or consumer.engine.release != self.release):
+            return None
+        consumer.read_verified(consumer.pins.offer_id)
+        return consumer
+
+    def assert_publication_scope_consumable(self, offer_id, *, payload=None, target_labels=None):
+        """Non-mutating dispatch guard for legacy and native publication paths.
+
+        Until a reviewed consumer handles the retained targets, no publication
+        plan for this offer may bypass its immutable cancellation record.
+        Other offers and other business operations retain their existing gates.
+        """
+        import sqlite3
+        if not self.store.path.is_file():
+            return
+        with sqlite3.connect(self.store.path.resolve().as_uri() + '?mode=ro', uri=True) as conn:
+            conn.execute('PRAGMA query_only=ON')
+            conn.execute('BEGIN')
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workbench_publication_scope_reductions'").fetchone():
+                return
+            for (raw,) in conn.execute('SELECT record_json FROM workbench_publication_scope_reductions'):
+                if json.loads(raw)['offer_id'] == str(offer_id):
+                    from shared_platform.prepared_target_consumer import configured_target_consumer
+                    consumer = configured_target_consumer(offer_id)
+                    if (consumer is None or consumer.engine.store.path.resolve() != self.store.path.resolve()
+                            or consumer.engine.release != self.release or payload is None):
+                        raise ValueError('PUBLICATION_TARGET_REDUCTION_CONSUMER_NOT_ADOPTED')
+                    consumer.validate_payload(payload, target_labels=target_labels)
+
+    def record_publication_target_reduction(self, task_id, *, request, expected_version,
+                                           expected_checkpoint_sha256, predecessor_review_bytes):
+        """Trusted coordinator records one exact pre-submit cancellation.
+
+        No lease expiry, lock release, version replacement or historical scope
+        rewrite occurs here. The old consumer is held until a separately
+        reviewed consumer adopts the cancellation. This is not an HTTP route.
+        """
+        from shared_platform.prepared_target_reduction import (
+            build_prepared_target_reduction, canonical_digest,
+        )
+        request_digest = canonical_digest(request)
+        with self.transaction() as conn:
+            row = self._row(conn, task_id)
+            self._require_version(row)
+            if json.loads(row['version_json']) != expected_version:
+                raise ValueError('original task version pin changed')
+            existing = conn.execute('SELECT * FROM workbench_publication_scope_reductions WHERE task_id=?',
+                                    (task_id,)).fetchone()
+            if existing:
+                record = json.loads(existing['record_json'])
+                if (existing['request_digest'] != request_digest
+                        or record['checkpoint_sha256'] != expected_checkpoint_sha256
+                        or record['original_scope'] != json.loads(row['scope_json'])
+                        or hashlib.sha256(predecessor_review_bytes).hexdigest() !=
+                           record['predecessor_lineage']['predecessor_review_file_sha256']):
+                    raise ValueError('task already has a different target reduction')
+                return record
+            if (row['template'] != 'publication' or row['step_index'] != 0
+                    or self._review_identity(conn, task_id)['review_mode'] != 'legacy'
+                    or row['state'] not in {'queued', 'failed'}
+                    or row['worker'] is not None or row['lease_token'] is not None or row['lease_until'] is not None
+                    or row['external_started'] or row['action_json'] is not None):
+                raise ValueError('original writer must be inactive and pre-submit state resolved')
+            if (conn.execute('SELECT 1 FROM workbench_resource_locks WHERE task_id=?', (task_id,)).fetchone()
+                    or conn.execute('SELECT 1 FROM workbench_external_tasks WHERE task_id=?', (task_id,)).fetchone()
+                    or conn.execute("SELECT 1 FROM workbench_domain_operations WHERE owner_task_id=? AND state<>'completed'",
+                                    (task_id,)).fetchone()):
+                raise ValueError('original writer lock or unresolved external owner remains')
+            checkpoint = json.loads(row['checkpoint_json'])
+            actual_digest = hashlib.sha256(row['checkpoint_json'].encode()).hexdigest()
+            if (set(checkpoint) != {'native_preparation'}
+                    or actual_digest != expected_checkpoint_sha256):
+                raise ValueError('original pre-submit checkpoint pin changed')
+            record = build_prepared_target_reduction(request, task_id=task_id,
+                scope=json.loads(row['scope_json']), version=expected_version,
+                checkpoint_sha256=actual_digest,
+                prepared_reference=checkpoint['native_preparation'].get('prepared_reference'),
+                predecessor_review_bytes=predecessor_review_bytes)
+            conn.execute('INSERT INTO workbench_publication_scope_reductions VALUES(?,?,?)',
+                         (task_id, request_digest, _json(record)))
+            self._event(conn, task_id, 'publication_target_cancelled', {
+                'reduction_digest': record['reduction_digest'], 'removed_target': record['authority']['removed_target'],
+                'execution_authority': False, 'consumer_adopted': False,
+            })
+            return record
+
+    def record_publication_target_reinstatement(self, task_id, **arguments):
+        """Trusted local coordinator only; append history, never an approval or lease."""
+        from shared_platform.prepared_target_reinstatement import record_reinstatement
+        return record_reinstatement(self, task_id, **arguments)
 
     def bind_scope(self, task_id, token, scope):
         """Resolve exact identities before a business write; acquire locks atomically."""
@@ -1048,7 +1299,9 @@ class WorkbenchEngine:
                 if existing and existing["task_id"] != task_id:
                     raise ValueError("offer preparation is locked by " + existing["task_id"])
                 conn.execute("INSERT OR IGNORE INTO workbench_resource_locks VALUES(?,?)", (resource, task_id))
-            for shop in ([] if row["template"] == "profit" else scope["shops"]):
+            consumer = self._target_consumer(task_id) if row['template'] == 'publication' else None
+            lock_shops = consumer.read_effective_scope(scope.get('offer_id'))['shops'] if consumer else scope['shops']
+            for shop in ([] if row["template"] == "profit" else lock_shops):
                 for sku in scope["skus"]:
                     resource = "product:" + _json([shop, sku])
                     if conn.execute("SELECT 1 FROM workbench_domain_locks WHERE resource=?", (resource,)).fetchone():

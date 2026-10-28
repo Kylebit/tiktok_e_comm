@@ -246,8 +246,12 @@ class NativeCommonSourceReader:
         records = []
         plan_ids = []
         unstarted = []
-        for plan in db.execute("SELECT * FROM release_plans WHERE product_id=? ORDER BY plan_id",
-                               (graph.offer_id,)):
+        # Sort only immutable identities, never the potentially large payload.
+        # Resolve every complete row in this same caller-owned SQLite snapshot.
+        for identity in db.execute("SELECT plan_id FROM release_plans WHERE product_id=? ORDER BY plan_id",
+                                   (graph.offer_id,)):
+            plan = db.execute("SELECT * FROM release_plans WHERE plan_id=?",
+                              (identity["plan_id"],)).fetchone()
             try:
                 labels = json.loads(plan["target_labels_json"])
                 if type(labels) is not list or any(type(label) is not str for label in labels):

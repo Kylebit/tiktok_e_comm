@@ -19,6 +19,8 @@ class StartupConfig:
     incidents: str
     explicit_policy: bool
     explicit_incidents: bool
+    common_credentials_root: Path | None = None
+    common_credentials_sha256: str | None = None
 
 
 def capture_startup_config(*, root: Path, environ: Mapping[str, str] | None = None) -> StartupConfig:
@@ -30,7 +32,26 @@ def capture_startup_config(*, root: Path, environ: Mapping[str, str] | None = No
         env.get('ORBIT_R3_INCIDENT_REGISTRY_PATH', 'skills/publish-approved-product/references/incident-registry.json'),
         'ORBIT_R3_POLICY_PATH' in env or 'ORBIT_R3_CONFIG_ROOT' in env,
         'ORBIT_R3_INCIDENT_REGISTRY_PATH' in env or 'ORBIT_R3_CONFIG_ROOT' in env,
+        Path(env['ORBIT_COMMON_CREDENTIALS_ROOT']) if env.get('ORBIT_COMMON_CREDENTIALS_ROOT') else None,
+        env.get('ORBIT_COMMON_CREDENTIALS_SHA256'),
     )
+
+
+def common_signing_bytes(config: StartupConfig) -> bytes:
+    """Read one startup-pinned existing credential file without copying it.
+
+    This separates an existing private signing source from versioned policy;
+    it does not supply business authority or accept request-time paths.
+    """
+    if type(config) is not StartupConfig:raise ConfigReadError('UNSAFE_PATH')
+    if config.common_credentials_root is None:
+        if config.common_credentials_sha256 is not None:raise ConfigReadError('UNSAFE_PATH')
+        return _read(config.root,'config/miaoshou.local.json')
+    expected=config.common_credentials_sha256
+    if type(expected) is not str or len(expected)!=64 or any(c not in '0123456789abcdef' for c in expected):raise ConfigReadError('UNSAFE_PATH')
+    raw=_read(config.common_credentials_root,'config/miaoshou.local.json')
+    if hashlib.sha256(raw).hexdigest()!=expected:raise ConfigReadError('CHANGED_DURING_READ')
+    return raw
 
 
 class ConfigReadError(ValueError):

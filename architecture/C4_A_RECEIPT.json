@@ -1,0 +1,450 @@
+{
+  "schema": "orbithive-c4-receipt/v1",
+  "generated_at_utc": "2026-09-05T10:22:17.637598+00:00",
+  "work_order": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\work-orders\\WO-20260905-ORBIT-C4-A.md",
+  "owner": "/root/static_boundary_fix",
+  "status": "DELIVERED_FOR_COMPOSITION_REVIEW_WITH_UNRESOLVED_S02D_OBSERVATION",
+  "root": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-c4-frontend-20260905",
+  "branch": "codex/orbithive-c4-frontend-20260905",
+  "exact_base": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+  "base_parent": "b0b40072d8205879bce31c1ce90c40b562a42e62",
+  "implementation_commit": "86c0874c9315f47db688f12b688f474d17516847",
+  "implementation_parent": "730acce725ea4062d082ae27efd3436ec1842765",
+  "clean_before_receipt": true,
+  "finalization": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\finalization.json",
+  "receipt_commit_note": "The next commit only adds these two receipts. Exact final HEAD/parent/clean and post-commit owned-preview restart are recorded in external finalization.json.",
+  "replays": [
+    {
+      "source_commit": "052ed7433399575ec82434fa3ef7f0511e5fbfe5",
+      "parent": "429768b52699cdbe5578d00b06bb0e6b09a35d86",
+      "patch_id": "7c633220b4faec7f882aea244338abca84000854",
+      "patch_sha256": "7e2c8da2a6b80818ec1aabb6fac755cd6b8985b84e700e1b9d692785ffda1dd0",
+      "paths": [
+        "architecture/U00_A_RECEIPT.md",
+        "core/config.py",
+        "modules/ozon/rus_server.py",
+        "modules/products/server.py",
+        "modules/sourcing/new_product_server.py",
+        "scripts/product_publication_runtime.py",
+        "shared_platform/entry_catalog.json",
+        "shared_platform/orbit_registry.py",
+        "shared_platform/runtime_identity.py",
+        "tests/runtime_identity_process.py",
+        "tests/test_orbit_v1_navigation.py",
+        "tests/test_product_publication_runtime.py",
+        "tests/test_runtime_identity_process.py",
+        "tests/test_unified_entry.py",
+        "tests/test_unified_entry_browser.py",
+        "tests/unified_entry_browser.cjs",
+        "web/index.html",
+        "web/static/orbit_product.css",
+        "web/static/orbit_product.js"
+      ],
+      "overlap_with_c3_s02c_since_c2": [],
+      "replayed_commit": "5439dfe35002ff4a4fd33e15c684fe25d30f6284",
+      "replayed_parent": "6b920cdf83b1275370537f5d3ab17269fad5a0bf",
+      "replayed_patch_id": "7c633220b4faec7f882aea244338abca84000854",
+      "patch_id_equal": true,
+      "conflicts": []
+    },
+    {
+      "source_commit": "8457cf2246c7520bade525957cba2893a9bf0526",
+      "parent": "052ed7433399575ec82434fa3ef7f0511e5fbfe5",
+      "patch_id": "0c7594d5af5c898638245b15ce8f1d5bacee7659",
+      "patch_sha256": "7a176294a66834aeebc9a333e096afac6c27b6ebbb737760e335e46ae6c79ee8",
+      "paths": [
+        "web/static/orbit_product.css"
+      ],
+      "overlap_with_c3_s02c_since_c2": [],
+      "replayed_commit": "69b259af2790100075c21224ea62eb97c4f6e3d3",
+      "replayed_parent": "5439dfe35002ff4a4fd33e15c684fe25d30f6284",
+      "replayed_patch_id": "0c7594d5af5c898638245b15ce8f1d5bacee7659",
+      "patch_id_equal": true,
+      "conflicts": []
+    },
+    {
+      "source_commit": "f634ab9937971d24f80904c8340dce7dfef92afb",
+      "parent": "8457cf2246c7520bade525957cba2893a9bf0526",
+      "patch_id": "e062505ca7ee9a85614e55642a20b43b7061a93c",
+      "patch_sha256": "54997e641d37cf3da5e2b4c6efe52c3e5eea62a6254798ad658948b2a8360dc2",
+      "paths": [
+        "architecture/U00_B1_SOURCE_MATRIX.json",
+        "architecture/U00_B1_SOURCE_MATRIX.md",
+        "shared_platform/orbit_registry.py",
+        "shared_platform/runtime_identity.py",
+        "tests/dense_workspace_browser.cjs",
+        "tests/dense_workspace_preview.py",
+        "tests/test_dense_workspace_browser.py",
+        "web/index.html",
+        "web/product_workspace.html",
+        "web/static/operations.css",
+        "web/static/operations_shell.js",
+        "web/static/orbit_product.js",
+        "web/static/product_workspace.css",
+        "web/static/product_workspace.js"
+      ],
+      "overlap_with_c3_s02c_since_c2": [],
+      "replayed_commit": "d8c8fed9d9bf2baa3170d9c563302e73893c89d3",
+      "replayed_parent": "69b259af2790100075c21224ea62eb97c4f6e3d3",
+      "replayed_patch_id": "e062505ca7ee9a85614e55642a20b43b7061a93c",
+      "patch_id_equal": true,
+      "conflicts": []
+    },
+    {
+      "source_commit": "cfbdcd218396e646fe3effeca5c83fb4938422f9",
+      "parent": "f634ab9937971d24f80904c8340dce7dfef92afb",
+      "patch_id": "4058d445fd7e74a2b91f8ed29a967ac782d8f31d",
+      "patch_sha256": "fd11c06c3a82ad6060dfec68056ab03dbff2091850818bfb3bed73d06794ce0a",
+      "paths": [
+        "security/U00_B1_RECEIPT.json",
+        "security/U00_B1_RECEIPT.md"
+      ],
+      "overlap_with_c3_s02c_since_c2": [],
+      "replayed_commit": "730acce725ea4062d082ae27efd3436ec1842765",
+      "replayed_parent": "d8c8fed9d9bf2baa3170d9c563302e73893c89d3",
+      "replayed_patch_id": "4058d445fd7e74a2b91f8ed29a967ac782d8f31d",
+      "patch_id_equal": true,
+      "conflicts": []
+    }
+  ],
+  "text_followup": {
+    "commit": "86c0874c9315f47db688f12b688f474d17516847",
+    "scope": "two user-facing authorization/wiring sentences in web/product_workspace.html"
+  },
+  "merge_conflicts": 0,
+  "source_disposition": {
+    "c3_s02c": "retained base; no duplicate C2/R00 replay",
+    "u00": "four exact patch-id replays",
+    "b4b": "unmerged; no WIP read or copy",
+    "video": "independent Sites clone preserved, not embedded",
+    "d00": "old8457 clean checkpoint preserved, next base only after root acceptance and S02-D"
+  },
+  "source_contracts": [
+    {
+      "path": "modules/products/server.py",
+      "line": 604,
+      "contract": "current C4 legacy presentation still invokes build_factual_english_description; source identity deterministic_verified_facts_fallback at 620",
+      "absolute_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-c4-frontend-20260905\\modules\\products\\server.py",
+      "sha256": "ef45e3cf73812d6cdb3fe3c8c2ad6bb3109f4e8dfd6c2a8a0771d17d9fe0b5b0"
+    },
+    {
+      "path": "modules/shopee/global_copy.py",
+      "line": 314,
+      "contract": "current fallback producer; B4B retirement not imported",
+      "absolute_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-c4-frontend-20260905\\modules\\shopee\\global_copy.py",
+      "sha256": "bd5b07af1f33c0bd4f9849e88f5be1fbd4e53e1a42d0d6e26a66e4cbe3025db7"
+    },
+    {
+      "path": "modules/products/release_adapters.py",
+      "line": 350,
+      "contract": "current fallback adapter dependency; future B4B consumer sync item",
+      "absolute_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-c4-frontend-20260905\\modules\\products\\release_adapters.py",
+      "sha256": "44c89a085a07e3392981a1d1edf540504383ba38115b276e64048865853a35e5"
+    },
+    {
+      "path": "skills/prepare-product-images/scripts/prepare_product_images.py",
+      "line": 2155,
+      "contract": "CLI loads paid_context with approved scope/policy; not proof browser page produces that context",
+      "absolute_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-c4-frontend-20260905\\skills\\prepare-product-images\\scripts\\prepare_product_images.py",
+      "sha256": "1685deff480cdd71aab7d8c4209dc6925cc67663b31b89b2761407d4f402242c"
+    },
+    {
+      "path": "modules/sourcing/brand_image_lingshi_generation.py",
+      "line": 152,
+      "contract": "paid_context and offer/source identity gate retained",
+      "absolute_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-c4-frontend-20260905\\modules\\sourcing\\brand_image_lingshi_generation.py",
+      "sha256": "c17a8349c5f00e0dfc2460d786e8a45d7117a3a40490a6ab1613dacd75c75b41"
+    },
+    {
+      "path": "modules/sourcing/localized_image_lingshi_generation.py",
+      "line": 175,
+      "contract": "paid_context and business identity gate retained",
+      "absolute_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-c4-frontend-20260905\\modules\\sourcing\\localized_image_lingshi_generation.py",
+      "sha256": "20b4ae433d20f10bd839ca8bf3afc009f742966deff72fffd9c36db9c6a6cdf0"
+    },
+    {
+      "path": "web/product_workspace.html",
+      "line": 242,
+      "contract": "current page paid task wiring explicitly pending; no blanket repeated approval",
+      "absolute_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-c4-frontend-20260905\\web\\product_workspace.html",
+      "sha256": "28da27e120a5759533e6bc8179ff9c90f0a21b44944a9e86da915107942e893a"
+    },
+    {
+      "path": "web/product_workspace.html",
+      "line": 582,
+      "contract": "describe existing frozen-scope approval/revision and read-only completed/unknown target records",
+      "absolute_path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-c4-frontend-20260905\\web\\product_workspace.html",
+      "sha256": "28da27e120a5759533e6bc8179ff9c90f0a21b44944a9e86da915107942e893a"
+    }
+  ],
+  "preservation": {
+    "evidence": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\resource-preservation.json",
+    "assets_sha256_verified": 224,
+    "supply_manifest_crlf_to_lf_entries": 13,
+    "r00_documents": 9,
+    "unchanged_base_files": 1180,
+    "unchanged_base_tree_sha256": "fdd88b18138b90195474542e91cdac19d993a0512b8f9d83f1d424abff1a99a4",
+    "s02c_checkpoint_blob": "b3a9f5339dfa6ff2f4b88590250a64cf105be86e"
+  },
+  "validation": {
+    "latest_unique_pytest_outcomes": {
+      "passed": 178
+    },
+    "entry": 73,
+    "content_first_run": {
+      "passed": 102,
+      "failed": 1
+    },
+    "content_failed_only_retry": {
+      "passed": 1,
+      "failed": 0
+    },
+    "browser_wrappers": 2,
+    "dense_browser_checks": 103,
+    "unified_entry_browser_records": 26,
+    "skipped": 0,
+    "tested_composition_head": "730acce725ea4062d082ae27efd3436ec1842765",
+    "post_test_change": "two low-impact copy sentences only; independently read in real CUA at implementation commit",
+    "not_run": "unchanged full C3 665 or whole repository; preserved unrelated blobs/resources instead",
+    "caution": "Latest green retry does not resolve original lock concurrency failure; do not declare all underlying risks closed."
+  },
+  "unresolved_lock_observation": {
+    "generated_at_utc": "2026-09-05T10:10:13.161186+00:00",
+    "first_run": {
+      "name": "test_process_concurrency_and_crash_released_kernel_lock",
+      "file": "tests\\test_lingshi_checkpoint_recovery.py",
+      "worker_exit_codes": [
+        0,
+        1
+      ],
+      "captured_failure_message": "AssertionError: [('fixture-completed\n  ', ''), ('', 'Traceback (most recent call last):\n    File \"C:\\\\Users\\\\Windows11\\\\Desktop\\\\Agent_P...tion_checkpoint.py\", line 109, in business_lock\n      stream.flush()\n  PermissionError: [Errno 13] Permission denied\n  ')]\nassert [0, 1] == [0, 0]\n  \n  At index 1 diff: 1 != 0\n  Use -v to get more diff",
+      "captured_failure_text": "tmp_path = WindowsPath('C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-audit-20260905/c4t-content/t96')\n\n    def test_process_concurrency_and_crash_released_kernel_lock(tmp_path):\n        command = [sys.executable, \"-B\", str(Path(__file__).resolve())]\n        options = dict(cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,\n                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == \"nt\" else 0)\n        processes = [subprocess.Popen([*command, \"generate\", str(tmp_path)], **options) for _ in range(2)]\n        outputs = [process.communicate(timeout=30) for process in processes]\n>       assert [process.returncode for process in processes] == [0, 0], outputs\nE       AssertionError: [('fixture-completed\nE         ', ''), ('', 'Traceback (most recent call last):\nE           File \"C:\\\\Users\\\\Windows11\\\\Desktop\\\\Agent_P...tion_checkpoint.py\", line 109, in business_lock\nE             stream.flush()\nE         PermissionError: [Errno 13] Permission denied\nE         ')]\nE       assert [0, 1] == [0, 0]\nE         \nE         At index 1 diff: 1 != 0\nE         Use -v to get more diff\n\ntests\\test_lingshi_checkpoint_recovery.py:500: AssertionError",
+      "original_worker_stream_limit": "pytest serialized/truncated the asserted outputs. Full original worker stderr was not separately captured; not reconstructed.",
+      "first_worker_stdout_observed": "fixture-completed",
+      "second_worker_error_observed": "PermissionError [Errno 13] at image_generation_checkpoint.py:109 stream.flush()",
+      "command": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content-command.json",
+      "junit": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content.xml",
+      "log": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content.log"
+    },
+    "lock_files_after_exit": [
+      {
+        "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\c4t-content\\t96\\.lingshi-7e066a770565784154677efe.lock",
+        "size": 2,
+        "hex": "3030",
+        "sha256": "f1534392279bddbf9d43dde8701cb5be14b82f76ec6607bf8d6ad557f60f304e",
+        "mtime_ns": 1788602833905365900,
+        "observation": "after both test worker processes exited; not contemporaneous lock ownership"
+      }
+    ],
+    "retry": {
+      "command": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content-retry-command.json",
+      "junit": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content-retry.xml",
+      "tests": 1,
+      "failed": 0
+    },
+    "status": "UNRESOLVED_CONCURRENCY_OBSERVATION; one green retry is not a fix",
+    "candidate_cause": "write/flush of initially empty persistent lock file precedes kernel locking; retained as hypothesis, not proven scheduling trace",
+    "production_changed_for_observation": false,
+    "next_owner": "root to authorize separate minimal S02 correction"
+  },
+  "guard": {
+    "source": "reviewed C3 startup guard adapted in audit only",
+    "installed_before_candidate_import": true,
+    "python_runtime": "D:/Users/Windows11/Desktop/Agent_PR/tiktok_e_comm/.venv/Scripts/python.exe",
+    "candidate_imports_only": true,
+    "bytecode": false,
+    "pytest_cache": false,
+    "allowed_processes": "source-hashed exact fixture scripts/arguments, generated Git fixture actions, exact candidate Git identity reads",
+    "network": "owned bound loopback ports or explicitly recorded preview peer; original 8765/8766/3000/8788/49569/59502/59620 prohibited",
+    "database": "memory or exact scoped audit fixture paths/file URI; no production DB",
+    "legacy_v1_fixture": "only directories created by this run are registered, not all existing v1 audit paths",
+    "negative_probes_blocked": 5,
+    "actual_suite_blocked_calls": 0,
+    "node_guard": "exact browser script process receives declared fixture ports; Chrome pages also intercept nonlocal requests",
+    "limitation": "process-level test guards, not a system firewall or provider/production acceptance"
+  },
+  "preview_before_receipt": {
+    "pid": 15364,
+    "url": "http://127.0.0.1:49289/",
+    "root": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-c4-frontend-20260905",
+    "profile": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\preview\\preview-data\\runtime-profile.json",
+    "generated_offers": [
+      "99001",
+      "99002",
+      "99003",
+      "99004",
+      "99005"
+    ],
+    "business_database_connections": 0,
+    "synthetic_release_database": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\preview\\synthetic-release-15364.db",
+    "release_fixture": "real ReleaseStore create/approve/start/readback/failure; fake identities only",
+    "configuration_initialization": 0,
+    "external_calls": 0,
+    "runtime_cache": "synthetic manually attributed",
+    "dashboard": "real handler route + real workspace projection, generated release projection at backend boundary",
+    "other_apis": "synthetic image fixture or explicit 503, POST 403",
+    "commit": "86c0874c9315f47db688f12b688f474d17516847",
+    "build": {
+      "digest": "d374a9b2ec8370fff8e2bb1e0091515e220604a67dc1dc4a2b1c58b9fcb9c2a5",
+      "missing": [],
+      "file_count": 14
+    },
+    "assets": {
+      "digest": "25db2ab3e3f8b40bd796ff6cd2a493c8b53f94871350e5e53c8f6940359825b0",
+      "missing": [],
+      "file_count": 247
+    },
+    "state": "READY",
+    "wrong_profile": "CONFIG_MISMATCH",
+    "identity_only": true,
+    "business_execution_verified": false
+  },
+  "preview_final": "Same49289 port, new owned PID after receipt commit; finalization.json and identity-final.json are final authority.",
+  "parent_independent_browser": {
+    "tool": "CUA tab9",
+    "url": "http://127.0.0.1:49289/product-workspace?offer_id=99003",
+    "pid": 15364,
+    "observed": [
+      "Offer99003/revision7/TEST-plan match",
+      "two actual400x400 synthetic images load",
+      "ledger one succeeded/one reconciliation_required/one pending",
+      "TikTok/Shopee disabled; Ozon pending retained",
+      "two scoped-authority copy sentences accepted"
+    ],
+    "business_actions": 0
+  },
+  "external_effects": {
+    "paid": 0,
+    "platform_writes": 0,
+    "auth_writes": 0,
+    "production_database": 0,
+    "credential_reads": 0,
+    "uploads": 0,
+    "push": 0,
+    "existing_service_stops": 0,
+    "install": 0,
+    "dependency_media_copy": 0
+  },
+  "protected_services": [
+    "U00 PID63228/59502",
+    "U00 PID64568",
+    "video PID56008/59620",
+    "original3000/8788/8765/8766"
+  ],
+  "next_owner": "root",
+  "next_action": "accept C4 exact final SHA; activate isolated S02-D lock initialization repair, then set D00 exact base",
+  "evidence": [
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\preflight.json",
+      "sha256": "9983024bc8313c4adbaf20bfc89833f862f6e14b6c891a690fbff4e5486e6882"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\resource-preservation.json",
+      "sha256": "640321aa80f1b0eed44f3107c059e239c680503a8837dc86f0f8697d2d1768d7"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\test-results.json",
+      "sha256": "e896b42115f6a8d79839c3dee939bd4f144a864e02430874615af0b14d7bdd9c"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\lock-initialization-observation.json",
+      "sha256": "ead92ef69e08dbb9d3d6c7e51bfad63ea77f60629e96c3410af748fbfd93ca20"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\entry.xml",
+      "sha256": "de3a4f31c04ece4be967d21fed57146bd2fd839aa64476bcb2dc7f563dd0d7e9"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\entry-command.json",
+      "sha256": "a10b7264f502ee96e852f58c2d72f5df3f566c1a3ada2e2c0f8edd335db27314"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\entry-evidence.json",
+      "sha256": "26356e02b9ffd1f3c07032b08e0130d52091ba0c1f1b21cda4e59c14d29c05bc"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content.xml",
+      "sha256": "0668e12da26c6b71f38fa059e7537729ceba65ae3ed7979a848a441b4d84fb1e"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content.log",
+      "sha256": "74261f2cf4da37edb1f1243cf6bf0447d9b18c9de2202376c5b2e20b11572be9"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content-command.json",
+      "sha256": "04efc6d5528373ee17726163656671006b0286e021673e6882dba7b7b7d7f6c7"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content-evidence.json",
+      "sha256": "5322df71fb46a89eadfef8a3efbe073fe94e92db03b3ff0c402aec674818ce2b"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content-retry.xml",
+      "sha256": "312290f7c7695712420e77e94d43302dc458c0b1885a9c3a58f4f99254401895"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content-retry-command.json",
+      "sha256": "127c4712eb094d3bd85dd5e0fd06e725270020a2dae1dc1fd0799783dc5574aa"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\content-retry-evidence.json",
+      "sha256": "82e6d3c8e416b2ee3c9ca15acb3e3401a8f7e01cf1828fa9129595e8d5a2f609"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\browser.xml",
+      "sha256": "25c5419c585e8e7b6c60920bada75e53815a632a1886c58fd35ddd1e1ca764e9"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\browser-command.json",
+      "sha256": "341721a9854eb9313b1bdfed7acf1875b82b77a927f9f29b9fd4d87f17033e1c"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\browser-evidence.json",
+      "sha256": "3344f7be01a34413ba3ce55df2419f9331a2b61f116254bc8dae12583d4c5203"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\negative1.json",
+      "sha256": "9ae0dc28c0bd8f81fc08aceea69c126692589949790e6245d474e6e30c5305b7"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\negative1-command.json",
+      "sha256": "a39c8c6ef95b8dce779290e2bcf21ef396666418e6b9c343d4d7d2ba91c7b75f"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\guard-config.json",
+      "sha256": "4b77d69e2fb1eccee5b627b1395802613eb84cd05260177035e1ee197a1f3878"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\guard\\sitecustomize.py",
+      "sha256": "9f292e05eac987ea2b64e53e7ea5690ceb268d9d48df734a1d73a14b43bcb3a0"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\guard\\offline-node.cjs",
+      "sha256": "f62245c43b5ff3ae2a24a20c1d74acba8dcbbe1a0ea8bcc1f2fd6fc18d549bc2"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\identity-before.json",
+      "sha256": "70ef7ecb9138c7117ea1fd301cc6a52db071b2c39ce1cbc5a8eb0a29ea57ab2c"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\identity-before-command.json",
+      "sha256": "1e56148cc68196b6a468e287143e59e2bee700f04b0506462fc6e85df9354c33"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\preview-launch.json",
+      "sha256": "579aa461d72e19bcabf338853df4043ff2ece686d90d806f2b90186278bb3d1f"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\architecture\\c4-validation\\preview\\preview.json",
+      "sha256": "9520683279dd8f1eeea599b8e4396132035120565bdc016b0fbba8f2bae1eacd"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\c4t-browser\\t1\\browser-result.json",
+      "sha256": "a7c8e64e03267d17dc698ec7ff5483744e006ef76971f1b24d9523c4e2a68d60"
+    },
+    {
+      "path": "C:\\Users\\Windows11\\Desktop\\Agent_PR\\outputs\\orbithive-audit-20260905\\c4t-browser\\t0\\browser\\browser-result.json",
+      "sha256": "610b4c57e64c1ebf3c1daba07e91a7d8351f2429455f269413a377eff23245b3"
+    }
+  ]
+}

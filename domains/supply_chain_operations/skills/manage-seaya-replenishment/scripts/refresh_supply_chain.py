@@ -27,6 +27,7 @@ SOURCE_FILES = tuple(SCRIPT_DIR + name + '.py' for name in (
     'domains/supply_chain_operations/order_demand.py', 'domains/supply_chain_operations/demand_trend.py',
     'shared_platform/capability_runtime.py', 'modules/sourcing/image_generation_checkpoint.py',
     'domains/supply_chain_operations/captured_serving.py','core/static_files.py',
+    'shared_platform/publication_canonical_aliases.py','shared_platform/publication_variant_identity.py',
 )
 REGIONS = ('MY', 'TH', 'VN', 'PH')
 WAREHOUSES = {'MY': 'MY8803', 'TH': 'TH8806', 'VN': 'VN8805', 'PH': 'PH8807'}
@@ -54,7 +55,7 @@ def preflight(root, profile_path):
     if set(profile) != fields or profile['schema'] not in {'supply-chain-refresh-profile/v1', 'supply-chain-refresh-profile/v2'} or type(profile['stable_release']) is not bool:
         raise RefreshBlocked('PROFILE_INVALID', 'explicit non-secret refresh profile fields required')
     if profile['schema']=='supply-chain-refresh-profile/v2' and (
-        type(profile['captured']) is not dict or set(profile['captured'])!={'sources','targets','output_root'}):
+        type(profile['captured']) is not dict or set(profile['captured'])-{'canonical_aliases'}!={'sources','targets','output_root'}):
         raise RefreshBlocked('PROFILE_INVALID','captured sources, targets and output_root fields required')
     if Path(profile['project_root']).resolve() != root.resolve(): raise RefreshBlocked('ROOT_MISMATCH', 'profile root differs')
     if git(root, 'branch', '--show-current') != profile['branch']: raise RefreshBlocked('BRANCH_MISMATCH', 'profile branch differs')

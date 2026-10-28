@@ -111,7 +111,8 @@ class NativeSoleFinalDecisionService:
         context=credential.get('native_account_context')
         if context is None:_fail('NATIVE_SOLE_FINAL_GENUINE_COMMON_CONTEXT_REQUIRED')
         census=census_same_snapshot(self.store,db,payload,reader.read_source_facts(db,graph.common_plan_id))
-        if (census['status']!='LOCAL_PERSISTED_CENSUS' or census['unresolved_attempts']
+        from shared_platform.native_common_baseline_successor import unresolved_after_authorized_successor
+        if (census['status']!='LOCAL_PERSISTED_CENSUS' or unresolved_after_authorized_successor(self.store,db,payload,census)
                 or census['local_observed_confirmed_writes']!=1
                 or any(r.get('same_preparation_root') is True for r in census['unclassified_history'])):
             _fail('NATIVE_SOLE_FINAL_COMMON_BUDGET_UNVERIFIED')

@@ -20,7 +20,10 @@ class NativeR1ReconciliationRequired(ValueError):
 def _server(profile):
     from modules.products import server
     if Path(server.ROOT).resolve() != Path(profile.root).resolve():
-        raise ValueError('NATIVE_PUBLICATION_ROOT_CONFLICT')
+        from shared_platform.original_prepared_continuation import _INSTALLED
+        if _INSTALLED is None or profile != _INSTALLED.original_profile:
+            raise ValueError('NATIVE_PUBLICATION_ROOT_CONFLICT')
+        _INSTALLED.verify_sources()
     return server
 
 
@@ -48,6 +51,11 @@ def _report_dir(profile, offer):
 
 def _task_owns_snapshot(task, profile, *, offer, targets, prepared_reference, snapshot_digest, approved_at):
     """Require the original task's durable event, not copyable task JSON."""
+    if (task.get('checkpoint') or {}).get('native_r1_adoption') is not None:
+        from shared_platform.agent_prepared_publication_adoption import verify
+        verify(task, profile, offer=offer, targets=targets,
+               prepared_reference=prepared_reference, snapshot_digest=snapshot_digest)
+        return
     from shared_platform.immutable_approval_files import require_local_path
 
     release = {'code_version': getattr(profile, 'version', None),
@@ -134,6 +142,25 @@ def _task_owns_snapshot(task, profile, *, offer, targets, prepared_reference, sn
 
 def read_frozen(task, profile):
     """Return only the actual still-current domain snapshot, or no approval."""
+    from shared_platform.original_prepared_continuation import configured_original_continuation
+    continuation = configured_original_continuation((task.get('scope') or {}).get('offer_id'))
+    if continuation is not None:
+        return continuation.read_frozen(task, profile)
+    if (task.get('checkpoint') or {}).get('native_r1_adoption') is not None:
+        # This origin owns its signed preparation, not a legacy workspace CAS.
+        # Verify the genuine task/source chain before using any copied facts.
+        from shared_platform.agent_prepared_publication_adoption import verify
+        offer, targets = _scope(task)
+        checkpoint = task['checkpoint']
+        record = verify(task, profile, offer=offer, targets=targets,
+            prepared_reference=(checkpoint.get('native_preparation') or {}).get('prepared_reference'),
+            snapshot_digest=(checkpoint.get('native_r1') or {}).get('snapshot_digest'))
+        _server(profile)
+        _report_dir(profile, offer)
+        facts = record['facts']
+        return {'offer_id': record['offer_id'], 'targets': record['targets'],
+                'snapshot_digest': facts['snapshot_digest'], 'prepared_reference': facts['prepared_reference'],
+                'internal_sku': facts['internal_sku'], 'seller_sku': facts['seller_sku']}
     from modules.sourcing import new_product_workbench as workbench
     from shared_platform import publication_rounds, round1_workspace
     offer, targets = _scope(task)
@@ -163,7 +190,13 @@ def read_frozen(task, profile):
     seller = str(((snapshot.get('fact_snapshot') or {}).get('product_facts') or {}).get('seller_sku') or '')
     canonical = internal_sku(seller)
     if not re.fullmatch(r'[0-9]{4}', canonical):
-        raise ValueError('NATIVE_INTERNAL_SKU_REQUIRED')
+        if not (state.get('new_b_identity') or {}).get('canonical_to_B_provider_sku'):
+            raise ValueError('NATIVE_INTERNAL_SKU_REQUIRED')
+        from shared_platform.publication_variant_identity import read_explicit_variant_aliases
+        pin = ((task.get('checkpoint') or {}).get('native_r1_adoption') or {}).get('source_identity_binding_sha256')
+        explicit = read_explicit_variant_aliases(offer_id=offer, round1_snapshot=snapshot,
+            state=state, report_directory=_report_dir(profile, offer), expected_binding_sha256=pin)
+        canonical = explicit['internal_sku']
     return {'offer_id': offer, 'targets': targets, 'snapshot_digest': snapshot['snapshot_digest'],
             'prepared_reference': ref, 'internal_sku': canonical, 'seller_sku': seller}
 
@@ -268,13 +301,17 @@ class NativeR2PreparedReviewReader:
         self.task, self.profile = task, profile
 
     def read_verified(self, offer_id, reports_root, current_review, snapshot):
+        from shared_platform.original_prepared_continuation import configured_original_continuation
+        continuation = configured_original_continuation(offer_id)
+        if continuation is not None:
+            return continuation.read_review(self.task, self.profile, offer_id, reports_root, current_review, snapshot)
         from shared_platform import publication_rounds, round1_workspace
         from shared_platform.immutable_approval_files import require_local_path
         frozen = read_frozen(self.task, self.profile)
         root = Path(self.profile.root) / 'reports/product-preparation'
         if (not frozen or frozen['offer_id'] != offer_id
                 or Path(reports_root).resolve() != root.resolve()
-                or snapshot['snapshot_digest'] != frozen['snapshot_digest']):
+                or snapshot.get('snapshot_digest') != frozen['snapshot_digest']):
             raise ValueError('NATIVE_R2_PREPARED_SOURCE_CONFLICT')
         path = root / offer_id / 'first-review.json'
         require_local_path(path, root=root)
@@ -298,6 +335,14 @@ def load_service_r2_documents(offer_id, operations=None):
     Once an origin exists, any owner/version/source failure is terminal here.
     This reads a precise prepared reference, not a dashboard or runnable queue.
     """
+    from shared_platform.original_prepared_continuation import configured_original_continuation
+    continuation = configured_original_continuation(offer_id)
+    if continuation is not None:
+        from types import SimpleNamespace
+        if (type(operations) is not SimpleNamespace or operations.engine is not continuation.engine
+                or operations.profile != continuation.original_profile):
+            raise ValueError('ORIGINAL_CONTINUATION_SERVICE_RUNTIME_CHANGED')
+        return continuation.read_documents()
     from shared_platform.publication_r3_image_bridge import load_r2_documents
     from modules.sourcing import new_product_workbench as workbench
     from shared_platform import publication_rounds as rounds, round1_workspace
@@ -378,6 +423,12 @@ def load_service_r2_documents(offer_id, operations=None):
 
 def read_images(task, profile):
     """Read all six native R2 documents through the actual domain consumer."""
+    from shared_platform.original_prepared_continuation import configured_original_continuation
+    continuation = configured_original_continuation((task.get('scope') or {}).get('offer_id'))
+    if continuation is not None:
+        from shared_platform.publication_r3_image_bridge import validate_r2_identity
+        return {'native_r1': continuation.read_frozen(task, profile),
+                'native_r2': validate_r2_identity(continuation.read_documents())}
     from shared_platform.publication_r3_image_bridge import R2_DOCUMENTS, load_r2_documents, validate_r2_identity
     frozen = read_frozen(task, profile)
     if not frozen:

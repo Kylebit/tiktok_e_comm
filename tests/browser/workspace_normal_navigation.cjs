@@ -28,7 +28,12 @@ const path=require('node:path');
   await ready();
   assert.equal(new URL(page.url()).searchParams.get('offer_id'),'123');
   assert((await page.locator('#round1Category').innerText()).includes('42'));
-  assert((await page.locator('#currentReviewSummary').innerText()).includes('2 个目标'));
+  // Preparation distinguishes platform targets from the COMMON collect box.
+  // Verify the current scope wording and the two exact retained target rows.
+  assert((await page.locator('#currentReviewSummary').innerText()).includes('2 个平台目标'));
+  assert.equal(await page.locator('#selectedChannelPriceGrid tbody tr').count(),2);
+  const preparationTargets=await page.locator('#selectedChannelPriceGrid tbody tr td:first-child strong').allTextContents();
+  assert.deepEqual(preparationTargets,['tiktok:LH_MY','shopee:MY']);
   assert.equal(await page.locator('#factsEditSellerSku').inputValue(),'0001');
   assert(await page.locator('#originalPublicationReview').isVisible());
   assert.equal(await page.locator('[data-original-round]').count(),3);

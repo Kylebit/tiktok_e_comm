@@ -123,6 +123,8 @@ def request_authentication(endpoint,row,*,timeout_seconds):
     """Only the isolated client worker calls this fixed pipe operation."""
     from shared_platform import native_actor_launcher as pipe
     timeout=pipe._milliseconds(timeout_seconds); pipe._io_available()
+    import time
+    deadline=time.monotonic()+min(timeout,2000)/1000
     if type(endpoint) is not pipe.NativeLauncherEndpoint:
         _deny('NATIVE_LAUNCHER_STARTUP_ENDPOINT_REQUIRED')
     _check_context(row)
@@ -130,27 +132,26 @@ def request_authentication(endpoint,row,*,timeout_seconds):
         _deny('NATIVE_LAUNCHER_WRONG_OWNER')
     verify_server_process(endpoint.process_id,row['server_birth_100ns'])
     a,k=pipe._apis()
-    handle=pipe._allocate_ipc(lambda:k.CreateFileW(endpoint.pipe_name,0xC0000000,0,None,3,
-        pipe._OVERLAPPED_IO|0x100000|0x20000,None))
-    if not handle or handle==pipe._INVALID_HANDLE: _deny('NATIVE_LAUNCHER_CONNECT_FAILED')
+    handle,remaining=pipe._connect_before_frame(k,endpoint,deadline)
     try:
         pipe._verify_pipe_owner(a,k,handle,endpoint.owner_sid)
         pid=W.ULONG()
         if not k.GetNamedPipeServerProcessId(handle,C.byref(pid)) or pid.value!=endpoint.process_id:
             _deny('NATIVE_LAUNCHER_SERVER_IDENTITY_CHANGED')
+        verify_server_process(endpoint.process_id,row['server_birth_100ns'])
         mode=W.DWORD(2)
         if not k.SetNamedPipeHandleState(handle,C.byref(mode),None,None):
             _deny('NATIVE_LAUNCHER_MODE_FAILED')
         request={key:row[key] for key in _CONTEXT|{'filename'}}
         request.update(schema_version=REQUEST_SCHEMA,action='authenticate-owner-session')
-        pipe._write(k,handle,canonical_bytes(request),timeout)
-        raw=pipe._read(k,handle,timeout)
+        pipe._write(k,handle,canonical_bytes(request),remaining())
+        raw=pipe._read(k,handle,remaining())
         try: result=json.loads(raw)
         except (ValueError,TypeError): _deny('NATIVE_ACTOR_AUTH_RESULT_INVALID')
         check_result(result,row)
         if raw!=canonical_bytes(result): _deny('NATIVE_ACTOR_AUTH_RESULT_INVALID')
         verify_server_process(endpoint.process_id,row['server_birth_100ns'])
-        pipe._write(k,handle,pipe._ACK,timeout)
+        pipe._write(k,handle,pipe._ACK,remaining())
         return result
     finally:
         k.CloseHandle(handle)

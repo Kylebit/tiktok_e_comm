@@ -1,0 +1,210 @@
+{
+  "schema": "orbithive-b00-b1-selection-manifest/v1",
+  "work_order": "WO-20260905-ORBIT-B00-B1",
+  "candidate": {
+    "root": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-integration-20260905",
+    "branch": "codex/orbithive-integration-20260905",
+    "base_commit": "eb60a9052988654100405d5cb8c679723303734e"
+  },
+  "sources": {
+    "bundle": {
+      "path": "C:/Users/Windows11/Desktop/Agent_PR/outputs/orbithive-baseline-recovery-20260905-fixed-00-r4/private/git/formal-all-refs.bundle",
+      "sha256": "157977f9edd6b0a6fe903562bfbfe12d81beceb9b49a8771282b3156ccdf1b9f",
+      "verification": "COMPLETE_HISTORY_VERIFIED"
+    },
+    "local_head": "99401680f0a211b7099a13dc953308010f1a6e55",
+    "integration_named_source": "5a3959dc575f2e002843e9807977d115af97b160",
+    "supply_chain_named_source": "ce2306be6091e52d20093d8574c1fd806ebb0bf5",
+    "domain_decision_inputs": [
+      {
+        "lane": "00",
+        "json_sha256": "9c4a542af77326450dadea12cd562a501825ddf205b69fc87b775cda3ff9bc54",
+        "report_sha256": "4caf61d1a25d4f1c9da453f3062174b7b945956749e2a697795ad14d12dfa832"
+      },
+      {
+        "lane": "01",
+        "json_sha256": "7053eafbe5f2876fb824389df8e7eb1517fa9282eb625d9d37a9169ba4f443cf",
+        "report_sha256": "adabc2393734d83081e7581c4be7e79dcc9372731dc17bd0cac7d0d2fb1a2b12"
+      },
+      {
+        "lane": "02",
+        "json_sha256": "2037559a1996d645490acf616e922aa3b475ae23aa13c82c1606e307ed5b4732",
+        "report_sha256": "0d786f3318c05a7941b99b1f5bb8646ec8580e5b3750b0ecdc130408268a6f2a"
+      },
+      {
+        "lane": "03",
+        "json_sha256": "c41b59e3c9458b271d8a4facfd6a2dc08d51952107c4b4bdc4386be18b5b3a57",
+        "report_sha256": "ea769799a2b65d60c01d8edcd2bc35d36e919d427444fcd7fd9afc269e7fca0d"
+      },
+      {
+        "lane": "04",
+        "json_sha256": "e6f64d031a18b481114794c6cb9acaab34f98200f9b26f177d6e4a1133a86989",
+        "report_sha256": "e38c2fd1980d660c43aa739ef98f9b0756340c39ec4ce44920f10ba9b0c37f70"
+      },
+      {
+        "lane": "05",
+        "json_sha256": "c6eba3b553ccdd07d18c4a8191e5f6b914f4618685c711c4af299c41308f3902",
+        "report_sha256": "75f82d970c9456eec50ff996acca2eeb55552648218d816e3534fb6915bda715"
+      }
+    ]
+  },
+  "selected": [
+    {
+      "path": "shared_platform/product_description_media.py",
+      "classification": "KEEP_LOCAL_HEAD",
+      "source_blob": "be77b2557250f117d023e7baca2c4d37e06be817"
+    },
+    {
+      "path": "shared_platform/product_publication_closure.py",
+      "classification": "KEEP_LOCAL_HEAD",
+      "source_blob": "0d5eed7d1cd6dc8ab439e47a16a40fed5a3f5252"
+    },
+    {
+      "path": "shared_platform/publication_error_policy.py",
+      "classification": "KEEP_LOCAL_HEAD",
+      "source_blob": "7c93d92dd006e01469d8bdfb2a31b43795a25fe0"
+    },
+    {
+      "path": "shared_platform/publication_image_plan.py",
+      "classification": "KEEP_LOCAL_HEAD",
+      "source_blob": "436fa1c72b1a9adba357b4857c1b0c8fb9d6a76d"
+    },
+    {
+      "path": "shared_platform/publication_image_qa.py",
+      "classification": "KEEP_LOCAL_HEAD",
+      "source_blob": "6818622a02d85d9afbb9758537b2e49fbd39b46b"
+    },
+    {
+      "path": "shared_platform/publication_rounds.py",
+      "classification": "KEEP_LOCAL_HEAD",
+      "source_blob": "fe734cf987c8574b7aa0d8c20ab7c6a881316afc",
+      "known_lazy_dependency": "shared_platform/publication_autopilot.py",
+      "lazy_dependency_status": "PENDING_GROUP"
+    },
+    {
+      "path": "shared_platform/publication_stock_policy.py",
+      "classification": "KEEP_LOCAL_HEAD",
+      "source_blob": "82aebed4d9093f4a3073f93c7fd4907c5ddb9e74"
+    },
+    {
+      "path": "shared_platform/publication_write_budget.py",
+      "classification": "KEEP_LOCAL_HEAD",
+      "source_blob": "7643c35e816363ea64a0395d69df1d5f0f7e2a18"
+    }
+  ],
+  "pure_dependencies": [
+    {
+      "path": "config/publication_error_policy.json",
+      "source": "99401680f0a211b7099a13dc953308010f1a6e55",
+      "source_blob": "f61143f82c028077cf6ca26d40d3b182587b2cf7",
+      "reason": "publication_error_policy default governed data"
+    },
+    {
+      "path": "domains/product_operations/approved_publication_snapshot.py",
+      "source": "BASELINE",
+      "source_blob": "788c37d94162b7497c15a21b3d44cfde0fb6e301",
+      "reason": "product_description_media import dependency already retained by base"
+    },
+    {
+      "path": "core/config.py",
+      "source": "BASELINE",
+      "reason": "product_publication_closure root-path dependency already retained by base"
+    }
+  ],
+  "paired_tests": [
+    {
+      "path": "tests/test_product_description_media.py",
+      "source_blob": "10d351cf1c7b408dfc80a0e9fb1ab75e58eea749"
+    },
+    {
+      "path": "tests/test_product_publication_closure.py",
+      "source_blob": "f5a7154833412fa1718981b3bc43e50e4ce1cf03"
+    },
+    {
+      "path": "tests/test_publication_error_policy.py",
+      "source_blob": "87a7401d18e99af5400d3308e0596d70e7692c78"
+    },
+    {
+      "path": "tests/test_publication_image_qa.py",
+      "source_blob": "5df304c5d00e7aca74d3b3ec1975b17b0becc3a6"
+    },
+    {
+      "path": "tests/test_publication_image_qa_check_alias.py",
+      "source_blob": "552691190aa00ca38e8a998d1a74724677ea9e30"
+    },
+    {
+      "path": "tests/test_publication_write_budget.py",
+      "source_blob": "f3df0c7b1733626eb113263b534dcd555ed483cd"
+    },
+    {
+      "path": "tests/test_publication_compatibility_contracts.py",
+      "source": "B1_AUTHORED",
+      "worktree_blob": "d4a9156d15e0c5ff07353df008f52ea68bc62e69",
+      "reason": "narrow pure coverage for image plan, stock policy, and non-autopilot round contracts"
+    }
+  ],
+  "not_selected": [
+    {
+      "group": "B00-B2-PRODUCT-IDENTITY-SNAPSHOT",
+      "status": "PENDING_GROUP",
+      "source": "lane 01 decisions"
+    },
+    {
+      "group": "B00-B3-CONTENT-PACKAGE",
+      "status": "PENDING_GROUP",
+      "source": "lane 02 decisions"
+    },
+    {
+      "group": "B00-B4-CHANNEL-CONTROLPLANE",
+      "status": "PENDING_GROUP",
+      "source": "lane 03 decisions"
+    },
+    {
+      "group": "B00-B5-SUPPLY-CHAIN",
+      "status": "PENDING_GROUP",
+      "source": "ce2306be6091e52d20093d8574c1fd806ebb0bf5 and lane 04 decisions"
+    },
+    {
+      "group": "B00-B6-DATA-FACTS",
+      "status": "PENDING_GROUP",
+      "source": "lane 05 decisions"
+    },
+    {
+      "group": "B00-B7-WORKFLOW-ENTRY-UX-GATE",
+      "status": "PENDING_GROUP",
+      "source": "lane 00 candidate build plan"
+    },
+    {
+      "path": "shared_platform/publication_autopilot.py",
+      "status": "PENDING_GROUP",
+      "reason": "MERGE_REQUIRED; B1 does not resolve cross-domain autopilot policy semantics"
+    },
+    {
+      "path": "tests/test_product_publication_rounds.py",
+      "status": "PENDING_GROUP",
+      "reason": "mixed regression requires excluded autopilot module and newer round-2 Skill text; narrow B1 contract coverage is used instead"
+    },
+    {
+      "capabilities": [
+        "discount",
+        "delist",
+        "MiniMax H3",
+        "TikHub reference analysis",
+        "five governance document addendum"
+      ],
+      "status": "RETAINED_OUTSIDE_CANDIDATE",
+      "reason": "preserved sources are named but integration belongs to later work packages"
+    },
+    {
+      "capability": "ToAPI",
+      "status": "RETIRED_DO_NOT_REVIVE"
+    }
+  ],
+  "scope_assertions": {
+    "source_or_production_data_included": false,
+    "credentials_included": false,
+    "external_writes": 0,
+    "network_calls": 0,
+    "full_ui_or_cross_domain_acceptance_claimed": false
+  }
+}

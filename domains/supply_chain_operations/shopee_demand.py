@@ -47,6 +47,8 @@ def aggregate_escrow_details(
     recent_cutoff_ts: int,
     catalog_sku_by_model: dict[tuple[int, int], str] | None = None,
     trend_end_ts: int | None = None,
+    alias_registry=None,
+    shop_key=None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
     """Aggregate redacted order details into exact-SKU demand facts."""
 
@@ -93,6 +95,10 @@ def aggregate_escrow_details(
         for item in items:
             source_sku = str(item.get("model_sku") or item.get("item_sku") or "").strip()
             canonical = canonical_demand_sku(source_sku)
+            if canonical is None:
+                from shared_platform.publication_canonical_aliases import resolve_order_alias
+                canonical=resolve_order_alias(alias_registry,platform='shopee',shop_key=shop_key,
+                    product_id=item.get('item_id'),variant_id=item.get('model_id'),seller_sku=source_sku)
             if canonical is None:
                 item_id = item.get("item_id")
                 model_id = item.get("model_id")

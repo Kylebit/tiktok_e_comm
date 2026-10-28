@@ -1,0 +1,181 @@
+{
+  "schema_version": "shopee-historical-snapshot-structure-evidence/v1",
+  "privacy": "No raw order ID, token, URL, or response body is retained.",
+  "snapshot": {
+    "absolute_path": "D:\\Users\\Windows11\\Desktop\\Agent_PR\\tiktok_e_comm\\outputs\\shopee_escrow_TH_20260718_20260731.json",
+    "sha256": "d37e4ef610e11ff2d62c8fdcc7b9e1e1a5a62d3108353dbd14de5e1021e9b24e",
+    "file_size": 375001,
+    "file_mtime_utc": "2026-07-31T23:34:50.297834+00:00",
+    "top_level_keys": [
+      "count",
+      "end",
+      "pulled_at",
+      "region",
+      "rows",
+      "start"
+    ],
+    "region": "TH",
+    "declared_start": "2026-07-18",
+    "declared_end": "2026-07-31",
+    "pulled_at": "2026-07-31T23:34:50.287835+00:00",
+    "declared_count": 428,
+    "observed_row_count": 428,
+    "row_keys": [
+      "commission_fee",
+      "currency",
+      "order_sn",
+      "product_cost",
+      "product_cost_cny",
+      "product_name",
+      "quantity",
+      "region",
+      "release_time",
+      "release_ts",
+      "sale_local",
+      "seller_sku",
+      "service_fee",
+      "settlement_local",
+      "source",
+      "status",
+      "unit_cost_cny"
+    ],
+    "field_type_counts": {
+      "commission_fee": {
+        "float": 428
+      },
+      "currency": {
+        "str": 428
+      },
+      "order_sn": {
+        "str": 428
+      },
+      "product_cost": {
+        "NoneType": 24,
+        "float": 404
+      },
+      "product_cost_cny": {
+        "NoneType": 24,
+        "float": 404
+      },
+      "product_name": {
+        "str": 428
+      },
+      "quantity": {
+        "int": 428
+      },
+      "region": {
+        "str": 428
+      },
+      "release_time": {
+        "str": 428
+      },
+      "release_ts": {
+        "int": 428
+      },
+      "sale_local": {
+        "float": 428
+      },
+      "seller_sku": {
+        "str": 428
+      },
+      "service_fee": {
+        "float": 428
+      },
+      "settlement_local": {
+        "float": 428
+      },
+      "source": {
+        "str": 428
+      },
+      "status": {
+        "str": 428
+      },
+      "unit_cost_cny": {
+        "NoneType": 24,
+        "float": 404
+      }
+    },
+    "nonempty_field_counts": {
+      "commission_fee": 428,
+      "currency": 428,
+      "order_sn": 428,
+      "product_cost": 404,
+      "product_cost_cny": 404,
+      "product_name": 428,
+      "quantity": 428,
+      "region": 428,
+      "release_time": 428,
+      "release_ts": 428,
+      "sale_local": 428,
+      "seller_sku": 428,
+      "service_fee": 428,
+      "settlement_local": 428,
+      "source": 428,
+      "status": 428,
+      "unit_cost_cny": 404
+    }
+  },
+  "july_31_th_local_derivation": {
+    "source_field": "release_ts",
+    "source_field_semantics": "Unix timestamp instant",
+    "conversion": "datetime.fromtimestamp(release_ts, UTC).astimezone(UTC+07:00/Asia-Bangkok).date()",
+    "filter": "local_date == 2026-07-31",
+    "product_line_count": 226,
+    "unique_order_count": 214,
+    "repeated_order_line_count": 12,
+    "sorted_order_id_set_sha256": "2fa391a7518f2970cc5bc4ca72a2ed4cff7abbb98b93a192fe7d255f1a5c3787",
+    "sorted_order_line_id_sequence_sha256": "61eb7a51bba6700d0efb9f3ac674dcb1ab685e3b00a09f77488d42c29abcf4eb"
+  },
+  "independent_cross_check": {
+    "absolute_path": "D:\\OrbitEvidence\\th-settlement-independent-20260909\\STRUCTURE.json",
+    "raw_order_rows_copied": false,
+    "confirmed_full_file_row_count": 428,
+    "confirmed_full_file_unique_order_count": 409,
+    "confirmed_july_31_product_line_count": 226,
+    "confirmed_july_31_unique_order_count": 214,
+    "confirmed_exact_full_row_duplicates": 0,
+    "confirmed_duplicate_order_sku_pairs": 0,
+    "confirmed_release_time_text_semantics": "UTC minute text, not Thailand local time"
+  },
+  "producer": {
+    "absolute_path": "D:\\Users\\Windows11\\Desktop\\Agent_PR\\tiktok_e_comm\\modules\\shopee\\orders_pull.py",
+    "sha256": "401e9ac9b3a4753f82b06cda3fb6a974ed9924ed98d18f74a7448d4dbb808a12",
+    "excerpts": {
+      "utc_display": {
+        "start_line": 44,
+        "end_line": 50,
+        "text": "44: def _fmt_ts(ts: int | float | None) -> str:\n45:     if not ts:\n46:         return \"\"\n47:     try:\n48:         return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime(\"%Y-%m-%d %H:%M\")\n49:     except (OSError, OverflowError, ValueError):\n50:         return \"\""
+      },
+      "list_pagination": {
+        "start_line": 83,
+        "end_line": 116,
+        "text": "83: def iter_escrow_list(\n84:     shop_id: int,\n85:     token: str,\n86:     *,\n87:     time_from: int,\n88:     time_to: int,\n89: ) -> list[dict[str, Any]]:\n90:     out: list[dict[str, Any]] = []\n91:     page = 1\n92:     while True:\n93:         resp = shop_get(\n94:             \"/api/v2/payment/get_escrow_list\",\n95:             shop_id,\n96:             token,\n97:             {\n98:                 \"release_time_from\": int(time_from),\n99:                 \"release_time_to\": int(time_to),\n100:                 \"page_size\": 100,\n101:                 \"page_no\": page,\n102:             },\n103:         )\n104:         if resp.get(\"error\"):\n105:             raise RuntimeError(resp.get(\"message\") or resp.get(\"error\") or str(resp))\n106:         body = resp.get(\"response\") or {}\n107:         batch = body.get(\"escrow_list\") or []\n108:         out.extend(batch)\n109:         if not body.get(\"more\"):\n110:             break\n111:         page += 1\n112:         if page > 200:\n113:             break\n114:     return out\n115: \n116: "
+      },
+      "normalized_fields": {
+        "start_line": 129,
+        "end_line": 202,
+        "text": "129: def _normalize_detail(\n130:     *,\n131:     region: str,\n132:     currency: str,\n133:     list_row: dict[str, Any],\n134:     detail: dict[str, Any],\n135: ) -> list[dict[str, Any]]:\n136:     \"\"\"一单可能多 SKU → 多行；结算金额按 discounted_price 比例分摊。\"\"\"\n137:     oi = detail.get(\"order_income\") or {}\n138:     settlement = _f(oi.get(\"escrow_amount_after_adjustment\") or oi.get(\"escrow_amount\"))\n139:     if settlement == 0:\n140:         settlement = _f(list_row.get(\"payout_amount\"))\n141:     release_ts = list_row.get(\"escrow_release_time\")\n142:     release_str = _fmt_ts(release_ts)\n143:     order_sn = str(detail.get(\"order_sn\") or list_row.get(\"order_sn\") or \"\")\n144:     items = oi.get(\"items\") or []\n145:     if not items:\n146:         items = [\n147:             {\n148:                 \"model_sku\": \"\",\n149:                 \"item_name\": \"\",\n150:                 \"discounted_price\": _f(oi.get(\"buyer_total_amount\")),\n151:                 \"selling_price\": _f(oi.get(\"buyer_total_amount\")),\n152:                 \"quantity_purchased\": 1,\n153:             }\n154:         ]\n155: \n156:     weights = []\n157:     for it in items:\n158:         w = _f(it.get(\"discounted_price\") or it.get(\"selling_price\")) * max(\n159:             int(it.get(\"quantity_purchased\") or 1), 1\n160:         )\n161:         weights.append(max(w, 0.01))\n162:     total_w = sum(weights) or 1.0\n163: \n164:     rows = []\n165:     for it, w in zip(items, weights):\n166:         sku = str(it.get(\"model_sku\") or it.get(\"item_sku\") or \"\").strip()\n167:         sale = _f(it.get(\"discounted_price\") or it.get(\"selling_price\"))\n168:         qty = max(int(it.get(\"quantity_purchased\") or 1), 1)\n169:         subtotal = sale * qty if sale else w\n170:         share = settlement * (w / total_w)\n171:         unit_cost = _cost_by_seller_sku(sku)\n172:         product_cost = unit_cost * qty if unit_cost is not None else None\n173:         rows.append(\n174:             {\n175:                 \"region\": region,\n176:                 \"currency\": currency,\n177:                 \"order_sn\": order_sn,\n178:                 \"seller_sku\": sku,\n179:                 \"product_name\": str(it.get(\"item_name\") or it.get(\"model_name\") or \"\")[:200],\n180:                 \"status\": \"COMPLETED\",\n181:                 \"sale_local\": round(subtotal, 2),\n182:                 \"settlement_local\": round(share, 2),\n183:                 \"quantity\": qty,\n184:                 \"release_time\": release_str,\n185:                 \"release_ts\": int(release_ts or 0),\n186:                 # ``product_cost`` remains the backwards-compatible total\n187:                 # line cost.  New consumers should use the explicit fields.\n188:                 \"unit_cost_cny\": unit_cost,\n189:                 \"product_cost_cny\": product_cost,\n190:                 \"product_cost\": product_cost,\n191:                 \"commission_fee\": _f(oi.get(\"commission_fee\")) * (w / total_w),\n192:                 \"service_fee\": _f(oi.get(\"service_fee\")) * (w / total_w),\n193:                 \"source\": \"shopee_api_escrow\",\n194:             }\n195:         )\n196:     return rows\n197: \n198: \n199: def _headers() -> list[dict[str, str]]:\n200:     return [\n201:         {\"name\": \"Purchase Date\"},\n202:         {\"name\": \"Order SN\"},"
+      },
+      "json_envelope": {
+        "start_line": 288,
+        "end_line": 307,
+        "text": "288: \n289: def write_json_snapshot(\n290:     *,\n291:     region: str,\n292:     start: date,\n293:     end: date,\n294:     norms: list[dict[str, Any]],\n295: ) -> Path:\n296:     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)\n297:     path = OUTPUT_DIR / f\"shopee_escrow_{region}_{_ymd(start)}_{_ymd(end)}.json\"\n298:     payload = {\n299:         \"region\": region,\n300:         \"start\": start.isoformat(),\n301:         \"end\": end.isoformat(),\n302:         \"pulled_at\": datetime.now(timezone.utc).isoformat(),\n303:         \"count\": len(norms),\n304:         \"rows\": norms,\n305:     }\n306:     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding=\"utf-8\")\n307:     return path"
+      },
+      "utc_request_bounds_and_dedupe": {
+        "start_line": 323,
+        "end_line": 356,
+        "text": "323: \n324:     shop_id, token = _shop_ctx(region)\n325:     currency = {\"TH\": \"THB\", \"MY\": \"MYR\", \"PH\": \"PHP\", \"VN\": \"VND\"}.get(region.upper(), \"THB\")\n326: \n327:     # 切窗拉取 escrow_list\n328:     list_rows: list[dict[str, Any]] = []\n329:     cursor = start\n330:     while cursor <= end:\n331:         chunk_end = min(cursor + timedelta(days=CHUNK_DAYS - 1), end)\n332:         t0 = int(datetime(cursor.year, cursor.month, cursor.day, tzinfo=timezone.utc).timestamp())\n333:         t1 = int(\n334:             (\n335:                 datetime(chunk_end.year, chunk_end.month, chunk_end.day, tzinfo=timezone.utc)\n336:                 + timedelta(days=1)\n337:             ).timestamp()\n338:         )\n339:         batch = iter_escrow_list(shop_id, token, time_from=t0, time_to=t1)\n340:         list_rows.extend(batch)\n341:         cursor = chunk_end + timedelta(days=1)\n342: \n343:     # 去重 order_sn（保留最新 release）\n344:     by_sn: dict[str, dict[str, Any]] = {}\n345:     for row in list_rows:\n346:         sn = str(row.get(\"order_sn\") or \"\")\n347:         if not sn:\n348:             continue\n349:         prev = by_sn.get(sn)\n350:         if not prev or int(row.get(\"escrow_release_time\") or 0) >= int(\n351:             prev.get(\"escrow_release_time\") or 0\n352:         ):\n353:             by_sn[sn] = row\n354: \n355:     print(f\"  [shopee {region}] escrow_list={len(by_sn)} orders · fetching details…\", flush=True)\n356: "
+      }
+    }
+  },
+  "pagination_assessment": {
+    "page_size": 100,
+    "continue_condition": "response.more",
+    "page_number_incremented": true,
+    "defensive_page_limit": 200,
+    "terminal_more_false_retained_in_snapshot": false,
+    "page_count_retained_in_snapshot": false,
+    "raw_list_count_retained_in_snapshot": false,
+    "independent_full_pagination_proof": false
+  }
+}

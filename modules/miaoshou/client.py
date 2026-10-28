@@ -214,7 +214,7 @@ def generate_sign(
     return _open_sign(app_secret, path, timestamp, app_key, body_json)
 
 
-def _decode_json_response(response: urllib.request.addinfourl) -> dict[str, Any]:
+def _decode_json_response(response: urllib.request.addinfourl, *, on_decoded=None) -> dict[str, Any]:
     raw_bytes = response.read()
     encoding = str(response.headers.get("Content-Encoding") or "").lower()
     if encoding == "gzip" or raw_bytes[:2] == b"\x1f\x8b":
@@ -224,9 +224,12 @@ def _decode_json_response(response: urllib.request.addinfourl) -> dict[str, Any]
             pass
     raw = raw_bytes.decode("utf-8", errors="replace")
     try:
-        return json.loads(raw)
+        result = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Miaoshou returned non-JSON data: {raw[:300]}") from exc
+    if on_decoded is not None:
+        on_decoded(result, hashlib.sha256(raw_bytes).hexdigest())
+    return result
 
 
 def post_open(
@@ -263,17 +266,33 @@ def post_open(
     )
     try:
         from shared_platform.native_common_edit_boundary import native_edit_response_capture
+        from shared_platform.manual_common_creation import CREATE_PATH
         open_request = (urllib.request.build_opener(_RefuseCommonDetailRedirect()).open
-                        if native_edit_response_capture(path) is not None else urllib.request.urlopen)
+                        if native_edit_response_capture(path) is not None or path == CREATE_PATH else urllib.request.urlopen)
         with open_request(request, timeout=30) as response:
+            capture_create = None
+            if path == CREATE_PATH:
+                from shared_platform.manual_common_creation import retain_create_sdk_response
+                if root != OPEN_BASE_URL or response.geturl() != OPEN_BASE_URL + CREATE_PATH or response.status != 200:
+                    raise ValueError('COMMON_CREATE_RESPONSE_IDENTITY_INVALID')
+                capture_create = lambda parsed, sha: retain_create_sdk_response(path, payload, parsed,
+                    redaction_values=(key,secret,request.get_header('X-sign')),decoded_business_bytes_sha256=sha)
             result = (_capture_native_edit_response(request, response, key, secret)
                       if native_edit_response_capture(path) is not None else
+                      _decode_json_response(response,on_decoded=capture_create) if capture_create is not None else
                       _decode_json_response(response))
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
+        raw_bytes = exc.read(COMMON_OBSERVATION_MAX_BYTES + 1)
+        _retain_native_edit_summary(path,request,'HTTP_ERROR',http_status=exc.code,wire=raw_bytes,
+            redactions=(key,secret,request.get_header('X-sign')))
+        raw = raw_bytes.decode("utf-8", errors="replace")
         raise RuntimeError(f"Miaoshou HTTP {exc.code}: {raw[:300]}") from exc
     except urllib.error.URLError as exc:
+        _retain_native_edit_summary(path,request,'TRANSPORT_UNKNOWN',redactions=(key,secret,request.get_header('X-sign')))
         raise RuntimeError(f"Miaoshou network error: {exc}") from exc
+    except (OSError,TimeoutError):
+        _retain_native_edit_summary(path,request,'TRANSPORT_UNKNOWN',redactions=(key,secret,request.get_header('X-sign')))
+        raise
     if str(result.get("result") or "").lower() != "success":
         code, field_path, reason = _business_rejection_details(result)
         raise MiaoshouBusinessRejectedError(
@@ -282,6 +301,30 @@ def post_open(
             field_path=field_path,
         )
     return result
+
+
+def _retain_native_edit_summary(path,request,outcome,*,http_status=None,wire=None,business=None,result=None,redactions=()):
+    from shared_platform.native_common_edit_boundary import native_edit_response_capture,retain_native_edit_outcome
+    if native_edit_response_capture(path) is None:return
+    canonical=lambda value:json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+    code,field,reason=_business_rejection_details(result or {})
+    def safe(value):
+        value=str(value)
+        # Provider prose may echo unknown credentials, including quoted JSON
+        # and underscore/hyphen spellings. Keep only its hash in that case.
+        if re.search(r'(?i)(authorization|bearer|cookie|password|token|secret|api[_-]?key|app[_-]?key|x[_-]sign|signature)',value):
+            return 'PROVIDER_REASON_REDACTED'
+        for secret in redactions:
+            if secret:value=value.replace(str(secret),'[redacted]')
+        return sanitize_provider_reason(value)
+    summary=dict(schema_version='native-common-edit-outcome/v1',outcome=outcome,http_status=http_status,
+        provider_result=safe(sanitize_provider_code((result or {}).get('result'))),provider_code=safe(code),
+        provider_field_path=safe(field),provider_reason=safe(reason) if result else outcome,
+        request_canonical_sha256=hashlib.sha256(canonical(json.loads(request.data))).hexdigest(),
+        response_canonical_sha256=hashlib.sha256(canonical(result)).hexdigest() if result is not None else None,
+        decoded_business_bytes_sha256=hashlib.sha256(business).hexdigest() if business is not None else None,
+        wire_sha256=hashlib.sha256(wire).hexdigest() if wire is not None else None)
+    retain_native_edit_outcome(path,request.data,summary)
 
 
 def _capture_native_edit_response(request, response, key, secret):
@@ -306,9 +349,18 @@ def _capture_native_edit_response(request, response, key, secret):
                 raise ValueError('COMMON_EDIT_RESPONSE_DUPLICATE_KEY')
             value[name] = item
         return value
-    result = json.loads(business.decode('utf-8', errors='strict'), object_pairs_hook=unique)
+    try:
+        result = json.loads(business.decode('utf-8', errors='strict'), object_pairs_hook=unique)
+    except (UnicodeError,ValueError):
+        _retain_native_edit_summary(EDIT_PATH,request,'UNPARSEABLE_RESPONSE',http_status=200,wire=wire,
+            business=business,redactions=(key,secret,request.get_header('X-sign')))
+        raise
     if len(business) > COMMON_OBSERVATION_MAX_BYTES or type(result) is not dict:
         raise ValueError('COMMON_EDIT_RESPONSE_BODY_INVALID')
+    if str(result.get('result') or '').lower() != 'success':
+        _retain_native_edit_summary(EDIT_PATH,request,'BUSINESS_REJECTED',http_status=200,wire=wire,
+            business=business,result=result,redactions=(key,secret,request.get_header('X-sign')))
+        return result
     # Refuse secrets instead of rewriting bytes and mislabelling them original.
     sensitive = {'authorization','access_token','refresh_token','app_secret',
                  'client_secret','x-sign','x-app-key','signature'}

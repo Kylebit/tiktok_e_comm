@@ -97,6 +97,11 @@ def _require_schema(path):
 @contextmanager
 def _execution_scope(active,plan,run,labels):
     if _active() is not active:raise ApprovalBlocked('NATIVE_PROMOTION_PROTECTED_FACTORY_CHANGED')
+    from shared_platform.native_approved_discount_prices import B_OFFER
+    if plan.get('product_id')==B_OFFER:
+        with _b0431_execution_scope(active,plan,run,labels) as scope:
+            yield scope
+        return
     from shared_platform.native_prepared_v4_targets import _scope
     _scope(active,plan) # Exact original continuation, actual six R1/R2 files.
     if _SCOPE.get() is not None:raise ApprovalBlocked('NATIVE_PROMOTION_SCOPE_ALREADY_HELD')
@@ -110,6 +115,61 @@ def _execution_scope(active,plan,run,labels):
            'targets':labels,'proofs':proofs,'job_id':None}
     token=_SCOPE.set(scope)
     try:yield scope
+    finally:_SCOPE.reset(token)
+
+
+@contextmanager
+def _b0431_execution_scope(active,plan,run,labels):
+    """Only the genuine signed adoption may restore this B's missing quote."""
+    from shared_platform.agent_prepared_v4_targets import _scope
+    from shared_platform.native_approved_discount_prices import (
+        B_PLAN,B_RUN,B_DECISION,B_TASK,B_CANDIDATE,B_PAYLOAD,B_TARGETS,B_EVENT,
+        read_b0431_discount_decision,
+    )
+    if (active.plan_id!=B_PLAN or active.decision_id!=B_DECISION
+            or plan.get('plan_id')!=B_PLAN or run.get('run_id')!=B_RUN
+            or _hash(plan['payload'])!=B_PAYLOAD
+            or not labels or any(v not in {'promotion:'+t for t in B_TARGETS} for v in labels)):
+        raise ApprovalBlocked('NATIVE_PROMOTION_B0431_EXACT_APPROVED_SCOPE_REQUIRED')
+    if _SCOPE.get() is not None:raise ApprovalBlocked('NATIVE_PROMOTION_SCOPE_ALREADY_HELD')
+    bound,task,adoption=_scope(active,plan)  # Current HMAC/history/R1/R2/owner first.
+    if task['task_id']!=B_TASK or adoption['owner_sid']!=active.owner_sid:
+        raise ApprovalBlocked('NATIVE_PROMOTION_B0431_CURRENT_ADOPTION_CHANGED')
+    if active.service._actor()['owner_sid']!=active.owner_sid:
+        raise ApprovalBlocked('NATIVE_PROMOTION_B0431_CURRENT_ACTOR_CHANGED')
+    with sqlite3.connect(bound.engine.store.path.resolve().as_uri()+'?mode=ro',uri=True) as db:
+        db.execute('PRAGMA query_only=ON')
+        events=db.execute('SELECT detail_json FROM workbench_events WHERE task_id=? AND event_type=?',
+                          (B_TASK,B_EVENT)).fetchall()
+    if len(events)!=1:raise ApprovalBlocked('NATIVE_PROMOTION_B0431_SIGNED_SOURCE_REQUIRED')
+    envelope=json.loads(events[0][0]);raw=envelope.get('record_json')
+    if type(raw) is not str or hashlib.sha256(raw.encode()).hexdigest()!=envelope.get('record_digest'):
+        raise ApprovalBlocked('NATIVE_PROMOTION_B0431_SOURCE_ENVELOPE_CHANGED')
+    # _scope already authenticated this exact event and its new purpose. JSON
+    # parsing below never substitutes for that current-source verification.
+    record=json.loads(raw);ref=record.get('b0431_discount_decision_ref')
+    doc=read_b0431_discount_decision(ref)
+    if _hash(doc)!=record.get('b0431_discount_decision_digest'):
+        raise ApprovalBlocked('NATIVE_PROMOTION_B0431_SIGNED_INTENT_CHANGED')
+    with active.store._connect_readonly() as db:
+        db.execute('BEGIN')
+        active.service._decision(db,B_DECISION,owner_sid=active.owner_sid)
+        original=db.execute('SELECT review_json FROM native_sole_final_decisions WHERE decision_id=?',
+                            (B_DECISION,)).fetchone()
+    if original is None or json.loads(original[0]).get('candidate_digest')!=B_CANDIDATE:
+        raise ApprovalBlocked('NATIVE_PROMOTION_B0431_ORIGINAL_CANDIDATE_CHANGED')
+    rows={r['target_label']:r for r in run['targets']}
+    proofs={action:canonical_prerequisite(rows[promotion_prerequisite_target(action)],
+                                        promotion_prerequisite_target(action)) for action in labels}
+    scope={'active':active,'plan_id':B_PLAN,'run_id':B_RUN,'targets':labels,
+           'proofs':proofs,'job_id':None,'b0431_discount_decision_ref':ref,
+           'b0431_discount_decision_digest':_hash(doc),
+           'b0431_discount_source_digest':envelope['record_digest']}
+    token=_SCOPE.set(scope)
+    try:
+        from shared_platform.postpublish_promotions import approved_promotion_action_policy
+        for action in labels:approved_promotion_action_policy(plan['payload'],action)
+        yield scope
     finally:_SCOPE.reset(token)
 
 def check_ensure(path,plan,run,labels):

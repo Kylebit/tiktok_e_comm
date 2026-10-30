@@ -157,6 +157,14 @@ def prepare_postpublish_promotion(request):
     if policy['channel']!='shopee':_hold('shopee_promotion_target_invalid')
     approval=approved_promotion_action_policy(request.immutable_plan_payload,action)
     expected=retained_discount_price(request.immutable_plan_payload,policy['prerequisite_target'])
+    # The B supplemental intent pins its existing shop/item as well as prices.
+    # Preserve legacy 403's original path; no caller quote opens the B scope.
+    if expected.get('offer_id')=='8412287877065586543':
+        from shared_platform.native_approved_discount_prices import B_SH
+        region,shop,item=_identity(request.prerequisite_context)
+        exact=B_SH[policy['prerequisite_target']]
+        if (region!=policy['region'] or shop!=exact[0] or str(item)!=exact[1]):
+            _hold('shopee_promotion_b0431_original_item_changed')
     expected={k:expected[k] for k in ('currency','list_price','sale_after_discount')}
     expected['seller_skus']=list(_approved_model_skus(request.immutable_plan_payload))
     prerequisite=request.prerequisite_context

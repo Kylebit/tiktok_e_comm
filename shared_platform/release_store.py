@@ -5760,6 +5760,46 @@ class ReleaseStore:
                 ).fetchone()
             )
 
+    def _record_native_shopee_failed_readback(self, proof):
+        """Close original B VN failure4 from an owned strict GET-only proof."""
+        from shared_platform.native_sole_final_execution import _ACTIVE,_NativeExecution
+        from shared_platform.native_sole_final_readback import (
+            _trusted_vn_proof,_vn_facts,_vn_verified_evidence,_ozon_sha,_VN,
+        )
+        from shared_platform.native_approved_discount_prices import B_PLAN,B_RUN,B_DECISION
+        active=_ACTIVE.get()
+        if type(active) is not _NativeExecution or active.store is not self:
+            raise ReleaseAuthorizationError('native VN protected GET-only source is required')
+        scope=_trusted_vn_proof(active,proof)
+        if active.service._actor()['owner_sid']!=active.owner_sid:
+            raise ReleaseAuthorizationError('native VN current actor changed')
+        evidence=json.loads(proof.evidence_json)
+        with self._transaction() as connection:
+            active.service._decision(connection,B_DECISION,owner_sid=active.owner_sid)
+            self._reject_final_review_legacy_authority(connection,B_PLAN)
+            target=self._target_for_update(connection,B_RUN,_VN)
+            old=connection.execute('SELECT evidence_json FROM release_target_readbacks WHERE run_id=? AND target_label=?',
+                                   (B_RUN,_VN)).fetchone()
+            if target['status']==TARGET_SUCCEEDED:
+                if old is None or old['evidence_json']!=proof.evidence_json:
+                    raise ImmutableReleaseError('native VN already has different canonical evidence')
+                return self._run_in_transaction(connection,B_RUN)
+            facts=_vn_facts(connection)  # Same connection only, no external reader.
+            if (old is not None or target['status']!=TARGET_FAILED
+                    or _ozon_sha(facts)!=proof.state_digest
+                    or proof.source_digest!=scope['material']['source_digest']
+                    or evidence!=_vn_verified_evidence(facts,scope['material'],evidence.get('official_responses'))):
+                raise ReleaseAuthorizationError('native VN GET-only facts lost their original CAS')
+            self._require_active_run(connection,B_RUN)
+            now=_utc_now()
+            connection.execute('INSERT INTO release_target_readbacks(run_id,target_label,evidence_json,evidence_digest,verified_at) VALUES(?,?,?,?,?)',
+                (B_RUN,_VN,proof.evidence_json,hashlib.sha256(proof.evidence_json.encode()).hexdigest(),now))
+            changed=connection.execute("UPDATE release_target_runs SET status='SUCCEEDED',external_id=?,error=NULL,updated_at=?,completed_at=? WHERE run_id=? AND target_label=? AND status='FAILED' AND attempts=4 AND idempotency_key=?",
+                ('shopee:1723948773:item:52420043241',now,now,B_RUN,_VN,facts['target']['idempotency_key']))
+            if changed.rowcount!=1:raise ReleaseStoreError('native VN GET-only target CAS changed')
+            self._refresh_run_status(connection,B_RUN,now=now)
+            return self._run_in_transaction(connection,B_RUN)
+
     def _record_native_submission_readback(self, proof):
         """Close one accepted target after service-owned zero-write official READ.
 
@@ -8561,6 +8601,8 @@ class ReleaseStore:
             if payload["submission"] and not (
                 payload['storage_status'] == TARGET_SUCCEEDED
                 and (((payload.get('readback') or {}).get('evidence') or {}).get('native_submission_readback')
+                     or (run_id=='release-run:25e66f7250d31cbb39ff8d0e' and row['target_label']=='shopee:VN'
+                         and ((payload.get('readback') or {}).get('evidence') or {}).get('native_shopee_failed_readback'))
                      or (row['target_label'] == 'miaoshou:COMMON' and run['approval_id'] is None
                          and run['technical_execution_state'] == 'CONFIRMED_WRITE'
                          and (payload['submission'].get('evidence') or {}).get('schema_version') ==

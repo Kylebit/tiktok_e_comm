@@ -5,6 +5,9 @@ reader remain submitted. Neither a platform acceptance nor a listing-only Ozon
 observation closes a frozen warehouse/quantity command.
 """
 from dataclasses import dataclass
+from contextvars import ContextVar
+import hashlib
+import sqlite3
 import json
 
 from shared_platform.final_review_server_admission import ApprovalBlocked
@@ -19,6 +22,195 @@ class _SubmissionReadback:
     external_id: str
     submission_digest: str
     evidence_json: str
+
+
+_VN_SCOPE=ContextVar('b0431_vn_get_only_readback',default=None)
+_VN='shopee:VN'
+_VN_FAILURE='18b7a18ffaecefcb24e290661d12913fe360249a4ceadd69f080f43be91c92df'
+_VN_PURPOSE='ORIGINAL_APPROVED_B0431_TIKTOK35_SHOPEE30_COMPANION_DISCOUNT_AND_VN_GET_ONLY_CANONICAL_CONTINUATION'
+_VN_REQUESTS={14:('create_publish_task','ca0dc9081a0fd36b373057604d5612d926292b261c1652f4cf9b10aec81acdf8'),
+              21:('update_regional_copy','6cd8be5df97945daf5ec6846b4e4b78db8c0f136b21e126265b101fed2d24907'),
+              22:('list_regional_item','1f6e060440d81431ca81f4f6ca3241ca9dd25f1cfafa142aa03e6cd8013dd81b')}
+
+
+@dataclass(frozen=True)
+class _ShopeeFailedReadback:
+    state_digest: str
+    source_digest: str
+    evidence_json: str
+
+
+def _vn_need(value,code):
+    if not value:raise ApprovalBlocked('NATIVE_VN_GET_ONLY_'+code)
+
+
+def _vn_facts(db):
+    """Same-connection immutable joins; no source/file/SDK/DDL operation."""
+    from shared_platform.native_approved_discount_prices import B_PLAN,B_RUN,B_PAYLOAD,B_CANDIDATE,B_DECISION
+    from shared_platform.release_store import _plan_from_row,_validated_publication_snapshot_row
+    plan=db.execute('SELECT * FROM release_plans WHERE plan_id=?',(B_PLAN,)).fetchone()
+    snap=db.execute('SELECT * FROM approved_publication_snapshots WHERE plan_id=?',(B_PLAN,)).fetchone()
+    target=db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?',(B_RUN,_VN)).fetchone()
+    run=db.execute('SELECT * FROM release_runs WHERE run_id=?',(B_RUN,)).fetchone()
+    failure=db.execute('SELECT * FROM release_target_failure_events WHERE run_id=? AND target_label=? AND attempt=4',(B_RUN,_VN)).fetchone()
+    _vn_need(plan is not None and snap is not None and target is not None and failure is not None
+        and run is not None and run['plan_id']==B_PLAN,'ORIGINAL_ROWS_REQUIRED')
+    frozen=_validated_publication_snapshot_row(snap,plan=_plan_from_row(plan))
+    _vn_need(plan['payload_digest']==B_PAYLOAD and _ozon_sha(json.loads(plan['payload_json']))==B_PAYLOAD
+        and target['attempts']==4 and target['status'] in {'FAILED','SUCCEEDED'}
+        and failure['evidence_digest']==_VN_FAILURE
+        and hashlib.sha256(failure['evidence_json'].encode()).hexdigest()==_VN_FAILURE
+        and hashlib.sha256(snap['snapshot_json'].encode()).hexdigest()=='3e41486796ec38f8f59fa73655abf1bc3deb1df27d62c5222e38baa5d4d02fb1','ORIGINAL_FAILURE_SNAPSHOT_CHANGED')
+    rows=[dict(r) for r in db.execute('''SELECT r.*,d.request_digest,o.outcome FROM native_final_budget_reservations r
+        JOIN native_final_budget_scopes s USING(scope_key)
+        LEFT JOIN native_final_budget_dispatches d USING(scope_key,sequence)
+        LEFT JOIN native_final_budget_outcomes o USING(scope_key,sequence)
+        WHERE s.plan_id=? ORDER BY r.scope_key,r.sequence''',(B_PLAN,))]
+    _vn_need(rows and all(r['outcome'] in {'ACCEPTED','REJECTED'} and type(r['request_digest']) is str
+        and len(r['request_digest'])==64 for r in rows),'UNRECONCILED_MUTATION')
+    own=[r for r in rows if r['target_label']==_VN]
+    _vn_need(len(own)==3 and {r['sequence'] for r in own}==set(_VN_REQUESTS)
+        and all((r['operation'],r['request_digest'])==_VN_REQUESTS[r['sequence']]
+            and r['outcome']=='ACCEPTED' and r['budget_scope']=='target' and r['attempt_count']==1 for r in own),'ACCEPTED_ORIGINAL_PREFIX_CHANGED')
+    scopes=[dict(r) for r in db.execute('SELECT * FROM native_final_budget_scopes WHERE plan_id=? ORDER BY scope_key',(B_PLAN,))]
+    sh=[r for r in scopes if r['platform']=='SHOPEE']
+    _vn_need(len(sh)==1,'ORIGINAL_BUDGET_BINDING_CHANGED')
+    binding=json.loads(sh[0]['binding_json'])
+    _vn_need(binding==dict(plan_id=B_PLAN,snapshot_digest=snap['snapshot_digest'],platform='SHOPEE',
+        target_labels=['shopee:PH','shopee:MY','shopee:TH','shopee:VN'],shared_maximum=10,per_target_maximum=9,
+        payload_digest=B_PAYLOAD,candidate_digest=B_CANDIDATE,decision_id=B_DECISION)
+        and _ozon_sha(binding)==sh[0]['binding_sha256'],'ORIGINAL_BUDGET_BINDING_CHANGED')
+    return {'target':dict(target),'failure':dict(failure),'run':dict(run),'ledger':rows,'scopes':scopes,
+            'snapshot':frozen,'payload_digest':plan['payload_digest']}
+
+
+def eligible_shopee_failed_readback(store,decision_id):
+    """A pure queue hint only; source/actor/official facts are verified later."""
+    from shared_platform.native_approved_discount_prices import B_DECISION
+    if decision_id!=B_DECISION:return False
+    try:
+        with store._connect_readonly() as db:
+            db.execute('BEGIN');facts=_vn_facts(db)
+        return facts['target']['status']=='FAILED'
+    except (ValueError,OSError,KeyError,TypeError,RuntimeError):return False
+
+
+def _vn_source(active,plan):
+    from shared_platform.agent_prepared_v4_targets import _scope
+    from shared_platform.native_approved_discount_prices import B_EVENT,B_TASK,B_DECISION,read_b0431_discount_decision
+    from shared_platform.native_shopee_regional_continuation import _list_event,_ref
+    _vn_need(active.decision_id==B_DECISION and active.service._actor()['owner_sid']==active.owner_sid,'ORIGINAL_ACTOR_REQUIRED')
+    bound,task,_=_scope(active,plan)  # Genuine current full HMAC/R1/R2 chain first.
+    with sqlite3.connect(bound.engine.store.path.resolve().as_uri()+'?mode=ro',uri=True) as db:
+        db.execute('PRAGMA query_only=ON')
+        rows=db.execute('SELECT detail_json FROM workbench_events WHERE task_id=? AND event_type=?',(B_TASK,B_EVENT)).fetchall()
+    _vn_need(len(rows)==1,'SINGLE_SIGNED_SOURCE_REQUIRED')
+    envelope=json.loads(rows[0][0]);raw=envelope['record_json'];record=json.loads(raw)
+    _vn_need(hashlib.sha256(raw.encode()).hexdigest()==envelope['record_digest']
+        and record.get('purpose')==_VN_PURPOSE and record.get('vn_get_only_target')==_VN
+        and record.get('vn_get_only_failure_digest')==_VN_FAILURE
+        and record.get('vn_get_only_item_id')=='52420043241','SOURCE_PURPOSE_REQUIRED')
+    intent=read_b0431_discount_decision(record['b0431_discount_decision_ref'])
+    _vn_need(_ozon_sha(intent)==record['b0431_discount_decision_digest'],'SIGNED_INTENT_CHANGED')
+    completion=_list_event(bound,task)
+    _vn_need(completion is not None,'ORIGINAL_COMPLETION_SOURCE_REQUIRED')
+    doc=completion['doc'];models=json.loads(_ref(doc['official_item_refs'][_VN]['models_ref']))['response']['model']
+    return {'source_digest':envelope['record_digest'],'image_ids':doc['approved_image_ids'][_VN],
+            'original_models':models}
+
+
+class _VNGetOnly:
+    """Four whitelisted official SDK GETs; no mutation callable is installed."""
+    def __init__(self,active):self.active=active
+    def mutate(self,*a,**k):raise ApprovalBlocked('NATIVE_VN_GET_ONLY_MUTATION_FORBIDDEN')
+    create_publish_task=upload_regional_images=update_regional_copy=update_regional_images=update_regional_description=list_item=mutate
+    def observe(self):
+        from shared_platform.native_canonical_provider_edges import _existing_shopee_context
+        from modules.shopee.client import shop_get,merchant_get
+        from modules.shopee.auth import token_path
+        path=token_path().resolve(strict=True);pin=hashlib.sha256(path.read_bytes()).digest()
+        def guard():
+            from shared_platform.native_sole_final_execution import _ACTIVE
+            _vn_need(_ACTIVE.get() is self.active and self.active.service._actor()['owner_sid']==self.active.owner_sid,'CURRENT_ACTOR_CHANGED')
+            _vn_need(hashlib.sha256(path.read_bytes()).digest()==pin,'EXISTING_AUTH_CHANGED')
+            ctx=_existing_shopee_context('VN')
+            _vn_need(ctx.shop_id==1723948773 and ctx.merchant_id==4970102,'EXACT_SHOP_MERCHANT_REQUIRED')
+            return ctx
+        reads=(('shop','/api/v2/product/get_item_base_info',{'item_id_list':'52420043241'}),
+               ('shop','/api/v2/product/get_model_list',{'item_id':52420043241}),
+               ('merchant','/api/v2/global_product/get_global_item_id',{'shop_id':1723948773,'item_id_list':'52420043241'}),
+               ('merchant','/api/v2/global_product/get_global_model_list',{'global_item_id':43135542690}))
+        responses=[]
+        for domain,endpoint,params in reads:
+            ctx=guard()
+            value=(shop_get(endpoint,ctx.shop_id,ctx.shop_token,params,call_guard=guard) if domain=='shop'
+                else merchant_get(endpoint,ctx.merchant_id,ctx.merchant_token,params))
+            guard();responses.append({'path':endpoint,'params':params,'response':value})
+        return responses
+
+
+def _vn_verified_evidence(facts,material,responses):
+    """Pure original strict matcher; used again inside the Store CAS."""
+    from modules.shopee import skill_regions as r
+    from shared_platform.native_shopee_regional_continuation import _completion_parcel,_completion_models
+    expected=('/api/v2/product/get_item_base_info','/api/v2/product/get_model_list',
+              '/api/v2/global_product/get_global_item_id','/api/v2/global_product/get_global_model_list')
+    _vn_need(type(responses) is list and tuple(v.get('path') for v in responses)==expected,'EXACT_READ_ENDPOINTS_REQUIRED')
+    _vn_need([v.get('params') for v in responses]==[{'item_id_list':'52420043241'},{'item_id':52420043241},
+        {'shop_id':1723948773,'item_id_list':'52420043241'},{'global_item_id':43135542690}],'EXACT_READ_IDENTITIES_REQUIRED')
+    values=[]
+    for row in responses:
+        value=row['response'];_vn_need(isinstance(value,dict) and not str(value.get('error') or '').strip(' -'),'OFFICIAL_READ_FAILED')
+        values.append(value['response'])
+    items=values[0]['item_list'];models=values[1]['model'];links=values[2]['item_id_map'];global_models=values[3]['global_model']
+    _vn_need(len(items)==1 and str(items[0].get('item_id'))=='52420043241'
+        and len(links)==1 and str(links[0].get('item_id'))=='52420043241'
+        and str(links[0].get('global_item_id'))=='43135542690','EXACT_OFFICIAL_ASSOCIATION_REQUIRED')
+    snapshot=facts['snapshot'];item=items[0];approved=r._approved_models(snapshot,_VN);title,description=r._approved_copy(snapshot,_VN)
+    checks=r._official_readback_checks(item=item,models=models,resolved_global_item_id='43135542690',expected_global_item_id='43135542690',
+        expected_models=approved,expected_tiers=r._exact_global_tiers(global_models,approved),expected_logistics=[],
+        expected_image_count=r._approved_image_count(snapshot),expected_item_sku=r._expected_item_sku(snapshot),
+        expected_category_id=r._expected_category_id(snapshot,_VN),expected_title=title,expected_description=description,
+        expected_region='VN',repaired_copy=(title,description),expected_image_ids=tuple(material['image_ids']),
+        expected_description_image_ids=tuple(material['image_ids']),item_id='52420043241')
+    _vn_need(len(checks)==15 and all(v is True for v in checks.values()),'FROZEN_OFFICIAL_MATCH_REQUIRED')
+    _completion_parcel(snapshot,item);_completion_models(snapshot,_VN,models,material['original_models'])
+    target_evidence={'target_label':_VN,'stage':'READBACK','provider_code':'shopee_official_readback_verified',
+        'provider_identity_bound':True,'outcome_unknown':False,'item_id':'52420043241','checks':checks,
+        'external_write_count':3,'official_catalog_rows':r._catalog_observation_rows(_VN,1723948773,'52420043241','VN',item,models,approved)}
+    canonical={'platform':'SHOPEE','status':'PUBLISHED','readback_completed':True,'dispatch_attempted':False,
+        'external_write_count':3,'readback_external_write_count':0,
+        'targets':[{'target_label':_VN,'status':'PUBLISHED','evidence':target_evidence}]}
+    return {'schema_version':'native-scoped-v4-target-result/v1','target_label':_VN,'verified':True,
+        'status':'PUBLISHED','outcome_unknown':False,'reconciliation_required':False,'request_attempted':False,
+        'known_pre_submit_zero':False,'canonical_platform_result':canonical,'checks':checks,
+        'official_responses':responses,'external_writes_performed':[],
+        'native_shopee_failed_readback':{'original_failure_digest':_VN_FAILURE,'attempt':4,
+            'source_event_record_digest':material['source_digest'],'state_digest':_ozon_sha(facts),
+            'historical_accepted_target_mutations':3,'new_merchant_writes':0}}
+
+
+def _trusted_vn_proof(active,proof):
+    scope=_VN_SCOPE.get()
+    _vn_need(type(proof) is _ShopeeFailedReadback and scope is not None
+        and scope['active'] is active and scope.get('proof') is proof,'NONCALLER_PROOF_REQUIRED')
+    return scope
+
+
+def _observe_vn_failed(active,gate,data):
+    from shared_platform.native_approved_discount_prices import B_DECISION
+    material=_vn_source(active,gate['plan'])
+    with active.store._connect_readonly() as db:
+        db.execute('BEGIN');active.service._decision(db,B_DECISION,owner_sid=active.owner_sid);facts=_vn_facts(db)
+    _vn_need(facts['target']['status']=='FAILED','ORIGINAL_FAILED4_REQUIRED')
+    responses=_VNGetOnly(active).observe();evidence=_vn_verified_evidence(facts,material,responses)
+    _,failure=active.gate(data,store=active.store)
+    _vn_need(failure is None and _vn_source(active,gate['plan'])==material,'CURRENT_SOURCE_CHANGED_AFTER_READ')
+    proof=_ShopeeFailedReadback(_ozon_sha(facts),material['source_digest'],json.dumps(evidence,ensure_ascii=False,sort_keys=True,separators=(',',':')))
+    token=_VN_SCOPE.set({'active':active,'proof':proof,'facts':facts,'material':material})
+    try:active.store._record_native_shopee_failed_readback(proof)
+    finally:_VN_SCOPE.reset(token)
+    return {'target_label':_VN,'verified':True,'source':'official_shopee_shop_api','external_writes_performed':[]}
 
 
 def _official_observation(payload, target):
@@ -322,6 +514,14 @@ def observe_submissions(runtime, decision_id):
         observations = []
         retry_read = False
         for target in (run or {}).get('targets') or []:
+            if target['target_label']==_VN and target['status']=='FAILED' and eligible_shopee_failed_readback(runtime.store,decision_id):
+                try:
+                    observations.append(_observe_vn_failed(active,gate,data))
+                except (ValueError,OSError,KeyError,TypeError,RuntimeError) as error:
+                    observations.append({'target_label':_VN,'verified':False,
+                        'capability':'VN_STRICT_GET_ONLY_CANONICAL_HOLD','error_type':type(error).__name__,
+                        'external_writes_performed':[]})
+                continue
             if target['status'] != 'SUBMITTED_UNVERIFIED':
                 continue
             submission = target.get('submission') or {}

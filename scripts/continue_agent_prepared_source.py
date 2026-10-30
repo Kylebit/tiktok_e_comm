@@ -94,6 +94,15 @@ def main(argv=None):
     p.add_argument('--ozon-two-card-proof-sha256')
     p.add_argument('--shopee-existing-item-completion-proof',type=Path)
     p.add_argument('--shopee-existing-item-completion-proof-sha256')
+    p.add_argument('--approved-b0431-companion-discount-continuation',action='store_true',help='Bind original TK35/SH30 and original VN same-item GET-only canonical continuation; no merchant write, new attempt, grant or publication certification')
+    p.add_argument('--discount-mechanism-head')
+    p.add_argument('--discount-mechanism-manifest')
+    p.add_argument('--discount-technical-request',type=Path)
+    p.add_argument('--discount-technical-request-sha256')
+    p.add_argument('--discount-run-preimage',type=Path)
+    p.add_argument('--discount-run-preimage-sha256')
+    p.add_argument('--discount-decision',type=Path)
+    p.add_argument('--discount-decision-sha256')
     p.add_argument('--initialize-common-correction-schema',action='store_true',help='Explicit correction-ledger schema maintenance')
     args=p.parse_args(argv);config=json.loads(args.deployment.read_text(encoding='utf-8-sig'))
     if args.api_only and (not args.completed_common_variant_image_projection or config.get('agent_prepared_api_target_scope') is None):
@@ -136,7 +145,10 @@ def main(argv=None):
         args.ozon_two_card_proof,args.ozon_two_card_proof_sha256,args.shopee_existing_item_completion_proof,args.shopee_existing_item_completion_proof_sha256)
     if (args.approved_ozon_stock_shopee_frozen_completion_continuation and not all(two_card_args)) or (not args.approved_ozon_stock_shopee_frozen_completion_continuation and any(two_card_args)):
         raise ValueError('COMBINED_COMPLETION_SOURCE_EXACT_HISTORY_PINS_REQUIRED')
-    if (sum((args.common_create_successor,args.common_create_correction,args.common_baseline_successor,args.common_baseline_lock_fix,args.common_colormap_correction,args.completed_common_gallery_compatibility,args.completed_common_variant_image_projection,args.native_final_image_ui_compatibility,args.approved_native_r1_reader_compatibility,args.approved_platform_preparation_compatibility,args.native_tiktok_ozon_recovery_compatibility,args.approved_stock_category_continuation,args.approved_tiktok_locale_draft_correction,args.approved_tiktok_activation_connection_fix,args.approved_shopee_regional_tiktok_saved_publish_continuation,args.approved_ozon_stock_shopee_frozen_completion_continuation))>1
+    discount_args=(args.discount_mechanism_head,args.discount_mechanism_manifest,args.discount_technical_request,args.discount_technical_request_sha256,args.discount_run_preimage,args.discount_run_preimage_sha256,args.discount_decision,args.discount_decision_sha256)
+    if (args.approved_b0431_companion_discount_continuation and not all(discount_args)) or (not args.approved_b0431_companion_discount_continuation and any(discount_args)):
+        raise ValueError('B0431_DISCOUNT_SOURCE_EXACT_HISTORY_PINS_REQUIRED')
+    if (sum((args.common_create_successor,args.common_create_correction,args.common_baseline_successor,args.common_baseline_lock_fix,args.common_colormap_correction,args.completed_common_gallery_compatibility,args.completed_common_variant_image_projection,args.native_final_image_ui_compatibility,args.approved_native_r1_reader_compatibility,args.approved_platform_preparation_compatibility,args.native_tiktok_ozon_recovery_compatibility,args.approved_stock_category_continuation,args.approved_tiktok_locale_draft_correction,args.approved_tiktok_activation_connection_fix,args.approved_shopee_regional_tiktok_saved_publish_continuation,args.approved_ozon_stock_shopee_frozen_completion_continuation,args.approved_b0431_companion_discount_continuation))>1
         or args.initialize_common_correction_schema and not args.common_create_correction):
         raise ValueError('SOURCE_SUCCESSOR_EXACT_SOURCE_ACTION_REQUIRED')
     from scripts.stable_runtime_bootstrap import prebind_release_store,prebind_workbench_store,configure_stable_runtime
@@ -171,7 +183,13 @@ def main(argv=None):
         actor_reader=NativeWindowsActorProfileReader(actor,actor.grant_same_user()))
     if args.initialize_common_successor_schema and not args.common_create_successor:
         raise ValueError('SOURCE_SUCCESSOR_EXPLICIT_V2_REQUIRED')
-    if args.approved_ozon_stock_shopee_frozen_completion_continuation:
+    if args.approved_b0431_companion_discount_continuation:
+        from shared_platform.agent_prepared_source_successor import continue_b0431_discount_source
+        record=continue_b0431_discount_source(engine,profile,default_release_store(),mechanism_head=args.discount_mechanism_head,mechanism_manifest=args.discount_mechanism_manifest,
+            technical_request=dict(path=str(args.discount_technical_request),sha256=args.discount_technical_request_sha256),
+            run_preimage=dict(path=str(args.discount_run_preimage),sha256=args.discount_run_preimage_sha256),
+            b0431_discount_decision_ref=dict(path=str(args.discount_decision),sha256=args.discount_decision_sha256),**kwargs)
+    elif args.approved_ozon_stock_shopee_frozen_completion_continuation:
         from shared_platform.agent_prepared_source_successor import continue_combined_completion_source
         record=continue_combined_completion_source(engine,profile,default_release_store(),mechanism_head=args.completion_mechanism_head,
             mechanism_manifest=args.completion_mechanism_manifest,

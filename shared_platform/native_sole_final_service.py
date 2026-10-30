@@ -410,7 +410,9 @@ class NativeSoleFinalService:
                                (decision_id,)).fetchone()
                 runrow=db.execute('SELECT run_id FROM release_runs WHERE plan_id=?',(row['plan_id'],)).fetchone()
                 run=self.store._run_in_transaction(db,runrow['run_id']) if runrow else None
-        if not any(target['status']=='SUBMITTED_UNVERIFIED' for target in (run or {}).get('targets') or []):
+        from shared_platform.native_sole_final_readback import eligible_shopee_failed_readback
+        if (not any(target['status']=='SUBMITTED_UNVERIFIED' for target in (run or {}).get('targets') or [])
+                and not eligible_shopee_failed_readback(self.store,decision_id)):
             raise ApprovalBlocked('NATIVE_ACCEPTED_SUBMISSION_REQUIRED_FOR_READ_ONLY_RESUME')
         with self._execution_lock:
             if self._closed or self._stopping:

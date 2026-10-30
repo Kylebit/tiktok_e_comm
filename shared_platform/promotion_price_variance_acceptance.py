@@ -85,10 +85,14 @@ def _official_member(readback, target, command):
     members = [r for r in items if r['item_id'] == command['item_id']]
     _require(len(members) == 1, 'PRICE_ACCEPTANCE_EXACT_MEMBER_REQUIRED')
     models = members[0].get('model_list')
-    _require(type(models) is list and len(models) == len(command['model_ids']) == 1
-        and [r.get('model_id') for r in models] == command['model_ids'] == [target['model_id']]
-        and Decimal(str(models[0]['model_original_price'])) == Decimal(str(command['expected']['list_price']))
-        and Decimal(str(models[0]['model_promotion_price'])) == Decimal(target['accepted_official_price']),
+    ids = target.get('model_ids', [target.get('model_id')])
+    _require(type(models) is list and models and all(type(r) is dict for r in models)
+        and len(models) == len(ids) == len(command['model_ids'])
+        and all(type(r.get('model_id')) is int and r['model_id'] > 0 for r in models)
+        and len({r['model_id'] for r in models}) == len(models)
+        and {r['model_id'] for r in models} == set(command['model_ids']) == set(ids)
+        and all(Decimal(str(r['model_original_price'])) == Decimal(str(command['expected']['list_price']))
+            and Decimal(str(r['model_promotion_price'])) == Decimal(target['accepted_official_price']) for r in models),
         'PRICE_ACCEPTANCE_OFFICIAL_MODEL_PRICE_CHANGED')
     return {'shop_id': command['shop_id'], 'activity_id': command['activity_id'], 'item_id': command['item_id'],
         'model_ids': command['model_ids'], 'currency': command['expected']['currency'],
@@ -155,11 +159,27 @@ def record_existing_price_acceptance(store, *, authorization_ref, expected_outco
                 and occurrences[0]['confirmed_lower_bound'] == 0 and occurrences[0]['possible_upper_bound'] == 1,
                 'PRICE_ACCEPTANCE_ORIGINAL_WRITE_OCCUPANCY_CHANGED')
             command = json.loads(row['command_json'])['payload']
+            # Explicit complete identity for multi-Model acceptance. Legacy
+            # single-Model authorities and the v1 event reader stay unchanged.
+            model_ids = target.get('model_ids', [target.get('model_id')])
+            seller_skus = authority.get('seller_skus', [authority.get('seller_sku')])
+            _require(type(model_ids) is list and model_ids
+                and all(type(v) is int and v > 0 for v in model_ids)
+                and len(set(model_ids)) == len(model_ids)
+                and type(seller_skus) is list and len(seller_skus) == len(model_ids)
+                and all(type(v) is str and bool(v.strip()) for v in seller_skus)
+                and len(set(seller_skus)) == len(seller_skus)
+                and ('model_ids' in target or len(model_ids) == len(seller_skus) == 1)
+                and (len(model_ids) == 1 or 'seller_skus' in authority),
+                'PRICE_ACCEPTANCE_COMPLETE_MODEL_SKUS_REQUIRED')
             _require(command['target_label'] == label and command['mode'] == 'ADD_TO_EXISTING_DISCOUNT'
                 and all(command[key] == target[key] for key in ('shop_id', 'activity_id', 'item_id'))
-                and command['model_ids'] == [target['model_id']]
+                and len(command['model_ids']) == len(model_ids) and set(command['model_ids']) == set(model_ids)
                 and command['expected']['currency'] == target['currency']
-                and command['expected']['seller_skus'] == [authority['seller_sku']]
+                and len(command['expected']['seller_skus']) == len(seller_skus)
+                and set(command['expected']['seller_skus']) == set(seller_skus)
+                and ('model_ids' not in target or Decimal(target['original_list_price'])
+                    == Decimal(str(command['expected']['list_price'])))
                 and Decimal(str(command['expected']['sale_after_discount'])) == Decimal(target['original_frozen_price'])
                 and Decimal(target['accepted_official_price']) > 0
                 and Decimal(target['accepted_official_price']) != Decimal(target['original_frozen_price']),

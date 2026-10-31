@@ -10,6 +10,7 @@ from collections import Counter
 from test_round1_workspace_freeze import live
 from test_round1_auto_freeze import public_settings
 from owned_new_publication_task import complete_new_task
+from modules.products import release_adapters
 from shared_platform import native_new_task_v4_targets as native
 from shared_platform import native_sole_final_execution as execution
 
@@ -27,6 +28,17 @@ def test_new_three_model_one_decision_parallel_fork_keeps_operation_actor_reuse(
             label = request.target_labels[0]
             assert request.snapshot['offer_id'] == market['product_id']
             assert len(request.snapshot['skus']) == 3
+            channel, site = label.split(':', 1)
+            # Keep the real persisted decision/graph/copy consumer inside the
+            # original worker operation and _ACTIVE native execution context.
+            assert execution._ACTIVE.get() is active
+            assert request.snapshot['plan_id'] == active.plan_id
+            payload = active.store.get_plan(active.plan_id)['payload']
+            frozen = release_adapters._native_frozen_target(
+                payload, channel=channel, site=site, target_label=label)
+            assert frozen['target'] == label
+            if channel == 'tiktok':
+                assert len(frozen['copy']['variants']) == 3
             with guard:
                 initial = platform not in first
                 first.add(platform)

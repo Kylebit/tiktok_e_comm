@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from urllib.parse import urlsplit
 
 import pytest
@@ -37,6 +38,8 @@ def test_real_sole_review_button_compares_shown_full_review_before_deciding_and_
             f'http://127.0.0.1:{http.server_port}',str(tmp_path),market['product_id'],
             'changed' if changed_display else 'same',str(expected)],
             env=dict(os.environ,NODE_PATH=str(modules)),capture_output=True,text=True,encoding='utf-8',timeout=100)
+        (tmp_path/'browser-process-result.json').write_text(json.dumps({'returncode':result.returncode,
+            'stdout':result.stdout,'stderr':result.stderr},ensure_ascii=False),encoding='utf-8')
         assert result.returncode==0,result.stdout+result.stderr
         proof=json.loads(result.stdout)
         assert proof['widths']==[1440,390] and proof['errors']==[]
@@ -53,5 +56,17 @@ def test_real_sole_review_button_compares_shown_full_review_before_deciding_and_
                 task=db.execute("SELECT state,action_json FROM workbench_execution WHERE template='publication'").fetchone()
                 assert task['state']=='waiting_domain' and json.loads(task['action_json'])['kind']=='observe'
     finally:
-        http.shutdown();http.server_close();thread.join(timeout=5);installed.close()
-        assert not thread.is_alive()
+        original_error=sys.exc_info()[1]
+        try:
+            http.shutdown();http.server_close();thread.join(timeout=5)
+            assert not thread.is_alive()
+            # A failed browser assertion must not race its own already-saved
+            # decision worker or mask the subject failure with close().
+            execution=installed._execution_thread
+            if execution is not None:
+                execution.join(timeout=40)
+                assert not execution.is_alive(),'Owned native execution has not retired normally'
+            installed.close()
+        except Exception as cleanup_error:
+            if original_error is None:raise
+            original_error.add_note('Owned fixture teardown also failed: '+type(cleanup_error).__name__+': '+str(cleanup_error))

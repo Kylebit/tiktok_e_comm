@@ -1300,12 +1300,21 @@
 
 .release-candidate-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   margin: 18px 0;
   padding: 18px;
   border: 1px solid #d7ded8;
   border-radius: 18px;
   background: #f8faf7;
+}
+
+.release-candidate-panel > * { min-width: 0; }
+
+.release-candidate-content,
+.release-review-section {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 
@@ -1355,6 +1364,8 @@
 
 
 .release-candidate-grid article {
+  min-width: 0;
+  overflow-wrap: anywhere;
   display: grid;
   gap: 5px;
 }

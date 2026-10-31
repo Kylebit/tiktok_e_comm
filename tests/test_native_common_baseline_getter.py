@@ -17,10 +17,21 @@ from shared_platform.native_common_baseline_source import NativeCommonBaselineRe
 from shared_platform.native_common_signing_context import NativeCommonSigningContextReader
 from shared_platform.r3_frozen_review_producer import DomainFrozenReviewProducer
 from shared_platform.release_store import ReleaseStore, PLAN_PENDING_APPROVAL
-from test_round1_workspace_freeze import live
+from test_round1_workspace_freeze import live as original_live
 from test_native_common_retained_review_graph import _completed, _market
 from test_native_common_baseline_source import _service_config
 from test_native_common_write_census import _historical_target
+from owned_wall_sticker_gallery import include_homebloom_target, wall_sticker_gallery
+
+
+@pytest.fixture
+def live(original_live, monkeypatch):
+    import test_common_native_preparation_source as preparation
+    include_homebloom_target(original_live)
+    original_proposal = preparation._image_proposal
+    monkeypatch.setattr(preparation, '_image_proposal',
+                        lambda: wall_sticker_gallery(original_proposal()))
+    return original_live
 
 
 def _get(live, market):

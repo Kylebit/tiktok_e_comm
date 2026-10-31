@@ -19,11 +19,13 @@ from test_native_parent_images_phase_continuation import _closed
 from test_native_common_retained_review_graph import _propose_market_inputs
 from test_native_common_technical_execution import _install_owned
 from test_native_common_service_facts import _installed, _closed_signed_transport
+from owned_wall_sticker_gallery import include_homebloom_target, wall_sticker_gallery
 
 
 @pytest.fixture
 def live(original_live, monkeypatch):
     # All category/copy proposals precede the original capture and freeze.
+    include_homebloom_target(original_live)
     _propose_market_inputs(original_live, monkeypatch)
     import test_native_parent_images as images
     import test_round1_sidecar_convergence as sidecar
@@ -36,7 +38,7 @@ def live(original_live, monkeypatch):
             body['candidate_plan'] = json.dumps(candidate)
             if mutate is not None:
                 return mutate(body, schema_path, data)
-        return original_child(patch, image_plan, propose)
+        return original_child(patch, wall_sticker_gallery(image_plan), propose)
     # The actual typed child, rather than the unused legacy candidate factory,
     # returns the proposed plan to the original validator and fixed sidecar.
     monkeypatch.setattr(images, '_child', child_with_market_candidates)
@@ -140,7 +142,9 @@ def test_original_images_common_and_native_sole_final_read_the_same_prepared_own
         ozon_stock_decision=warehouse['decision'], category_store=runtime.store)
     from shared_platform.release_store import _target_labels
     markets = list(_target_labels([label for label in documents['round1_snapshot']['canonical_targets'] if label != 'miaoshou:COMMON']))
-    assert material['payload']['targets'] == markets and len(markets) == 7
+    assert material['payload']['targets'] == markets and len(markets) == 8
+    assert set(markets) == {'tiktok:LH_PH', 'tiktok:LH_MY', 'tiktok:MX', 'tiktok:GB',
+                            'tiktok:HB_PH', 'shopee:PH', 'shopee:MY', 'ozon:RU'}
     assert material['payload']['r3_marketplace_binding']['documents'] == documents
     assert common['payload']['r3_stage_binding']['marketplace_targets'] == documents['round1_snapshot']['canonical_targets']
     assert 'miaoshou:COMMON' not in material['payload']['product_facts']['content_by_target']

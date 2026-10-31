@@ -16,8 +16,18 @@ def main():
     os.environ['ORBIT_R3_POLICY_PATH']='missing-policy.json'
     os.environ['ORBIT_R3_INCIDENT_REGISTRY_PATH']='missing-incidents.json'
     sys.pycache_prefix=str(out/'unused-pycache')
+    # Explicit fixture bootstrap: capture the real source identity before the
+    # subject's strict subprocess guard. Do not let the first shell/runtime GET
+    # lazily run Git against the synthetic data root inside that guard.
+    full_handler=os.environ.get('ORBIT_FULL_HANDLER')=='1'
+    operations_profile=None
+    if full_handler:
+        os.environ['ORBIT_OPERATIONS_ENV']='preview'
+        os.environ['ORBIT_OPERATIONS_DATA_ROOT']=str(out/'inputs/operations')
+        from shared_platform.operations_runtime import RuntimeProfile
+        operations_profile=RuntimeProfile.capture(ROOT)
     from u05_finance_guard import install
-    install(ROOT,out)  # before business imports; usable without an external harness
+    install(ROOT,out)  # before business consumers and synthetic DB creation
     import sqlite3
     from test_i05_profit_facts import catalog_db,captured_evidence
     from core.static_files import resolve_static_path
@@ -85,7 +95,6 @@ def main():
     mimetypes.inited=True;mimetypes._db=mimetypes.MimeTypes()
     namespace={'BaseHTTPRequestHandler':BaseHTTPRequestHandler,'Path':Path,'json':json,'urlparse':urlparse,'mimetypes':mimetypes,'ROOT':ROOT,'WEB_DIR':ROOT/'web','resolve_static_path':resolve_static_path}
     exec(compile(ast.fix_missing_locations(selected),str(ROOT/'modules/products/server.py'),'exec'),namespace)
-    full_handler=os.environ.get('ORBIT_FULL_HANDLER')=='1'
     if full_handler:
         os.environ['no_proxy']='*'
         from modules.products import server as actual_server
@@ -139,12 +148,27 @@ def main():
     class Server(ThreadingHTTPServer):
         def server_bind(self):socketserver.TCPServer.server_bind(self);self.server_name='localhost';self.server_port=self.server_address[1]
     server=Server(('127.0.0.1',0),Guarded)
+    operations_worker=None
+    if full_handler:
+        from types import SimpleNamespace
+        from shared_platform.operations_runtime import OperationsWorker
+        from shared_platform.workbench_engine import WorkbenchEngine
+        engine=WorkbenchEngine(operations_profile.data_root/'tasks.db',{
+            'code_version':operations_profile.version,'environment':operations_profile.environment,
+            'manifest_digest':operations_profile.manifest_digest})
+        operations_worker=OperationsWorker(engine,operations_profile,{})
+        server.operations_runtime=SimpleNamespace(profile=operations_profile,engine=engine,
+            worker=operations_worker,worker_enabled=False)
+        assert not operations_worker.thread.is_alive()
     # /profit is the user-approved July report. The synthetic calculator
     # acceptance target is the explicit review route in every fixture mode.
     review_route='/profit-review'
     record={'pid':os.getpid(),'root':str(ROOT),'url':f'http://127.0.0.1:{server.server_port}{review_route}','profiles':profiles,'handler_sha256':hashlib.sha256(raw).hexdigest(),'full_handler':full_handler,'contract':'actual imported Handler across product finance and synthetic supply' if full_handler else 'complete original Handler AST, guarded routes, original catalog/evidence/engines; no business mocks'}
     (out/'preview.json').write_text(json.dumps(record,indent=2));print(json.dumps(record),flush=True)
     try:server.serve_forever(poll_interval=.05)
-    finally:server.server_close();save()
+    finally:
+        server.server_close()
+        if operations_worker is not None:operations_worker.close()
+        save()
 
 if __name__=='__main__':main()

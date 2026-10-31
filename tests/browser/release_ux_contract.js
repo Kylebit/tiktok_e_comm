@@ -229,16 +229,26 @@ function jsonResponse(payload, status = 200) {
 function apiFixture(url, method, state) {
   const path = url.pathname;
   if (path === "/api/orbit/navigation") return jsonResponse(orbitNavigation);
-  if (path === "/api/orbit/operations-runtime") {
+  if (path === "/api/orbit/operations-runtime" || path === "/api/orbit/home/runtime") {
     return jsonResponse({
       environment: "stable",
       execution_mode: "web-only",
       worker_enabled: false,
+      business_execution_enabled: false,
+      version: "owned-release-ux-fixture",
+      manifest_digest: "0".repeat(64),
       dispatcher: { state: "stopped" },
     });
   }
-  if (path === "/api/orbit/tasks") {
-    return jsonResponse({ ok: true, tasks: [], executor: { connected: false } });
+  if (path === "/api/orbit/tasks" || path === "/api/orbit/home/tasks") {
+    return jsonResponse({ ok: true, tasks: [], executor: { connected: false },
+      release: { code_version: "owned-release-ux-fixture", environment: "stable", manifest_digest: "0".repeat(64) },
+      domain_operations: [], domain_guard: { unresolved_operation_count: 0, locked_resource_count: 0 },
+    });
+  }
+  if (path === "/api/orbit/home/feedback") {
+    return jsonResponse({ schema: "orbit-source-feedback-health/v1", state: "unavailable",
+      checked_at: null, business_execution_heartbeat: false });
   }
   if (path === "/api/product-workspace/history") {
     return jsonResponse({ ok: true, items: [], errors: [] });
@@ -341,6 +351,10 @@ async function computedVisibility(page, selector) {
   return page.locator(selector).evaluate((element) => {
     let node = element;
     while (node && node instanceof Element) {
+      if (node instanceof HTMLDetailsElement && !node.open) {
+        const summary = node.querySelector(":scope > summary");
+        if (node !== element && !summary?.contains(element)) return false;
+      }
       const style = getComputedStyle(node);
       if (
         style.display === "none"
@@ -8986,7 +9000,7 @@ async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
       {
         name: "Orbit 首页",
         path: "/",
-        nextActions: ["#countCurrent", "#attentionList"],
+        nextActions: ["#decisionCards", "#workEmpty"],
       },
       {
         name: "商品发布中心",

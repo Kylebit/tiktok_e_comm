@@ -405,15 +405,34 @@ def _native_frozen_target(payload: dict[str, Any], *, channel: str, site: str,
         label = labels[0]
         frozen = route["target_facts"].get(label)
         projected = payload["product_facts"]["content_by_target"].get(label)
+        expected_copy = None
+        if isinstance(frozen, dict):
+            expected_copy = {"title": frozen["copy"].get("title"),
+                             "description": frozen["copy"].get("description"),
+                             "locale": TARGET_LOCALE[label]}
+            if label.startswith("tiktok:") and isinstance(projected, dict) and "variants" in projected:
+                # Current R1->R3 copy includes exact localized Model displays.
+                # The whole payload was already compared to its persisted
+                # approval above; this is no caller-selectable legacy fallback.
+                from domains.product_operations.approved_publication_snapshot import _localized_variant_displays
+                variants = frozen["copy"].get("variants")
+                if (not isinstance(variants, list) or any(not isinstance(item, dict)
+                        or set(item) != {"seller_sku", "display_name"} for item in variants)):
+                    raise RuntimeError("NATIVE_TARGET_COPY_FROZEN_SCOPE_CHANGED")
+                try:
+                    expected_copy["variants"] = _localized_variant_displays([
+                        {"model_sku": item["seller_sku"], "display_name": item["display_name"]}
+                        for item in variants], expected_models=[
+                            item["model_sku"] for item in payload["sku_lineage"]["assignment"]["model_skus"]])
+                except (ValueError, KeyError, TypeError):
+                    raise RuntimeError("NATIVE_TARGET_COPY_FROZEN_SCOPE_CHANGED") from None
         if (graph.marketplace_plan_id != active.plan_id or label not in graph.targets
                 or graph.round1_digest != binding["documents"]["round1_snapshot"]["snapshot_digest"]
                 or frozen is None or frozen.get("target") != label
                 or route["route_locales"].get(label) != TARGET_LOCALE[label]
                 or any(image.get("brand_id") != ("homebloom-sea" if label.startswith("tiktok:HB_") else "livelyhive-sea")
                        for image in route["image_routes"].get(label, []))
-                or projected != {"title": frozen["copy"].get("title"),
-                                 "description": frozen["copy"].get("description"),
-                                 "locale": TARGET_LOCALE[label]}):
+                or projected != expected_copy):
             raise RuntimeError("NATIVE_TARGET_COPY_FROZEN_SCOPE_CHANGED")
         return json.loads(json.dumps(frozen))
 

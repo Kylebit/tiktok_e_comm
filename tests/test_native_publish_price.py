@@ -19,12 +19,15 @@ def test_real_native_decision_consumes_exact_frozen_publish_price_without_discou
         pytest.fail('Only the closed owned submission seam may run')
     monkeypatch.setattr(adapters,'_tiktok_readback',no_provider)
     monkeypatch.setattr(adapters.auth,'access_token',no_provider)
+    def no_marketing_quote(*args,**kwargs):
+        pytest.fail('native publish must consume frozen per-SKU price, not a marketing quote')
+    monkeypatch.setattr(adapters,'_store_price',no_marketing_quote)
     def accepted(payload,*,site):
         label='tiktok:'+site
         frozen=payload['r3_marketplace_binding']['route']['target_facts'][label]['price']['sku_prices']
-        assert not payload['pricing']['selected_targets'][label].get('store_prices')
-        with pytest.raises(RuntimeError,match='requires exactly one approved store price'):
-            adapters._store_price(payload,label)
+        # A frozen quote may exist. It is not an approval to apply a discount;
+        # the publication consumer must independently use the exact SKU price.
+        assert 'approved_postpublish_promotion_policy' not in payload
         price=adapters._tiktok_publish_price(payload,site)
         assert price['sku_prices']==[{'model_sku':row['model_sku'],
             'list_price':row['amount'],'currency':row['currency']} for row in frozen]
@@ -41,7 +44,9 @@ def test_real_native_decision_consumes_exact_frozen_publish_price_without_discou
             with pytest.raises(RuntimeError,match='NATIVE_TARGET_COPY_PERSISTED_PAYLOAD_CHANGED'):
                 adapters._tiktok_publish_price(changed,site)
         with pytest.raises(RuntimeError,match='NATIVE_TARGET_COPY_EXACT_TARGET_REQUIRED'):
-            adapters._tiktok_publish_price(payload,'HB_PH')
+            outside=next(value for value in adapters.SEA_SITES
+                         if 'tiktok:'+value not in payload['targets'])
+            adapters._tiktok_publish_price(payload,outside)
         consumed.append(label)
         return '7:8',{'source':'miaoshou_open_api','accepted':True,'detail_id':7,'shop_id':8,
             'write_outcome':'submission_accepted','external_writes_performed':['owned:submission']}

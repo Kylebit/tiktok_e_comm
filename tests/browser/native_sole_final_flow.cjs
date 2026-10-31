@@ -5,9 +5,10 @@ const [base,out,offer,mode,expectedPath]=process.argv.slice(2);
 const fixture=JSON.parse(fs.readFileSync(expectedPath,'utf8'));
 const expected=fixture.getter.marketplace.native_final_review,media=new Set(fixture.media);
 (async()=>{
-  const browser=await chromium.launch({channel:'chrome',headless:true});
+  const executablePath=process.env.ORBIT_BROWSER_EXECUTABLE||process.env.ORBIT_CHROMIUM_BIN;
+  const browser=await chromium.launch({headless:true,...(executablePath?{executablePath}:{channel:'chrome'})});
   const context=await browser.newContext({viewport:{width:1440,height:900}});
-  const page=await context.newPage(),errors=[],posts=[],views=[],screenshots=[];
+  const page=await context.newPage(),errors=[],posts=[],views=[],screenshots=[],overflowChecks=[],unavailableViews=[];
   const owned=request=>new URL(request.url()).pathname==='/api/product-workspace/publication-stages';
   const bodies=createResponseBodyCapture((response,raw)=>{assert.strictEqual(response.status(),200);views.push(JSON.parse(raw));});
   page.on('pageerror',error=>errors.push(error.message));
@@ -18,6 +19,25 @@ const expected=fixture.getter.marketplace.native_final_review,media=new Set(fixt
     if(!request.url().startsWith(base+'/')){
       assert(request.resourceType()==='image'&&media.has(request.url()),'No undeclared foreign request');
       return route.fulfill({status:200,contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><rect width="200" height="200" fill="#bea"/></svg>'});
+    }
+    // The same finite fixture media also travels through the real page's
+    // bounded proxy route. Fulfil that closed edge here, rather than asking
+    // the owned Python server to resolve example.com/fixture.example.
+    if(url.pathname==='/api/proxy-image'){
+      assert.strictEqual(request.method(),'GET');
+      assert(media.has(url.searchParams.get('url')),'Only declared fixture proxy media');
+      return route.fulfill({status:200,contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><rect width="200" height="200" fill="#bea"/></svg>'});
+    }
+    if(['/api/product-flow/preview','/api/product-flow/content-package/localized-image-review'].includes(url.pathname)){
+      assert.strictEqual(request.method(),'GET');
+      assert.strictEqual(url.searchParams.get('offer_id'),offer);
+      assert.deepStrictEqual([...url.searchParams.keys()],['offer_id']);
+      // This owned native fixture does not install the separate legacy image
+      // service. Report its actual unavailability, not a fabricated image
+      // result and not a request to an unrelated localhost:8766 process.
+      unavailableViews.push(url.pathname);
+      return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({
+        ok:false,offer_id:offer,error:'OWNED_LEGACY_IMAGE_SERVICE_UNAVAILABLE'})});
     }
     if(owned(request) && displayDrift){
       const response=await route.fetch(),value=await response.json();
@@ -88,13 +108,24 @@ const expected=fixture.getter.marketplace.native_final_review,media=new Set(fixt
       assert.strictEqual(await page.locator('#releasePlanApprovalForm').isVisible(),false);
       assert.strictEqual(await page.locator('#prepareMiaoshouButton').isDisabled(),true);
       assert.strictEqual(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+      overflowChecks.push(await page.evaluate(()=>({viewport:innerWidth,scrollWidth:document.documentElement.scrollWidth})));
       const file=out+'/native-sole-final-'+mode+'-'+width+'.png';
       await page.screenshot({path:file,fullPage:true});screenshots.push(file);
     }
     await bodies.drain();assert.strictEqual(bodies.pendingCount,0);assert.strictEqual(bodies.pendingRequestCount,0);
     assert.deepStrictEqual(errors,[]);
     fs.writeFileSync(out+'/native-review-http-observations.json',JSON.stringify({posts,views},null,2));
-    console.log(JSON.stringify({widths:[1440,390],errors,screenshots,decision_posts:posts.filter(row=>row.path.endsWith('/decision')).length}));
-  }catch(error){fs.writeFileSync(out+'/native-sole-final-failure.html',await page.content());await page.screenshot({path:out+'/native-sole-final-failure.png',fullPage:true});throw error;}
+    console.log(JSON.stringify({widths:[1440,390],errors,screenshots,overflowChecks,unavailableViews,
+      decision_posts:posts.filter(row=>row.path.endsWith('/decision')).length}));
+  }catch(error){
+    const overflow=await page.evaluate(()=>({viewport:{width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth},
+      offenders:[...document.querySelectorAll('body *')].map(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return {
+        selector:el.tagName.toLowerCase()+(el.id?'#'+el.id:'')+(typeof el.className==='string'?'.'+el.className.trim().split(/\s+/).join('.'):''),
+        right:r.right,left:r.left,width:r.width,height:r.height,scrollWidth:el.scrollWidth,clientWidth:el.clientWidth,
+        display:s.display,minWidth:s.minWidth,overflowX:s.overflowX,overflowWrap:s.overflowWrap,wordBreak:s.wordBreak,
+        text:(el.innerText||'').slice(0,180)}}).filter(row=>row.width>0&&row.height>0&&row.right>innerWidth+1).sort((a,b)=>b.right-a.right).slice(0,35)}));
+    fs.writeFileSync(out+'/native-overflow-diagnostic.json',JSON.stringify(overflow,null,2));
+    fs.writeFileSync(out+'/native-sole-final-failure.html',await page.content());await page.screenshot({path:out+'/native-sole-final-failure.png',fullPage:true});throw error;
+  }
   finally{try{await bodies.drain();assert.strictEqual(bodies.pendingCount,0);assert.strictEqual(bodies.pendingRequestCount,0);}finally{await browser.close();}}
 })().catch(error=>{console.error(error);process.exitCode=1;});

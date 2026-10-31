@@ -8,12 +8,20 @@ from pathlib import Path
 from shared_platform.workbench_engine import WorkbenchEngine
 
 
-def complete_new_task(live,monkeypatch,tmp_path):
+def complete_new_task(live,monkeypatch,tmp_path,*,with_warehouse=True):
     import test_common_native_preparation_source as preparation
     import test_round1_sidecar_convergence as sidecar
     from test_native_sole_final_service import _installed
     from shared_platform import release_control
     from shared_platform.native_task_preparation import ExplicitNewTaskWorker,NativeR1FilesystemBoundary
+    from shared_platform import publication_r3_image_bridge as bridge
+    from shared_platform.postpublish_promotions import build_approved_postpublish_promotion_policy
+    original_material=bridge.build_marketplace_review_material
+    def material(*args,**kwargs):
+        kwargs['promotion_policy']=build_approved_postpublish_promotion_policy(
+            approval_reference='OWNED_EXPLICIT_TERMS_REVIEWED_WITH_SAME_CANDIDATE')
+        return original_material(*args,**kwargs)
+    monkeypatch.setattr(bridge,'build_marketplace_review_material',material)
     original_source=preparation.complete_source
     def source(value):
         original_source(value)
@@ -27,7 +35,15 @@ def complete_new_task(live,monkeypatch,tmp_path):
             if site in state['review']['selected_sites']]
         # Original persisted source, before the actual capture/R1 producer.
         # No dashboard, frozen packet, or downstream consumer is replaced.
-        state['review']['warehouse_inventory_by_target']=owned_warehouse_allocations(labels)
+        if with_warehouse:
+            state['review']['warehouse_inventory_by_target']=owned_warehouse_allocations(labels)
+        else:
+            # An intentionally incomplete ORIGINAL source for preflight
+            # negatives. Never remove fields from an immutable R1/R3 packet.
+            state['review'].pop('warehouse_inventory_by_target',None)
+            state['source'].pop('warehouse_inventory_by_target',None)
+        state['review']['publication_discounts_by_target']={**{label:(10 if label in {'tiktok:MX','tiktok:GB'} else 35)
+            for label in labels},'shopee:MY':30,'shopee:PH':30}
         path.write_text(json.dumps(state),encoding='utf-8')
     monkeypatch.setattr(preparation,'complete_source',source)
     original_images=preparation._image_proposal

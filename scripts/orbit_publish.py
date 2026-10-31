@@ -113,11 +113,21 @@ def _brief_blockers(value):
         for row in rows[:64] if isinstance(row,(str,dict))]
 
 
+def _blocker_counts(value):
+    rows=value if isinstance(value,list) else []
+    return {'blocker_count':len(rows),'omitted_blocker_count':max(0,len(rows)-64)}
+
+
+def _action(value):
+    return _brief(value,('kind','label','url','reason','action_id')) if isinstance(value,dict) else value[:512] if isinstance(value,str) else None
+
+
 def _target_summary(row):
     value=_brief(row,('target_label','platform','status','state','reason','error','next_action',
         'owner','next_check_at','submitted','submission_accepted','readback_verified'))
     if isinstance(row.get('blocked_by'),list):value['blocked_by']=_brief_blockers(row['blocked_by'])
     if isinstance(row.get('blockers'),list):value['blockers']=_brief_blockers(row['blockers'])
+    value.update(_blocker_counts(row.get('blockers')))
     return value
 
 
@@ -125,26 +135,32 @@ def _plan_ref(value):
     return _brief(value,('plan_id','payload_digest','status','product_id','run_id','state'))
 
 
-def publication_summary(stage,bound,offer):
+def publication_summary(stage,bound,offer,*,stage_http_status=200):
     """Small observation only; original GET and frozen review remain intact."""
     market=stage.get('marketplace') or {};common=stage.get('common') or {}
     native=market.get('native_final_review') or {};candidate=market.get('preview') or {}
-    result={'schema_version':'publication-agent-summary/v1','offer_id':offer,'execution_authority':False,
+    result={**_brief(stage,('ok','error','message')),
+        'schema_version':'publication-agent-summary/v1','offer_id':offer,'execution_authority':False,
+        'stage_http_status':stage_http_status,
         'source_stage':{'method':'GET','url':bound['runtime']['base_url'].rstrip('/')+
             '/api/product-workspace/publication-stages?'+urlencode({'offer_id':offer}),
             'read_digest':digest(stage),'digest_encoding':'CANONICAL_JSON_SHA256',
             'full_bytes':len(json.dumps(stage,ensure_ascii=False,separators=(',',':')).encode())},
         'review_url':bound['runtime']['base_url'].rstrip('/')+'/product-workspace?'+urlencode({'offer_id':offer,'round':'final'}),
         'common':{**_brief(common,('status','user_status','next_action','reason')),
-            'blockers':_brief_blockers(common.get('blockers')),'plan':_plan_ref(common.get('plan')),
+            'blockers':_brief_blockers(common.get('blockers')),**_blocker_counts(common.get('blockers')),'plan':_plan_ref(common.get('plan')),
             'run':_plan_ref(common.get('run'))},
         'marketplace':{**_brief(market,('status','native_execution_current_phase','native_execution_in_progress',
             'native_execution_queued','native_readback_resume_available','next_action','owner','next_check_at')),
-            'blockers':_brief_blockers(market.get('blockers')),'plan':_plan_ref(market.get('plan')),
+            'blockers':_brief_blockers(market.get('blockers')),**_blocker_counts(market.get('blockers')),'plan':_plan_ref(market.get('plan')),
             'run':_plan_ref(market.get('run')),
             'native_final_review':_brief(native,('status','approval_saved','decision_id','plan_id','review_digest','candidate_digest','offer_id')),
             'native_preflight':{**_brief(market.get('native_preflight'),('status','preflight_digest')),
-                'blockers':_brief_blockers((market.get('native_preflight') or {}).get('blockers'))}}}
+                'blockers':_brief_blockers((market.get('native_preflight') or {}).get('blockers')),
+                **_blocker_counts((market.get('native_preflight') or {}).get('blockers'))}}}
+    if isinstance(common.get('user_status'),dict):
+        result['common']['user_status']=_brief(common['user_status'],('summary',))
+        result['common']['user_status']['next_action']=_action(common['user_status'].get('next_action'))
     labels=market.get('targets') or candidate.get('target_labels') or []
     result['marketplace']['targets']=[v for v in labels if isinstance(v,str)]
     rows=market.get('target_results') or market.get('result_rows') or (market.get('run') or {}).get('targets') or []
@@ -172,9 +188,13 @@ def task_summary(value):
     return {**_brief(value,('ok','schema_version')),'task':{
         **_brief(task,('task_id','template','execution_state','current_step','status','created_at','updated_at',
             'phase','next_action','owner','next_check_at')),
-        'scope':{**_brief(scope,('offer_id',)),'shops':[v for v in scope.get('shops',[]) if isinstance(v,str)]},
+        **_brief(task,('source_key',)),
+        'required_action':_action(task.get('required_action')),
+        'pending_observation':_action(task.get('pending_observation')),
+        'scope':{**_brief(scope,('offer_id','source_key')),
+            **{key:[v for v in scope.get(key,[]) if isinstance(v,str)] for key in ('shops','skus')}},
         'blocked_by':_brief_blockers(task.get('blocked_by')),
-        'blockers':_brief_blockers(task.get('blockers'))}}
+        'blockers':_brief_blockers(task.get('blockers')),**_blocker_counts(task.get('blockers'))}}
 
 
 def run(args,*,request=request_json):
@@ -207,8 +227,8 @@ def run(args,*,request=request_json):
         if code!=200:return value
         task=value['task'];offer=task.get('scope',{}).get('offer_id')
         if task.get('template')!='publication' or not offer:raise ExecutionPackageError('ORIGINAL_PUBLICATION_TASK_REQUIRED')
-        _,stage=_stage(bound,offer,request)
-        return {'task':task_summary(value),'publication':publication_summary(stage,bound,offer),'execution_authority':False}
+        stage_code,stage=_stage(bound,offer,request)
+        return {'task':task_summary(value),'publication':publication_summary(stage,bound,offer,stage_http_status=stage_code),'execution_authority':False}
     if mode=='native-sole-final':
         code,value=_stage(bound,args.offer_id,request)
         if code!=200:return value

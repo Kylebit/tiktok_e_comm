@@ -288,6 +288,11 @@ def _safe_target_facts(preview: dict[str, Any], requested_targets: list[str]) ->
                     variant_calculation.setdefault('derived_preview',{})['sale_price']=sale
             if variant_calculation is not None:
                 variant_price["calculation"] = variant_calculation
+            if 'postpublish_discount' in raw_sku_price:
+                from shared_platform.publication_discount_terms import frozen_quote
+                action=raw_sku_price['postpublish_discount']
+                frozen_quote(action,amount=amount,currency=currency)
+                variant_price['postpublish_discount']=deepcopy(action)
             safe_sku_prices.append(variant_price)
         if safe_sku_prices:
             price_fact["sku_prices"] = safe_sku_prices

@@ -28,7 +28,7 @@ def test_explicit_complete_inventory_contract_is_not_missing_equals_zero(stocks)
 
 
 def test_actual_new_task_collects_missing_scope_artifact_and_schema_before_nonce(live,monkeypatch,tmp_path):
-    runtime,market,*_=complete_new_task(live,monkeypatch,tmp_path)
+    runtime,market,*_=complete_new_task(live,monkeypatch,tmp_path,with_warehouse=False)
     try:
         asset=market['payload']['r3_marketplace_binding']['documents']['generation_result']['assets'][0]
         Path(asset['artifact_path']).write_bytes(b'changed owned image')
@@ -47,7 +47,7 @@ def test_actual_new_task_collects_missing_scope_artifact_and_schema_before_nonce
 
 
 def test_first_decision_rechecks_actual_preflight_and_preserves_inert_nonce(live,monkeypatch,tmp_path):
-    runtime,market,*_=complete_new_task(live,monkeypatch,tmp_path)
+    runtime,market,*_=complete_new_task(live,monkeypatch,tmp_path,with_warehouse=False)
     try:
         from shared_platform.native_sole_final_decision import NativeSoleFinalDecisionService
         # An inert real nonce from the old producer cannot bypass the new task
@@ -64,7 +64,7 @@ def test_first_decision_rechecks_actual_preflight_and_preserves_inert_nonce(live
 
 
 def test_stage_and_http_expose_structured_gaps_and_stage_reuses_only_display_hint(live,monkeypatch,tmp_path):
-    runtime,market,*_=complete_new_task(live,monkeypatch,tmp_path)
+    runtime,market,*_=complete_new_task(live,monkeypatch,tmp_path,with_warehouse=False)
     http=thread=None
     try:
         from shared_platform import publication_execution_preflight as preflight

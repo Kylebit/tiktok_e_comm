@@ -25,12 +25,15 @@ def test_profiles_are_explicit_and_preview_does_not_read_environment(monkeypatch
     context=profile(tmp_path)
     class NoValues(dict):
         def get(self,*args):raise AssertionError('environment value read')
-    monkeypatch.setattr(rt.os,'environ',NoValues({'ALPHA_KEY':'fixture-only'}))
-    doctor=rt.doctor(ROOT,context,'lingshi')
-    assert doctor['credentials']['lingshi']['key_present'] is True
-    result=rt.preview(ROOT,context,'lingshi','media',{'model':'example','prompt':'fixture','params':{}})
-    assert result['request_attempted'] is False and result['credential_value_read'] is False
-    assert result['request']['payload']['prompt']=='fixture'
+    # os is process-global: restore the hostile mapping before pytest or a
+    # session-finish hook reports a genuine subject failure.
+    with monkeypatch.context() as isolated:
+        isolated.setattr(rt.os,'environ',NoValues({'ALPHA_KEY':'fixture-only'}))
+        doctor=rt.doctor(ROOT,context,'lingshi')
+        assert doctor['credentials']['lingshi']['key_present'] is True
+        result=rt.preview(ROOT,context,'lingshi','media',{'model':'example','prompt':'fixture','params':{}})
+        assert result['request_attempted'] is False and result['credential_value_read'] is False
+        assert result['request']['payload']['prompt']=='fixture'
 
 
 def test_profile_rejects_secret_fields_and_outside_artifact_root(tmp_path):

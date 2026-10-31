@@ -80,6 +80,14 @@ def real_chain(live,monkeypatch,tmp_path):
         db.execute('INSERT INTO agent_prepared_publication_adoptions VALUES (?,?,?,?,?)',
             (task['task_id'],offer,raw.decode(),adoption_digest,hmac.new(key,raw,'sha256').hexdigest()))
         checkpoint=deepcopy(task['checkpoint']);checkpoint['native_r1_adoption']=dict(record_digest=adoption_digest,source_identity_binding_sha256='b'*64)
+        # Mirror the actual adoption producer's checkpoint contract. The signed
+        # origin below must be independently bound by native.read_frozen, rather
+        # than losing those exact R1 identities when replacing the old task.
+        checkpoint['native_preparation']={'prepared_reference':facts['prepared_reference']}
+        checkpoint['native_r1']={
+            'offer_id':offer,'targets':sorted(task['scope']['shops']),
+            **{name:facts[name] for name in (
+                'snapshot_digest','prepared_reference','internal_sku','seller_sku')}}
         db.execute('UPDATE workbench_execution SET checkpoint_json=? WHERE task_id=?',(adoption._bytes(checkpoint).decode(),task['task_id']))
     manual.initialize_schema(store.path);child.initialize_schema(store.path)
     value=intent();value.update(offer_id=offer,owner_sid=sid,seller_sku=payload['seller_sku'])

@@ -13,10 +13,19 @@ from shared_platform.final_review_server_admission import ApprovalBlocked
 def test_new_three_models_real_graph_one_decision_generic_registry_and_original_budget(live,monkeypatch,tmp_path):
     runtime,market,task,calls=complete_new_task(live,monkeypatch,tmp_path)
     try:
-        from shared_platform.publication_execution_package import preflight_native_review
+        from shared_platform.publication_execution_preflight import preflight_native_review
         before=runtime.store.path.read_bytes()
         ready=preflight_native_review(runtime,market['plan_id'])
         assert ready['status']=='READY' and ready['execution_authority'] is False
+        assert all(row['local_adapter_supported'] for row in ready['local_adapter_capabilities']['targets'])
+        candidate=market['payload']['r3_marketplace_binding']['reviewed_candidate_facts']
+        from shared_platform.postpublish_promotions import approved_promotion_action_policy
+        actions=[row for row in candidate['companion_actions']['actions'] if row['action_kind']=='POSTPUBLISH_DIRECT_DISCOUNT']
+        assert actions
+        for row in actions:
+            result=approved_promotion_action_policy(market['payload'],row['action_target'])
+            target=row['prerequisite_target']
+            assert result['discount_percent']==(30 if target.startswith('shopee:') else 10 if target in {'tiktok:MX','tiktok:GB'} else 35)
         assert runtime.store.path.read_bytes()==before
         prepared=runtime.prepare(market['plan_id'])
         assert len(prepared['manifest']['variants'])==3

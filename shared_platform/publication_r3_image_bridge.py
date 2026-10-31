@@ -1012,6 +1012,11 @@ def _frozen_store_prices(rows):
     from decimal import Decimal,InvalidOperation
     quotes=[]
     for row in rows:
+        if 'postpublish_discount' in row:
+            from shared_platform.publication_discount_terms import frozen_quote
+            quote=frozen_quote(row['postpublish_discount'],amount=row.get('amount'),currency=row.get('currency'))
+            if quote not in quotes:quotes.append(quote)
+            continue
         calculation=row.get('calculation') or {}
         inputs=calculation.get('inputs') or {};result=calculation.get('result') or {}
         derived=calculation.get('derived_preview') or {}

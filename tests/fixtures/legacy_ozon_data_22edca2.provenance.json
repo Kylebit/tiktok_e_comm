@@ -1,0 +1,12 @@
+{
+  "schema_version": "accepted-source-fixture/v1",
+  "repository_role": "historical accepted source, not current candidate",
+  "verified_repository": "E:/OrbitHive/wt-agent-images-status-binding-20261003",
+  "commit": "22edca2cedbdcb4f0356ad46835c464beeefed92",
+  "source_path": "modules/catalog/ozon_data.py",
+  "git_blob_sha1": "f96eca1bc34301b91c30038b08a87e49ef19c692",
+  "sha256": "7a690cb65b804cf72813cd34eabb95f6507c761c7e407d34f25b09ed6ed78ccc",
+  "bytes": 3268,
+  "fixture_path": "tests/fixtures/legacy_ozon_data_22edca2.py",
+  "normalization": "none; exact git blob bytes"
+}

@@ -80,8 +80,30 @@ def _events(body):
 
 
 def _child(monkeypatch, images, mutate=None):
+    # This shared fixture closes the proposal transport below the real parent
+    # state machine. Python is an inert test executable, never a production
+    # Codex capability claim. Keep the real invocation/config/argv checks while
+    # supplying only this fixture's exact binary capability and local config.
+    import hashlib
+    from shared_platform import native_readonly_invocation as isolation
+    fixture_root=Path(server.ROOT)
+    assert fixture_root.resolve()!=Path(__file__).resolve().parents[1]
+    home=fixture_root/'.owned-parent-codex-home'
+    system=fixture_root/'.owned-parent-program-data'
+    home.mkdir(exist_ok=True);system.mkdir(exist_ok=True)
+    config=home/'config.toml'
+    if not config.exists():config.write_text('model="owned-offline-parent"\n',encoding='utf-8')
+    for name in ('CODEX_PROFILE','CODEX_CONFIG','CODEX_CONFIG_FILE','CODEX_MANAGED_CONFIG'):
+        monkeypatch.delenv(name,raising=False)
+    monkeypatch.setenv('CODEX_HOME',str(home))
+    monkeypatch.setenv('ProgramData',str(system))
+    monkeypatch.setattr(isolation,'_SUPPORTED_BINARY_SHA256',frozenset({
+        hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()}))
     calls = []
     def run(argv, prompt, **kwargs):
+        invocation=kwargs.get('invocation')
+        assert type(invocation) is isolation.NativeReadonlyInvocation
+        assert invocation.verify_launch(argv,kwargs['cwd'])==dict(os.environ)
         schema_path = Path(argv[argv.index('--output-schema') + 1])
         data = json.loads((schema_path.parent / 'parent-input.json').read_text(encoding='utf-8'))
         body = {'schema_version': SCHEMA, 'binding': data['binding'], 'candidate_plan': None,

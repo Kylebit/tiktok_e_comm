@@ -51,7 +51,7 @@ def workspace(tmp_path):
         target.write_bytes(f"中文 {index}\nAlpha é \nBeta\n".encode("utf-8"))
         files[relative] = target
     script = root / "skills/manage-seaya-replenishment/scripts/verify_dashboard_sync.py"
-    script.parent.mkdir(parents=True)
+    script.parent.mkdir(parents=True, exist_ok=True)
     script.write_bytes(SCRIPT.read_bytes())
     manifest = root / "skills/manage-seaya-replenishment/references/dashboard-sync.json"
 

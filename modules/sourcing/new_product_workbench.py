@@ -92,6 +92,7 @@ _APPROVAL_BOUND_REVIEW_FIELDS = frozenset(
         "support_cod",
         "fx_rates",
         "warehouse_inventory_by_target",
+        "publication_discounts_by_target",
     }
 )
 EXPERIENCE_RECIPE_REVIEW_MODE = "experience_recipe_auto_v1"
@@ -6486,6 +6487,8 @@ def save_review(offer_id_or_url: str, review: dict[str, Any]) -> dict[str, Any]:
             current["fields_locked"] = True
     from shared_platform.release_control import _source_review_warehouse_facts
     _source_review_warehouse_facts({**state, 'review': current})
+    from shared_platform.publication_discount_terms import source_terms
+    source_terms({**state, 'review': current})
     source = _source_summary(offer_id)
     allowed_sku_keys = {
         str(row.get("key") or row.get("name") or "")

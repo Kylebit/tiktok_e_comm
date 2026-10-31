@@ -1887,6 +1887,8 @@ def build_release_dashboard(
     )
     if frozen_pricing is None:
         _apply_store_level_pricing(release_pricing, omnichannel_selection)
+        from shared_platform.publication_discount_terms import apply_source_terms
+        apply_source_terms(release_pricing, state, publication_scope['selected_labels'])
     release_pricing["selection_source"] = publication_scope["source"]
     release_pricing["publication_target_labels"] = list(
         publication_scope["selected_labels"]

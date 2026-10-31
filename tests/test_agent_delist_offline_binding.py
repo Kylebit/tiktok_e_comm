@@ -297,7 +297,17 @@ def test_ozon_default_setup_and_parser_results_match_accepted_source(tmp_path,mo
     config.ozon_data_dir=resolver
     monkeypatch.setitem(sys.modules,'modules.ozon.config',config)
     original=tmp_path/'accepted_ozon_data.py'
-    original.write_text(git(ROOT,'show','22edca2cedbdcb4f0356ad46835c464beeefed92:modules/catalog/ozon_data.py'),encoding='utf-8')
+    baseline=ROOT/'tests/fixtures/legacy_ozon_data_22edca2.py'
+    provenance=json.loads(baseline.with_suffix('.provenance.json').read_bytes())
+    # Git may apply core.autocrlf on a portable checkout. The captured blob
+    # uses LF; only reverse that checkout transformation, then verify both
+    # the exact original Git blob identity and its independent SHA256.
+    raw=baseline.read_bytes().replace(b'\r\n',b'\n')
+    assert provenance['commit']=='22edca2cedbdcb4f0356ad46835c464beeefed92'
+    assert provenance['source_path']=='modules/catalog/ozon_data.py'
+    assert len(raw)==provenance['bytes'] and hashlib.sha256(raw).hexdigest()==provenance['sha256']
+    assert hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()==provenance['git_blob_sha1']
+    original.write_bytes(raw)
     old=load_module(original,'accepted_ozon_default')
     new=load_module(ROOT/'modules/catalog/ozon_data.py','candidate_ozon_default')
     assert calls==[]  # Both original import paths load config but do not resolve it.

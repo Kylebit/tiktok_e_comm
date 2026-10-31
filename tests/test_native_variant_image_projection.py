@@ -16,6 +16,8 @@ from test_agent_prepared_source_successor import git
 
 
 def test_actual_readonly_projection_routes_manifest_and_closed_negatives():
+    from retained_fixture_gate import require_retained_inputs
+    require_retained_inputs('ORBIT_VARIANT_RO_DIAGNOSTIC')
     # The explicitly supplied audit script opens only URI mode=ro/query_only;
     # it reconstructs the authentic inert Ozon structure, never an installed authority.
     connect,network=ReleaseStore._connect,socket.create_connection

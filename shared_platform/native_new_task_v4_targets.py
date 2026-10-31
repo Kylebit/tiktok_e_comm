@@ -14,13 +14,54 @@ from domains.channel_operations.omnichannel_orchestrator import ADAPTER_NAMES
 from shared_platform.final_review_server_admission import ApprovalBlocked
 
 
+def local_execution_capabilities(snapshot,candidate):
+    """Run the installed adapters' pure consumers, never READY flags or APIs.
+
+    Provider permission/current ID availability is deliberately not asserted by
+    local shape checks; execution still uses exact official rechecks.
+    """
+    from modules.miaoshou.tiktok_v4_drafts import _draft_payload
+    from shared_platform.product_publication_live_dependencies import (
+        _shopee_expected_models,OfficialOzonFridgeMagnetProfileResolver)
+    value=deepcopy(snapshot)
+    value.setdefault('snapshot_digest',value.get('preview_digest'))
+    labels=[r['target_label'] for r in value['publication_targets']]
+    if candidate.get('target_labels')!=labels:raise ValueError('LOCAL_CAPABILITY_CANDIDATE_TARGETS_CHANGED')
+    rows=[]
+    for target in value['publication_targets']:
+        label=target['target_label'];platform=label.split(':',1)[0];blockers=[]
+        try:
+            if platform=='tiktok':
+                category=value['categories_by_target'][label]['category']
+                draft=_draft_payload(value,target=target,category=category)
+                if len(draft['skus'])!=len(value['skus']):raise ValueError('model coverage')
+            elif platform=='shopee':
+                _shopee_expected_models(value,[t for t in labels if t.startswith('shopee:')])
+            elif platform=='ozon':
+                OfficialOzonFridgeMagnetProfileResolver._profile_ids(value)
+            else:raise ValueError('unknown adapter')
+        except (ValueError,KeyError,TypeError) as error:
+            blockers.append({'code':'LOCAL_ADAPTER_FROZEN_INPUT_UNSUPPORTED','error_type':type(error).__name__,
+                'detail':str(error)[:240]})
+        rows.append({'target_label':label,'local_adapter_supported':not blockers,'blockers':blockers,
+                     'current_provider_permission':'NOT_ASSERTED','official_readback_required':True})
+    return {'schema_version':'native-local-publication-capabilities/v1','targets':rows,'execution_authority':False}
+
+
 def scope(active, plan):
     from shared_platform.native_sole_final_execution import _ACTIVE, _NativeExecution
-    from shared_platform.native_task_preparation import ExplicitNewTaskWorker
-    from shared_platform import workbench_publication_native as native
     if type(active) is not _NativeExecution or _ACTIVE.get() is not active:
         raise ApprovalBlocked('NEW_TASK_V4_PROTECTED_EXECUTION_REQUIRED')
-    operations=active.runtime._operations
+    return preparation_scope(active.runtime,plan)
+
+
+def preparation_scope(runtime,plan):
+    """Read the same genuine explicit task/R1/R2 before final review; no grant."""
+    from shared_platform.native_sole_final_service import NativeSoleFinalService
+    from shared_platform.native_task_preparation import ExplicitNewTaskWorker
+    from shared_platform import workbench_publication_native as native
+    if type(runtime) is not NativeSoleFinalService:raise ApprovalBlocked('NEW_TASK_V4_RUNTIME_REQUIRED')
+    operations=runtime._operations
     if (operations is None or getattr(operations,'original_continuation',None) is not None
             or getattr(operations,'agent_prepared_common',None) is not None):
         raise ApprovalBlocked('NEW_TASK_V4_NOT_A_HISTORICAL_CONTINUATION')
@@ -33,24 +74,42 @@ def scope(active, plan):
              'manifest_digest':profile.manifest_digest}
     if operations.engine.release!=release or profile.environment!='stable':
         raise ApprovalBlocked('NEW_TASK_V4_RELEASE_CHANGED')
-    # This set is recovered only from exact-version explicit-POST origin events.
-    # It does not scan/adopt historical queues or trust a caller task_id.
-    ids=operations.engine.explicit_new_post_task_ids()
-    if len(ids)>32:raise ApprovalBlocked('NEW_TASK_V4_ORIGIN_CAPACITY_EXCEEDED')
-    matches=[]
-    for task_id in ids:
-        task=operations.engine.get(task_id)
-        if task.get('scope',{}).get('offer_id')==str(plan.get('product_id')):
-            matches.append(task)
-    if len(matches)!=1:raise ApprovalBlocked('NEW_TASK_V4_UNIQUE_ORIGINAL_TASK_REQUIRED')
-    task=matches[0]
+    # Resolve this plan's exact immutable preparation owner. Do not sweep all
+    # same-Offer history, expire leases or enter engine.get's write transaction
+    # once per target. The trusted explicit-POST grant is checked in that same
+    # read-only engine snapshot; a caller task_id cannot select an owner.
+    binding=plan['payload'].get('r3_marketplace_binding') or {}
+    common=runtime.store.get_plan(binding.get('common_plan_id'))
+    source=((common or {}).get('payload',{}).get('r3_stage_binding',{}).get('native_preparation_source') or {})
+    reference=source.get('prepared_reference')
+    if not reference or source.get('offer_id')!=plan.get('product_id'):
+        raise ApprovalBlocked('NEW_TASK_V4_PREPARATION_OWNER_REFERENCE_REQUIRED')
+    engine=operations.engine
+    with engine.readonly_snapshot() as db:
+        rows=db.execute("SELECT DISTINCT e.task_id FROM workbench_events e JOIN workbench_execution x USING(task_id) "
+            "WHERE e.event_type='checkpoint_saved' AND x.template='publication' "
+            "AND json_extract(x.scope_json,'$.offer_id')=? AND "
+            "(json_extract(e.detail_json,'$.checkpoint.native_preparation.prepared_reference')=? OR "
+            "json_extract(e.detail_json,'$.checkpoint.native_r1.prepared_reference')=?) LIMIT 2",
+            (plan['product_id'],reference,reference)).fetchall()
+        if len(rows)!=1:raise ApprovalBlocked('NEW_TASK_V4_UNIQUE_ORIGINAL_TASK_REQUIRED')
+        task=engine._project(db,engine._row(db,rows[0]['task_id']))
+        grants=db.execute("SELECT g.detail_json,e.request_digest,t.source_key FROM workbench_events g "
+            "JOIN workbench_execution e USING(task_id) JOIN workbench_tasks t USING(task_id) "
+            "WHERE g.task_id=? AND g.event_type='explicit_new_post_preparation'",(task['task_id'],)).fetchall()
+        if len(grants)!=1:raise ApprovalBlocked('NEW_TASK_V4_EXPLICIT_ORIGIN_REQUIRED')
+        grant=json.loads(grants[0]['detail_json'])
+        if (set(grant)!={'request_digest','source_key','scope','release'} or grant['release']!=release
+                or grant['request_digest']!=grants[0]['request_digest'] or grant['source_key']!=grants[0]['source_key']
+                or grant['scope'].get('offer_id')!=task['scope']['offer_id']
+                or grant['scope'].get('shops')!=task['scope']['shops']):
+            raise ApprovalBlocked('NEW_TASK_V4_EXPLICIT_ORIGIN_CHANGED')
     if (not worker.owns(task['task_id']) or task.get('version')!=release
             or task.get('template')!='publication'
             or task.get('execution_state') in {'cancelled','failed'}):
         raise ApprovalBlocked('NEW_TASK_V4_TASK_OR_VERSION_CHANGED')
     frozen=native.read_frozen(task,profile)
     images=native.read_images(task,profile)
-    binding=plan['payload'].get('r3_marketplace_binding') or {}
     targets=[t for t in task['scope']['shops'] if t!='miaoshou:COMMON']
     if (not frozen or frozen['offer_id']!=plan['product_id']
             or sorted(frozen['targets'])!=sorted(task['scope']['shops'])
@@ -172,7 +231,10 @@ def _execute(active,request):
             release_candidate=deepcopy(candidate),write_budget=deepcopy(candidate['write_budget'][platform]),
             write_budget_ledger=ledger,checkpoint_root=active.runtime.supervisor.root,catalog_sink=sink)
         entered=True;result=execute(native_request)
-        value=_result(result,request,ledger,provider_reference=','.join(dict.fromkeys(references)) or None,durable_seams=True)
+        from shared_platform.native_provider_continuation import continue_original_result
+        value=continue_original_result(active,request,native_request,result,ledger)
+        if value is None:
+            value=_result(result,request,ledger,provider_reference=','.join(dict.fromkeys(references)) or None,durable_seams=True)
         return replace(value,readback_evidence={**value.readback_evidence,
             'provider_readonly_observations':observations,'checkpoint_file_identity':mapping,
             'checkpoint_file_identity_ref':reference})

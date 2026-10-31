@@ -141,7 +141,7 @@ def _provider_failed_facts(db, active, target):
         WHERE s.plan_id=? AND s.platform='SHOPEE' AND (r.target_label=? OR r.budget_scope='shared')
         ORDER BY r.scope_key,r.sequence''',(active.plan_id,target['target_label']))]
     _provider_need(any(r['target_label']==target['target_label'] and r['operation']=='create_publish_task'
-        and r['request_digest'] and r['outcome'] is None for r in ledger),'PROVIDER_ORIGINAL_CREATE_UNKNOWN_REQUIRED')
+        and r['request_digest'] and r['outcome'] in {None,'ACCEPTED'} for r in ledger),'PROVIDER_ORIGINAL_CREATE_REQUEST_REQUIRED')
     return {'target':dict(row),'failure':dict(failure),'plan':plan,'snapshot':snapshot,'ledger':ledger}
 
 
@@ -163,7 +163,8 @@ def _provider_original_task(active, facts):
                 and type(resource.get('shop_id')) is int and type(resource.get('global_item_id')) is int):
             candidates.append({'task_id':task_id,'resource':resource,'account':original['account'],
                 'response_key':row['key'],'response_sha256':row['response_sha256'],
-                'request_body_sha256':original['request_body_sha256']})
+                'request_body_sha256':original['request_body_sha256'],
+                'native_request_digest':original.get('native_request_digest')})
     _provider_need(len(candidates)==1,'PROVIDER_UNIQUE_RETAINED_TASK_REQUIRED')
     return candidates[0]
 
@@ -204,7 +205,7 @@ def _provider_official_reads(active, source):
     return responses
 
 
-def _provider_verified_evidence(facts, source, responses):
+def _provider_verified_evidence(facts, source, responses, *, material_only=False):
     """Pure frozen matcher, repeated in the short final CAS."""
     from decimal import Decimal
     from modules.shopee import skill_regions as r
@@ -229,9 +230,7 @@ def _provider_verified_evidence(facts, source, responses):
     item=items[0];approved=r._approved_models(snapshot,label);title,description=r._approved_copy(snapshot,label)
     _provider_need(len(models)==len(approved) and len({str(m.get('model_id')) for m in models})==len(approved),'PROVIDER_EXACT_MODEL_SET_REQUIRED')
     images=tuple(publication_images_for_target(snapshot,label));official_images=tuple((item.get('image') or {}).get('image_url_list') or [])
-    _provider_need(official_images==images,'PROVIDER_FROZEN_IMAGES_NOT_YET_EXACT')
     ids=tuple((item.get('image') or {}).get('image_id_list') or [])
-    _provider_need(len(ids)==len(images) and len(set(ids))==len(ids),'PROVIDER_IMAGE_IDENTITIES_REQUIRED')
     checks=r._official_readback_checks(item=item,models=models,
         resolved_global_item_id=str(links[0]['global_item_id']),expected_global_item_id=str(source['resource']['global_item_id']),
         expected_models=approved,expected_tiers=r._exact_global_tiers(global_models,approved),expected_logistics=[],
@@ -240,6 +239,8 @@ def _provider_verified_evidence(facts, source, responses):
         expected_region=source['resource']['shop_region'],repaired_copy=(title,description),
         expected_image_ids=ids,expected_description_image_ids=ids,item_id=item_id)
     checks['exact_ordered_image_urls']=official_images==images
+    checks['image_identities_complete']=len(ids)==len(images) and len(set(ids))==len(ids)
+    checks['frozen_category_exact']=str(item.get('category_id') or '')==r._expected_category_id(snapshot,label)
     weight,dims=r._parcel_envelope(snapshot);parcel=item.get('dimension') or {}
     checks['parcel_exact']=(Decimal(str(item.get('weight')))==Decimal(str(weight))
         and [Decimal(str(parcel.get(k))) for k in ('package_length','package_width','package_height')]==[Decimal(str(v)) for v in dims])
@@ -254,10 +255,21 @@ def _provider_verified_evidence(facts, source, responses):
         return (len(by)==len(rows) and by.get(location)==policy['stock']['quantity']
             and all(type(k) is str and type(v) is int and v==(policy['stock']['quantity'] if k==location else 0) for k,v in by.items()))
     checks['frozen_stock_exact']=all(stock(m) for m in models)
+    if material_only:
+        return {'checks':checks,'item':item,'models':models,'global_models':global_models,
+            'approved_models':approved,'image_ids':ids,'image_urls':images,
+            'title':title,'description':description,'item_id':item_id}
     _provider_need(all(v is True for v in checks.values()),'PROVIDER_FROZEN_OFFICIAL_MATCH_REQUIRED')
+    canonical={'platform':'SHOPEE','status':'PUBLISHED','readback_completed':True,
+        'dispatch_attempted':False,'readback_external_write_count':0,
+        'historical_unknown_preserved':True,'targets':[{'target_label':label,'status':'PUBLISHED',
+            'evidence':{'verified':True,'provider_task_id':source['task_id'],'item_id':item_id,
+                'checks':checks,'official_catalog_rows':r._catalog_observation_rows(label,
+                    source['resource']['shop_id'],item_id,source['resource']['shop_region'],item,models,approved)}}]}
     return {'schema_version':'native-provider-original-readback/v1','source':'official_shopee_shop_api',
         'verified':True,'target_label':label,'item_id':item_id,'shop_id':source['resource']['shop_id'],
         'provider_task_id':source['task_id'],'checks':checks,'official_responses':responses,
+        'canonical_platform_result':canonical,'snapshot_digest':snapshot['snapshot_digest'],
         'original_response':source,'external_writes_performed':[],
         'original_failure_digest':facts['failure']['evidence_digest'],
         'original_budget_state_digest':_ozon_sha(facts['ledger']),

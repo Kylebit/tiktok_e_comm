@@ -121,7 +121,7 @@ def _category_semantic(value: Any) -> str:
     return name.strip() if isinstance(name, str) else ""
 
 
-def _safe_product_facts(preview: dict[str, Any]) -> dict[str, Any]:
+def _safe_product_facts(preview: dict[str, Any], requested_targets: list[str] | None = None) -> dict[str, Any]:
     product = preview.get("product") if isinstance(preview.get("product"), dict) else {}
     if product:
         if "source_image_count" in product:
@@ -130,7 +130,7 @@ def _safe_product_facts(preview: dict[str, Any]) -> dict[str, Any]:
                 raise PreparationError("source image count must be a non-negative integer")
         else:
             source_image_count = len(((preview.get("content") or {}).get("images") or []))
-        return _annotate_parcel_facts({
+        facts = _annotate_parcel_facts({
             "title": _clean_text(product.get("title")),
             "seller_sku": _clean_text(product.get("seller_sku_candidate")),
             "category_semantic": _category_semantic(product.get("category")),
@@ -140,6 +140,23 @@ def _safe_product_facts(preview: dict[str, Any]) -> dict[str, Any]:
             "skus": _safe_dashboard_skus(product),
             "source_image_count": source_image_count,
         })
+        if 'warehouse_inventory_by_target' in product:
+            from domains.product_operations.approved_publication_snapshot import (
+                _warehouse_inventory_by_target, _targets,
+            )
+            # Preserve the existing typed exact-shop contract in the immutable
+            # R1 facts. No missing warehouse is inferred and no zero is added.
+            labels = requested_targets
+            if labels is None:
+                labels = (preview.get('publication_scope') or {}).get('selected_labels') or []
+            try:
+                allocation = _warehouse_inventory_by_target(
+                    product['warehouse_inventory_by_target'], targets=_targets(labels))
+            except (ValueError, TypeError, KeyError) as error:
+                raise PreparationError('R1_WAREHOUSE_ALLOCATION_INVALID: '+str(error)) from None
+            if allocation is not None:
+                facts['warehouse_inventory_by_target'] = allocation
+        return facts
     source = preview.get("source") if isinstance(preview.get("source"), dict) else {}
     review = preview.get("review") if isinstance(preview.get("review"), dict) else {}
     return _annotate_parcel_facts({
@@ -249,13 +266,26 @@ def _safe_target_facts(preview: dict[str, Any], requested_targets: list[str]) ->
                     "status": _clean_text(raw_sku_price.get("status")),
                 }
             if _clean_text(price.get("role")) == "master_listing":
-                variant_calculation = _safe_price_calculation({**price, "store_prices": [raw_sku_price]})
+                # Some current Product Center rows wrap the actual calculator
+                # under source. Preserve that producer's fields, not merely
+                # the wrapper's list-price projection.
+                quote={**source,**{k:v for k,v in raw_sku_price.items() if k not in {'source','derived_preview'}}}
+                variant_calculation = _safe_price_calculation({**price, "store_prices": [quote]})
             else:
                 variant_calculation = _safe_price_calculation({
                     **price,
                     "derived_preview": derived,
                     "store_prices": [],
                 })
+                explicit={**derived,**raw_sku_price}
+                percent=explicit.get('discount_reserve_pct')
+                sale=explicit.get('sale_after_discount',explicit.get('sale_after_discount_local'))
+                if percent is not None and sale is not None:
+                    # These are exact target-quote inputs, not a rate borrowed
+                    # from the TikTok price-source row or a historical Offer.
+                    variant_calculation=deepcopy(variant_calculation or {'kind':'DERIVED_PRICE_CANDIDATE','derived_preview':{}})
+                    variant_calculation['discount_rate_percent']=percent
+                    variant_calculation.setdefault('derived_preview',{})['sale_price']=sale
             if variant_calculation is not None:
                 variant_price["calculation"] = variant_calculation
             safe_sku_prices.append(variant_price)
@@ -632,7 +662,7 @@ def prepare_offer(
             "selected_in_product_center": selected_sites,
             "missing_from_product_center": missing_targets,
         },
-        "product_facts": _safe_product_facts(preview),
+        "product_facts": _safe_product_facts(preview, targets),
         "targets": _apply_candidate_plan(_safe_target_facts(preview, targets), safe_candidate_plan),
         "platform_categories": safe_candidate_plan.get("platform_categories", []),
         "copy_review_sets": safe_candidate_plan.get("copy_review_sets", []),
@@ -1469,6 +1499,8 @@ def _safe_price_calculation(price: dict[str, Any]) -> dict[str, Any] | None:
         }
     if formula or derived:
         return {
+            **({'contract_version': 'shopee-canonical-derived-price/v1'}
+               if derived.get('canonical_global_source') is not None else {}),
             "kind": "DERIVED_PRICE_CANDIDATE",
             "formula": formula,
             "formula_zh": (
@@ -1484,6 +1516,7 @@ def _safe_price_calculation(price: dict[str, Any]) -> dict[str, Any] | None:
                     "old_price_cny",
                     "source_currency",
                     "exchange_rate_cny_per_local",
+                    "canonical_global_source",
                 )
                 if derived.get(key) is not None
             },

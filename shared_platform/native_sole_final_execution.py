@@ -178,11 +178,14 @@ def execute_decision(service,decision_id,*,runtime=None,promotion_targets=None):
                             if any(t.split(':',1)[0].upper()==p for t in plan['targets']))
             def invoke(platform):
                 # ContextVars intentionally do not cross worker threads. Each
-                # partition rechecks the same complete stored sole decision.
-                part=_NativeExecution(service,decision_id,runtime,platform_scope=(platform,))
-                part.plan_id=plan['plan_id'];part_token=_ACTIVE.set(part)
-                try:return server._publish_selected_release(data,native_gate=part)
-                finally:_ACTIVE.reset(part_token)
+                # partition acquires its own genuine operation lease and then
+                # rechecks the same complete stored sole decision. Reusing a
+                # parent service object does not transfer its actor proof.
+                with runtime.operation() as platform_service:
+                    part=_NativeExecution(platform_service,decision_id,runtime,platform_scope=(platform,))
+                    part.plan_id=plan['plan_id'];part_token=_ACTIVE.set(part)
+                    try:return server._publish_selected_release(data,native_gate=part)
+                    finally:_ACTIVE.reset(part_token)
             outcomes=run_native_platform_partitions(platforms,invoke,max_parallel=3)
             code=200 if all(c<400 for c,_ in outcomes.values()) else 409
             return code,{'ok':code==200,'native_decision_id':receipt['decision_id'],

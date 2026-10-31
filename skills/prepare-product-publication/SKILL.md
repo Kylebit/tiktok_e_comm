@@ -5,6 +5,21 @@ description: "Prepare an auditable round-1 candidate for one Product Center Offe
 
 # Prepare Product Publication
 
+<!-- orbit-publication-entry:v1:start -->
+## Normal end-to-end Agent route
+
+For an authorized complete publication task, use the selected source's
+`scripts/orbit_publish.py` with an explicit execution profile, following
+`docs/PUBLICATION_AGENT_ENTRY.md` in that source. Verify source/config/data and
+the actual runtime; a personal Skill directory or candidate commit is not a
+deployed service. Keep the original task through R1, R2, COMMON, the complete
+single final review, execution and readback. This route grants no new authority.
+An R1-only inspection still has zero external writes and uses the narrow entry
+below; do not turn it into paid images or COMMON synchronization. Complete all
+frozen image/variant, price/discount, warehouse and adapter checks before final
+review. Historical workflow modes remain explicit, never fallback authorities.
+<!-- orbit-publication-entry:v1:end -->
+
 ### Gallery completeness fallback
 
 Apply an applicable product-specific image rule before the generic fallback;

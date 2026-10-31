@@ -40,9 +40,16 @@ CREATE TABLE IF NOT EXISTS publication_dispatch (
 CREATE TABLE IF NOT EXISTS publication_dispatch_responses (
  id INTEGER PRIMARY KEY AUTOINCREMENT, scope_key TEXT NOT NULL,
  kind TEXT NOT NULL, http_status INTEGER NOT NULL, raw_body BLOB NOT NULL,
- body_sha256 TEXT NOT NULL, observed_at TEXT NOT NULL
+ body_sha256 TEXT NOT NULL, observed_at TEXT NOT NULL,
+ started_at TEXT NOT NULL,finished_at TEXT NOT NULL,elapsed_seconds REAL NOT NULL,error_type TEXT
 );
 """
+_EXPECTED_COLUMNS = {
+    "publication_dispatch": ("scope_key","binding_json","phase","revision","owner","started_at","updated_at",
+        "next_action","next_check_at","blocked_by","run_id","report_id","result_json"),
+    "publication_dispatch_responses": ("id","scope_key","kind","http_status","raw_body","body_sha256",
+        "observed_at","started_at","finished_at","elapsed_seconds","error_type"),
+}
 
 
 def _now() -> str:
@@ -87,7 +94,22 @@ class DispatchJournal:
         ensure_private_runtime_directory(self.root, _key({"schema": SCHEMA, "root": str(self.root)}))
         _checked_runtime_path(self.path)
         with sqlite3.connect(self.path, timeout=10) as connection:
+            self._check_schema(connection, allow_absent=True)
             connection.executescript(_SCHEMA_SQL)
+            self._check_schema(connection)
+
+    @staticmethod
+    def _check_schema(connection, *, allow_absent=False):
+        found=[]
+        for table, expected in _EXPECTED_COLUMNS.items():
+            actual=tuple(row[1] for row in connection.execute("PRAGMA table_info("+table+")"))
+            found.append(bool(actual))
+            if actual and actual!=expected:
+                raise ValueError("DISPATCH_JOURNAL_SCHEMA_HOLD_PRESERVE_ORIGINAL")
+            if not actual and not allow_absent:
+                raise ValueError("DISPATCH_JOURNAL_SCHEMA_HOLD_PRESERVE_ORIGINAL")
+        if any(found) and not all(found):
+            raise ValueError("DISPATCH_JOURNAL_SCHEMA_HOLD_PRESERVE_ORIGINAL")
 
     @contextmanager
     def _write(self):
@@ -102,6 +124,7 @@ class DispatchJournal:
         ensure_private_runtime_directory(self.root, _key({"schema": SCHEMA, "root": str(self.root)}))
         _checked_runtime_path(self.path)
         with sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=10) as c:
+            self._check_schema(c)
             c.row_factory = sqlite3.Row
             row = c.execute("SELECT * FROM publication_dispatch WHERE scope_key=?", (key,)).fetchone()
             return dict(row) if row else None
@@ -123,13 +146,23 @@ class DispatchJournal:
                 (key, encoded, f"pid:{os.getpid()}", at, at, at, "ORIGINAL_START_OUTCOME_UNCONFIRMED"))
             return True
 
-    def response(self, key, kind, status, raw):
+    def response(self, key, kind, status, raw, *, started_at, finished_at, elapsed_seconds, error_type=None):
         """Retain raw bytes and status BEFORE any JSON/identity extraction."""
         with self._write() as c:
             c.execute("""INSERT INTO publication_dispatch_responses
-                (scope_key,kind,http_status,raw_body,body_sha256,observed_at)
-                VALUES (?,?,?,?,?,?)""",
-                (key, kind, status, raw, hashlib.sha256(raw).hexdigest(), _now()))
+                (scope_key,kind,http_status,raw_body,body_sha256,observed_at,
+                 started_at,finished_at,elapsed_seconds,error_type)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (key, kind, status, raw, hashlib.sha256(raw).hexdigest(), _now(),
+                 started_at,finished_at,elapsed_seconds,error_type))
+
+    def spans(self, key):
+        if not self.path.is_file():return []
+        with sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True) as c:
+            c.row_factory=sqlite3.Row
+            return [dict(row) for row in c.execute('''SELECT kind,http_status,started_at,
+                finished_at,elapsed_seconds,error_type FROM publication_dispatch_responses
+                WHERE scope_key=? ORDER BY id''',(key,))]
 
     def original_start(self, key):
         if not self.path.is_file():
@@ -171,14 +204,22 @@ def _http_raw(url, *, payload=None, timeout_seconds=30):
 
 
 def _request(journal, key, kind, request, url, *, payload=None, timeout_seconds=30):
-    if request is None:
-        status, raw = _http_raw(url, payload=payload, timeout_seconds=timeout_seconds)
-    else:
-        # Injection replaces the external edge only. Production uses exact raw
-        # bytes; legacy offline callbacks may return a decoded Mapping.
-        status, body = request(url, payload=payload, timeout_seconds=timeout_seconds)
-        raw = body if isinstance(body, bytes) else _canonical(body)
-    journal.response(key, kind, status, raw)
+    import time
+    started_at=_now();started=time.monotonic()
+    try:
+        if request is None:
+            status, raw = _http_raw(url, payload=payload, timeout_seconds=timeout_seconds)
+        else:
+            # Injection replaces the external edge only. Production uses exact
+            # raw bytes; offline callbacks may return a decoded Mapping.
+            status, body = request(url, payload=payload, timeout_seconds=timeout_seconds)
+            raw = body if isinstance(body, bytes) else _canonical(body)
+    except Exception as error:
+        journal.response(key,kind,0,b'',started_at=started_at,finished_at=_now(),
+            elapsed_seconds=time.monotonic()-started,error_type=type(error).__name__)
+        raise
+    journal.response(key,kind,status,raw,started_at=started_at,finished_at=_now(),
+        elapsed_seconds=time.monotonic()-started)
     try:
         parsed = json.loads(raw.decode("utf-8")) if raw else {}
     except (ValueError, UnicodeError):
@@ -355,6 +396,7 @@ def _package_state(package, journal_root, rows=None):
             "blocked_by": row["blocked_by"] if row else None,
             "run_id": row["run_id"] if row else None,
             "report_id": row["report_id"] if row else None,
+            "http_spans": journal.spans(key),
             "result": json.loads(row["result_json"]) if row and row["result_json"] else None})
     finished = all(s["state"] == "TERMINAL" for s in states)
     unknown = any(s["state"] in {"INTENT", "UNKNOWN"} for s in states)

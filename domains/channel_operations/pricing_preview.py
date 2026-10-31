@@ -15,6 +15,7 @@ from typing import Any
 
 
 MASTER_SITE_ORDER = ("PH", "MY", "TH", "VN", "MX", "GB")
+SHOPEE_CANONICAL_GLOBAL_SOURCE = 'overall-master/v1'
 
 
 def build_channel_pricing_preview(
@@ -23,8 +24,11 @@ def build_channel_pricing_preview(
     selected_site_keys: Iterable[object],
     shopee_exchange_rates: Mapping[str, object],
     ozon_exchange_rates: Mapping[str, object],
+    shopee_global_source_policy: str | None = None,
 ) -> dict[str, Any]:
     """Return JSON-ready store prices and cross-channel price lineage."""
+    if shopee_global_source_policy not in {None,SHOPEE_CANONICAL_GLOBAL_SOURCE}:
+        raise ValueError('unsupported Shopee global-price source policy')
 
     selected_keys = tuple(
         dict.fromkeys(
@@ -92,6 +96,7 @@ def build_channel_pricing_preview(
             source,
             target_site=site,
             exchange_rates=shopee_exchange_rates,
+            global_source=master if shopee_global_source_policy is not None else None,
         )
 
     target_pricing["ozon:RU"] = _ozon_price(
@@ -220,6 +225,7 @@ def _shopee_price(
     *,
     target_site: str,
     exchange_rates: Mapping[str, object],
+    global_source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not source or source.get("list_price") is None:
         return {
@@ -232,7 +238,18 @@ def _shopee_price(
     rate = _positive_number(exchange_rates.get(currency))
     local_price = _positive_number(source.get("list_price"))
     global_cny = round(local_price * rate, 2) if rate and local_price else None
-    return {
+    canonical=None
+    if global_source is not None:
+        global_currency=str(global_source.get('currency') or '').upper()
+        global_rate=_positive_number(exchange_rates.get(global_currency))
+        global_price=_positive_number(global_source.get('list_price'))
+        global_cny=round(global_price*global_rate,2) if global_price and global_rate else None
+        canonical={'contract_version':'shopee-canonical-global-source/v1',
+            'selection_policy':'MASTER_SITE_ORDER','master_site_order':list(MASTER_SITE_ORDER),
+            'target_key':str(global_source.get('id') or _special_key(global_source)).lower(),
+            'region':str(global_source.get('region') or '').upper(),'currency':global_currency,
+            'list_price':global_price,'exchange_rate_cny_per_local':global_rate}
+    result = {
         "role": "derived_listing",
         "status": "awaiting_tiktok_readback" if global_cny is not None else "blocked",
         "target_site": target_site,
@@ -246,6 +263,7 @@ def _shopee_price(
             "local_original_price": local_price,
             "source_currency": currency,
             "exchange_rate_cny_per_local": rate,
+            **({'canonical_global_source':canonical} if canonical is not None else {}),
         },
         "write_fields": [
             "global_item.original_price (CNY)",
@@ -257,6 +275,7 @@ def _shopee_price(
             "local publish task historically reuses the source numeric price."
         ),
     }
+    return result
 
 
 def _ozon_price(

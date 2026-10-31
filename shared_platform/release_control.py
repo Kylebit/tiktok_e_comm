@@ -825,9 +825,12 @@ def _release_pricing_review(
     selected_site_keys: object | None = None,
     sku_commercial_facts: object = (),
     model_skus_by_variant: Mapping[str, str] | None = None,
+    pricing_contract: str = 'legacy-v1',
 ) -> dict[str, Any]:
     """Replay the persisted legacy pricing inputs without fetching live FX."""
 
+    if pricing_contract not in {'legacy-v1', 'canonical-global-v2'}:
+        raise ValueError('unsupported publication pricing contract')
     fx_rates = (
         dict(review.get("fx_rates") or {})
         if isinstance(review.get("fx_rates"), Mapping)
@@ -870,6 +873,9 @@ def _release_pricing_review(
             selected_site_keys=effective_site_keys,
             shopee_exchange_rates=shopee_rates,
             ozon_exchange_rates=ozon_exchange_rates(),
+            shopee_global_source_policy=(
+                'overall-master/v1' if pricing_contract == 'canonical-global-v2' else None
+            ),
         )
 
     result = build_one(
@@ -1099,6 +1105,33 @@ def _apply_store_level_pricing(
 R1_PATH_BINDING_CONTRACT = 'orbit-r1-paths/v2'
 
 
+def _source_review_warehouse_facts(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Read existing typed source/review allocation; do not infer inventory.
+
+    The complete original TikTok selection is used even while projecting a
+    temporary COMMON-only view. Two supplied sources must agree exactly.
+    """
+    from domains.product_operations.approved_publication_snapshot import (
+        _warehouse_inventory_by_target, _targets,
+    )
+    from shared_platform.publication_rounds import CANONICAL_TIKTOK_TO_WORKBENCH
+    review = state.get('review') if isinstance(state.get('review'), Mapping) else {}
+    source = state.get('source') if isinstance(state.get('source'), Mapping) else {}
+    selected = review.get('selected_sites') or []
+    labels = [label for label, site in CANONICAL_TIKTOK_TO_WORKBENCH.items()
+              if label in selected or site in selected]
+    supplied = [row['warehouse_inventory_by_target'] for row in (source, review)
+                if row.get('warehouse_inventory_by_target') is not None]
+    if not supplied:
+        return None
+    normalized = [_warehouse_inventory_by_target(value, targets=_targets(labels)) for value in supplied]
+    if any(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+           != json.dumps(normalized[0], sort_keys=True, separators=(',', ':'), allow_nan=False)
+           for value in normalized[1:]):
+        raise ValueError('WAREHOUSE_SOURCE_REVIEW_CONFLICT')
+    return deepcopy(normalized[0])
+
+
 def build_release_dashboard(
     *,
     offer_id: object = DEFAULT_OFFER_ID,
@@ -1117,6 +1150,7 @@ def build_release_dashboard(
     source_outputs_root: str | Path | None = None,
     content_outputs_root: str | Path | None = None,
     release_store_path: str | Path | None = None,
+    pricing_contract: str = 'legacy-v1',
 ) -> dict[str, Any]:
     """Build the complete local release rehearsal without side effects."""
     clean_offer_id = _clean_offer_id(offer_id)
@@ -1835,6 +1869,7 @@ def build_release_dashboard(
     }
     base_release_pricing = deepcopy(frozen_pricing) if frozen_pricing is not None else _release_pricing_review(
         review,
+        pricing_contract=pricing_contract,
         sku_commercial_facts=commercial_rows,
         model_skus_by_variant=model_skus_by_variant,
     )
@@ -1845,6 +1880,7 @@ def build_release_dashboard(
     )
     release_pricing = deepcopy(frozen_pricing) if frozen_pricing is not None else _release_pricing_review(
         review,
+        pricing_contract=pricing_contract,
         selected_site_keys=scope_site_keys,
         sku_commercial_facts=commercial_rows,
         model_skus_by_variant=model_skus_by_variant,
@@ -2214,6 +2250,8 @@ def build_release_dashboard(
                 for key, value in sku_label_overrides.items()
             },
             "source_skus": source_skus,
+            **({'warehouse_inventory_by_target': warehouse_facts}
+               if (warehouse_facts := _source_review_warehouse_facts(state)) is not None else {}),
             "revision": int(state.get("_revision") or 0),
             "fields_locked": bool(review.get("fields_locked")),
             "facts_status": (

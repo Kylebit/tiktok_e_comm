@@ -68,3 +68,22 @@ def test_result_is_readonly_and_includes_original_task_and_target_truth(bound):
     result=entry.run(Namespace(profile='explicit',command='result',task_id='task-original'),request=request)
     assert result['publication']['marketplace']['status']=='RECONCILIATION_REQUIRED'
     assert all(body is None for _,body in calls) and list(Path(bound['data_root']).iterdir())==before
+
+def test_explicit_readback_refreshes_after_known_202_instead_of_caching_forever(bound):
+    request,calls=closed(bound,lambda p,b:(202,{'readback_queued':True}))
+    body={'decision_id':'stored'}
+    for _ in range(2):entry._mutation(bound,'/api/product-workspace/native-final/readback',body,request,read_only=True)
+    assert sum(b is not None for _,b in calls)==2
+
+def test_known_resume_control_receipt_can_reenter_original_queue_but_unknown_cannot(bound):
+    request,calls=closed(bound,lambda p,b:(202,{'queued':True}))
+    for _ in range(2):entry._mutation(bound,'/api/product-workspace/native-final/resume',{'decision_id':'stored'},request,resume_known=True)
+    assert sum(b is not None for _,b in calls)==2
+
+def test_profile_change_does_not_disguise_same_original_unknown_as_new_request(bound):
+    request,calls=closed(bound,lambda p,b:(_ for _ in ()).throw(TimeoutError('lost')))
+    with pytest.raises(TimeoutError):entry._mutation(bound,'/api/orbit/tasks',{'source_key':'same'},request)
+    bound['profile_ref']={**bound['profile_ref'],'sha256':'4'*64}
+    with pytest.raises(entry.ExecutionPackageError,match='BINDING_CHANGED'):
+        entry._mutation(bound,'/api/orbit/tasks',{'source_key':'same'},request)
+    assert sum(b is not None for _,b in calls)==1

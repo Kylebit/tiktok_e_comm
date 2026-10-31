@@ -22,6 +22,12 @@ def complete_new_task(live,monkeypatch,tmp_path):
         state['review']['selected_sku_keys']=['size-large','size-medium','size-small']
         state['source']['skus']=[{'key':key,'name':name,'price':4.4,'image':f'https://example.com/variant-{index}.png'}
             for index,(key,name) in enumerate(zip(state['review']['selected_sku_keys'],('Large','Medium','Small')))]
+        from shared_platform.publication_rounds import CANONICAL_TIKTOK_TO_WORKBENCH
+        labels=[label for label,site in CANONICAL_TIKTOK_TO_WORKBENCH.items()
+            if site in state['review']['selected_sites']]
+        # Original persisted source, before the actual capture/R1 producer.
+        # No dashboard, frozen packet, or downstream consumer is replaced.
+        state['review']['warehouse_inventory_by_target']=owned_warehouse_allocations(labels)
         path.write_text(json.dumps(state),encoding='utf-8')
     monkeypatch.setattr(preparation,'complete_source',source)
     original_images=preparation._image_proposal
@@ -68,3 +74,13 @@ def complete_new_task(live,monkeypatch,tmp_path):
         finally:worker.close()
     monkeypatch.setattr(installed,'close',close)
     return installed,market,task,calls
+
+
+def owned_warehouse_allocations(labels):
+    return {label:{'schema_version':'miaoshou-tiktok-warehouse-allocation/v1',
+        'shop_id':str(91000+index),
+        'warehouses':[{'warehouse_id':str(92000+index*2),'warehouse_name':'Owned mainland fixture','stock':150},
+            {'warehouse_id':str(92001+index*2),'warehouse_name':'Owned regional fixture','stock':50}],
+        'total_stock':200,'source':'CONVERSATION_APPROVAL',
+        'approved_by':'OWNED_OFFLINE_FIXTURE_NOT_LIVE_AUTHORITY','approved_at':'2026-10-31T00:00:00+00:00'}
+        for index,label in enumerate(sorted(labels))}

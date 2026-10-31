@@ -299,7 +299,7 @@ def _checked_candidate_input(document):
     return current
 
 
-def _packet(server, scope, *, bound, candidate_input=None):
+def _packet(server, scope, *, bound, candidate_input=None, pricing_contract='canonical-global-v2'):
     from shared_platform.release_control import build_release_dashboard
     plan, image_digest, image_revision = _image_input(scope['offer_id'])
     if candidate_input is None:
@@ -316,7 +316,7 @@ def _packet(server, scope, *, bound, candidate_input=None):
         category_observation=scope['observer_reference'] if bound else None,
         category_account_digest=scope['account_identity_digest'] if bound else None,
         candidate_plan=candidate_input[1],
-        preview_builder=lambda offer: build_release_dashboard(offer_id=offer))
+        preview_builder=lambda offer: build_release_dashboard(offer_id=offer, pricing_contract=pricing_contract))
     return packet, image_digest, image_revision
 
 
@@ -357,7 +357,8 @@ def _recheck(server, document):
         raise Round1WorkspaceError('R1_ACTOR_CHANGED')
     # Rebuild actual current inputs, without overlaying an old revision on them.
     candidate_input = _checked_candidate_input(document)
-    packet, image_digest, image_revision = _packet(server, scope, bound=False, candidate_input=candidate_input)
+    packet, image_digest, image_revision = _packet(server, scope, bound=False, candidate_input=candidate_input,
+        pricing_contract=document.get('pricing_contract', 'legacy-v1'))
     if (image_digest != document['image_digest'] or image_revision != scope['product_center_revision']
             or _semantic_packet(packet) != _semantic_packet(document['unbound_packet'])
             or packet['product_center_revision'] != state['_revision']):
@@ -409,7 +410,7 @@ def prepare(server, data):
             raise Round1WorkspaceError('R1_SAVED_TARGET_SCOPE_MISMATCH')
         rounds.validate_round1_reviewable(packet, report_directory=rounds.report_dir(data['offer_id']))
         from shared_platform.release_control import build_release_dashboard
-        dashboard = build_release_dashboard(offer_id=data['offer_id'])
+        dashboard = build_release_dashboard(offer_id=data['offer_id'], pricing_contract='canonical-global-v2')
         preview = dashboard.get('approval_rehearsal') or dashboard.get('approval') or {}
         proposed = (preview.get('state_patch_preview') or {}).get('product_approval') or {}
         if not preview.get('ready') or not proposed.get('input_fingerprint'):
@@ -417,6 +418,7 @@ def prepare(server, data):
         preparation_root = _preparation_root(connection, scope=scope, state=state,
             unbound_packet=unbound, request_id=data['request_id'], server=server)
         document = {'scope':scope,'packet':packet,'unbound_packet':unbound,'image_digest':image_digest,
+                    'pricing_contract':'canonical-global-v2',
                     'preparation_root': preparation_root,
                     'candidate_input':candidate_input[0],
                     'state_before':state,'actor':server._local_product_approval_actor(),
@@ -559,7 +561,8 @@ def _auto_recheck(server, document, decision):
     if server._local_product_approval_actor() != document['actor']:
         raise Round1WorkspaceError('R1_ACTOR_CHANGED')
     candidate_input = _checked_candidate_input(document)
-    packet, image_digest, image_revision = _packet(server, scope, bound=False, candidate_input=candidate_input)
+    packet, image_digest, image_revision = _packet(server, scope, bound=False, candidate_input=candidate_input,
+        pricing_contract=document.get('pricing_contract', 'legacy-v1'))
     if (image_digest != document['image_digest'] or image_revision != scope['product_center_revision']
             or _semantic_packet(packet) != _semantic_packet(document['unbound_packet'])
             or packet['product_center_revision'] != state['_revision']):
@@ -651,7 +654,8 @@ def auto_freeze(server, data):
                 raise Round1WorkspaceError('R1_AUTO_POLICY_CHANGED')
             if (directory / 'round1-approved-snapshot.json').exists():
                 raise Round1WorkspaceError('R1_EXISTING_SNAPSHOT_CONFLICT')
-            dashboard = build_release_dashboard(offer_id=offer)
+            dashboard = build_release_dashboard(offer_id=offer,
+                pricing_contract=document.get('pricing_contract', 'legacy-v1'))
             preview = dashboard.get('approval_rehearsal') or dashboard.get('approval') or {}
             proposed = (preview.get('state_patch_preview') or {}).get('product_approval') or {}
             seller_sku = str((dashboard.get('product') or {}).get('seller_sku_candidate') or '').strip()

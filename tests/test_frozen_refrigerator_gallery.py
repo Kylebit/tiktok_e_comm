@@ -22,6 +22,8 @@ from test_agent_prepared_source_successor import git
 
 
 def _documents():
+    from retained_fixture_gate import require_retained_inputs
+    require_retained_inputs('ORBIT_GALLERY_FROZEN_DOCUMENTS')
     root=Path(os.environ['ORBIT_GALLERY_FROZEN_DOCUMENTS'])
     return {key:json.loads((root/name).read_bytes()) for key,name in bridge.R2_DOCUMENTS.items()}
 

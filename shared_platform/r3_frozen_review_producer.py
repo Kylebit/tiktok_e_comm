@@ -100,7 +100,9 @@ def _retained_approved_copy_shape(db, marketplace_plan):
         if label.startswith("tiktok:") and "variants" not in copy:
             legacy.append(label)
     from shared_platform.publication_r3_image_bridge import _RetainedApprovedCopyShape
-    return _RetainedApprovedCopyShape(stored["plan_id"], snapshot["snapshot_digest"], tuple(legacy))
+    prices=stored['payload'].get('pricing',{}).get('selected_targets',{})
+    return _RetainedApprovedCopyShape(stored["plan_id"], snapshot["snapshot_digest"], tuple(legacy),
+        tuple(label for label in stored['targets'] if 'store_prices' in prices.get(label,{})))
 
 
 def rebuild_domain_review_graph(common_plan, common_run, marketplace_plan, *, native_completion=None,

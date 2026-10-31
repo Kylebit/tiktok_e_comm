@@ -5,6 +5,21 @@ description: Consume an immutable round-1 technical snapshot and prepare auditab
 
 # Prepare Product Images
 
+<!-- orbit-publication-entry:v1:start -->
+## Normal end-to-end Agent route
+
+When R2 belongs to an existing complete publication task, keep that task and
+use the selected source's `scripts/orbit_publish.py` observation/continuation
+route in `docs/PUBLICATION_AGENT_ENTRY.md`. The original R2 producer and paid
+ledger still own generation; the entry does not make a status command paid or
+redirect producer paths. Apply the existing paid authority without another
+content approval. Freeze exact `variant_keys` for single-variant hero roles and
+retain the same R2 artifact identity through localization and COMMON. Finish
+the applicable gallery and automatic QA before the one final marketplace
+review; never create an intermediate image-approval gate. Use the narrow phase
+commands below only for the corresponding existing R2 mode and inputs.
+<!-- orbit-publication-entry:v1:end -->
+
 For a direct Agent CLI, use the explicitly selected complete source's
 `<PYTHON> -I -B <SOURCE>/scripts/repo_bound_agent_entry.py --profile <ABSOLUTE_PROFILE> --entry images --check-binding`
 (`--entry qa` for automated QA), then pass the original arguments after `--`.

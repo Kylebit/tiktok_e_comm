@@ -171,6 +171,20 @@ def _independent_price_formula_matches(calculation: Mapping[str, Any]) -> bool |
     have been produced by the declared formula.
     """
 
+    if calculation.get('contract_version')=='shopee-canonical-derived-price/v1':
+        preview=calculation.get('derived_preview')
+        source=preview.get('canonical_global_source') if isinstance(preview,Mapping) else None
+        if not isinstance(source,Mapping) or source.get('contract_version')!='shopee-canonical-global-source/v1':return False
+        from domains.channel_operations.pricing_preview import MASTER_SITE_ORDER
+        if (source.get('selection_policy')!='MASTER_SITE_ORDER'
+                or source.get('master_site_order')!=list(MASTER_SITE_ORDER)
+                or str(source.get('region') or '') not in MASTER_SITE_ORDER
+                or not str(source.get('target_key') or '').strip()
+                or not str(source.get('currency') or '').strip()):return False
+        price=_decimal(source.get('list_price'));rate=_decimal(source.get('exchange_rate_cny_per_local'))
+        result=_decimal(preview.get('global_original_price_cny'))
+        return bool(price is not None and price>0 and rate is not None and rate>0 and result is not None
+            and result==round(price*rate,2))
     if calculation.get("contract_version") != "publication-price-calculation/v2":
         return None
     kind = str(calculation.get("kind") or "")
@@ -307,6 +321,26 @@ def _legacy_target_override_is_exact(
             str(override.get("evidence_digest") or ""),
         )
     )
+
+
+def _canonical_price_matches_frozen(calculation, snapshot, model, frozen):
+    """Bind new arithmetic to the already selected overall master, not JSON policy claims."""
+    if calculation.get('contract_version') != 'shopee-canonical-derived-price/v1':
+        return True
+    derived = calculation.get('derived_preview') or {}
+    source = derived.get('canonical_global_source') or {}
+    master = (snapshot.get('shopee_global_master') or {}).get('price_source') or {}
+    sku = next((r for r in snapshot.get('skus', []) if r.get('model_sku') == model), {})
+    # R3's historical master key identifies the Shopee regional selection.
+    # The new canonical source explicitly identifies the selected TikTok store.
+    source_label = 'tiktok:' + str(source.get('target_key') or '').upper()
+    original = (sku.get('prices') or {}).get(source_label) or {}
+    return bool(master and original and isinstance(frozen, Mapping)
+        and source.get('region') == master.get('region')
+        and source_label.endswith('_' + str(master.get('region') or ''))
+        and source.get('currency') == original.get('currency')
+        and _decimal(source.get('list_price')) == _decimal(original.get('amount'))
+        and _decimal(derived.get('global_original_price_cny')) == _decimal(frozen.get('global_original_price_cny')))
 
 
 def _task_key(row: Mapping[str, Any]) -> tuple[object, str, str, str]:
@@ -770,6 +804,7 @@ def evaluate_publication_quality_evidence(
                 and str(frozen.get("currency") or "") == str(row.get("currency") or "")
                 and _decimal(calculated) == _decimal(row.get("amount"))
                 and bool(str(calculation.get("kind") or ""))
+                and _canonical_price_matches_frozen(calculation, snapshot, model, frozen)
             )
             formula_match = _independent_price_formula_matches(calculation)
             if formula_match is False and _legacy_target_override_is_exact(

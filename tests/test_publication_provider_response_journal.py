@@ -120,6 +120,13 @@ def test_original_task_survives_real_sdk_decoder_exception_without_resend(tmp_pa
     readonly = provider_recovery_state(*_scope(request))
     assert readonly["intents"][0]["original_identities"]["response.publish_task_id"] == "81234567"
     assert len(calls) == 1
+    # A pre-continuation retained row lacked this supplementary native-ledger
+    # digest. A later executable may not turn its addition into a new POST key.
+    with sqlite3.connect(journal.path) as db:
+        prior=json.loads(rows[0]['request_identity_json'])
+        assert prior.pop('native_request_digest')
+        db.execute('UPDATE provider_response_intents SET request_identity_json=? WHERE key=?',
+                   (json.dumps(prior),rows[0]['key']))
     monkeypatch.setattr(client, "_parse_json", original)
     # A new process/run cannot hide the old retained/unknown identity.
     resumed = replace(request, run_id="fresh-provider-resume", report_id="publication-report:fresh-provider-resume")

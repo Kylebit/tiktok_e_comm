@@ -638,6 +638,19 @@ def prepare_common_stage_dashboard(
         raise ValueError('COMMON_FROZEN_LIVELYHIVE_ENGLISH_COPY_REQUIRED')
     copy = english[0]['copy']
     result = deepcopy(dict(dashboard))
+    if 'warehouse_inventory_by_target' in facts:
+        from domains.product_operations.approved_publication_snapshot import (
+            _warehouse_inventory_by_target, _targets,
+        )
+        frozen_allocation = _warehouse_inventory_by_target(
+            facts['warehouse_inventory_by_target'], targets=_targets(r1['canonical_targets']))
+        current_allocation = _warehouse_inventory_by_target(
+            product.get('warehouse_inventory_by_target'), targets=_targets(r1['canonical_targets']))
+        if _canonical_digest(current_allocation) != _canonical_digest(frozen_allocation):
+            raise ValueError('COMMON_R1_WAREHOUSE_ALLOCATION_CONFLICT')
+        # COMMON has no marketplace inventory mutation. Retain the full source
+        # in R1, then project it only into the later marketplace snapshot.
+        result['product'].pop('warehouse_inventory_by_target', None)
     result['product']['title'] = copy['title']
     result['product']['revision'] = r1['approved_product_center_revision']
     result['publication_scope'] = {'selected_labels': ['miaoshou:COMMON']}
@@ -971,6 +984,7 @@ class _RetainedApprovedCopyShape:
     plan_id: str
     snapshot_digest: str
     legacy_targets: tuple[str, ...]
+    store_price_targets: tuple[str, ...] | None = None
 
 
 def _marketplace_target_copy(label, copy, locale, model_skus, *, retained_shape=None):
@@ -991,6 +1005,31 @@ def _marketplace_target_copy(label, copy, locale, model_skus, *, retained_shape=
         if retained_shape is None or label not in retained_shape.legacy_targets:
             result['variants'] = localized
     return result
+
+
+def _frozen_store_prices(rows):
+    """Project the actual frozen calculator contract, without inventing a rate."""
+    from decimal import Decimal,InvalidOperation
+    quotes=[]
+    for row in rows:
+        calculation=row.get('calculation') or {}
+        inputs=calculation.get('inputs') or {};result=calculation.get('result') or {}
+        derived=calculation.get('derived_preview') or {}
+        percent=inputs.get('discount_reserve_pct',calculation.get('discount_rate_percent'))
+        sale=result.get('sale_after_discount',derived.get('sale_price'))
+        amount=row.get('amount');currency=row.get('currency')
+        if percent is None or sale is None:return []
+        try:
+            p,a,s=map(lambda v:Decimal(str(v)),(percent,amount,sale))
+            if (any(type(v) is bool for v in (percent,amount,sale)) or not all(v.is_finite() for v in (p,a,s))
+                    or not 0<p<100 or p!=p.to_integral_value() or min(a,s)<=0
+                    or a*(Decimal(1)-p/100)!=s or not isinstance(currency,str)
+                    or (result and (Decimal(str(result.get('list_price')))!=a or result.get('currency')!=currency))):
+                return []
+        except (InvalidOperation,ValueError,TypeError):return []
+        quote={'currency':currency,'list_price':amount,'discount_reserve_pct':int(p),'sale_after_discount':sale}
+        if quote not in quotes:quotes.append(quote)
+    return quotes
 
 
 def _project_frozen_variant_images(payload, documents, common_plan, common_run):
@@ -1206,17 +1245,10 @@ def build_marketplace_stage_payload(
         # Keep the v2 discount consumer bound to the exact frozen R1 calculation.
         # It requires a single target row; differing SKU prices remain unavailable,
         # never collapsed to the first SKU or replaced with historical defaults.
-        store_prices = []
-        for row in frozen['price'].get('sku_prices') or []:
-            calculation = row.get('calculation') or {}
-            derived = calculation.get('derived_preview') or {}
-            if calculation.get('discount_rate_percent') is None or derived.get('sale_price') is None:
-                store_prices = []
-                break
-            value = {'currency': row.get('currency'), 'list_price': row.get('amount'),
-                'discount_reserve_pct': calculation['discount_rate_percent'], 'sale_after_discount': derived['sale_price']}
-            if value not in store_prices:
-                store_prices.append(value)
+        store_prices = _frozen_store_prices(frozen['price'].get('sku_prices') or [])
+        if (_retained_copy_shape is not None and _retained_copy_shape.store_price_targets is not None
+                and label not in _retained_copy_shape.store_price_targets):
+            store_prices=[] # Preserve the exact original approved serialization.
         if store_prices:
             prices[label]['store_prices'] = store_prices
         copies[label] = _marketplace_target_copy(label, frozen['copy'], route['route_locales'][label],
@@ -1227,6 +1259,18 @@ def build_marketplace_stage_payload(
     facts['categories_by_target'] = categories
     facts['content_by_target'] = copies
     facts['stock_policy'] = deepcopy(r1['publication_stock_policy'])
+    frozen_allocation = (documents['first_review'].get('product_facts') or {}).get('warehouse_inventory_by_target')
+    if frozen_allocation is not None:
+        from domains.product_operations.approved_publication_snapshot import (
+            _warehouse_inventory_by_target, _targets,
+        )
+        full = _warehouse_inventory_by_target(frozen_allocation, targets=_targets(r1['canonical_targets']))
+        # A governed target reduction can omit complete shops, never warehouses
+        # inside a selected shop. Validate against the exact derived plan scope.
+        selected = {label: deepcopy(row) for label, row in full.items() if label in payload['targets']}
+        if selected:
+            facts['warehouse_inventory_by_target'] = _warehouse_inventory_by_target(
+                selected, targets=_targets(payload['targets']))
     if 'ozon:RU' in payload['targets']:
         if not isinstance(ozon_stock_decision, Mapping):
             raise ValueError('OZON_EXACT_STOCK_WAREHOUSE_DECISION_REQUIRED')
@@ -1254,6 +1298,8 @@ def build_marketplace_stage_payload(
             'title': facts['title'], 'category': facts['category'], 'selected_sku_keys': facts['selected_sku_keys'],
             'source_skus': facts['selected_skus'], 'sku_commercial_facts': facts['sku_commercial_facts'],
             'stock_policy': deepcopy(facts['stock_policy']),
+            **({'warehouse_inventory_by_target': deepcopy(facts['warehouse_inventory_by_target'])}
+               if 'warehouse_inventory_by_target' in facts else {}),
             **({'ozon_stock_decision': deepcopy(facts['ozon_stock_decision'])}
                if 'ozon_stock_decision' in facts else {})},
         'content': {'approved': True, 'package_id': payload['content_package_id'], 'images': payload['images']},

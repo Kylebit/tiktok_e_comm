@@ -4,9 +4,10 @@ Construction belongs to startup. GET projection is only an existing SQLite
 snapshot. Explicit review prepare/decision use the signed READ producer and
 the automatically owned helper. Nothing migrates schemas or replays old tasks.
 """
-from contextlib import contextmanager,ExitStack
+from contextlib import contextmanager,ExitStack,closing
 from pathlib import Path
 from dataclasses import asdict
+from copy import deepcopy
 import json
 import sqlite3
 import threading
@@ -80,17 +81,20 @@ def _worker_failure(decision_id,error):
 def check_current_rounds(store,plan_id,*,operations=None):
     from shared_platform import publication_r3_image_bridge as bridge
     from shared_platform.workbench_publication_native import load_service_r2_documents
-    with store._connect_readonly() as db:
+    with closing(store._connect_readonly()) as db,db:
         db.execute('BEGIN')
         row=db.execute('SELECT payload_json FROM release_plans WHERE plan_id=?',(plan_id,)).fetchone()
         if row is None:raise ApprovalBlocked('NATIVE_SOLE_FINAL_PLAN_MISSING')
         payload=json.loads(row['payload_json'])
-        if operations is not None:
-            operations.engine.assert_publication_scope_consumable(payload['product_id'], payload=payload)
         binding=payload['r3_marketplace_binding']
-        documents=load_service_r2_documents(payload['product_id'],operations)
-        if bridge.validate_r2_identity(documents)!=binding['r2_identity']:
-            raise ApprovalBlocked('NATIVE_SOLE_FINAL_CURRENT_ROUNDS_CHANGED')
+    # Loading R2 may open the SAME store through the R1 category index. Never
+    # hold a shared read lock across that nested reader: a pending writer would
+    # wait on us while its pending lock prevents the nested read from starting.
+    if operations is not None:
+        operations.engine.assert_publication_scope_consumable(payload['product_id'], payload=payload)
+    documents=load_service_r2_documents(payload['product_id'],operations)
+    if bridge.validate_r2_identity(documents)!=binding['r2_identity']:
+        raise ApprovalBlocked('NATIVE_SOLE_FINAL_CURRENT_ROUNDS_CHANGED')
 
 
 class NativeSoleFinalService:
@@ -170,7 +174,7 @@ class NativeSoleFinalService:
         try:
             # An owned lease fixes the generation while the global operation
             # lock is released. Every actor use still checks that generation.
-            yield NativeSoleFinalDecisionService(self.store,reader)
+            yield NativeSoleFinalDecisionService(self.store,reader,review_runtime=self)
         finally:
             with self._lock:self._active_operations-=1
             stack.close()
@@ -180,6 +184,35 @@ class NativeSoleFinalService:
         with self.operation() as service:
             check_current_rounds(self.store,plan_id,operations=self._operations)
             return service.prepare(plan_id)
+
+    def review_preflight(self,plan_id,*,projection=False):
+        """Fresh on writes; bounded metadata-invalidated hints for GET display."""
+        from shared_platform.publication_execution_package import NativePublicationPreflightBlocked
+        from shared_platform.publication_execution_preflight import preflight_native_review
+        plan=self.store.get_plan(plan_id)
+        if plan is None:raise ApprovalBlocked('NATIVE_SOLE_FINAL_PLAN_MISSING')
+        documents=(plan['payload'].get('r3_marketplace_binding') or {}).get('documents') or {}
+        paths=[self.store.path,Path(str(self.store.path)+'-wal')]
+        for name in ('generation_result','translation_result'):
+            paths.extend(Path(r['artifact_path'] or r['local_path']) for r in (documents.get(name) or {}).get('assets',[])
+                if r.get('artifact_path') or r.get('local_path'))
+        import os
+        bound=os.environ.get('ORBIT_CATALOG_DATABASE')
+        if bound:paths.append(Path(bound))
+        def stamp(path):
+            try:info=path.stat();return str(path),info.st_size,info.st_mtime_ns
+            except OSError:return str(path),None,None
+        key=(plan_id,plan['payload_digest'],bound,tuple(stamp(p) for p in paths))
+        cache=getattr(self,'_review_preflight_cache',{})
+        if projection and key in cache:return deepcopy(cache[key])
+        try:report=preflight_native_review(self,plan_id)
+        except NativePublicationPreflightBlocked as error:
+            report=error.report
+            cache.clear();cache[key]=deepcopy(report);self._review_preflight_cache=cache
+            if not projection:raise
+            return deepcopy(report)
+        cache.clear();cache[key]=deepcopy(report);self._review_preflight_cache=cache
+        return report
 
     def _require_original_plan_scope(self, plan_id):
         adopted=getattr(self._operations,'agent_prepared_common',None)
@@ -346,12 +379,19 @@ class NativeSoleFinalService:
             with self.store._connect_readonly() as db:
                 db.execute('BEGIN')
                 from shared_platform.native_sole_final_decision import _hash
-                row=db.execute('SELECT plan_id FROM native_sole_final_nonces WHERE nonce_digest=?',
+                row=db.execute('SELECT * FROM native_sole_final_nonces WHERE nonce_digest=?',
                     (_hash(nonce.encode()),)).fetchone() if type(nonce) is str else None
                 if row is None:raise ApprovalBlocked('NATIVE_SOLE_FINAL_NONCE_INVALID')
                 plan_id=row['plan_id']
             self._require_original_plan_scope(plan_id)
             check_current_rounds(self.store,plan_id,operations=self._operations)
+            current_actor=service._actor()
+            from shared_platform.publication_execution_preflight import normal_new_task
+            if normal_new_task(self) and (row['decision_id'] is not None or row['expires_at_epoch']>int(time.time())
+                    and all(row[k]==current_actor[k] for k in ('owner_sid','session_id','instance_id'))):
+                # The normal valid nonce needs one fresh decision READ, not a
+                # redundant refresh READ, nonce INSERT and second decision READ.
+                return service.decide(nonce=nonce,review_digest=review_digest)
             # A page TTL or a genuine helper-session refresh is technical
             # recovery of these exact displayed bytes, never another decision.
             value=service.refresh_nonce(nonce=nonce,review_digest=review_digest)
@@ -843,6 +883,19 @@ class NativeSoleFinalService:
                         'decision_id':decision['decision_id'] if decision else None,
                         'approval_saved':bool(decision),'execution_authority':False})
                 value['common']={**(value.get('common') or {}),'status':'VERIFIED'}
+                from shared_platform.publication_execution_preflight import normal_new_task
+                if not decision and normal_new_task(self):
+                    # All SQL projection facts are captured. Release its read
+                    # snapshot before preflight opens original native readers.
+                    db.commit()
+                    preflight=self.review_preflight(plan['plan_id'],projection=True)
+                    market['native_preflight']=preflight
+                    market['blockers']=preflight['blockers']
+                    available=preflight['status']=='READY'
+                    market['final_review_available']=available
+                    market['final_review_admission'].update(final_review_available=available,blockers=preflight['blockers'])
+                    market['native_final_review'].update(status='READY' if available else 'BLOCKED',blockers=preflight['blockers'])
+                    if not available:market['status']='BLOCKED'
                 value['marketplace']=market
                 return value
         except Exception as error:
@@ -911,7 +964,10 @@ def handle_native_final(handler,*,method):
         else:raise ApprovalBlocked('NATIVE_SOLE_FINAL_FIELDS_INVALID')
         handler._json(200,{'ok':True,**result,'external_writes_performed':[]})
     except (ValueError,OSError,KeyError,TypeError,RuntimeError,ReleaseStoreError) as error:
-        handler._json(409,{'ok':False,'error':str(error),'execution_authority':False,'external_writes_performed':[]})
+        from shared_platform.publication_execution_package import NativePublicationPreflightBlocked
+        report=error.report if type(error) is NativePublicationPreflightBlocked else None
+        handler._json(409,{'ok':False,'error':str(error),'execution_authority':False,'external_writes_performed':[],
+            **({'preflight':report,'blockers':report['blockers'],'final_review_available':False} if report else {})})
     return True
 
 

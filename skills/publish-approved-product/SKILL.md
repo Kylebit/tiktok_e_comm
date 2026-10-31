@@ -5,6 +5,21 @@ description: "Execute round 3 for a product with immutable round-1 facts and rou
 
 # Publish Approved Product
 
+<!-- orbit-publication-entry:v1:start -->
+## Normal end-to-end Agent route
+
+Use the selected source's `scripts/orbit_publish.py` with the explicit profile
+in `docs/PUBLICATION_AGENT_ENTRY.md`. Verify actual source/config/data/runtime;
+a candidate commit or personal Skill copy is not deployment. Preserve the
+original task, COMMON readback, complete frozen candidate and server-stored
+sole decision. Preflight must consume actual adapter/discount/warehouse/image
+contracts before final review. Execute independent platforms against that same
+decision; explicit reconcile observes the original requests and never republishes
+UNKNOWN. Do not switch workflow mode, profile or source-key to evade recovery.
+The original frontend is the only protected approval surface, not CLI JSON.
+Narrow legacy commands below remain mode-specific, not an alternative approval.
+<!-- orbit-publication-entry:v1:end -->
+
 This Skill owns the entire third round. It may not re-open first-round fact,
 category, price, copy, target or image-plan approval, and it may not regenerate
 second-round images. It validates immutable snapshot identity and performs

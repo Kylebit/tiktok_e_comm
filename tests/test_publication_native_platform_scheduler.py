@@ -169,7 +169,10 @@ def test_partition_exception_never_synthesizes_safe_zero_write_or_success():
     assert set(calls) == {"TIKTOK", "SHOPEE", "OZON"}
     assert results["SHOPEE"][1]["outcome_unknown"] is True
     assert "external_writes_performed" not in results["SHOPEE"][1]
-    assert results["OZON"] == (202, {"ok": True, "state": "SUBMITTED"})
+    assert results["OZON"][0] == 202 and results["OZON"][1]["state"] == "SUBMITTED"
+    span=results["SHOPEE"][1]["orchestration_span"]
+    assert span["elapsed_seconds"] >= 0 and span["started_at"] <= span["finished_at"]
+    assert span["next_action"] == "RECONCILE_ORIGINAL_PARTITION_READONLY"
 
 
 def test_partition_contract_rejects_untrusted_or_changed_target_scope():

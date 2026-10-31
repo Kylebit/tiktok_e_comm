@@ -190,6 +190,13 @@ def _official_catalog_rows(detail, command, shop, region):
 
 
 class NativeTikTokExactStorefrontReadback:
+    @staticmethod
+    def local_observation_contract():
+        """The actual DTO scope; absent zero rows have no completeness proof."""
+        return {'schema_version':'native-tiktok-readback-contract/v1',
+            'inventory_scope':'EXACT_RETURNED_DETAIL_ROWS',
+            'omitted_zero_quantity_proven':False,'provider_access':'NOT_OBSERVED'}
+
     def __init__(self,*,shop_post=None,official_call=None,token_loader=None,inventory_bindings=None,evidence=None,required_product_attributes=None):
         self._shop_post=shop_post;self._official_call=official_call;self._token_loader=token_loader
         self._inventory_bindings=inventory_bindings if inventory_bindings is not None else {}

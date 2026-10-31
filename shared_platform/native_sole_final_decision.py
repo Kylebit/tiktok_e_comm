@@ -75,9 +75,19 @@ def _frozen(raw):
 
 class NativeSoleFinalDecisionService:
     """Inject the existing OS reader and trusted service store, never a request dict."""
-    def __init__(self,store,actor_reader):
+    def __init__(self,store,actor_reader,*,review_runtime=None):
         if type(store) is not ReleaseStore:_fail('NATIVE_SOLE_FINAL_STORE_REQUIRED')
         self.store,self.actor_reader=store,actor_reader
+        if review_runtime is not None:
+            from shared_platform.native_sole_final_service import NativeSoleFinalService
+            if type(review_runtime) is not NativeSoleFinalService or review_runtime.store is not store:
+                _fail('NATIVE_REVIEW_RUNTIME_REQUIRED')
+        self.review_runtime=review_runtime
+
+    def _preflight(self,plan_id):
+        if self.review_runtime is not None:
+            from shared_platform.publication_execution_preflight import normal_new_task
+            if normal_new_task(self.review_runtime):return self.review_runtime.review_preflight(plan_id)
 
     def _actor(self):
         actor=read_native_actor_identity(self.actor_reader)
@@ -184,6 +194,7 @@ class NativeSoleFinalDecisionService:
     def prepare(self,plan_id):
         """Explicit final-review preparation, never called by a read-only GET."""
         actor=self._actor()
+        self._preflight(plan_id)
         observation=self._observe_market_current(plan_id)
         with self._transaction() as db:
             review,graph,diagnostic,read_bytes=self._candidate(db,plan_id,current_observation=observation)
@@ -204,6 +215,13 @@ class NativeSoleFinalDecisionService:
         actor=self._actor()
         if type(nonce) is not str or len(nonce)!=64 or type(review_digest) is not str:
             _fail('NATIVE_SOLE_FINAL_NONCE_INVALID')
+        with closing(self.store._connect_readonly()) as db,db:
+            row=db.execute('SELECT plan_id,owner_sid,review_digest FROM native_sole_final_nonces WHERE nonce_digest=?',(_hash(nonce.encode()),)).fetchone()
+            if row is None or row['owner_sid']!=actor['owner_sid'] or row['review_digest']!=review_digest:
+                _fail('NATIVE_SOLE_FINAL_NONCE_BINDING_CHANGED')
+            first=db.execute('SELECT 1 FROM native_sole_final_decisions WHERE plan_id=?',(row['plan_id'],)).fetchone() is None
+            plan_id=row['plan_id']
+        if first:self._preflight(plan_id)
         observation=self._observe_nonce_current(nonce,review_digest,actor)
         with self._transaction() as db:
             row=db.execute('SELECT * FROM native_sole_final_nonces WHERE nonce_digest=?',(_hash(nonce.encode()),)).fetchone()

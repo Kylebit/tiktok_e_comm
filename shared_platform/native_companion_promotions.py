@@ -102,8 +102,14 @@ def _execution_scope(active,plan,run,labels):
         with _b0431_execution_scope(active,plan,run,labels) as scope:
             yield scope
         return
-    from shared_platform.native_prepared_v4_targets import _scope
-    _scope(active,plan) # Exact original continuation, actual six R1/R2 files.
+    operations=active.runtime._operations
+    if (getattr(operations,'new_task_worker',None) is not None
+            and getattr(operations,'original_continuation',None) is None
+            and getattr(operations,'agent_prepared_common',None) is None):
+        from shared_platform.native_new_task_v4_targets import scope as require_scope
+    else:
+        from shared_platform.native_prepared_v4_targets import _scope as require_scope
+    require_scope(active,plan) # Same original task/decision/R1/R2, not a new grant.
     if _SCOPE.get() is not None:raise ApprovalBlocked('NATIVE_PROMOTION_SCOPE_ALREADY_HELD')
     rows={r['target_label']:r for r in run['targets']};proofs={}
     from shared_platform.postpublish_promotions import approved_promotion_action_policy

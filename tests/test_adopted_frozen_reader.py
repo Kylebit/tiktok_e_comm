@@ -95,6 +95,8 @@ out.write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf
 
 
 def test_actual_approved_adoption_reader_and_nonadoption_fail_closed(tmp_path):
+    from retained_fixture_gate import require_retained_inputs
+    require_retained_inputs('ORBIT_READER_ACTUAL_ROOT', 'ORBIT_READER_ACTUAL_TASK_ROOT', 'ORBIT_READER_OUTPUT')
     script=tmp_path/'actual-approved-reader.py';script.write_text(ACTUAL,encoding='utf-8')
     reader=Path(__file__).resolve().parents[1]/'shared_platform/workbench_publication_native.py'
     result=subprocess.run([sys.executable,'-I','-B','-X','utf8',str(script),str(reader)],text=True,capture_output=True,timeout=90)

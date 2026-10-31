@@ -90,13 +90,14 @@ def _runtime(value):
     return deepcopy(value)
 
 
-def _domain_material(inputs):
+def _domain_material(inputs,*,category_store=None):
     """Actual R1/R2/R3 consumer; no placeholder producer or all-success handler."""
     if 'documents' in inputs:
         from shared_platform.publication_r3_image_bridge import build_marketplace_review_material
         return build_marketplace_review_material(inputs['documents'],inputs['common_plan'],inputs['common_run'],
             policy=inputs['policy'],incidents=inputs['incident_registry'],
-            promotion_policy=inputs.get('promotion_policy'),ozon_stock_decision=inputs.get('ozon_stock_decision'))
+            promotion_policy=inputs.get('promotion_policy'),ozon_stock_decision=inputs.get('ozon_stock_decision'),
+            category_store=category_store)
     # A retained service-frozen payload uses the same original v4 projection and
     # quality compiler; local checksums grant no COMMON or final-decision rights.
     from domains.product_operations.approved_publication_snapshot import build_publication_preview
@@ -188,7 +189,7 @@ def inspect_execution_dependencies(payload,snapshot,candidate,inputs):
     return blockers
 
 
-def compile_publication_execution_package(inputs,*,task_id,source_identity,runtime,approval_ref=None):
+def compile_publication_execution_package(inputs,*,task_id,source_identity,runtime,approval_ref=None,category_store=None):
     _need(_object(inputs) and type(task_id) is str and task_id,'PACKAGE_INPUTS_REQUIRED')
     _need(_object(source_identity) and {'root','head','manifest_digest'}==set(source_identity),'SOURCE_IDENTITY_REQUIRED')
     runtime=_runtime(runtime)
@@ -196,7 +197,7 @@ def compile_publication_execution_package(inputs,*,task_id,source_identity,runti
     if 'documents' not in inputs and not _object(inputs.get('immutable_plan_payload')):
         blockers.append({'code':'PUBLICATION_PAYLOAD_MISSING'})
     else:
-        try:material=_domain_material(inputs)
+        try:material=_domain_material(inputs,category_store=category_store)
         except (ValueError,KeyError,TypeError,OSError) as error:
             blockers.append({'code':'ORIGINAL_PUBLICATION_COMPILER_REJECTED','detail':type(error).__name__+':'+str(error)[:300]})
     payload=material.get('payload') or inputs.get('immutable_plan_payload') or {}
@@ -263,68 +264,6 @@ def render_package_review(package):
 
 
 def preflight_native_review(runtime,plan_id):
-    """Service-owned, zero-write full dependency gate before the one review.
-
-    Uses original domain graph/COMMON reader and installed schemas. Caller JSON
-    and observation booleans cannot replace these reads or create authority.
-    No HTTP, SDK, token renewal, paid operation, DDL or cached decision here.
-    """
-    from shared_platform.native_sole_final_service import NativeSoleFinalService
-    from shared_platform.r3_frozen_review_producer import read_stored_domain_graph
-    from shared_platform.r3_common_source_facts import NativeCommonSourceReader
-    from domains.product_operations.approved_publication_snapshot import build_publication_preview
-    from shared_platform.publication_r3_image_bridge import marketplace_quality_evidence
-    _need(type(runtime) is NativeSoleFinalService,'NATIVE_REVIEW_RUNTIME_REQUIRED')
-    plan=runtime.store.get_plan(plan_id)
-    _need(plan is not None,'NATIVE_REVIEW_ORIGINAL_PLAN_REQUIRED')
-    payload=plan['payload'];blockers=[]
-    def block(code,target=None):
-        row={'code':code,**({'target_label':target} if target else {})}
-        if row not in blockers:blockers.append(row)
-    with runtime.store._connect_readonly() as db:
-        db.execute('BEGIN')
-        graph=read_stored_domain_graph(db,plan_id,native_reader=NativeCommonSourceReader(runtime.store))
-        tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        snapshot=build_publication_preview(payload)
-        evidence=marketplace_quality_evidence(snapshot,payload,category_store=runtime.store,category_connection=db)
-    candidate=json.loads(graph.display_bytes)
-    for check in evidence['platform_preflight']['checks']:
-        if check['status']!='PASSED':block(check['code'],check.get('target_label'))
-    documents=payload['r3_marketplace_binding']['documents']
-    assets=[]
-    for row in documents['generation_result'].get('assets',[]):
-        path=row.get('artifact_path') or row.get('local_path')
-        if not path:block('R2_LOCAL_IMAGE_ARTIFACT_MISSING');continue
-        assets.append({'url':row.get('public_url'),'path':path,'sha256':row.get('artifact_digest'),
-                       'role':row.get('role'),'brand':row.get('brand_id')})
-    _asset_checks(snapshot,assets,block)
-    from shared_platform.postpublish_promotions import approved_promotion_action_policy
-    actions=(candidate.get('companion_actions') or {}).get('actions') or []
-    for action in actions:
-        if action.get('action_kind')=='POSTPUBLISH_DIRECT_DISCOUNT':
-            try:approved_promotion_action_policy(payload,action['action_target'])
-            except (ValueError,KeyError,TypeError):block('DISCOUNT_CONSUMER_FACTS_INCOMPLETE',action.get('prerequisite_target'))
-    if any(a.get('action_kind')=='POSTPUBLISH_DIRECT_DISCOUNT' for a in actions):
-        required={'oneclick_release_jobs','oneclick_release_targets','oneclick_release_events','oneclick_release_outcomes',
-                  'oneclick_release_manual_acceptances','oneclick_release_write_occurrences'}
-        if not required<=tables:block('ONECLICK_SCHEMA_NOT_INSTALLED')
-    from shared_platform.native_final_mutation_budget import _EXPECTED_SCHEMA
-    with runtime.store._connect_readonly() as db:
-        for name in _EXPECTED_SCHEMA:
-            if db.execute('SELECT 1 FROM sqlite_master WHERE name=?',(name,)).fetchone() is None:
-                block('NATIVE_MUTATION_BUDGET_SCHEMA_NOT_INSTALLED');break
-    # Prove the same startup-selected catalog and canonical Model identity that
-    # the new-task adapter will consume, before asking for human approval.
-    if (getattr(runtime._operations,'new_task_worker',None) is not None
-            and getattr(runtime._operations,'original_continuation',None) is None
-            and getattr(runtime._operations,'agent_prepared_common',None) is None):
-        bound=os.environ.get('ORBIT_CATALOG_DATABASE')
-        if not bound or not Path(bound).is_absolute() or not Path(bound).is_file():block('CATALOG_STARTUP_BINDING_REQUIRED')
-        if any(not re.fullmatch(r'[0-9]{4}',str(r.get('model_sku',''))) for r in snapshot['skus']):
-            block('CANONICAL_ALIAS_AUTHORITY_REQUIRED')
-    report={'schema_version':'native-publication-preflight/v1','offer_id':plan['product_id'],'plan_id':plan_id,
-        'candidate_digest':graph.candidate_digest,'targets':list(graph.targets),'blockers':blockers,
-        'status':'BLOCKED' if blockers else 'READY','execution_authority':False}
-    report['preflight_digest']=digest(report)
-    if blockers:raise NativePublicationPreflightBlocked(report)
-    return report
+    """Compatibility entry; the service-owned checker has a single source."""
+    from shared_platform.publication_execution_preflight import preflight_native_review as inspect
+    return inspect(runtime,plan_id)

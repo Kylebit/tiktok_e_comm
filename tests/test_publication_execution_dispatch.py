@@ -59,12 +59,15 @@ def test_unknown_one_platform_never_reposts_and_others_finish(tmp_path):
     second = _run(tmp_path, wire)
     assert posts.count("SHOPEE") == 1
     assert [row["status"] for row in first] == ["PUBLISHED", "PROCESSING", "PUBLISHED"]
-    assert second[1]["reason_code"] == "ORIGINAL_START_ID_MISSING"
+    assert second[1]["reason_code"] == "START_OUTCOME_UNKNOWN"
     journal = dispatch.DispatchJournal(tmp_path / "dispatch")
     key, _ = dispatch._bound("http://127.0.0.1:49100", "987650123", "fresh-three-model-plan", "SHOPEE", None)
     state = journal.get(key)
     assert state["phase"] == "UNKNOWN" and state["next_action"] == "RECONCILE_ORIGINAL_START"
     assert state["owner"].startswith("pid:") and state["revision"] >= 2 and state["next_check_at"]
+    spans=journal.spans(key)
+    assert len(spans)==1 and spans[0]["kind"]=='START'
+    assert spans[0]["error_type"]=='TimeoutError' and spans[0]["elapsed_seconds"]>=0
 
 
 def test_body_persists_before_start_identity_decode_then_local_reconcile(tmp_path, monkeypatch):
@@ -132,3 +135,15 @@ def test_invalid_bounds_are_rejected_before_any_artifact_or_http(tmp_path):
         with pytest.raises(ValueError):
             _run(tmp_path, lambda *a, **k: pytest.fail("no HTTP"), **options)
     assert not (tmp_path / "dispatch").exists()
+
+
+def test_existing_schema_mismatch_holds_before_wire_without_migrating(tmp_path):
+    journal=dispatch.DispatchJournal(tmp_path/'dispatch')
+    dispatch.ensure_private_runtime_directory(journal.root,
+        dispatch._key({'schema':dispatch.SCHEMA,'root':str(journal.root)}))
+    with sqlite3.connect(journal.path) as connection:
+        connection.execute('CREATE TABLE publication_dispatch(scope_key TEXT)')
+    before=journal.path.read_bytes()
+    with pytest.raises(ValueError,match='JOURNAL_SCHEMA_HOLD'):
+        _run(tmp_path,lambda *a,**k:pytest.fail('schema mismatch must prevent HTTP'))
+    assert journal.path.read_bytes()==before

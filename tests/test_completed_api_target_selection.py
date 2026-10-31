@@ -8,6 +8,8 @@ import os,subprocess,sys
 
 
 def test_actual_B_api9_ro_compilation_and_scope_rejections():
+    from retained_fixture_gate import require_retained_inputs
+    require_retained_inputs('ORBIT_API9_READONLY_DIAGNOSTIC')
     script=Path(os.environ['ORBIT_API9_READONLY_DIAGNOSTIC'])
     assert script.is_absolute() and script.is_file()
     result=subprocess.run([sys.executable,'-I','-B','-X','utf8',str(script),'--negative-validation'],

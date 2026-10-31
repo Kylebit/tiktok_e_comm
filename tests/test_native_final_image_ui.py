@@ -110,6 +110,8 @@ def test_ui_source_real_engine_cas_hmac_once_preserves_old_events(segments,monke
 
 
 def test_actual_stored_candidate_and_request_are_unchanged(monkeypatch):
+    from retained_fixture_gate import require_retained_inputs
+    require_retained_inputs('ORBIT_UI_ACTUAL_RELEASE_STORE', 'ORBIT_UI_ACTUAL_STAGE', 'ORBIT_UI_USER_REQUEST')
     from shared_platform import release_store
     actual=Path(os.environ['ORBIT_UI_ACTUAL_RELEASE_STORE']);assert actual.is_absolute()
     monkeypatch.setattr(release_store,'DEFAULT_RELEASE_STORE_PATH',actual)
@@ -196,6 +198,8 @@ fs.writeFileSync(path.join(out,'BROWSER_COMPONENT_RESULT.json'),JSON.stringify({
 
 
 def test_actual_frozen_native_images_pane_in_independent_chromium(tmp_path):
+    from retained_fixture_gate import require_retained_inputs
+    require_retained_inputs('ORBIT_UI_ACTUAL_STAGE', 'ORBIT_UI_IMAGE_PROOF', 'ORBIT_UI_OUTPUT', 'ORBIT_UI_PLAYWRIGHT')
     node=Path(os.environ['ORBIT_NODE_BIN']);script=tmp_path/'native-ui.cjs';script.write_text(BROWSER,encoding='utf-8')
     root=Path(os.environ.get('ORBIT_UI_SOURCE_ROOT',str(ROOT)))
     result=subprocess.run([str(node),str(script),str(root)],text=True,capture_output=True,timeout=90)

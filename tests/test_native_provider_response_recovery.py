@@ -28,20 +28,31 @@ class Response(io.BytesIO):
     def geturl(self):return 'https://example.invalid/provider'
 
 
-def test_full_new_native_failure_recovers_original_id_and_strict_readback_without_new_write(live,monkeypatch,tmp_path):
-    service_data=tmp_path.parent/'provider-recovery-service-data'
+@pytest.mark.parametrize('continue_in_attempt',[False,True],ids=['failed-original-readonly','same-attempt-approved-remainder'])
+def test_full_new_native_failure_recovers_original_id_and_strict_readback_without_new_write(live,monkeypatch,tmp_path,continue_in_attempt):
+    service_data=tmp_path.parent/('provider-recovery-'+tmp_path.name)
     import test_native_sole_final_service as service_fixture
     from shared_platform.native_windows_actor import NativeActorServiceConfig
     monkeypatch.setattr(service_fixture,'NativeActorServiceConfig',
         lambda _root,operator:NativeActorServiceConfig(service_data,operator))
     runtime,market,task,_=complete_new_task(live,monkeypatch,tmp_path)
+    # release_adapters imports this factory by value. Across parameterized
+    # fixtures its first import must not retain another fixture's closed DB.
+    from modules.products import release_adapters
+    from shared_platform.release_store import ReleaseStore
+    monkeypatch.setattr(release_adapters,'default_release_store',lambda:ReleaseStore(runtime.store.path))
     wire=[];state={'snapshot':None,'status':'UNLIST','decode_failed':False}
     ctx=r.RegionContext('PH',101,500,'synthetic-shop-token','synthetic-merchant-token')
     token_file=tmp_path/'synthetic-token-binding.json';token_file.write_text('{}')
     from modules.shopee import auth
     from shared_platform import native_canonical_provider_edges as edges
     monkeypatch.setattr(auth,'token_path',lambda:token_file)
-    monkeypatch.setattr(edges,'_existing_shopee_context',lambda region:ctx)
+    monkeypatch.setattr(edges,'_existing_shopee_context',lambda region,*_:ctx)
+    if not continue_in_attempt:
+        # Closed process-interruption seam: no in-attempt recovery consumer
+        # survives. This exercises only the existing FAILED read-only route.
+        from shared_platform import native_provider_continuation as continuation
+        monkeypatch.setattr(continuation,'continue_original_result',lambda *args:None)
     monkeypatch.setattr(client,'shopee_config',lambda:{'host':'https://example.invalid','partner_id':123,'partner_key':'synthetic-partner'})
     def parts():
         snapshot=state['snapshot'];label=state['label'];approved=r._approved_models(snapshot,label)
@@ -66,6 +77,10 @@ def test_full_new_native_failure_recovers_original_id_and_strict_readback_withou
     def network(req,**options):
         path=urlsplit(req.full_url).path;wire.append((req.get_method(),path))
         if req.get_method()=='POST':
+            if path=='/api/v2/product/unlist_item':
+                assert continue_in_attempt and json.loads(req.data)=={'item_list':[{'item_id':123456789,'unlist':False}]}
+                state['status']='NORMAL'
+                return Response(b'{"error":"","response":{"success_list":[{"item_id":123456789,"unlist":false}]}}')
             assert path==r.CREATE_TASK_PATH
             return Response(b'{"error":"","response":{"publish_task_id":81234567}}')
         item,models,global_models=parts()
@@ -109,6 +124,15 @@ def test_full_new_native_failure_recovers_original_id_and_strict_readback_withou
                 'dispatch_attempted':False,'readback_completed':False,'external_write_count':0}
         return selected
     monkeypatch.setattr(native,'_dependencies',dependencies)
+    # Keep pre-wire diagnostics in this synthetic fixture; production errors
+    # remain sanitized and never expose provider/credential text.
+    from shared_platform import native_prepared_v4_targets as prepared_targets
+    dependency_errors=[]
+    original_failure=prepared_targets._pre_submit_failure
+    def failure(request,error):
+        dependency_errors.append((type(error).__name__,str(error)))
+        return original_failure(request,error)
+    monkeypatch.setattr(prepared_targets,'_pre_submit_failure',failure)
     try:
         prepared=runtime.prepare(market['plan_id'])
         decision=runtime.decide(nonce=prepared['nonce'],review_digest=prepared['review_digest'])
@@ -125,6 +149,20 @@ def test_full_new_native_failure_recovers_original_id_and_strict_readback_withou
         run_id='release-run:'+market['payload_digest'][:24]
         before=runtime.store.get_run(run_id)
         target=next(t for t in before['targets'] if t['target_label']=='shopee:PH')
+        if continue_in_attempt:
+            assert target['status']=='SUCCEEDED',(target,dependency_errors)
+            proof=target['readback']['evidence']
+            assert proof['approved_remaining_steps']['performed']==['LIST_ORIGINAL_ITEM']
+            assert proof['approved_remaining_steps']['new_create_calls']==0
+            assert proof['approved_remaining_steps']['original_outcome_confirmation_appended'] is True
+            assert target['attempts']==1
+            with runtime.store._connect_readonly() as db:
+                original=db.execute("SELECT r.initial_outcome,o.outcome FROM native_final_budget_reservations r JOIN native_final_budget_outcomes o USING(scope_key,sequence) WHERE r.operation='create_publish_task'").fetchall()
+                assert len(original)==1 and tuple(original[0])==('UNKNOWN','ACCEPTED')
+            assert sum(method=='POST' and path==r.CREATE_TASK_PATH for method,path in wire)==1
+            assert sum(method=='POST' for method,_ in wire)==2
+            assert sum(method=='GET' for method,_ in wire)==12
+            return
         assert state['decode_failed'] and target['status']=='FAILED',target
         assert target['failure_events'][-1]['evidence']['outcome_unknown'] is True
         with runtime.store._connect_readonly() as db:

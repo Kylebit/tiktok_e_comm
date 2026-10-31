@@ -205,7 +205,10 @@ class ProviderResponseJournal:
             """)
 
     def claim(self, request_identity):
-        key = _digest(request_identity)
+        # Derived native-ledger evidence is supplementary, never a fresh wire
+        # identity. Adding it in a later version must not hide an older raw
+        # response or make the same provider request eligible for another POST.
+        key = _digest({k:v for k,v in request_identity.items() if k!='native_request_digest'})
         with sqlite3.connect(self.path, timeout=10) as c:
             c.row_factory = sqlite3.Row
             c.execute("BEGIN IMMEDIATE")
@@ -315,6 +318,8 @@ def retained_urlopen(provider, request, opener, **kwargs):
                 or type(resource["shop_region"]) is not str or len(resource["shop_region"]) != 2):
             raise ValueError("provider create-task resource identity is incomplete")
         request_identity["resource"] = resource
+        from shared_platform.native_final_mutation_budget import _request_sha
+        request_identity["native_request_digest"] = _request_sha('create_publish_task',(body,),{})
     key, prior = journal.claim(request_identity)
     if prior:
         raw = prior.get("response_body")

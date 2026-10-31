@@ -9,6 +9,10 @@ from ctypes import wintypes as W
 import json
 import os
 from pathlib import Path
+from contextlib import contextmanager
+from contextvars import ContextVar
+import hashlib
+import time
 import re
 
 from shared_platform import local_operator_session as owner
@@ -16,7 +20,7 @@ from shared_platform.common_offer_authority_store import canonical_bytes
 from shared_platform.final_review_server_admission import ApprovalBlocked
 
 REQUEST_SCHEMA = 'native-owner-authenticate-request/v1'
-RESULT_SCHEMA = 'native-owner-authenticate-result/v1'
+RESULT_SCHEMA = 'native-owner-authenticate-result/v2'
 CLIENT_SCHEMA = 'native-owner-authenticate-client/v1'
 CLIENT_RESULT_SCHEMA = 'native-owner-authenticate-client-result/v1'
 _CONTEXT = {'nonce','server_pid','server_birth_100ns','instance_id','logical_profile'}
@@ -96,12 +100,13 @@ def serve_authentication(service,row):
     result['schema_version']=RESULT_SCHEMA
     try:
         grant=service.grant_from_owner_file(filename=row['filename'])
-        result['identity']=service.authenticate(grant)
+        result['identity'],result['session_expires_at_epoch']=service._authenticate_with_expiry(grant)
         result['error']=None
     except ApprovalBlocked as error:
         # A known session rejection is acknowledged; unknown transport errors
         # still have no response and are never replayed by the supervisor.
         result['identity']=None
+        result['session_expires_at_epoch']=None
         result['error']=str(error)
         if not 0<len(result['error'])<=256: raise
     return result
@@ -109,11 +114,12 @@ def serve_authentication(service,row):
 
 def check_result(row,context):
     _check_context(row)
-    if (set(row)!=_CONTEXT|{'schema_version','identity','error'}
+    if (set(row)!=_CONTEXT|{'schema_version','identity','error','session_expires_at_epoch'}
             or row['schema_version']!=RESULT_SCHEMA
             or any(row[key]!=context[key] for key in _CONTEXT)
             or not (row['error'] is None and type(row['identity']) is dict
-                    or row['identity'] is None and type(row['error']) is str
+                    and type(row['session_expires_at_epoch']) is int and row['session_expires_at_epoch']>0
+                    or row['identity'] is None and row['session_expires_at_epoch'] is None and type(row['error']) is str
                     and 0<len(row['error'])<=256)):
         _deny('NATIVE_ACTOR_AUTH_RESULT_INVALID')
     return row
@@ -215,5 +221,71 @@ class NativeHelperActorProfileReader:
             owner.verify_owner_only(self.carrier,self.endpoint.owner_sid,protected=False)
 
     def read_verified(self):
+        lease=_OPERATION_IDENTITY.get()
+        if lease is not None and lease.reader is self:
+            return lease.read()
         return self.supervisor.authenticate_carrier(self.carrier,
             expected_endpoint=self.endpoint,expected_birth=self.birth)
+
+    @contextmanager
+    def verified_operation(self):
+        """One real RPC for this lexical operation, never a persistent grant.
+
+        Every use still checks the actual Windows owner, helper birth,
+        profile/carrier bytes and exact server-issued session deadline.
+        Independent write-boundary readers outside this scope still RPC.
+        """
+        existing=_OPERATION_IDENTITY.get()
+        if existing is not None and existing.reader is self:
+            existing.read()
+            yield
+            existing.read()
+            return
+        before=_carrier_identity(self)
+        identity,deadline=self.supervisor.authenticate_carrier(self.carrier,
+            expected_endpoint=self.endpoint,expected_birth=self.birth,_with_expiry=True)
+        if before!=_carrier_identity(self):_deny('NATIVE_ACTOR_HANDOFF_CHANGED')
+        lease=_VerifiedOperationIdentity(self,identity,deadline,before)
+        lease.read()
+        token=_OPERATION_IDENTITY.set(lease)
+        try:yield
+        finally:_OPERATION_IDENTITY.reset(token)
+
+
+_OPERATION_IDENTITY=ContextVar('native_verified_operation_identity',default=None)
+
+
+def _carrier_identity(reader):
+    """Read the protected carrier without exposing any capability bytes."""
+    from shared_platform.native_windows_actor import _identity
+    path=owner._safe_path(reader.carrier)
+    owner.verify_owner_only(path,reader.endpoint.owner_sid,protected=False)
+    before=path.stat()
+    with path.open('rb') as stream:
+        opened=os.fstat(stream.fileno());raw=stream.read(1025);closed=os.fstat(stream.fileno())
+    after=owner._safe_path(path).stat()
+    if (not 0<len(raw)<=1024 or not _identity(before)==_identity(opened)==_identity(closed)==_identity(after)):
+        _deny('NATIVE_ACTOR_HANDOFF_CHANGED')
+    return _identity(after),hashlib.sha256(raw).digest()
+
+
+class _VerifiedOperationIdentity:
+    """Only a real reader's successful protected RPC constructs this value."""
+    def __init__(self,reader,identity,deadline,carrier_identity):
+        self.reader=reader;self.identity=dict(identity);self.deadline=deadline
+        self.carrier_identity=carrier_identity
+
+    def read(self):
+        reader=self.reader;supervisor=reader.supervisor
+        with supervisor._lock:
+            endpoint=supervisor.endpoint()
+            if (endpoint!=reader.endpoint or owner.current_windows_owner_sid()!=endpoint.owner_sid
+                    or process_birth(supervisor._process.process)!=reader.birth):
+                _deny('NATIVE_ACTOR_SERVER_IDENTITY_CHANGED')
+            if type(self.deadline) is not int or int(time.time())>=self.deadline:
+                _deny('NATIVE_ACTOR_SESSION_EXPIRED')
+            owner.verify_owner_only(endpoint.owner_root,endpoint.owner_sid)
+            _,digest=verified_profile(supervisor.config,endpoint)
+            if digest!=self.identity['mapping_digest'] or _carrier_identity(reader)!=self.carrier_identity:
+                _deny('NATIVE_ACTOR_PROFILE_OR_HANDOFF_CHANGED')
+            return dict(self.identity)

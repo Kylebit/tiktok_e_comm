@@ -177,6 +177,14 @@ class NativeWindowsActorService:
         return grant
 
     def authenticate(self, grant):
+        return self._authenticate_with_expiry(grant)[0]
+
+    def _authenticate_with_expiry(self, grant):
+        """Protected transport may retain the exact server-owned expiry.
+
+        The deadline is session metadata, never a caller-selected TTL. Keep
+        the public identity shape stable for existing original consumers.
+        """
         value, raw_digest = self._current()
         if (type(grant) is not NativeOperatorGrant
                 or any(type(x) is not str or not x or len(x)>256
@@ -191,10 +199,11 @@ class NativeWindowsActorService:
             if row.expires_at_epoch <= int(time.time()):
                 _fail('NATIVE_ACTOR_SESSION_EXPIRED')
         self._current()
-        return {'schema_version':ACTOR_SCHEMA, 'identity_verified':True, 'owner_sid':value['owner_sid'],
+        identity = {'schema_version':ACTOR_SCHEMA, 'identity_verified':True, 'owner_sid':value['owner_sid'],
             'logical_profile':value['logical_profile'], 'instance_id':value['instance_id'],
             'trust_mode':TRUST, 'mapping_source':value['mapping_source'],
             'mapping_digest':raw_digest, 'session_id':grant.session_id}
+        return identity, row.expires_at_epoch
 
 
 def bootstrap_service(config):

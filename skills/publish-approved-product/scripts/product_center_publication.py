@@ -9,6 +9,7 @@ only stdout/file artifact is a sanitized four-state summary.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 import re
@@ -261,7 +262,7 @@ def _poll_report(
         sleep(min(poll_interval_seconds, max(0.0, deadline - monotonic())))
 
 
-def _run_platform(
+def _start_platform(
     *,
     base_url: str,
     offer_id: str,
@@ -302,20 +303,7 @@ def _run_platform(
         # is malformed.  Without a trustworthy report key the only truthful
         # public state is processing/unknown, never deterministic failure.
         return _row(platform, "PROCESSING", reason_code="START_IDENTITY_INVALID")
-    return _poll_report(
-        base_url=base_url,
-        offer_id=offer_id,
-        plan_id=plan_id,
-        platform=platform,
-        run_id=run_id,
-        report_id=report_id,
-        request=request,
-        request_timeout_seconds=request_timeout_seconds,
-        poll_interval_seconds=poll_interval_seconds,
-        poll_timeout_seconds=poll_timeout_seconds,
-        monotonic=monotonic,
-        sleep=sleep,
-    )
+    return _row(platform, "PROCESSING", run_id=run_id, report_id=report_id)
 
 
 def _overall_status(rows: list[Mapping[str, Any]]) -> str:
@@ -350,6 +338,7 @@ def run_publication(
     target_scope: tuple[str, ...] | None = None,
     retry_of_run_id: str | None = None,
     recovery_manifest_digest: str | None = None,
+    max_parallel: int = 3,
 ) -> dict[str, Any]:
     safe_offer = _offer_id(offer_id)
     safe_plan = _plan_id(plan_id)
@@ -384,10 +373,11 @@ def run_publication(
         raise ValueError("request_timeout_seconds must be positive")
     if poll_interval_seconds <= 0 or poll_timeout_seconds < 0:
         raise ValueError("polling durations are invalid")
-    rows: list[dict[str, Any]] = []
-    for selected_platform in selected:
+    if type(max_parallel) is not int or not 1 <= max_parallel <= 3:
+        raise ValueError("max_parallel must be an integer from 1 to 3")
+    def start(selected_platform):
         try:
-            row = _run_platform(
+            return _start_platform(
                 base_url=base_url,
                 offer_id=safe_offer,
                 plan_id=safe_plan,
@@ -403,14 +393,37 @@ def run_publication(
                 recovery_manifest_digest=recovery_manifest_digest,
             )
         except Exception:
-            # No exception detail enters the public artifact.  Other platform
-            # runs must still start.
-            row = _row(
+            # A transport exception may follow a successful server submission.
+            # Keep it uncertain, while independent platforms continue.
+            return _row(
                 selected_platform,
-                "FAILED",
-                reason_code="CONTROL_WRAPPER_FAILED",
+                "PROCESSING",
+                reason_code="START_OUTCOME_UNKNOWN",
             )
-        rows.append(row)
+    with ThreadPoolExecutor(max_workers=min(max_parallel, len(selected))) as pool:
+        starts = {p: pool.submit(start, p) for p in selected}
+        started = {p: starts[p].result() for p in selected}
+    # Never put the next independent platform behind the first platform's
+    # potentially long asynchronous processing poll.
+    def poll(selected_platform):
+        row = started[selected_platform]
+        if row.get("status") != "PROCESSING" or not row.get("run_id"):
+            return row
+        try:
+            return _poll_report(
+                base_url=base_url, offer_id=safe_offer, plan_id=safe_plan,
+                platform=selected_platform, run_id=row["run_id"],
+                report_id=row["report_id"], request=request,
+                request_timeout_seconds=request_timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                poll_timeout_seconds=poll_timeout_seconds,
+                monotonic=monotonic, sleep=sleep,
+            )
+        except Exception:
+            return {**row, "reason_code": "REPORT_UNAVAILABLE"}
+    with ThreadPoolExecutor(max_workers=min(max_parallel, len(selected))) as pool:
+        futures = {p: pool.submit(poll, p) for p in selected}
+        rows = [futures[p].result() for p in selected]
     overall = _overall_status(rows)
     scope_kind = (
         "TARGET_SCOPED"

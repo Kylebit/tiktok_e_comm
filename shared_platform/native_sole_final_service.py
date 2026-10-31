@@ -4,7 +4,7 @@ Construction belongs to startup. GET projection is only an existing SQLite
 snapshot. Explicit review prepare/decision use the signed READ producer and
 the automatically owned helper. Nothing migrates schemas or replays old tasks.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager,ExitStack
 from pathlib import Path
 from dataclasses import asdict
 import json
@@ -152,12 +152,16 @@ class NativeSoleFinalService:
                     # The supervisor has proven the original owned generation's
                     # retirement before returning a different endpoint.
                     self._reader=self._fresh_reader()
-                else:
-                    try:self._reader.read_verified()
-                    except ApprovalBlocked as error:
-                        if str(error)!='LOCAL_OPERATOR_SESSION_EXPIRED':raise
-                        self._reader=self._fresh_reader()
-            yield NativeSoleFinalDecisionService(self.store,self._reader)
+            with ExitStack() as stack:
+                try:
+                    stack.enter_context(self._reader.verified_operation())
+                except ApprovalBlocked as error:
+                    if str(error) not in {'LOCAL_OPERATOR_SESSION_EXPIRED','NATIVE_ACTOR_SESSION_EXPIRED'}:raise
+                    self._reader=self._fresh_reader()
+                    stack.enter_context(self._reader.verified_operation())
+                # Only admission above may refresh a genuine expired session.
+                # An error from the operation body is never replayed.
+                yield NativeSoleFinalDecisionService(self.store,self._reader)
 
     def prepare(self,plan_id):
         self._require_original_plan_scope(plan_id)

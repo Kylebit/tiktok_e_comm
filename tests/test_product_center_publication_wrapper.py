@@ -3,6 +3,8 @@
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import sys
+import threading
+import time
 import pytest
 
 
@@ -16,6 +18,88 @@ SPEC = spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 PUBLICATION = module_from_spec(SPEC)
 SPEC.loader.exec_module(PUBLICATION)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_dispatch_journal(tmp_path, monkeypatch):
+    monkeypatch.setenv("ORBIT_PUBLICATION_DISPATCH_ROOT", str(tmp_path / "dispatch"))
+
+
+def _published_report(platform):
+    run_id = "speed-" + platform.lower()
+    return {
+        "ok": True, "schema_version": PUBLICATION.REPORT_API_SCHEMA,
+        "report": {
+            "schema_version": "product-publication-report/v1",
+            "offer_id": "987650123", "plan_id": "fresh-three-model-plan",
+            "run_id": run_id, "report_id": f"publication-report:{run_id}",
+            "snapshot": {"schema_version": PUBLICATION.SNAPSHOT_SCHEMA,
+                         "digest": "sha256:" + "9" * 64},
+            "status": "PUBLISHED",
+            "summary": {"overall_status": "PUBLISHED", "platforms": [
+                {"platform": platform, "status": "PUBLISHED"}]},
+        },
+    }
+
+
+def test_independent_platforms_start_before_any_platform_poll():
+    calls = []
+
+    def request(url, *, payload=None, timeout_seconds):
+        if payload is not None:
+            platform = next(p for p, endpoint in PUBLICATION.PLATFORM_ENDPOINTS.items()
+                            if url.endswith(endpoint))
+            calls.append(("POST", platform))
+            run_id = "speed-" + platform.lower()
+            return 202, {"ok": True, "schema_version": PUBLICATION.START_SCHEMA,
+                         "platform": platform, "run_id": run_id,
+                         "report_id": f"publication-report:{run_id}"}
+        calls.append(("GET", url))
+        platform = url.rsplit("speed-", 1)[1].upper()
+        return 200, _published_report(platform)
+
+    result = PUBLICATION.run_publication(
+        offer_id="987650123", plan_id="fresh-three-model-plan", request=request,
+        poll_timeout_seconds=0,
+    )
+    assert result["overall_status"] == "PUBLISHED"
+    assert {item[1] for item in calls[:3]} == {"TIKTOK", "SHOPEE", "OZON"}
+    assert all(item[0] == "POST" for item in calls[:3])
+
+
+def test_independent_starts_respect_parallel_limit():
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+    two_started = threading.Event()
+
+    def request(url, *, payload=None, timeout_seconds):
+        nonlocal active, peak
+        if payload is not None:
+            platform = next(p for p, endpoint in PUBLICATION.PLATFORM_ENDPOINTS.items()
+                            if url.endswith(endpoint))
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                if active == 2:
+                    two_started.set()
+            assert two_started.wait(2), "independent starts were serialized"
+            time.sleep(0.01)
+            with lock:
+                active -= 1
+            run_id = "speed-" + platform.lower()
+            return 202, {"ok": True, "schema_version": PUBLICATION.START_SCHEMA,
+                         "platform": platform, "run_id": run_id,
+                         "report_id": f"publication-report:{run_id}"}
+        platform = url.rsplit("speed-", 1)[1].upper()
+        return 200, _published_report(platform)
+
+    result = PUBLICATION.run_publication(
+        offer_id="987650123", plan_id="fresh-three-model-plan", request=request,
+        poll_timeout_seconds=0, max_parallel=2,
+    )
+    assert result["overall_status"] == "PUBLISHED"
+    assert peak == 2
 
 
 def test_all_platforms_continue_in_order_after_one_start_rejection():
@@ -77,7 +161,7 @@ def test_all_platforms_continue_in_order_after_one_start_rejection():
         sleep=lambda _seconds: None,
     )
 
-    assert starts == ["TIKTOK", "SHOPEE", "OZON"]
+    assert set(starts) == {"TIKTOK", "SHOPEE", "OZON"}
     assert [row["status"] for row in result["platforms"]] == [
         "FAILED",
         "PUBLISHED",

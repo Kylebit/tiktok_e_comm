@@ -352,7 +352,7 @@ class NativeActorHelperSupervisor:
                 self.endpoint(timeout_seconds=timeout)
                 raise
 
-    def authenticate_carrier(self, carrier, *, expected_endpoint, expected_birth, timeout_seconds=2):
+    def authenticate_carrier(self, carrier, *, expected_endpoint, expected_birth, timeout_seconds=2,_with_expiry=False):
         """One real session validation; no automatic replay or session issuance."""
         from shared_platform import native_actor_authentication as auth
         timeout=_bound(timeout_seconds)
@@ -409,7 +409,8 @@ class NativeActorHelperSupervisor:
                 self.endpoint(timeout_seconds=timeout)
                 raise
             # Known rejection is a completed RPC, not an unknown transport.
-            return auth.verified_identity(reply,self.config,endpoint)
+            identity=auth.verified_identity(reply,self.config,endpoint)
+            return (identity,reply['session_expires_at_epoch']) if _with_expiry else identity
 
     def _retire_client(self, seconds):
         if self._client is not None:

@@ -87,12 +87,213 @@ def _vn_facts(db):
 def eligible_shopee_failed_readback(store,decision_id):
     """A pure queue hint only; source/actor/official facts are verified later."""
     from shared_platform.native_approved_discount_prices import B_DECISION
-    if decision_id!=B_DECISION:return False
+    if decision_id!=B_DECISION:return eligible_provider_failed_readback(store,decision_id)
     try:
         with store._connect_readonly() as db:
             db.execute('BEGIN');facts=_vn_facts(db)
         return facts['target']['status']=='FAILED'
     except (ValueError,OSError,KeyError,TypeError,RuntimeError):return False
+
+
+def _provider_need(value,code):
+    if not value:raise ApprovalBlocked('NATIVE_PROVIDER_READBACK_'+code)
+
+
+def eligible_provider_failed_readback(store, decision_id):
+    """SQL-only hint. A failure/approval never itself authorizes the reader."""
+    try:
+        with store._connect_readonly() as db:
+            rows=db.execute('''SELECT f.evidence_json FROM native_sole_final_decisions d
+                JOIN release_runs r ON r.plan_id=d.plan_id
+                JOIN release_target_runs t USING(run_id)
+                JOIN release_target_failure_events f ON f.run_id=t.run_id
+                  AND f.target_label=t.target_label AND f.attempt=t.attempts
+                WHERE d.decision_id=? AND t.status='FAILED' AND t.target_label LIKE 'shopee:%' ''',
+                (decision_id,)).fetchall()
+        return any((json.loads(r['evidence_json'] or '{}').get('schema_version')=='native-scoped-v4-target-result/v1'
+            and json.loads(r['evidence_json'] or '{}').get('outcome_unknown') is True) for r in rows)
+    except (ValueError,OSError,KeyError,TypeError,RuntimeError,sqlite3.Error):return False
+
+
+def _provider_failed_facts(db, active, target):
+    """Pure original-row CAS material; no file, network, schema or retry."""
+    from shared_platform.release_store import _plan_from_row,_validated_publication_snapshot_row
+    row=db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?',
+        (target['run_id'],target['target_label'])).fetchone()
+    run=db.execute('SELECT plan_id FROM release_runs WHERE run_id=?',(target['run_id'],)).fetchone()
+    _provider_need(row is not None and run is not None and run['plan_id']==active.plan_id,'PROVIDER_ORIGINAL_TARGET_REQUIRED')
+    failure=db.execute('SELECT * FROM release_target_failure_events WHERE run_id=? AND target_label=? AND attempt=?',
+        (target['run_id'],target['target_label'],row['attempts'])).fetchone()
+    _provider_need(row['status']=='FAILED' and row['attempts']>0 and failure is not None,'PROVIDER_ORIGINAL_FAILED_ATTEMPT_REQUIRED')
+    evidence=json.loads(failure['evidence_json'] or '{}')
+    _provider_need(hashlib.sha256(failure['evidence_json'].encode()).hexdigest()==failure['evidence_digest']
+        and evidence.get('schema_version')=='native-scoped-v4-target-result/v1'
+        and evidence.get('outcome_unknown') is True,'PROVIDER_ORIGINAL_UNKNOWN_REQUIRED')
+    plan=_plan_from_row(db.execute('SELECT * FROM release_plans WHERE plan_id=?',(active.plan_id,)).fetchone())
+    snapshot=_validated_publication_snapshot_row(db.execute(
+        'SELECT * FROM approved_publication_snapshots WHERE plan_id=?',(active.plan_id,)).fetchone(),plan=plan)
+    receipt=active.service._decision(db,active.decision_id,owner_sid=active.owner_sid)
+    _provider_need(receipt['snapshot_digest']==snapshot['snapshot_digest'],'PROVIDER_ORIGINAL_SNAPSHOT_REQUIRED')
+    ledger=[dict(r) for r in db.execute('''SELECT r.*,d.request_digest,o.outcome FROM native_final_budget_reservations r
+        JOIN native_final_budget_scopes s USING(scope_key)
+        LEFT JOIN native_final_budget_dispatches d USING(scope_key,sequence)
+        LEFT JOIN native_final_budget_outcomes o USING(scope_key,sequence)
+        WHERE s.plan_id=? AND s.platform='SHOPEE' AND (r.target_label=? OR r.budget_scope='shared')
+        ORDER BY r.scope_key,r.sequence''',(active.plan_id,target['target_label']))]
+    _provider_need(any(r['target_label']==target['target_label'] and r['operation']=='create_publish_task'
+        and r['request_digest'] and r['outcome'] is None for r in ledger),'PROVIDER_ORIGINAL_CREATE_UNKNOWN_REQUIRED')
+    return {'target':dict(row),'failure':dict(failure),'plan':plan,'snapshot':snapshot,'ledger':ledger}
+
+
+def _provider_original_task(active, facts):
+    from shared_platform.native_prepared_v4_targets import provider_request_for_readonly_recovery
+    from shared_platform.publication_provider_journal import _scope,provider_recovery_state
+    request=provider_request_for_readonly_recovery(active,facts['plan'],facts['target'],facts['snapshot'])
+    root,identity=_scope(request)
+    state=provider_recovery_state(root,identity)
+    candidates=[]
+    for row in state['intents']:
+        original=row['original_request'];resource=original.get('resource') or {}
+        task_id=row['original_identities'].get('response.publish_task_id')
+        if (row['http_status']==200 and row['decode_status']=='DECODED_LOCALLY'
+                and original.get('provider')=='shopee' and original.get('method')=='POST'
+                and original.get('path')=='/api/v2/global_product/create_publish_task'
+                and row['original_execution']==identity and task_id and task_id.isdecimal()
+                and int(task_id)>0 and resource.get('shop_region')==facts['target']['target_label'].split(':')[1]
+                and type(resource.get('shop_id')) is int and type(resource.get('global_item_id')) is int):
+            candidates.append({'task_id':task_id,'resource':resource,'account':original['account'],
+                'response_key':row['key'],'response_sha256':row['response_sha256'],
+                'request_body_sha256':original['request_body_sha256']})
+    _provider_need(len(candidates)==1,'PROVIDER_UNIQUE_RETAINED_TASK_REQUIRED')
+    return candidates[0]
+
+
+def _provider_official_reads(active, source):
+    """Six explicit GETs, existing bound credentials only; no mutation method."""
+    from shared_platform.native_canonical_provider_edges import _existing_shopee_context
+    from modules.shopee.client import shop_get,merchant_get
+    from modules.shopee.auth import token_path
+    from modules.shopee import skill_regions as r
+    region=source['resource']['shop_region'];path=token_path().resolve(strict=True)
+    pin=hashlib.sha256(path.read_bytes()).digest()
+    def guard():
+        from shared_platform.native_sole_final_execution import _ACTIVE
+        _provider_need(_ACTIVE.get() is active and active.service._actor()['owner_sid']==active.owner_sid,'PROVIDER_CURRENT_ACTOR_CHANGED')
+        _provider_need(hashlib.sha256(path.read_bytes()).digest()==pin,'PROVIDER_EXISTING_AUTH_CHANGED')
+        ctx=_existing_shopee_context(region)
+        _provider_need(ctx.shop_id==source['resource']['shop_id']
+            and str(ctx.merchant_id)==source['account'].get('merchant_id'),'PROVIDER_EXACT_ACCOUNT_CHANGED')
+        return ctx
+    responses=[]
+    def read(domain,endpoint,params):
+        ctx=guard()
+        value=(shop_get(endpoint,ctx.shop_id,ctx.shop_token,params,call_guard=guard) if domain=='shop'
+            else merchant_get(endpoint,ctx.merchant_id,ctx.merchant_token,params))
+        guard();responses.append({'domain':domain,'path':endpoint,'params':params,'response':value})
+        _provider_need(type(value) is dict and not r._provider_error(value)[0],'PROVIDER_OFFICIAL_READ_FAILED')
+        return value['response']
+    task=read('merchant',r.TASK_RESULT_PATH,{'publish_task_id':int(source['task_id'])})
+    _provider_need(str(task.get('publish_status') or '').lower()=='success','PROVIDER_ORIGINAL_TASK_STILL_PENDING')
+    item_id=r._positive_identity(r._task_item_id(task),'original task item')
+    read('shop','/api/v2/product/get_item_base_info',{'item_id_list':item_id})
+    read('shop','/api/v2/product/get_model_list',{'item_id':int(item_id)})
+    read('merchant','/api/v2/global_product/get_global_item_id',
+        {'shop_id':source['resource']['shop_id'],'item_id_list':item_id})
+    read('merchant','/api/v2/global_product/get_global_model_list',{'global_item_id':source['resource']['global_item_id']})
+    read('merchant','/api/v2/merchant/get_merchant_warehouse_location_list',{})
+    return responses
+
+
+def _provider_verified_evidence(facts, source, responses):
+    """Pure frozen matcher, repeated in the short final CAS."""
+    from decimal import Decimal
+    from modules.shopee import skill_regions as r
+    from domains.product_operations import publication_images_for_target
+    label=facts['target']['target_label'];snapshot=facts['snapshot']
+    _provider_need(type(responses) is list and len(responses)==6,'PROVIDER_EXACT_READ_SET_REQUIRED')
+    task=responses[0]['response']['response'];item_id=r._positive_identity(r._task_item_id(task),'original item')
+    expected=[('merchant',r.TASK_RESULT_PATH,{'publish_task_id':int(source['task_id'])}),
+        ('shop','/api/v2/product/get_item_base_info',{'item_id_list':item_id}),
+        ('shop','/api/v2/product/get_model_list',{'item_id':int(item_id)}),
+        ('merchant','/api/v2/global_product/get_global_item_id',{'shop_id':source['resource']['shop_id'],'item_id_list':item_id}),
+        ('merchant','/api/v2/global_product/get_global_model_list',{'global_item_id':source['resource']['global_item_id']}),
+        ('merchant','/api/v2/merchant/get_merchant_warehouse_location_list',{})]
+    _provider_need([(v.get('domain'),v.get('path'),v.get('params')) for v in responses]==expected
+        and str(task.get('publish_status') or '').lower()=='success','PROVIDER_EXACT_READ_IDENTITIES_REQUIRED')
+    _provider_need(all(type(v['response']) is dict and not r._provider_error(v['response'])[0] for v in responses),'PROVIDER_OFFICIAL_READ_FAILED')
+    values=[v['response']['response'] for v in responses]
+    items=values[1]['item_list'];models=values[2]['model'];links=values[3]['item_id_map'];global_models=values[4]['global_model']
+    _provider_need(len(items)==len(links)==1 and str(items[0].get('item_id'))==item_id
+        and str(links[0].get('item_id'))==item_id
+        and str(links[0].get('global_item_id'))==str(source['resource']['global_item_id']),'PROVIDER_ORIGINAL_ASSOCIATION_REQUIRED')
+    item=items[0];approved=r._approved_models(snapshot,label);title,description=r._approved_copy(snapshot,label)
+    _provider_need(len(models)==len(approved) and len({str(m.get('model_id')) for m in models})==len(approved),'PROVIDER_EXACT_MODEL_SET_REQUIRED')
+    images=tuple(publication_images_for_target(snapshot,label));official_images=tuple((item.get('image') or {}).get('image_url_list') or [])
+    _provider_need(official_images==images,'PROVIDER_FROZEN_IMAGES_NOT_YET_EXACT')
+    ids=tuple((item.get('image') or {}).get('image_id_list') or [])
+    _provider_need(len(ids)==len(images) and len(set(ids))==len(ids),'PROVIDER_IMAGE_IDENTITIES_REQUIRED')
+    checks=r._official_readback_checks(item=item,models=models,
+        resolved_global_item_id=str(links[0]['global_item_id']),expected_global_item_id=str(source['resource']['global_item_id']),
+        expected_models=approved,expected_tiers=r._exact_global_tiers(global_models,approved),expected_logistics=[],
+        expected_image_count=len(images),expected_item_sku=r._expected_item_sku(snapshot),
+        expected_category_id=r._expected_category_id(snapshot,label),expected_title=title,expected_description=description,
+        expected_region=source['resource']['shop_region'],repaired_copy=(title,description),
+        expected_image_ids=ids,expected_description_image_ids=ids,item_id=item_id)
+    checks['exact_ordered_image_urls']=official_images==images
+    weight,dims=r._parcel_envelope(snapshot);parcel=item.get('dimension') or {}
+    checks['parcel_exact']=(Decimal(str(item.get('weight')))==Decimal(str(weight))
+        and [Decimal(str(parcel.get(k))) for k in ('package_length','package_width','package_height')]==[Decimal(str(v)) for v in dims])
+    policy=snapshot['shopee_global_master']['policy'];warehouse=policy['warehouse']
+    locations=[v for v in values[5] if v.get('warehouse_name')==warehouse['display_name']]
+    _provider_need(len(locations)==1,'PROVIDER_UNIQUE_FROZEN_WAREHOUSE_REQUIRED')
+    location=str(locations[0]['location_id'])
+    _provider_need(not warehouse.get('location_id') or str(warehouse['location_id'])==location,'PROVIDER_FROZEN_WAREHOUSE_CHANGED')
+    def stock(row):
+        rows=(row.get('stock_info_v2') or {}).get('seller_stock') or []
+        by={v.get('location_id'):v.get('stock') for v in rows}
+        return (len(by)==len(rows) and by.get(location)==policy['stock']['quantity']
+            and all(type(k) is str and type(v) is int and v==(policy['stock']['quantity'] if k==location else 0) for k,v in by.items()))
+    checks['frozen_stock_exact']=all(stock(m) for m in models)
+    _provider_need(all(v is True for v in checks.values()),'PROVIDER_FROZEN_OFFICIAL_MATCH_REQUIRED')
+    return {'schema_version':'native-provider-original-readback/v1','source':'official_shopee_shop_api',
+        'verified':True,'target_label':label,'item_id':item_id,'shop_id':source['resource']['shop_id'],
+        'provider_task_id':source['task_id'],'checks':checks,'official_responses':responses,
+        'original_response':source,'external_writes_performed':[],
+        'original_failure_digest':facts['failure']['evidence_digest'],
+        'original_budget_state_digest':_ozon_sha(facts['ledger']),
+        'historical_unknown_preserved':True}
+
+
+def _observe_provider_failed(active, gate, data, target):
+    from shared_platform.native_new_task_v4_targets import scope
+    scope(active,gate['plan'])  # Exact new-task origin; historical lanes excluded.
+    with active.store._connect_readonly() as db:
+        db.execute('BEGIN');facts=_provider_failed_facts(db,active,target)
+    source=_provider_original_task(active,facts)
+    responses=_provider_official_reads(active,source)
+    evidence=_provider_verified_evidence(facts,source,responses)
+    refreshed,changed=active.gate(data,store=active.store)
+    _provider_need(changed is None,'PROVIDER_CURRENT_SOURCE_CHANGED')
+    scope(active,refreshed['plan'])
+    _provider_need(_provider_original_task(active,facts)==source,'PROVIDER_ORIGINAL_RESPONSE_CHANGED')
+    from shared_platform.release_store import _utc_now,_canonical_json
+    raw=_canonical_json(evidence)
+    with active.store._transaction() as db:
+        fresh=_provider_failed_facts(db,active,target)
+        _provider_need(_ozon_sha(fresh)==_ozon_sha(facts),'PROVIDER_READBACK_CAS_CHANGED')
+        _provider_need(evidence==_provider_verified_evidence(fresh,source,responses),'PROVIDER_READBACK_EVIDENCE_CHANGED')
+        active.store._require_active_run(db,target['run_id'])
+        _provider_need(db.execute('SELECT 1 FROM release_target_readbacks WHERE run_id=? AND target_label=?',
+            (target['run_id'],target['target_label'])).fetchone() is None,'PROVIDER_ALREADY_HAS_READBACK')
+        now=_utc_now()
+        db.execute('INSERT INTO release_target_readbacks(run_id,target_label,evidence_json,evidence_digest,verified_at) VALUES(?,?,?,?,?)',
+            (target['run_id'],target['target_label'],raw,hashlib.sha256(raw.encode()).hexdigest(),now))
+        changed=db.execute("UPDATE release_target_runs SET status='SUCCEEDED',external_id=?,error=NULL,updated_at=?,completed_at=? WHERE run_id=? AND target_label=? AND status='FAILED' AND attempts=? AND idempotency_key=?",
+            (f"shopee:{source['resource']['shop_id']}:item:{evidence['item_id']}",now,now,
+             target['run_id'],target['target_label'],target['attempts'],target['idempotency_key']))
+        _provider_need(changed.rowcount==1,'PROVIDER_READBACK_TARGET_CAS_CHANGED')
+        active.store._refresh_run_status(db,target['run_id'],now=now)
+    return {'target_label':target['target_label'],**evidence}
 
 
 def _vn_source(active,plan):
@@ -491,6 +692,7 @@ def _ozon_official_observation(active, gate, target):
 def observe_submissions(runtime, decision_id):
     """Current decision recheck -> exact submission READ -> original store CAS."""
     from shared_platform.native_sole_final_execution import _NativeExecution, _ACTIVE
+    from shared_platform.native_approved_discount_prices import B_DECISION
     with runtime.operation() as service:
         actor = service._actor()
         with runtime.store._connect_readonly() as db:
@@ -514,13 +716,22 @@ def observe_submissions(runtime, decision_id):
         observations = []
         retry_read = False
         for target in (run or {}).get('targets') or []:
-            if target['target_label']==_VN and target['status']=='FAILED' and eligible_shopee_failed_readback(runtime.store,decision_id):
+            if decision_id==B_DECISION and target['target_label']==_VN and target['status']=='FAILED' and eligible_shopee_failed_readback(runtime.store,decision_id):
                 try:
                     observations.append(_observe_vn_failed(active,gate,data))
                 except (ValueError,OSError,KeyError,TypeError,RuntimeError) as error:
                     observations.append({'target_label':_VN,'verified':False,
                         'capability':'VN_STRICT_GET_ONLY_CANONICAL_HOLD','error_type':type(error).__name__,
                         'external_writes_performed':[]})
+                continue
+            if (target['status']=='FAILED' and target['target_label'].startswith('shopee:')
+                    and eligible_provider_failed_readback(runtime.store,decision_id)):
+                try:
+                    observations.append(_observe_provider_failed(active,gate,data,target))
+                except (ValueError,OSError,KeyError,TypeError,RuntimeError,sqlite3.Error) as error:
+                    observations.append({'target_label':target['target_label'],'verified':False,
+                        'capability':'ORIGINAL_PROVIDER_RESPONSE_READONLY_HOLD',
+                        'error_type':type(error).__name__,'external_writes_performed':[]})
                 continue
             if target['status'] != 'SUBMITTED_UNVERIFIED':
                 continue

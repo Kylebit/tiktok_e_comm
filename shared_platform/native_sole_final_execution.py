@@ -16,7 +16,7 @@ _ACTIVE=ContextVar('native_sole_final_execution',default=None)
 
 
 class _NativeExecution:
-    def __init__(self,service,decision_id,runtime):
+    def __init__(self,service,decision_id,runtime,*,platform_scope=None):
         if type(service) is not NativeSoleFinalDecisionService:
             raise ApprovalBlocked('NATIVE_SOLE_FINAL_SERVICE_CONSUMER_REQUIRED')
         self.service=service
@@ -25,6 +25,10 @@ class _NativeExecution:
         self.decision_id=decision_id
         self.owner_sid=service._actor()['owner_sid']
         self.plan_id=None
+        if platform_scope is not None and (type(platform_scope) is not tuple or len(platform_scope)!=1
+                or platform_scope[0] not in {'TIKTOK','SHOPEE','OZON'}):
+            raise ApprovalBlocked('NATIVE_PLATFORM_PARTITION_INVALID')
+        self.platform_scope=platform_scope
 
     def gate(self,data,*,store):
         try:return self._gate(data,store=store)
@@ -74,22 +78,32 @@ class _NativeExecution:
         if getattr(self.runtime._operations,'agent_prepared_common',None) is not None:
             from shared_platform.agent_prepared_v4_targets import registry_for_adopted
             registry=registry_for_adopted(self,plan,registry)
+        elif (getattr(self.runtime._operations,'original_continuation',None) is None
+                and getattr(self.runtime._operations,'new_task_worker',None) is not None):
+            from shared_platform.native_new_task_v4_targets import registry_for_new_task
+            registry=registry_for_new_task(self,plan,registry)
         else:
             from shared_platform.native_prepared_v4_targets import registry_for_original
             registry=registry_for_original(self,plan,registry)
-        rows=[]
+        rows=[];partition_labels=[]
         for label in plan['targets']:
             channel,site=label.split(':',1)
             adapter=release_adapters.ADAPTER_NAMES.get(channel)
             if adapter is None:raise ApprovalBlocked('NATIVE_SOLE_FINAL_TARGET_ADAPTER_UNKNOWN')
+            if self.platform_scope is not None and channel.upper() not in self.platform_scope:continue
+            partition_labels.append(label)
             rows.append({'channel':channel,'site':site,'adapter':adapter})
+        if not rows:raise ApprovalBlocked('NATIVE_PLATFORM_PARTITION_EMPTY')
         run=self.store.get_run('release-run:'+plan['payload_digest'][:24])
-        return {'dashboard':{'frozen_review_projection':True,
+        value={'dashboard':{'frozen_review_projection':True,
                     'product':{'offer_id':plan['product_id'],'title':payload['product_facts']['title']},
                     'publication_scope':{'selected_labels':list(plan['targets'])}},
                 'payload':payload,'plan':plan,'run':run,'predecessor_run':None,
                 'registry':registry,'target_rows':rows,'native_recheck':checked,
-                'common_completion':common_completion},None
+                'common_completion':common_completion}
+        if self.platform_scope is not None:
+            value['execution_partition']={'platform':self.platform_scope[0],'target_labels':partition_labels}
+        return value,None
 
     def common_dependency_verified(self,gate):
         from shared_platform.native_common_retained_completion import RetainedCommonCompletion
@@ -148,6 +162,33 @@ def execute_decision(service,decision_id,*,runtime=None,promotion_targets=None):
         if promotion_targets is not None:
             from shared_platform.native_companion_promotions import execute_active
             return execute_active(active,data,promotion_targets)
+        operations=runtime._operations
+        if (getattr(operations,'original_continuation',None) is None
+                and getattr(operations,'agent_prepared_common',None) is None
+                and getattr(operations,'new_task_worker',None) is not None):
+            from shared_platform.native_new_task_v4_targets import scope
+            scope(active,plan)  # Original worker/task/R1/R2 before scheduling.
+            gate,failure=active.gate(data,store=service.store)
+            if failure:return failure
+            # One original run (and its durable target rows) exists before the
+            # three first claims. start_run is itself transactional/idempotent.
+            if gate['run'] is None:service.store.start_run(plan['plan_id'])
+            from shared_platform.publication_platform_scheduler import run_native_platform_partitions
+            platforms=tuple(p for p in ('TIKTOK','SHOPEE','OZON')
+                            if any(t.split(':',1)[0].upper()==p for t in plan['targets']))
+            def invoke(platform):
+                # ContextVars intentionally do not cross worker threads. Each
+                # partition rechecks the same complete stored sole decision.
+                part=_NativeExecution(service,decision_id,runtime,platform_scope=(platform,))
+                part.plan_id=plan['plan_id'];part_token=_ACTIVE.set(part)
+                try:return server._publish_selected_release(data,native_gate=part)
+                finally:_ACTIVE.reset(part_token)
+            outcomes=run_native_platform_partitions(platforms,invoke,max_parallel=3)
+            code=200 if all(c<400 for c,_ in outcomes.values()) else 409
+            return code,{'ok':code==200,'native_decision_id':receipt['decision_id'],
+                'approval_saved':True,'new_human_review_required':False,
+                'platform_results':{p:{'http_status':c,'result':v} for p,(c,v) in outcomes.items()},
+                'run':service.store.get_run('release-run:'+plan['payload_digest'][:24])}
         code,result=server._publish_selected_release(data,native_gate=active)
         return code,{**result,'native_decision_id':receipt['decision_id'],
             'approval_saved':True,'new_human_review_required':False}

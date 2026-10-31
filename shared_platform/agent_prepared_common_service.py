@@ -78,13 +78,14 @@ class AgentPreparedCommonService:
         return row[1]
     def _current(self):
         from shared_platform import workbench_publication_native as native
-        task=self.engine.get(self.task_id);frozen=native.read_frozen(task,self.profile)
-        if not frozen:raise adoption.AdoptionBlocked('ADOPTION_CURRENT_NATIVE_R1_REQUIRED')
-        record=adoption.verify(task,self.profile,offer=frozen['offer_id'],targets=frozen['targets'],
-            prepared_reference=frozen['prepared_reference'],snapshot_digest=frozen['snapshot_digest'])
-        images=native.read_images(task,self.profile)
-        if images['native_r2']!=record['facts']['r2_identity']:raise adoption.AdoptionBlocked('ADOPTION_CURRENT_R2_CHANGED')
-        return task,record
+        with adoption.verification_scope(self.profile,release_store=self.store):
+            task=self.engine.get(self.task_id);frozen=native.read_frozen(task,self.profile)
+            if not frozen:raise adoption.AdoptionBlocked('ADOPTION_CURRENT_NATIVE_R1_REQUIRED')
+            record=adoption.verify(task,self.profile,offer=frozen['offer_id'],targets=frozen['targets'],
+                prepared_reference=frozen['prepared_reference'],snapshot_digest=frozen['snapshot_digest'])
+            images=native.read_images(task,self.profile)
+            if images['native_r2']!=record['facts']['r2_identity']:raise adoption.AdoptionBlocked('ADOPTION_CURRENT_R2_CHANGED')
+            return task,record
     def owns(self,offer):return self._current()[0]['scope']['offer_id']==offer
     def _actor(self):
         with self.final.operation() as service:actor=service._actor()

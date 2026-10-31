@@ -40,6 +40,7 @@ from shared_platform.product_publication_runner import (
     PublicationPlatformRequest,
 )
 from shared_platform.product_description_media import validate_description_media_preflight
+from shared_platform.publication_provider_journal import retained_provider_executor
 
 
 _PLATFORM_ORDER = ("TIKTOK", "SHOPEE", "OZON")
@@ -538,7 +539,7 @@ def build_tiktok_v4_executor(
             # a transport did not receive a request.
             return _result("TIKTOK", labels, {label: "FAILED" for label in labels}, dispatch_attempted=True, readback_completed=False, external_write_count=None, requires_human_action=True, target_evidence=_tiktok_failure_evidence(labels, stage="EXECUTION", provider_code="transport_unknown", provider_reason=_safe_tiktok_exception_reason('TikTok execution outcome is unknown','EXECUTION',error), request_attempted=True, outcome_unknown=True, external_write_count=None))
 
-    return execute
+    return retained_provider_executor(execute)
 
 
 def _safe_tiktok_exception_reason(prefix: str, phase: str, error: Exception) -> str:
@@ -933,7 +934,7 @@ def build_shopee_region_executor(
                 include_target_evidence=checkpoint is not None,
             )
 
-    return execute
+    return retained_provider_executor(execute)
 
 
 def build_product_publication_platform_executors(
@@ -980,7 +981,7 @@ def build_product_publication_platform_executors(
     if "OZON" in selected:
         if not isinstance(ozon, OzonV4ExecutorDependencies):
             raise TypeError("Ozon executor dependencies are required")
-        result["OZON"] = build_ozon_v4_executor(
+        result["OZON"] = retained_provider_executor(build_ozon_v4_executor(
             dispatch_variant=ozon.dispatch_variant,
             readback_variants=ozon.readback_variants,
             official_profile_resolver=ozon.official_profile_resolver,
@@ -990,7 +991,7 @@ def build_product_publication_platform_executors(
             prepare_stock_update=ozon.prepare_stock_update,
             catalog_account_resolver=ozon.catalog_account_resolver,
             catalog_observer=ozon.catalog_observer,
-        )
+        ))
     return result
 
 

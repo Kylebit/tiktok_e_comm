@@ -21,6 +21,41 @@ from test_native_common_retained_review_graph import _propose_market_inputs, _ma
 
 
 def _completed(live, monkeypatch, tmp_path, *, install=True):
+    # This decision fixture needs a complete valid final gallery. Keep the
+    # older native-common gallery-negative fixtures unchanged; supply truthful
+    # unknown-fact substitutions BEFORE R1 freeze, never edit frozen evidence.
+    import test_common_native_preparation_source as preparation
+    state_path=live['root']/'data/new_product_workbench'/f"{live['offer']}.json"
+    state=json.loads(state_path.read_bytes())
+    if 'hb_ph' not in state['review']['selected_sites']:state['review']['selected_sites'].append('hb_ph')
+    state_path.write_text(json.dumps(state),encoding='utf-8')
+    original_proposal = preparation._image_proposal
+    def proposed_gallery():
+        plan=original_proposal()
+        for brand in plan['brand_plans']:
+            roles=('cover_scene','installed_detail','scene_1','scene_2','scene_3','assembled_size','piece_layout_or_instructions')
+            for asset,role in zip(brand['generated_assets'],roles):
+                asset['role']=role
+                replaces=asset['role']
+                if replaces in {'assembled_size','piece_layout_or_instructions'}:
+                    asset['role']={'assembled_size':'proportion_evidence','piece_layout_or_instructions':'construction_evidence'}[replaces]
+                    asset['role_substitution']={'replaces':replaces,'reason':'SOURCE_FACT_UNKNOWN',
+                        'evidence_basis':'Synthetic source has product construction only; numerical size and installation remain unknown.',
+                        'unknown_facts_not_asserted':True}
+        return plan
+    monkeypatch.setattr(preparation,'_image_proposal',proposed_gallery)
+    # All seven fixture roles are language-neutral; do not request invented
+    # localized text merely because the older media helper translates 3 slots.
+    media=preparation.media
+    original_workflow=media.Workflow
+    class NeutralWorkflow(original_workflow):
+        def __init__(self,*args,**kwargs):
+            super().__init__(*args,**kwargs)
+            producer=self.entry.build_approved_brand_translation_plan
+            def neutral(*args,**kwargs):
+                return producer(*args,**dict(kwargs,selections={}))
+            monkeypatch.setattr(self.entry,'build_approved_brand_translation_plan',neutral)
+    monkeypatch.setattr(media,'Workflow',NeutralWorkflow)
     _propose_market_inputs(live, monkeypatch)
     store, plan, payload, _ = _setup(live, monkeypatch, tmp_path)
     config, _ = _installed(monkeypatch, tmp_path, store)

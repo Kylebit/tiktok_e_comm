@@ -1,6 +1,7 @@
 """Real owned Windows helper, request-local reuse and tamper invalidation."""
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -66,3 +67,26 @@ def test_operation_error_does_not_reenter_or_retry_the_body(tmp_path):
                 raise ApprovalBlocked('NATIVE_ACTOR_SESSION_EXPIRED')
         assert entered==[1]
         assert len(supervisor.client_history)==2  # carrier issuance + one authentication
+
+
+def test_independent_operations_share_no_long_global_lock_and_close_cannot_retire_them(tmp_path):
+    with helper.NativeActorHelperSupervisor(NativeActorServiceConfig(tmp_path/'owner','Kyle',120)) as supervisor:
+        runtime=_runtime(tmp_path,supervisor)
+        entered=threading.Barrier(3);release=threading.Event()
+        def active():
+            with runtime.operation() as service:
+                actor=service._actor()
+                entered.wait(timeout=5)
+                assert release.wait(timeout=5)
+                assert service._actor()==actor
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures=[pool.submit(active) for unused in range(2)]
+            try:
+                entered.wait(timeout=5)
+                assert runtime._active_operations==2
+                with pytest.raises(ApprovalBlocked,match='NATIVE_OPERATION_ACTIVE'):runtime.close()
+                assert supervisor._process.facts()['process_signaled'] is False
+                assert getattr(runtime,'_closing',False) is False
+            finally:release.set()
+            for future in futures:future.result(timeout=5)
+        assert runtime._active_operations==0

@@ -160,6 +160,8 @@ _READONLY_SHOPEE_RECONCILE_CHECKS = frozenset(
 )
 _product_approval_lock = threading.Lock()
 _release_execution_lock = threading.Lock()
+_native_partition_locks_guard = threading.Lock()
+_native_partition_locks: dict[tuple[str, str, str], threading.Lock] = {}
 _tiktok_publish_lock = threading.Lock()
 _shopee_global_publish_lock = threading.Lock()
 _ozon_publish_lock = threading.Lock()
@@ -14098,6 +14100,43 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
         "failed_targets": [],
         "retryable": True,
     }
+def _native_execution_partition(gate, native_gate):
+    """Accept partitions only from the active, complete native decision gate."""
+    partition = gate.get("execution_partition")
+    scope = getattr(native_gate, "platform_scope", None) if native_gate is not None else None
+    if partition is None and scope is None:
+        return None
+    if (native_gate is None or type(partition) is not dict
+            or set(partition) != {"platform", "target_labels"}):
+        raise ValueError("NATIVE_EXECUTION_PARTITION_INVALID")
+    platform = partition["platform"]
+    if platform not in {"TIKTOK", "SHOPEE", "OZON"} or scope != (platform,):
+        raise ValueError("NATIVE_EXECUTION_PARTITION_SCOPE_CHANGED")
+    expected = [label for label in gate["plan"]["targets"]
+                if label.startswith(platform.lower() + ":")]
+    rows = [f"{row['channel']}:{row['site']}" for row in gate["target_rows"]]
+    if not expected or partition["target_labels"] != expected or rows != expected:
+        raise ValueError("NATIVE_EXECUTION_PARTITION_TARGETS_CHANGED")
+    return partition
+
+
+def _native_partition_lock(store, plan_id, partition):
+    if partition is None:
+        return _release_execution_lock
+    key = (str(store.path.resolve()), plan_id, partition["platform"])
+    with _native_partition_locks_guard:
+        return _native_partition_locks.setdefault(key, threading.Lock())
+
+
+def _native_partition_result_run(run, partition):
+    """A partition must not project another live partition as a terminal run."""
+    if partition is not None and any(row.get("status") in {"PENDING", "RUNNING"}
+                                     for row in run.get("targets") or ()):
+        return {**run, "storage_status": run.get("status"),
+                "status": "RUNNING", "completed_at": None}
+    return run
+
+
 def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dict]:
     """Execute the approved plan once through durable per-target adapters."""
     from domains.channel_operations.release_executor import AdapterExecutionRequest
@@ -14127,14 +14166,17 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
     if failure:
         return failure
     assert gate is not None
-
-    with _release_execution_lock:
+    partition = _native_execution_partition(gate, native_gate)
+    partition_labels = set(partition["target_labels"]) if partition else None
+    with _native_partition_lock(store, plan_id, partition):
         # Repeat the whole pure gate under the execution lock before retry,
         # recovery, begin_target, or any adapter call can mutate durable state.
         gate, failure = execution_gate(data, store=store)
         if failure:
             return failure
         assert gate is not None
+        if _native_execution_partition(gate, native_gate) != partition:
+            raise ValueError("NATIVE_EXECUTION_PARTITION_CHANGED")
         dashboard = gate["dashboard"]
         plan_payload = gate["payload"]
         if native_gate is not None and gate['run'] is None:
@@ -14151,6 +14193,7 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
             str(row.get("target_label") or "")
             for row in (run.get("targets") or ())
             if row.get("status") == "RUNNING"
+            and (partition_labels is None or row.get("target_label") in partition_labels)
         ]
         if interrupted:
             return _release_reconciliation_required(
@@ -14163,41 +14206,41 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
         native_tiktok_locale_hold = None
         native_shopee_regional = ()
         native_shopee_regional_hold = None
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             native_shopee_global_zero = _activate_native_shopee_global_zero(native_gate)
             native_tiktok_claimed_save = _activate_native_tiktok_claimed_save(native_gate)
             run = store.get_run(run["run_id"]) or run
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_tiktok_locale_draft_correction import activate_failed_targets as activate_tiktok_locale
             from shared_platform.native_final_mutation_budget import NativeMutationBudgetHold
             try:native_tiktok_locale_correction = activate_tiktok_locale(native_gate)
             except NativeMutationBudgetHold as error:
                 native_tiktok_locale_hold = str(error)
             run = store.get_run(run["run_id"]) or run
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_known_rejected_save_repair import activate_failed_targets
             activate_failed_targets(native_gate)
             run = store.get_run(run["run_id"]) or run
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_shopee_regional_continuation import activate_failed_targets as activate_shopee_regional
             from shared_platform.native_final_mutation_budget import NativeMutationBudgetHold
             try:native_shopee_regional = activate_shopee_regional(native_gate)
             except NativeMutationBudgetHold as error:native_shopee_regional_hold = str(error)
             run = store.get_run(run["run_id"]) or run
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_shopee_known_zero_recovery import activate_failed_targets as activate_shopee_zero
             activate_shopee_zero(native_gate)
             run = store.get_run(run["run_id"]) or run
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_accepted_save_core_repair import activate_failed_targets as activate_accepted_core
             activate_accepted_core(native_gate)
             run = store.get_run(run["run_id"]) or run
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_ozon_existing_media_recovery import activate_failed_targets as activate_ozon_media
             activate_ozon_media(native_gate)
             run = store.get_run(run["run_id"]) or run
         three_card_media_hold = None
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_ozon_three_card_media_recovery import activate_failed_targets as activate_three_card_media
             from shared_platform.native_final_mutation_budget import NativeMutationBudgetHold
             try:activate_three_card_media(native_gate)
@@ -14211,8 +14254,9 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
             row
             for row in (run.get("targets") or ())
             if row.get("status") in {"FAILED", "RECONCILIATION_REQUIRED"}
+            and (partition_labels is None or row.get("target_label") in partition_labels)
         ]
-        if failed_targets:
+        if failed_targets and partition is None:
             safe_retry_targets = [
                 str(row.get("target_label") or "")
                 for row in failed_targets
@@ -14220,7 +14264,7 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                 and _generic_tiktok_safe_retry_target(row)
             ]
             if safe_retry_targets:
-                if native_gate is not None:
+                if native_gate is not None and partition is None:
                     native_labels = [row['target_label'] for row in failed_targets
                         if row['target_label'] in safe_retry_targets and any(
                             isinstance(event.get('evidence'), dict)
@@ -14251,6 +14295,8 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
             target_rows=target_rows,
             registry=registry,
         )
+        if partition_labels is not None:
+            recovery_actions = [a for a in recovery_actions if a.get("target_label") in partition_labels]
         recovery_actions = [{**action, 'action_kind': 'NATIVE_SHOPEE_GLOBAL_ZERO_CONTINUATION', 'runnable': True,
             'reason_code': 'original_global_resolver_zero_before_any_mutation'}
             if action.get('target_label') in native_shopee_global_zero else action for action in recovery_actions]
@@ -14272,19 +14318,19 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
         if native_shopee_regional_hold:
             recovery_actions = [{**action, 'runnable': False, 'reason_code': native_shopee_regional_hold}
                 if str(action.get('target_label') or '').startswith('shopee:') else action for action in recovery_actions]
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_known_rejected_save_repair import recovery_actions as repair_recovery_actions
             recovery_actions = repair_recovery_actions(native_gate, run, recovery_actions)
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_shopee_known_zero_recovery import recovery_actions as shopee_zero_actions
             recovery_actions = shopee_zero_actions(native_gate, run, recovery_actions)
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_accepted_save_core_repair import recovery_actions as accepted_core_actions
             recovery_actions = accepted_core_actions(native_gate, run, recovery_actions)
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_ozon_existing_media_recovery import recovery_actions as ozon_media_actions
             recovery_actions = ozon_media_actions(native_gate, run, recovery_actions)
-        if native_gate is not None:
+        if native_gate is not None and partition is None:
             from shared_platform.native_ozon_three_card_media_recovery import recovery_actions as three_card_media_actions
             from shared_platform.native_final_mutation_budget import NativeMutationBudgetHold
             try:recovery_actions = three_card_media_actions(native_gate, run, recovery_actions)
@@ -14295,6 +14341,19 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                 recovery_actions = [{**action, 'runnable': False, 'reason_code': three_card_media_hold}
                     if action.get('target_label') == 'ozon:RU' else action for action in recovery_actions]
         if not any(action.get("runnable") is True for action in recovery_actions):
+            if partition is not None:
+                own = [row for row in run.get("targets") or ()
+                       if row.get("target_label") in partition_labels]
+                if own and all(row.get("status") in {
+                    "SUCCEEDED", "MANUALLY_VERIFIED", "SUBMITTED_UNVERIFIED"} for row in own):
+                    projected = _native_partition_result_run(run, partition)
+                    completed = all(row.get("status") in {"SUCCEEDED", "MANUALLY_VERIFIED"}
+                                    for row in run.get("targets") or ())
+                    return 200, {"ok": True, "completed": completed,
+                        "partial": not completed, "execution_partition": partition,
+                        "partition_finished": True, "external_writes_performed": [],
+                        "target_recovery_actions": recovery_actions, "run": projected,
+                        "dashboard": dashboard}
             if run.get("status") in {
                 "SUCCEEDED",
                 "COMPLETED_WITH_MANUAL_VERIFICATION",
@@ -14337,7 +14396,8 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
         }
         channel_order = {"miaoshou": 0, "tiktok": 1, "shopee": 2, "ozon": 3}
         ordered = sorted(
-            (run.get("targets") or ()),
+            (row for row in (run.get("targets") or ())
+             if partition_labels is None or row.get("target_label") in partition_labels),
             key=lambda row: (
                 channel_order.get(
                     str(row.get("target_label") or "").split(":", 1)[0],
@@ -14400,6 +14460,8 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                 )
                 return status, blocked
             assert fresh_gate is not None
+            if _native_execution_partition(fresh_gate, native_gate) != partition:
+                raise ValueError("NATIVE_EXECUTION_PARTITION_CHANGED")
             dashboard = fresh_gate["dashboard"]
             plan_payload = fresh_gate["payload"]
             registry = fresh_gate["registry"]
@@ -14579,7 +14641,7 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                     }
                 external_writes.extend(detected_writes)
 
-        final_run = store.get_run(run["run_id"]) or run
+        final_run = _native_partition_result_run(store.get_run(run["run_id"]) or run, partition)
         try:
             from shared_platform import release_control
 
@@ -14601,6 +14663,10 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
             "completed": complete,
             "partial": not complete and not awaiting_manual,
             "awaiting_manual_verification": awaiting_manual,
+            **({"execution_partition": partition,
+                "partition_finished": not any(row.get("status") in {"PENDING", "RUNNING"}
+                    for row in final_run.get("targets") or () if row.get("target_label") in partition_labels)}
+               if partition is not None else {}),
             "message": (
                 "all selected targets succeeded with verified readback"
                 if complete

@@ -8,6 +8,10 @@ from hashlib import sha256
 import hmac,json,os,sqlite3,subprocess
 from pathlib import Path
 from datetime import datetime,timezone
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
+import time
 
 SCHEMA='agent-prepared-publication-adoption/v1'
 TABLE="""CREATE TABLE IF NOT EXISTS agent_prepared_publication_adoptions (
@@ -234,7 +238,162 @@ def adopt(engine,profile,*,offer_id,targets,source_key,actor_reader):
     engine.yield_prepared_lease(task['task_id'],lease)
     return dict(task_id=task['task_id'],adoption_digest=sha256(raw).hexdigest(),adopted_at=record['adopted_at'],origin=record['origin'],external_write_count=0,marketplace_approval=False)
 
+_VERIFICATION_WINDOW=ContextVar('agent_prepared_verification_window',default=None)
+
+
+@contextmanager
+def verification_scope(profile,*,release_store=None):
+    """Reuse one genuine immutable proof only inside one local operation.
+
+    This is not an authority import: the first verify still performs the full
+    owner/HMAC/history/source checks. SQL data_version monitors invalidate on
+    any concurrent task/release commit. Protected source/artifact bytes are
+    rehashed on reuse, never admitted from mtime alone. No budget/claim/nonce
+    result is stored here and no cache survives the lexical operation.
+    """
+    # A default store may point at another checkout or data root. Without an
+    # exact caller-owned store, retain the original verifier on every call.
+    if release_store is None:
+        token=_VERIFICATION_WINDOW.set(None)
+        try:yield {'full_verifications':0,'proof_reuses':0,'cache_disabled_reason':'EXPLICIT_STORE_REQUIRED'}
+        finally:_VERIFICATION_WINDOW.reset(token)
+        return
+    from shared_platform.release_store import ReleaseStore
+    if type(release_store) is not ReleaseStore:raise TypeError('ADOPTION_EXACT_RELEASE_STORE_REQUIRED')
+    current=_VERIFICATION_WINDOW.get()
+    if current is not None and current.profile is profile and current.store is release_store:
+        yield current.metrics
+        return
+    window=_VerificationWindow(profile,release_store);token=_VERIFICATION_WINDOW.set(window)
+    try:yield window.metrics
+    finally:
+        _VERIFICATION_WINDOW.reset(token)
+        window.close()
+
+
+class _VerificationWindow:
+    def __init__(self,profile,store):
+        self.profile=profile;self.store=store;self.memo={};self.monitors=[];self.files={}
+        self.metrics={'full_verifications':0,'proof_reuses':0,'elapsed_seconds':0.0}
+        self.started=time.monotonic();self.deadline=None;self.runtime_digest=None
+        self.runtime_head=None;self.config_identity=None;self.config_object=None;self.missing_paths=[]
+
+    def close(self):
+        for connection,_,_,_ in self.monitors:connection.close()
+        self.monitors=[];self.memo.clear()
+        self.metrics['elapsed_seconds']=time.monotonic()-self.started
+
+    def _versions(self):
+        if any(path.exists() for path in self.missing_paths):_fail('ADOPTION_OPERATION_DATABASE_CHANGED')
+        for connection,path,identity,version in self.monitors:
+            stat=path.stat()
+            if (stat.st_dev,stat.st_ino)!=identity or connection.execute('PRAGMA data_version').fetchone()[0]!=version:
+                _fail('ADOPTION_OPERATION_DATABASE_CHANGED')
+
+    def _open_monitors(self):
+        if self.monitors or self.missing_paths:return
+        paths={Path(self.profile.data_root)/'tasks.db',self.store.path}
+        from shared_platform.immutable_approval_files import require_local_path
+        for path in paths:
+            if not path.is_file():self.missing_paths.append(path);continue
+            path=path.absolute();require_local_path(path,root=path.parent)
+            connection=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
+            connection.execute('PRAGMA query_only=ON')
+            stat=path.stat();version=connection.execute('PRAGMA data_version').fetchone()[0]
+            self.monitors.append((connection,path,(stat.st_dev,stat.st_ino),version))
+
+    def _pin(self,path,expected=None):
+        from shared_platform.immutable_approval_files import require_local_path
+        path=Path(path)
+        if not path.is_absolute() or not path.is_file():
+            if expected is not None:_fail('ADOPTION_OPERATION_SOURCE_CHANGED')
+            return
+        path=path.absolute()
+        if path in self.files:return
+        require_local_path(path,root=path.parent)
+        observed=sha256(path.read_bytes()).digest()
+        if expected is not None and observed.hex()!=expected:_fail('ADOPTION_OPERATION_SOURCE_CHANGED')
+        self.files[path]=observed
+
+    def capture(self,record,task):
+        for name,expected in record['facts']['source_files'].items():self._pin(Path(self.profile.root)/name,expected)
+        original=record['facts']['original_profile'];self._pin(original['path'],original['sha256'])
+        # These are exactly the byte inputs of _verify_uncached's same-source
+        # path. Do not recursively traverse captures or arbitrary event JSON.
+        if getattr(self.profile,'manifest_digest',None):
+            from shared_platform.operations_runtime import runtime_manifest
+            self.runtime_digest=runtime_manifest(Path(self.profile.root))
+            self.runtime_head=subprocess.check_output(['git','-C',str(self.profile.root),'rev-parse','HEAD']).strip()
+            if (self.runtime_digest!=self.profile.manifest_digest
+                    or self.runtime_head.decode()!=self.profile.version):_fail('ADOPTION_OPERATION_RUNTIME_CHANGED')
+        from modules.products import server
+        config=getattr(server,'R3_STARTUP_CONFIG',None)
+        self.config_object=config
+        self.config_identity=(id(config),repr(config))
+        if config is not None:
+            for name in (config.policy,config.incidents,'config/miaoshou.local.json'):
+                base=(config.common_credentials_root or config.root) if name=='config/miaoshou.local.json' else config.root
+                self._pin(Path(base)/name)
+        self.metrics['pinned_file_count']=len(self.files)
+        self.metrics['pinned_file_bytes']=sum(path.stat().st_size for path in self.files)
+        self._versions();self.deadline=time.monotonic()+10.0
+
+    def validate(self):
+        if self.deadline is None or time.monotonic()>self.deadline:
+            _fail('ADOPTION_OPERATION_PROOF_EXPIRED')
+        self._versions()
+        from shared_platform.immutable_approval_files import require_local_path
+        for path,expected in self.files.items():
+            require_local_path(path,root=path.parent)
+            if sha256(path.read_bytes()).digest()!=expected:_fail('ADOPTION_OPERATION_SOURCE_CHANGED')
+        if self.runtime_digest is not None:
+            from shared_platform.operations_runtime import runtime_manifest
+            if (runtime_manifest(Path(self.profile.root))!=self.runtime_digest
+                    or subprocess.check_output(['git','-C',str(self.profile.root),'rev-parse','HEAD']).strip()!=self.runtime_head):
+                _fail('ADOPTION_OPERATION_RUNTIME_CHANGED')
+        from modules.products import server
+        config=getattr(server,'R3_STARTUP_CONFIG',None)
+        if config is not self.config_object or (id(config),repr(config))!=self.config_identity:
+            _fail('ADOPTION_OPERATION_CONFIG_CHANGED')
+        self._versions()
+
+
 def verify(task,profile,*,offer,targets,prepared_reference,snapshot_digest):
+    window=_VERIFICATION_WINDOW.get()
+    if window is None or window.profile is not profile:
+        return _verify_uncached(task,profile,offer=offer,targets=targets,
+            prepared_reference=prepared_reference,snapshot_digest=snapshot_digest)
+    sid,key=_owner_key(profile)
+    identity=_bytes([task,offer,targets,prepared_reference,snapshot_digest,
+        str(profile.root),str(profile.data_root),profile.version,getattr(profile,'environment',None),getattr(profile,'manifest_digest',None),
+        sid,sha256(key).hexdigest()])
+    if identity in window.memo:
+        window.validate();window.metrics['proof_reuses']+=1
+        return deepcopy(window.memo[identity])
+    if window.memo:
+        # A changed owner, task, input or profile is a fresh operation; do not
+        # mix two snapshots within the old proof scope.
+        _fail('ADOPTION_OPERATION_INPUT_CHANGED')
+    window._open_monitors()
+    result=_verify_uncached(task,profile,offer=offer,targets=targets,
+        prepared_reference=prepared_reference,snapshot_digest=snapshot_digest)
+    window.metrics['full_verifications']+=1
+    version=task.get('version') or {}
+    if (result['release']!=version or version.get('code_version')!=profile.version
+            or version.get('environment')!=profile.environment
+            or getattr(profile,'manifest_digest',None) is not None
+            and version.get('manifest_digest')!=profile.manifest_digest
+            or result['facts'].get('image_unknown_successor_proof') is not None):
+        # Historical successor validators consume additional typed live files.
+        # Until each validator exposes its exact dependencies, preserve their
+        # full HMAC/history/UNKNOWN verification rather than guessing a graph.
+        window.metrics['cache_disabled_reason']='HISTORICAL_SUCCESSOR_REQUIRES_FULL_VERIFICATION'
+        return result
+    window.capture(result,task);window.memo[identity]=deepcopy(result)
+    return result
+
+
+def _verify_uncached(task,profile,*,offer,targets,prepared_reference,snapshot_digest):
     sid,key=_owner_key(profile)
     path=Path(profile.data_root)/'tasks.db'
     with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True) as db:

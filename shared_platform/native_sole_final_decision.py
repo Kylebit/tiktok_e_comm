@@ -6,7 +6,7 @@ GET consumers must not call them. Approval is still inert until execution rechec
 """
 from dataclasses import asdict
 from hashlib import sha256
-from contextlib import contextmanager
+from contextlib import contextmanager,closing
 import json
 import secrets
 import time
@@ -96,8 +96,35 @@ class NativeSoleFinalDecisionService:
             yield db
             check_schema(db)
 
-    def _candidate(self,db,plan_id):
-        """Rebuild full source and current READ in the same existing snapshot."""
+    def _observe_market_current(self,plan_id):
+        """Capture local inputs, close SQL, then perform the signed READ."""
+        from modules.products import server
+        if not self.store.path.is_file():_fail('NATIVE_SOLE_FINAL_STORE_UNAVAILABLE')
+        with closing(self.store._connect_readonly()) as db,db:
+            db.execute('BEGIN');check_schema(db)
+            row=db.execute('SELECT payload_json FROM release_plans WHERE plan_id=?',(plan_id,)).fetchone()
+            if row is None:_fail('NATIVE_SOLE_FINAL_PLAN_MISSING')
+            binding=json.loads(row['payload_json'])['r3_marketplace_binding']
+            reader=server._service_common_signing_context_reader(self.store)
+            if reader is None:_fail('NATIVE_SOLE_FINAL_SERVICE_CONTEXT_MISSING')
+            prepared=reader.prepare_current_read(db,binding['common_plan_id'],common_run_id=binding['common_run_id'])
+        # No read or write SQL transaction spans provider latency.
+        return reader.observe_current(prepared)
+
+    def _observe_nonce_current(self,nonce,review_digest,actor,*,refresh=False):
+        with closing(self.store._connect_readonly()) as db,db:
+            db.execute('BEGIN');check_schema(db)
+            row=db.execute('SELECT * FROM native_sole_final_nonces WHERE nonce_digest=?',(_hash(nonce.encode()),)).fetchone()
+            if (row is None or row['review_digest']!=review_digest or row['owner_sid']!=actor['owner_sid']
+                    or _hash(row['review_json'].encode())!=row['review_sha256']
+                    or not refresh and row['decision_id'] is None
+                    and any(row[k]!=actor[k] for k in ('session_id','instance_id'))):
+                _fail('NATIVE_SOLE_FINAL_NONCE_BINDING_CHANGED')
+            plan_id=row['plan_id']
+        return self._observe_market_current(plan_id)
+
+    def _candidate(self,db,plan_id,*,current_observation):
+        """Rebuild local facts and CAS the genuine observation; never network."""
         from modules.products import server
         from shared_platform import native_common_edit_boundary as boundary
         from shared_platform.publication_common_standing_policy import inspect_service_policy
@@ -129,7 +156,8 @@ class NativeSoleFinalDecisionService:
         policy=inspect_service_policy(policy_reader)
         if policy.status!='KNOWN_LOCAL_USER_INTENT' or policy.maximum_confirmed_writes!=1:
             _fail('NATIVE_SOLE_FINAL_STANDING_POLICY_UNKNOWN')
-        current=signing_reader.read_current(db,graph.common_plan_id,common_run_id=graph.common_run_id)
+        current=signing_reader.consume_current(db,graph.common_plan_id,
+            common_run_id=graph.common_run_id,observation=current_observation)
         if (current.status!='CURRENT_SIGNED_COMMON_READ_ACCEPTED' or current.current_fields_match is not True
                 or current.common_signing_context_digest!=context['common_signing_context_digest']
                 or current.preparation_root_id!=completion.preparation_root_id
@@ -156,8 +184,9 @@ class NativeSoleFinalDecisionService:
     def prepare(self,plan_id):
         """Explicit final-review preparation, never called by a read-only GET."""
         actor=self._actor()
+        observation=self._observe_market_current(plan_id)
         with self._transaction() as db:
-            review,graph,diagnostic,read_bytes=self._candidate(db,plan_id)
+            review,graph,diagnostic,read_bytes=self._candidate(db,plan_id,current_observation=observation)
             plan=db.execute('SELECT * FROM release_plans WHERE plan_id=?',(plan_id,)).fetchone()
             if plan['status']!=PLAN_PENDING_APPROVAL:_fail('NATIVE_SOLE_FINAL_PENDING_MARKET_REQUIRED')
             if self._actor()!=actor:_fail('NATIVE_SOLE_FINAL_OWNER_CHANGED_DURING_RECHECK')
@@ -175,6 +204,7 @@ class NativeSoleFinalDecisionService:
         actor=self._actor()
         if type(nonce) is not str or len(nonce)!=64 or type(review_digest) is not str:
             _fail('NATIVE_SOLE_FINAL_NONCE_INVALID')
+        observation=self._observe_nonce_current(nonce,review_digest,actor)
         with self._transaction() as db:
             row=db.execute('SELECT * FROM native_sole_final_nonces WHERE nonce_digest=?',(_hash(nonce.encode()),)).fetchone()
             if (row is None or row['review_digest']!=review_digest
@@ -185,7 +215,7 @@ class NativeSoleFinalDecisionService:
                 _fail('NATIVE_SOLE_FINAL_NONCE_BINDING_CHANGED')
             approved=_frozen(row['review_json'])
             if approved.digest()!=review_digest:_fail('NATIVE_SOLE_FINAL_REVIEW_BYTES_CHANGED')
-            current,_,_,_=self._candidate(db,row['plan_id'])
+            current,_,_,_=self._candidate(db,row['plan_id'],current_observation=observation)
             if compare_before_execution(approved,current).disposition!='MATCH_ONLY':
                 _fail('NATIVE_SOLE_FINAL_REVIEW_CHANGED')
             if self._actor()!=actor:_fail('NATIVE_SOLE_FINAL_OWNER_CHANGED_DURING_RECHECK')
@@ -224,13 +254,14 @@ class NativeSoleFinalDecisionService:
         """
         actor=self._actor()
         if type(nonce) is not str or len(nonce)!=64:_fail('NATIVE_SOLE_FINAL_NONCE_INVALID')
+        observation=self._observe_nonce_current(nonce,review_digest,actor,refresh=True)
         with self._transaction() as db:
             old=db.execute('SELECT * FROM native_sole_final_nonces WHERE nonce_digest=?',(_hash(nonce.encode()),)).fetchone()
             if (old is None or old['owner_sid']!=actor['owner_sid'] or old['review_digest']!=review_digest
                     or _hash(old['review_json'].encode())!=old['review_sha256']):
                 _fail('NATIVE_SOLE_FINAL_NONCE_BINDING_CHANGED')
             approved=_frozen(old['review_json'])
-            current,_,_,read_bytes=self._candidate(db,old['plan_id'])
+            current,_,_,read_bytes=self._candidate(db,old['plan_id'],current_observation=observation)
             if compare_before_execution(approved,current).disposition!='MATCH_ONLY':
                 _fail('NATIVE_SOLE_FINAL_REVIEW_CHANGED')
             if self._actor()!=actor:_fail('NATIVE_SOLE_FINAL_OWNER_CHANGED_DURING_RECHECK')
@@ -271,11 +302,17 @@ class NativeSoleFinalDecisionService:
         manufactured. Provider/state UNKNOWN preserves approval and refuses.
         """
         actor=self._actor()
+        with closing(self.store._connect_readonly()) as db,db:
+            db.execute('BEGIN');check_schema(db)
+            self._decision(db,decision_id,owner_sid=actor['owner_sid'])
+            row=db.execute('SELECT plan_id FROM native_sole_final_decisions WHERE decision_id=?',(decision_id,)).fetchone()
+            plan_id=row['plan_id']
+        observation=self._observe_market_current(plan_id)
         with self._transaction() as db:
             receipt=self._decision(db,decision_id,owner_sid=actor['owner_sid'])
             row=db.execute('SELECT * FROM native_sole_final_decisions WHERE decision_id=?',(decision_id,)).fetchone()
             approved=_frozen(row['review_json'])
-            current,_,diagnostic,_=self._candidate(db,row['plan_id'])
+            current,_,diagnostic,_=self._candidate(db,row['plan_id'],current_observation=observation)
             if self._actor()!=actor:_fail('NATIVE_SOLE_FINAL_OWNER_CHANGED_DURING_RECHECK')
             disposition=compare_before_execution(approved,current).disposition
             if disposition not in {'MATCH_ONLY','NONCRITICAL_REBIND_REQUIRED'}:

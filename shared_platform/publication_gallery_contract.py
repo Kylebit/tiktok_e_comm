@@ -283,7 +283,7 @@ def validate_gallery_plan(round1, *, effective_plan=None):
                 require(type(substitution) is dict and set(substitution) ==
                         {'replaces', 'reason', 'evidence_basis', 'unknown_facts_not_asserted'},
                         'GALLERY_ROLE_SUBSTITUTION_INVALID')
-                require(substitution['replaces'] in {'size', 'instructions', 'size_comparison', 'installation'}
+                require(substitution['replaces'] in {'size', 'instructions', 'size_comparison', 'installation', 'assembled_size', 'piece_layout_or_instructions'}
                         and role in {'construction_proportion', 'parts_detail', 'proportion_evidence', 'construction_evidence'}
                         and substitution['reason'] == 'SOURCE_FACT_UNKNOWN'
                         and type(substitution['evidence_basis']) is str and bool(substitution['evidence_basis'].strip())
@@ -345,11 +345,29 @@ def validate_gallery_documents(documents, route):
         brand = BRANDS[1] if label.startswith('tiktok:HB_') else BRANDS[0]
         roles = policy['roles_by_brand'][brand]
         assets = [row for row in rows if family(row.get('brand_id')) == brand]
+        locale=route.get('route_locales',{}).get(label)
+        expected=[]
+        for master in assets:
+            localized=[row for row in documents.get('translation_result',{}).get('assets',[])
+                if family(row.get('brand_id'))==brand and row.get('role')==master['role'] and row.get('locale')==locale]
+            require(len(localized)<=1,'GALLERY_LOCALIZED_ROLE_AMBIGUOUS')
+            selected=master
+            if localized:
+                selected=localized[0]
+                tasks=[t for t in documents.get('translation_plan',{}).get('tasks',[])
+                    if family(t.get('brand_id'))==brand and t.get('role')==master['role'] and t.get('locale')==locale]
+                require(len(tasks)==1 and tasks[0].get('review_number')==master.get('review_number')
+                    and tasks[0].get('source_artifact_digest')==master['artifact_digest']
+                    and tasks[0].get('source_url')==master['public_url']
+                    and selected.get('source_review_number')==master.get('review_number')
+                    and selected.get('status')=='COMPLETED' and selected.get('artifact_digest') in approved,
+                    'GALLERY_LOCALIZED_SOURCE_OR_QA_CHANGED')
+            expected.append((selected.get('artifact_digest'),selected.get('public_url')))
         require([row.get('role') for row in images] == roles
                 and [row.get('position') for row in images] == list(range(1, len(roles) + 1))
                 and all(row.get('brand_id') == brand for row in images)
                 and [(row.get('artifact_digest'), row.get('url')) for row in images] ==
-                    [(row.get('artifact_digest'), row.get('public_url')) for row in assets],
+                    expected,
                 'GALLERY_TARGET_ROUTE_INCOMPLETE')
     require(set(route['image_routes']) == set(documents['round1_snapshot']['canonical_targets'])-{'miaoshou:COMMON'},
             'GALLERY_EXACT_TARGET_ROUTES_REQUIRED')

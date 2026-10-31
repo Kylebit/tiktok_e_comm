@@ -258,13 +258,21 @@ def build_native_budget_ledger(active,*,platform,target_label,snapshot,candidate
         raise NativeMutationBudgetHold('NATIVE_BUDGET_PROTECTED_FACTORY_REQUIRED')
     adopted=getattr(active.runtime._operations,'agent_prepared_common',None)
     adopted_targets=None
+    new_task=False
     if adopted is not None:
         from shared_platform.agent_prepared_v4_targets import _scope
         bound,task,record=_scope(active,active.store.get_plan(active.plan_id))
         from shared_platform.prepared_target_consumer import effective_marketplace_targets
         adopted_targets=effective_marketplace_targets(record['offer_id'],record['targets'])
         if snapshot['offer_id']!=record['offer_id']:raise NativeMutationBudgetHold('ADOPTION_BUDGET_OFFER_CHANGED')
-    if (adopted is None and snapshot['offer_id']!='4039931504') or candidate.get('schema_version')!='publication-release-candidate/v1' or candidate.get('status')!='READY_FOR_FINAL_REVIEW':
+    if (adopted is None and getattr(active.runtime._operations,'original_continuation',None) is None
+            and getattr(active.runtime._operations,'new_task_worker',None) is not None):
+        from shared_platform.native_new_task_v4_targets import scope
+        _,task,frozen,_=scope(active,active.store.get_plan(active.plan_id))
+        adopted_targets=[label for label in task['scope']['shops'] if label!='miaoshou:COMMON']
+        if snapshot['offer_id']!=frozen['offer_id']:raise NativeMutationBudgetHold('NEW_TASK_BUDGET_OFFER_CHANGED')
+        new_task=True
+    if (adopted is None and not new_task and snapshot['offer_id']!='4039931504') or candidate.get('schema_version')!='publication-release-candidate/v1' or candidate.get('status')!='READY_FOR_FINAL_REVIEW':
         raise NativeMutationBudgetHold('NATIVE_BUDGET_EXACT_FINAL_CANDIDATE_REQUIRED')
     with active.store._connect_readonly() as db:
         db.execute('BEGIN');receipt=active.service._decision(db,active.decision_id,owner_sid=active.owner_sid)
@@ -304,7 +312,7 @@ def build_native_budget_ledger(active,*,platform,target_label,snapshot,candidate
                 or len(target)!=1 or target[0]['status']!='RUNNING'):
             raise NativeMutationBudgetHold('NATIVE_BUDGET_PLAN_OR_RUNNING_TARGET_CHANGED')
     base=_DurableLedger(store=active.store,binding=binding,target_label=target_label,recheck=recheck)
-    if adopted is not None:return base
+    if adopted is not None or new_task:return base
     from shared_platform.native_accepted_save_core_repair import for_active as accepted_core_for_active
     scoped=accepted_core_for_active(active,base)
     if scoped is not base:return scoped

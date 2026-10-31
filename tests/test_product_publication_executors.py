@@ -281,7 +281,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
                         "status": "FAILED",
                         "stage": "PREPARATION",
                         "provider_code": "tiktok_preparation_failed",
-                        "provider_reason": "TikTok local preparation failed",
+                        "provider_reason": "TikTok local preparation failed [phase=CONTEXT_RESOLVER; exception=Exception]",
                         "request_attempted": False,
                         "outcome_unknown": False,
                         "external_write_count": 0,
@@ -295,7 +295,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
                         "status": "FAILED",
                         "stage": "PREPARATION",
                         "provider_code": "tiktok_preparation_failed",
-                        "provider_reason": "TikTok local preparation failed",
+                        "provider_reason": "TikTok local preparation failed [phase=CONTEXT_RESOLVER; exception=Exception]",
                         "request_attempted": False,
                         "outcome_unknown": False,
                         "external_write_count": 0,
@@ -463,7 +463,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
                     "stage": "PREPARATION",
                     "provider_code": "shopee_credential_preparation_failed",
                     "provider_field_path": "credential",
-                    "provider_reason": "Shopee credential preparation failed before mutation",
+                    "provider_reason": "Shopee credential preparation failed before mutation [phase=GLOBAL_RESOLVER; exception=RuntimeError]",
                     "request_attempted": False,
                     "outcome_unknown": False,
                     "external_write_count": 0,
@@ -507,7 +507,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
         self.assertTrue(
             all(callable(executor) for executor in executors.values())
         )
-        self.assertIs(executors["OZON"], ozon_executor)
+        self.assertIs(executors["OZON"].__wrapped__, ozon_executor)
         build_ozon.assert_called_once_with(
             dispatch_variant=ozon.dispatch_variant,
             readback_variants=ozon.readback_variants,

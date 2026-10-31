@@ -9,6 +9,7 @@ deterministic failure instead of silently crossing the first-round boundary.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from contextlib import nullcontext
 import hashlib
 import json
@@ -422,7 +423,8 @@ def _safe_image_execution_plan(value: Any) -> dict[str, Any]:
             raise PreparationError("brand image plan evidence is invalid")
         clean_assets: list[dict[str, Any]] = []
         for asset in planned_assets:
-            if not isinstance(asset, dict) or set(asset) != {"role", "quantity", "brief"}:
+            if (not isinstance(asset, dict) or not {"role", "quantity", "brief"} <= set(asset)
+                    or set(asset)-{"role", "quantity", "brief", "role_substitution", "fact_evidence", "variant_keys"}):
                 raise PreparationError("brand generated asset shape is invalid")
             quantity = asset.get("quantity")
             if type(quantity) is not int or not 1 <= quantity <= 20 or not _clean_text(asset.get("role")) or not _clean_text(asset.get("brief")):
@@ -432,6 +434,36 @@ def _safe_image_execution_plan(value: Any) -> dict[str, Any]:
                 "quantity": quantity,
                 "brief": _clean_text(asset.get("brief"))[:600],
             })
+            if 'variant_keys' in asset:
+                keys=asset['variant_keys']
+                if (type(keys) is not list or not 1<=len(keys)<=50 or len(keys)!=len(set(keys))
+                        or any(type(k) is not str or not k.strip() or len(k)>200 for k in keys)):
+                    raise PreparationError('brand variant role binding is invalid')
+                clean_assets[-1]['variant_keys']=list(keys)
+            # Preserve the exact truth/provenance metadata consumed by R3.
+            # R1 validates its bounded shape; R3 still resolves fact_path against
+            # this product's immutable facts and rejects fabricated measurements.
+            substitution=asset.get('role_substitution')
+            if substitution is not None:
+                if (type(substitution) is not dict or set(substitution)!={
+                        'replaces','reason','evidence_basis','unknown_facts_not_asserted'}
+                        or substitution['replaces'] not in {'size','instructions','size_comparison','installation','assembled_size','piece_layout_or_instructions'}
+                        or asset['role'] not in {'construction_proportion','parts_detail','proportion_evidence','construction_evidence'}
+                        or substitution['reason']!='SOURCE_FACT_UNKNOWN'
+                        or type(substitution['evidence_basis']) is not str
+                        or not substitution['evidence_basis'].strip() or len(substitution['evidence_basis'])>2000
+                        or substitution['unknown_facts_not_asserted'] is not True):
+                    raise PreparationError('brand role substitution evidence is invalid')
+                clean_assets[-1]['role_substitution']=deepcopy(substitution)
+            evidence=asset.get('fact_evidence')
+            if evidence is not None:
+                if (substitution is not None or type(evidence) is not dict or set(evidence)!={'fact_path','value'}
+                        or type(evidence['fact_path']) is not list or not 1<=len(evidence['fact_path'])<=16
+                        or any(type(k) is not str or not k or len(k)>200 for k in evidence['fact_path'])
+                        or type(evidence['value']) is not dict
+                        or evidence['value'].get('fact_verified') is not True or evidence['value'].get('status')!='VERIFIED'):
+                    raise PreparationError('brand role fact evidence is invalid')
+                clean_assets[-1]['fact_evidence']=deepcopy(evidence)
         sticker_category_ids = {"600338", "101157", "17028954 / type 95819"}
         has_sticker_category = any(
             _clean_text(item.get("category_id")) in sticker_category_ids

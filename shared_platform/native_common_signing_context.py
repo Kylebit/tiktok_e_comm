@@ -22,6 +22,30 @@ from shared_platform.native_common_budget_facts import _validate_plan_source
 from shared_platform.native_common_retained_completion import read_retained_completion
 from shared_platform.manual_common_creation import common_detail_id
 
+_OBSERVATION_SEAL=object()
+_MAX_OBSERVATION_AGE=30.0
+
+
+@dataclass(frozen=True)
+class _PreparedCurrentRead:
+    config: object = field(repr=False)
+    store: object = field(repr=False)
+    plan_id: str
+    run_id: str | None
+    facts: object
+    payload_json: bytes = field(repr=False)
+    detail_id: str | None
+    signing_identity: object = field(repr=False)
+    seal: object = field(repr=False)
+
+
+@dataclass(frozen=True)
+class _ObservedCurrentRead:
+    prepared: object = field(repr=False)
+    facts: object
+    completed_monotonic: float
+    seal: object = field(repr=False)
+
 
 @dataclass(frozen=True)
 class NativeCommonSigningContextFacts:
@@ -141,6 +165,77 @@ class NativeCommonSigningContextReader:
             code = str(error) if str(error).startswith('COMMON_SIGNING_') else 'COMMON_SIGNING_CONTEXT_UNVERIFIED'
             return NativeCommonSigningContextFacts('UNKNOWN', code)
 
+    def prepare_current_read(self, db, common_plan_id, *, common_run_id=None):
+        """Capture retained inputs in an existing read-only SQL snapshot."""
+        facts=self.read(db,common_plan_id,common_run_id=common_run_id)
+        row=db.execute('SELECT payload_json FROM release_plans WHERE plan_id=?',(common_plan_id,)).fetchone()
+        raw=row['payload_json'].encode('utf-8') if row else b''
+        payload=json.loads(raw) if raw and facts.status!='UNKNOWN' else None
+        identity=self._signing_input() if facts.status!='UNKNOWN' else None
+        detail=common_detail_id(payload,connection=db) if payload and facts.status!='UNKNOWN' else None
+        return _PreparedCurrentRead(self._config,self._store,common_plan_id,common_run_id,
+            facts,raw,detail,identity,_OBSERVATION_SEAL)
+
+    def observe_current(self, prepared):
+        """One provider READ without an open database handle/transaction."""
+        if (type(prepared) is not _PreparedCurrentRead or prepared.seal is not _OBSERVATION_SEAL
+                or prepared.config is not self._config or prepared.store is not self._store):
+            raise ApprovalBlocked('COMMON_SIGNING_PREPARED_OBSERVATION_REQUIRED')
+        facts=prepared.facts
+        if facts.status=='UNKNOWN':
+            return _ObservedCurrentRead(prepared,facts,time.monotonic(),_OBSERVATION_SEAL)
+        try:
+            from modules.miaoshou.client import NativeCommonDetailObserver, MiaoshouBusinessRejectedError
+            from modules.products.release_adapters import readback_miaoshou_common
+            before=self._signing_input()
+            if before!=prepared.signing_identity:
+                raise ValueError('COMMON_SIGNING_CONFIG_CHANGED_DURING_READ')
+            from shared_platform.publication_runtime_config import common_signing_bytes
+            raw=common_signing_bytes(self._config)
+            value=json.loads(raw.decode('utf-8-sig'),object_pairs_hook=_unique_object)
+            if hashlib.sha256(raw).digest()!=before[0] or before[1]!=facts.common_signing_context_digest:
+                raise ValueError('COMMON_SIGNING_CONFIG_CHANGED_DURING_READ')
+            evidence=readback_miaoshou_common(json.loads(prepared.payload_json),
+                observation_reader=NativeCommonDetailObserver(value))
+            packet=evidence['native_common_observation']
+            if (packet['credential_scope_digest']!=facts.common_signing_context_digest
+                    or packet['detail_id']!=prepared.detail_id
+                    or packet['endpoint']!=OPEN_BASE_URL+COMMON_DETAIL_OBSERVATION_PATH
+                    or self._signing_input()!=before):
+                raise ValueError('COMMON_SIGNING_CURRENT_CONTEXT_CHANGED')
+            encoded=json.dumps(evidence,ensure_ascii=False,sort_keys=True,
+                separators=(',',':'),allow_nan=False).encode('utf-8')
+            observed=replace(facts,status='CURRENT_SIGNED_COMMON_READ_ACCEPTED',
+                current_read_acceptance='ACCEPTED',current_fields_match=evidence.get('verified') is True,
+                current_comparison_digest=hashlib.sha256(encoded).hexdigest(),
+                current_observed_at_epoch=int(time.time()),current_observation_bytes=encoded)
+        except MiaoshouBusinessRejectedError as error:
+            code=error.code if type(error.code) is str and re.fullmatch(r'[A-Za-z0-9_-]{1,96}',error.code) else 'REJECTED'
+            observed=replace(facts,status='UNKNOWN',reason='COMMON_SIGNING_CURRENT_READ_REJECTED:'+code,
+                current_read_acceptance='REJECTED')
+        except (ValueError,TypeError,KeyError,OSError,UnicodeError,RecursionError,
+                RuntimeError,ReleaseStoreError,ApprovalBlocked,sqlite3.Error):
+            observed=replace(facts,status='UNKNOWN',reason='COMMON_SIGNING_CURRENT_READ_UNAVAILABLE')
+        return _ObservedCurrentRead(prepared,observed,time.monotonic(),_OBSERVATION_SEAL)
+
+    def consume_current(self,db,common_plan_id,*,common_run_id=None,observation):
+        """Short-transaction local CAS; this method performs no provider I/O."""
+        if (type(observation) is not _ObservedCurrentRead or observation.seal is not _OBSERVATION_SEAL
+                or type(observation.prepared) is not _PreparedCurrentRead
+                or observation.prepared.seal is not _OBSERVATION_SEAL):
+            raise ApprovalBlocked('COMMON_SIGNING_GENUINE_CURRENT_OBSERVATION_REQUIRED')
+        prepared=observation.prepared
+        if (prepared.config is not self._config or prepared.store is not self._store
+                or prepared.plan_id!=common_plan_id or prepared.run_id!=common_run_id
+                or not 0<=time.monotonic()-observation.completed_monotonic<=_MAX_OBSERVATION_AGE):
+            raise ApprovalBlocked('COMMON_SIGNING_CURRENT_OBSERVATION_SCOPE_OR_AGE_CHANGED')
+        current=self.prepare_current_read(db,common_plan_id,common_run_id=common_run_id)
+        if current!=prepared:
+            raise ApprovalBlocked('COMMON_SIGNING_CURRENT_OBSERVATION_INPUTS_CHANGED')
+        # In particular UNKNOWN or a fresh provider rejection is not replaced
+        # by retained success. The caller still validates the returned status.
+        return observation.facts
+
     def read_current(self, db, common_plan_id, *, common_run_id=None):
         """Explicit fixed signed READ, only when a native caller requests it.
 
@@ -149,43 +244,8 @@ class NativeCommonSigningContextReader:
         cannot be replaced by an old accepted packet. Its exact private bytes
         permit later same-baseline freeze consumers to recheck the comparison.
         """
-        facts = self.read(db, common_plan_id, common_run_id=common_run_id)
-        if facts.status == 'UNKNOWN':
-            return facts
-        try:
-            from modules.miaoshou.client import NativeCommonDetailObserver, MiaoshouBusinessRejectedError
-            from modules.products.release_adapters import readback_miaoshou_common
-            before = self._signing_input()
-            from shared_platform.publication_runtime_config import common_signing_bytes
-            raw = common_signing_bytes(self._config)
-            value = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_unique_object)
-            if hashlib.sha256(raw).digest() != before[0] or before[1] != facts.common_signing_context_digest:
-                raise ValueError('COMMON_SIGNING_CONFIG_CHANGED_DURING_READ')
-            row = db.execute('SELECT payload_json FROM release_plans WHERE plan_id=?', (common_plan_id,)).fetchone()
-            evidence = readback_miaoshou_common(json.loads(row['payload_json']),
-                observation_reader=NativeCommonDetailObserver(value))
-            packet = evidence['native_common_observation']
-            if (packet['credential_scope_digest'] != facts.common_signing_context_digest
-                    or packet['detail_id'] != common_detail_id(json.loads(row['payload_json']),connection=db)
-                    or packet['endpoint'] != OPEN_BASE_URL + COMMON_DETAIL_OBSERVATION_PATH
-                    or self._signing_input() != before):
-                raise ValueError('COMMON_SIGNING_CURRENT_CONTEXT_CHANGED')
-            encoded = json.dumps(evidence, ensure_ascii=False, sort_keys=True,
-                separators=(',', ':'), allow_nan=False).encode('utf-8')
-            # Acceptance of READ is separate from field equality and permission
-            # to EDIT. A mismatched accepted detail is not a usable baseline.
-            return replace(facts, status='CURRENT_SIGNED_COMMON_READ_ACCEPTED',
-                current_read_acceptance='ACCEPTED', current_fields_match=evidence.get('verified') is True,
-                current_comparison_digest=hashlib.sha256(encoded).hexdigest(),
-                current_observed_at_epoch=int(time.time()),
-                current_observation_bytes=encoded)
-        except MiaoshouBusinessRejectedError as error:
-            code = error.code if type(error.code) is str and re.fullmatch(r'[A-Za-z0-9_-]{1,96}', error.code) else 'REJECTED'
-            return replace(facts, status='UNKNOWN', reason='COMMON_SIGNING_CURRENT_READ_REJECTED:'+code,
-                current_read_acceptance='REJECTED')
-        except (ValueError, TypeError, KeyError, OSError, UnicodeError, RecursionError,
-                RuntimeError, ReleaseStoreError, ApprovalBlocked, sqlite3.Error):
-            return replace(facts, status='UNKNOWN', reason='COMMON_SIGNING_CURRENT_READ_UNAVAILABLE')
+        return self.observe_current(self.prepare_current_read(db,common_plan_id,
+            common_run_id=common_run_id)).facts
 
 
 def inspect_service_signing_context(reader, db, common_plan_id, *, common_run_id=None):

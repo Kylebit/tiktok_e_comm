@@ -107,6 +107,8 @@ class NativeSoleFinalService:
         self._lock=threading.RLock()
         self._reader=None
         self._closed=False
+        self._closing=False
+        self._active_operations=0
         self._execution_lock=threading.RLock()
         self._execution_thread=None
         self._execution_decision=None
@@ -142,26 +144,36 @@ class NativeSoleFinalService:
 
     @contextmanager
     def operation(self):
-        with self._lock:
-            if self._closed:raise ApprovalBlocked('NATIVE_SOLE_FINAL_SERVICE_CLOSED')
-            if self._reader is None:
-                self._reader=self._fresh_reader()
-            else:
-                endpoint=self.supervisor.endpoint()
-                if endpoint!=self._reader.endpoint:
-                    # The supervisor has proven the original owned generation's
-                    # retirement before returning a different endpoint.
+        stack=ExitStack()
+        try:
+            with self._lock:
+                if self._closed or getattr(self,'_closing',False):
+                    raise ApprovalBlocked('NATIVE_SOLE_FINAL_SERVICE_CLOSED')
+                if self._reader is None:
                     self._reader=self._fresh_reader()
-            with ExitStack() as stack:
+                else:
+                    endpoint=self.supervisor.endpoint()
+                    if endpoint!=self._reader.endpoint:
+                        # Retirement is proven by the owned supervisor.
+                        self._reader=self._fresh_reader()
                 try:
                     stack.enter_context(self._reader.verified_operation())
                 except ApprovalBlocked as error:
                     if str(error) not in {'LOCAL_OPERATOR_SESSION_EXPIRED','NATIVE_ACTOR_SESSION_EXPIRED'}:raise
                     self._reader=self._fresh_reader()
                     stack.enter_context(self._reader.verified_operation())
-                # Only admission above may refresh a genuine expired session.
-                # An error from the operation body is never replayed.
-                yield NativeSoleFinalDecisionService(self.store,self._reader)
+                reader=self._reader
+                self._active_operations=getattr(self,'_active_operations',0)+1
+        except BaseException:
+            stack.close()
+            raise
+        try:
+            # An owned lease fixes the generation while the global operation
+            # lock is released. Every actor use still checks that generation.
+            yield NativeSoleFinalDecisionService(self.store,reader)
+        finally:
+            with self._lock:self._active_operations-=1
+            stack.close()
 
     def prepare(self,plan_id):
         self._require_original_plan_scope(plan_id)
@@ -843,6 +855,10 @@ class NativeSoleFinalService:
             return value
 
     def close(self):
+        with self._lock:
+            if getattr(self,'_active_operations',0):
+                raise ApprovalBlocked('NATIVE_OPERATION_ACTIVE')
+            self._closing=True
         with self._execution_lock:
             self._stopping=True
             self._work_available.set()

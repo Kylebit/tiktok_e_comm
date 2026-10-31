@@ -226,7 +226,12 @@ def _decode_json_response(response: urllib.request.addinfourl, *, on_decoded=Non
     try:
         result = json.loads(raw)
     except json.JSONDecodeError as exc:
+        from shared_platform.publication_provider_journal import response_is_retained
+        if response_is_retained(response):
+            raise RuntimeError("Miaoshou response decode failed; original retained privately") from None
         raise RuntimeError(f"Miaoshou returned non-JSON data: {raw[:300]}") from exc
+    from shared_platform.publication_provider_journal import retain_decoded_provider_identity
+    retain_decoded_provider_identity(response, result)
     if on_decoded is not None:
         on_decoded(result, hashlib.sha256(raw_bytes).hexdigest())
     return result
@@ -269,7 +274,8 @@ def post_open(
         from shared_platform.manual_common_creation import CREATE_PATH
         open_request = (urllib.request.build_opener(_RefuseCommonDetailRedirect()).open
                         if native_edit_response_capture(path) is not None or path == CREATE_PATH else urllib.request.urlopen)
-        with open_request(request, timeout=30) as response:
+        from shared_platform.publication_provider_journal import retained_urlopen
+        with retained_urlopen("miaoshou", request, open_request, timeout=30) as response:
             capture_create = None
             if path == CREATE_PATH:
                 from shared_platform.manual_common_creation import retain_create_sdk_response
@@ -282,6 +288,9 @@ def post_open(
                       _decode_json_response(response,on_decoded=capture_create) if capture_create is not None else
                       _decode_json_response(response))
     except urllib.error.HTTPError as exc:
+        from shared_platform.publication_provider_journal import response_is_retained
+        if response_is_retained(exc):
+            raise RuntimeError(f"Miaoshou HTTP {exc.code}: original response retained privately") from None
         raw_bytes = exc.read(COMMON_OBSERVATION_MAX_BYTES + 1)
         _retain_native_edit_summary(path,request,'HTTP_ERROR',http_status=exc.code,wire=raw_bytes,
             redactions=(key,secret,request.get_header('X-sign')))

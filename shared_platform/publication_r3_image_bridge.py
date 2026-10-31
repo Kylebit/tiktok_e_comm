@@ -998,6 +998,7 @@ def _project_frozen_variant_images(payload, documents, common_plan, common_run):
     from shared_platform.native_common_colormap_correction import KEY, frozen_projection
     relation = payload.get(KEY)
     if relation is None:
+        _project_generic_frozen_variant_images(payload,documents,common_plan,common_run)
         return
     facts = payload['product_facts']
     assets = [dict(role=row['role'], image_url=row['public_url'], artifact_digest=row['artifact_digest'])
@@ -1033,6 +1034,48 @@ def _project_frozen_variant_images(payload, documents, common_plan, common_run):
         common_payload_digest=common_plan['payload_digest'], common_run_id=common_run['run_id'],
         color_relation_digest=_canonical_digest(relation), variants=proof,
         product_gallery_unchanged=True, description_routes_unchanged=True)
+
+
+def _project_generic_frozen_variant_images(payload,documents,common_plan,common_run):
+    """A new task's explicit frozen role-to-variant relation, not index guessing.
+
+    Historical COMMON color bindings keep their original serializer above.
+    Missing bindings retain the original fail-closed multi-model validator.
+    """
+    r1=documents['round1_snapshot'];facts=payload['product_facts']
+    plans=[p for p in r1['image_plan'].get('brand_plans',[]) if _brand_family(p['id'])=='livelyhive-sea']
+    if len(plans)!=1:return
+    declared=[a for a in plans[0]['generated_assets'] if 'variant_keys' in a]
+    if not declared:return
+    models={r['variant_key']:r['model_sku'] for r in payload['sku_lineage']['assignment']['model_skus']}
+    by_key={};proof=[];positions=[];gallery=[r['image_url'] for r in payload['images']]
+    for binding in declared:
+        keys=binding['variant_keys']
+        if type(keys) is not list or len(keys)!=1 or keys[0] not in models or keys[0] in by_key:
+            raise ValueError('GENERIC_FROZEN_VARIANT_ROLE_AMBIGUOUS')
+        assets=[r for r in documents['generation_result']['assets']
+            if _brand_family(r['brand_id'])=='livelyhive-sea' and r['role']==binding['role']]
+        if len(assets)!=1 or gallery.count(assets[0]['public_url'])!=1:
+            raise ValueError('GENERIC_FROZEN_VARIANT_ARTIFACT_AMBIGUOUS')
+        asset=assets[0];key=keys[0];url=asset['public_url'];by_key[key]=url
+        position=gallery.index(url);positions.append({'model_sku':models[key],'position':position})
+        proof.append({'variant_key':key,'model_sku':models[key],'role':binding['role'],
+            'artifact_id':asset['artifact_id'],'artifact_digest':asset['artifact_digest'],
+            'image_url':url,'approved_position':position})
+    if set(by_key)!=set(models) or len({r['position'] for r in positions})!=len(models):
+        raise ValueError('GENERIC_FROZEN_VARIANT_ROLE_COVERAGE_REQUIRED')
+    if facts.get('shopee_global_variant_image_bindings') is not None:
+        raise ValueError('GENERIC_FROZEN_VARIANT_PROVENANCE_CONFLICT')
+    for sku in facts['selected_skus']:
+        sku['image_urls']=[by_key[sku['key']]]
+        facts['sku_commercial_facts'][sku['key']]['image_urls']=[by_key[sku['key']]]
+    ordered={r['model_sku']:r for r in positions}
+    facts['shopee_global_variant_image_positions']=[ordered[m] for m in models.values()]
+    payload['r3_marketplace_binding']['variant_image_projection']={
+        'schema_version':'r3-frozen-variant-role-projection/v1','round1_snapshot_digest':r1['snapshot_digest'],
+        'r2_identity':validate_r2_identity(documents),'common_plan_id':common_plan['plan_id'],
+        'common_payload_digest':common_plan['payload_digest'],'common_run_id':common_run['run_id'],
+        'variants':proof,'product_gallery_unchanged':True,'description_routes_unchanged':True}
 
 
 def independent_card_gallery(snapshot, sku, structure):

@@ -8,6 +8,7 @@ import urllib.request
 
 from core.http_retry import DEFAULT_SSL_CTX, urlopen
 from modules.ozon.config import ozon_credentials
+from shared_platform.publication_provider_journal import retained_urlopen, retain_decoded_provider_identity, response_is_retained
 
 BASE = "https://api-seller.ozon.ru"
 
@@ -35,14 +36,20 @@ def ozon_post_bound(path: str, body: dict, *, client_id: str, api_key: str, time
         },
     )
     try:
-        with urlopen(req, timeout=timeout, context=DEFAULT_SSL_CTX) as resp:
+        with retained_urlopen("ozon", req, urlopen, timeout=timeout, context=DEFAULT_SSL_CTX) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
+        if response_is_retained(e):
+            raise RuntimeError(f"Ozon HTTP {e.code}: original response retained privately") from None
         err = e.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Ozon HTTP {e.code}: {err[:400]}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"Ozon 网络错误: {e.reason}") from e
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        retain_decoded_provider_identity(resp, parsed)
+        return parsed
     except json.JSONDecodeError as e:
+        if response_is_retained(resp):
+            raise RuntimeError("Ozon response decode failed; original retained privately") from None
         raise RuntimeError(f"Ozon 响应非 JSON: {raw[:200]}") from e

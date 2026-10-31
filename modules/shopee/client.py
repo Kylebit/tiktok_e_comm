@@ -13,6 +13,7 @@ from core.http_retry import DEFAULT_SSL_CTX as SSL_CTX
 from core.http_retry import urlopen as urlopen_retry
 from modules.shopee.config import shopee_config
 from modules.shopee.sign import sign_merchant, sign_partner, sign_shop
+from shared_platform.publication_provider_journal import retained_urlopen, retain_decoded_provider_identity, response_is_retained
 
 _BOUNDARY = "----ShopeeUploadBoundary7MA4YWxkTrZu0gW"
 
@@ -22,6 +23,17 @@ def _parse_json(raw: str, ctx: str) -> dict:
         return json.loads(raw)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Shopee {ctx} 非 JSON: {raw[:300]}") from e
+
+
+def _parse_retained_response(response, path):
+    try:
+        parsed = _parse_json(response.read().decode("utf-8"), path)
+    except (UnicodeError, RuntimeError):
+        if response_is_retained(response):
+            raise RuntimeError("Shopee response decode failed; original retained privately") from None
+        raise
+    retain_decoded_provider_identity(response, parsed)
+    return parsed
 
 
 def shop_get(path: str, shop_id: int, access_token: str, params: dict | None = None, *, call_guard=None) -> dict:
@@ -63,14 +75,13 @@ def shop_post(path: str, shop_id: int, access_token: str, body: dict, *, call_gu
         headers={"Content-Type": "application/json"},
     )
     if call_guard: call_guard()
-    with urlopen_retry(
-        req,
+    with retained_urlopen("shopee", req, urlopen_retry,
         timeout=90,
         context=SSL_CTX,
         attempts=1,
         allow_curl_fallback=False,
     ) as resp:
-        return _parse_json(resp.read().decode("utf-8"), path)
+        return _parse_retained_response(resp, path)
 
 
 def upload_image(file_path: Path, *, scene: str = "normal") -> dict:
@@ -106,14 +117,13 @@ def upload_image(file_path: Path, *, scene: str = "normal") -> dict:
         method="POST",
         headers={"Content-Type": f"multipart/form-data; boundary={_BOUNDARY}"},
     )
-    with urlopen_retry(
-        req,
+    with retained_urlopen("shopee", req, urlopen_retry,
         timeout=120,
         context=SSL_CTX,
         attempts=1,
         allow_curl_fallback=False,
     ) as resp:
-        data = _parse_json(resp.read().decode("utf-8"), path)
+        data = _parse_retained_response(resp, path)
     if data.get("error"):
         raise RuntimeError(data.get("message") or data.get("error") or data)
     return data.get("response") or data
@@ -167,14 +177,13 @@ def merchant_post(path: str, merchant_id: int, access_token: str, body: dict) ->
     )
     # A merchant mutation may have reached Shopee before a transport failure.
     # Retrying it here (including through curl fallback) would be a blind replay.
-    with urlopen_retry(
-        req,
+    with retained_urlopen("shopee", req, urlopen_retry,
         timeout=90,
         context=SSL_CTX,
         attempts=1,
         allow_curl_fallback=False,
     ) as resp:
-        return _parse_json(resp.read().decode("utf-8"), path)
+        return _parse_retained_response(resp, path)
 
 
 def merchant_get(path: str, merchant_id: int, access_token: str, params: dict | None = None) -> dict:

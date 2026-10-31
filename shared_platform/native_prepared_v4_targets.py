@@ -50,6 +50,26 @@ def _persist_file_identity(root,mapping):
         if path.read_bytes()!=raw:_deny('NATIVE_V4_FILE_MAPPING_CHANGED')
     return {'path':str(path),'sha256':hashlib.sha256(raw).hexdigest()}
 
+
+def provider_request_for_readonly_recovery(active, plan, target, snapshot):
+    """Reconstruct the exact original SDK file scope without writes or budgets.
+
+    This is an identity encoder only. The caller must validate the complete
+    current native decision/new-task source and original failure before using
+    any retained provider response or official reader.
+    """
+    from shared_platform.native_sole_final_execution import _NativeExecution, _ACTIVE
+    from shared_platform.product_publication_runner import PublicationPlatformRequest
+    if (type(active) is not _NativeExecution or _ACTIVE.get() is not active
+            or active.plan_id != plan['plan_id'] or target['target_label'] not in plan['targets']
+            or target['run_id'] != 'release-run:' + plan['payload_digest'][:24]):
+        _deny('NATIVE_PROVIDER_RECOVERY_ORIGINAL_SCOPE_REQUIRED')
+    mapping = _file_identity(run_id=target['run_id'], plan_id=plan['plan_id'],
+        decision_id=active.decision_id, snapshot_digest=snapshot['snapshot_digest'])
+    return PublicationPlatformRequest(run_id=mapping['file_run_id'], report_id=mapping['file_report_id'],
+        platform=target['target_label'].split(':', 1)[0].upper(), target_labels=(target['target_label'],),
+        snapshot=deepcopy(snapshot), checkpoint_root=active.runtime.supervisor.root)
+
 def _frozen_candidate_matches(snapshot,candidate,*,receipt_digest,graph_digest):
     from shared_platform.publication_autopilot import _business_snapshot_digest
     return (snapshot['snapshot_digest']==receipt_digest

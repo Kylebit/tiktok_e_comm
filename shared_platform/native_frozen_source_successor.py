@@ -255,12 +255,17 @@ def verify_native_owner(db,row,release,profile=None):
         if profile is not None:
             _need(Path(envelope['record']['source']['root']).resolve()==profile.root.resolve(),
                   'CURRENT_CONSUMER_ROOT_CHANGED')
-        return envelope['record']['predecessors']
+        from shared_platform.native_post_common_source_successor import retained_seal
+        common=retained_seal(db,row['task_id'])
+        return {**envelope['record']['predecessors'],'post_common':common} if common is not None else envelope['record']['predecessors']
     return None
 
 
 def verify_native_files(seal,*,media=False):
-    if seal is not None:_files_equal(seal,media=media)
+    if seal is not None:
+        _files_equal(seal,media=media)
+        from shared_platform.native_post_common_source_successor import verify_retained
+        verify_retained(seal.get('post_common'))
 
 
 def verify_native_media(task,profile):

@@ -43,10 +43,50 @@
     document.body.classList.remove('native-final-images-ready');
     $('#nativeFinalFrozenContent')?.remove();
   }
+  function clearPreparedImages(){
+    document.body.classList.remove('native-prepared-images-ready');
+    $('#nativePreparedImageContent')?.remove();
+  }
+  function preparedImages(value){
+    const prepared=value?.prepared_images,pane=$('#pane-images'),common=value?.common;
+    const bound=common?.plan?.payload?.r3_stage_binding?.r2_identity;
+    const groups=prepared?.brand_groups;
+    const valid=data&&String(value.offer_id)===String(data.product?.offer_id)
+      &&prepared?.schema_version==='native-prepared-image-review/v1'
+      &&prepared.offer_id===String(data.product.offer_id)
+      &&prepared.status==='TECHNICALLY_PREPARED'&&prepared.qa_status==='PASSED'
+      &&prepared.execution_authority===false&&prepared.publication_approval_recorded===false
+      &&/^sha256:[0-9a-f]{64}$/.test(prepared.projection_digest||'')
+      &&Array.isArray(groups)&&groups.length>0
+      &&new Set(groups.map(g=>g.brand_id)).size===groups.length
+      &&groups.every(g=>Array.isArray(g.images)&&g.images.length>0
+        &&g.images.every(i=>/^sha256:[0-9a-f]{64}$/.test(i.artifact_digest||'')&&safeImage(i.url)))
+      &&groups.reduce((count,g)=>count+g.images.length,0)===prepared.image_count
+      &&(!bound||bound.identity_digest===prepared.r2_identity_digest);
+    if(!pane||!valid){clearPreparedImages();return;}
+    const identity=prepared.projection_digest;
+    if($('#nativePreparedImageContent')?.dataset.preparedIdentity===identity)return;
+    clearPreparedImages();
+    const panel=document.createElement('section');panel.id='nativePreparedImageContent';panel.className='panel native-prepared-image-content';
+    panel.dataset.preparedIdentity=identity;
+    const verifiedCommon=common?.run?.status==='SUCCEEDED'
+      &&common.run.targets?.some(t=>t.target_label==='miaoshou:COMMON'&&t.status==='SUCCEEDED'&&t.readback?.evidence?.verified===true);
+    const commonNote=verifiedCommon?'COMMON 基准图片已完成官方回读；各店完整图库仍以最终候选路由为准。':'COMMON 进度以发布阶段的原任务记录为准。';
+    panel.innerHTML=`<header><p class="kicker">R2 TECHNICAL PREPARATION</p><h2>本轮已准备的商品图片 · ${esc(prepared.image_count)} 张</h2><p>Offer ${esc(prepared.offer_id)} · 自动 QA 已通过。以下是原 R1/R2 任务的真实图库，供发布前唯一终审一起核对；本区没有独立批准或发布操作。</p><p>${esc(commonNote)}</p><details><summary>图片来源与技术准备身份</summary><p>R1 ${esc(prepared.round1_snapshot_digest)}</p><p>R2 ${esc(prepared.r2_identity_digest)}</p><p>QA ${esc(prepared.qa_digest)}</p><p>只读投影 ${esc(identity)}</p></details></header>`+
+      groups.map(group=>`<article class="native-prepared-gallery"><h3>${esc(group.brand_label)} · ${esc(group.images.length)} 张</h3><p>品牌母图的原顺序；完整各店图片、文案和售价在最终候选形成后统一展示。</p><div class="native-prepared-image-grid">${group.images.map(image=>`<figure><a href="${esc(safeImage(image.url))}" target="_blank" rel="noopener"><img src="${esc(safeImage(image.url))}" alt="${esc(group.brand_label)} ${esc(image.position)} · ${esc(image.role)}" loading="eager" data-native-prepared-image></a><figcaption>${esc(image.position)} · ${esc(image.role)}<span class="native-image-load" role="status">正在载入图片…</span></figcaption></figure>`).join('')}</div></article>`).join('');
+    pane.prepend(panel);document.body.classList.add('native-prepared-images-ready');
+    panel.querySelectorAll('[data-native-prepared-image]').forEach(img=>{
+      const status=img.closest('figure').querySelector('.native-image-load');
+      const report=()=>{status.textContent=img.naturalWidth>0?'图片已载入':'图片载入失败；可点击上图查看原图。';status.dataset.state=img.naturalWidth>0?'loaded':'error';};
+      img.addEventListener('load',report,{once:true});img.addEventListener('error',report,{once:true});if(img.complete)report();
+    });
+    const count=$('#reviewImageCount');if(count)count.textContent=`原 R2 ${prepared.image_count} 张 · 自动 QA 已通过`;
+  }
   function frozenImagesAndContent(value){
     const context=frozenFinalContext(value),pane=$('#pane-images');
     if(!context||!pane){clearFrozenImages();return;}
     const {market,candidate,manifest}=context;
+    clearPreparedImages();
     const identity=[candidate.candidate_digest,manifest.manifest_digest,market.native_final_review.review_digest].join(':');
     if($('#nativeFinalFrozenContent')?.dataset.frozenIdentity===identity)return;
     clearFrozenImages();
@@ -73,7 +113,7 @@
     }).join('');
     const cards=(manifest.targets||[]).filter(t=>t.listing_structure?.cards).map(target=>`<section><h2>${esc(target.target_label)} · 独立卡片的首图与完整顺序</h2><p>${esc(target.listing_structure.note_zh)}</p>${target.listing_structure.cards.map(card=>`<article data-native-ozon-card="${esc(card.model_sku)}"><h3>内部 SKU ${esc(card.canonical_sku)} · Model SKU ${esc(card.model_sku)} · ${esc(card.image_count)} 张</h3><div class="native-frozen-image-grid">${(card.images||[]).map(i=>figure(i,`${i.position}${i.position===1?' · 本卡首图':''} · ${i.role}`)).join('')}</div></article>`).join('')}</section>`).join('');
     const copy=(manifest.copy_sets||[]).map((group,index)=>`<article data-native-copy-set="${esc(index)}"><h3>文案组 ${index+1} · ${esc(group.language)}</h3><p>${esc((group.target_labels||[]).join('、'))}</p><h4>${esc(group.title)}</h4><p class="native-frozen-description">${esc(group.description)}</p>${(group.variants||[]).map(v=>`<p>Model SKU ${esc(v.model_sku)} · ${esc(v.display_name)}</p>`).join('')}</article>`).join('');
-    panel.innerHTML=`<header><p class="kicker">FROZEN FINAL REVIEW</p><h2>本轮已冻结的图片与内容</h2><p>Offer ${esc(candidate.offer_id)} · ${manifest.targets.length} 家店。本页只读核对；最终决定仍由原唯一终审控件保存。</p><details><summary>当前候选与冻结资料身份</summary><p>候选 ${esc(candidate.candidate_digest)}</p><p>计划 ${esc(candidate.plan_id)}</p><p>Manifest ${esc(manifest.manifest_digest)}</p><p>终审 ${esc(market.native_final_review.review_digest)}</p></details></header>${gallery}<section><h2>三款规格各自主图</h2>${heroes}</section>${cards}<section><h2>各店发布文案与规格名称</h2>${copy}</section>`;
+    panel.innerHTML=`<header><p class="kicker">FROZEN FINAL REVIEW</p><h2>本轮已冻结的图片与内容</h2><p>Offer ${esc(candidate.offer_id)} · ${manifest.targets.length} 家店。本页只读核对；最终决定仍由原唯一终审控件保存。</p><details><summary>当前候选与冻结资料身份</summary><p>候选 ${esc(candidate.candidate_digest)}</p><p>计划 ${esc(candidate.plan_id)}</p><p>Manifest ${esc(manifest.manifest_digest)}</p><p>终审 ${esc(market.native_final_review.review_digest)}</p></details></header>${gallery}<section><h2>各规格主图</h2>${heroes}</section>${cards}<section><h2>各店发布文案与规格名称</h2>${copy}</section>`;
     pane.prepend(panel);document.body.classList.add('native-final-images-ready');
     panel.querySelectorAll('[data-native-frozen-image]').forEach(img=>{
       const status=img.closest('figure').querySelector('.native-image-load');
@@ -95,7 +135,8 @@
       &&market.native_final_review.candidate_digest===candidate.candidate_digest;
   }
   function syncActualStagePresentation(){
-    if(!data||!stage||!actualFinalReady(stage))return;
+    if(!data||!stage)return;
+    if(!actualFinalReady(stage)){clearFrozenImages();preparedImages(stage);return;}
     const common=stage.common||{},market=stage.marketplace,candidate=market.preview||market.candidate;
     const image=$('#reviewImageCount');
     if(image&&candidate.image_route_checks?.all_targets_complete===true&&candidate.durable_quality_evidence?.status==='PASSED'){
@@ -363,6 +404,7 @@
   function safeImage(value){try{const u=new URL(value,location.origin);return u.origin===location.origin?u.href:u.protocol==='https:'?'/api/proxy-image?url='+encodeURIComponent(u.href):'';}catch{return '';}}
   function clear(){
     clearFrozenImages();
+    clearPreparedImages();
     data=null;stage=null;round='first';routedOffer=null;
     finalOnly=false;document.querySelectorAll('[data-original-round]').forEach(button=>button.hidden=false);
     document.body.classList.remove('operator-final-active');selectedCopy='';
@@ -383,7 +425,7 @@
     if(!data){pendingStage=value;return;}
     if(String(value.offer_id)!==String(data.product.offer_id))return;stage=value;
     if(finalOnly){
-      if(!actualFinalReady(value)){clearFrozenImages();return;}
+      if(!actualFinalReady(value)){clearFrozenImages();preparedImages(value);return;}
       $('#originalPublicationReview').hidden=false;document.body.classList.add('original-review-active');
       document.querySelectorAll('[data-original-round]').forEach(button=>button.hidden=button.dataset.originalRound!=='final');
       const notice=$('#originalPublicationReview .central-review-notice');

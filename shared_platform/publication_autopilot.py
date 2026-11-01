@@ -697,6 +697,14 @@ def _build_final_review_manifest(
             target_rows[-1]["category"]["technical_attribute_candidates"] = deepcopy(retained["required_attributes"])
             target_rows[-1]["category"]["final_marketplace_approval"] = False
             target_rows[-1]["category"]["note_zh"] = "原官方 metadata 的技术候选；GB 的值 1 是官方单选枚举，不是制造批号。只有本页后续受保护的唯一终审才可批准发布。"
+        technical = (facts.get("category") or {}).get("technical_metadata_projection")
+        if isinstance(technical, Mapping):
+            if isinstance(retained, Mapping):
+                raise ValueError('FINAL_REVIEW_CATEGORY_TECHNICAL_SOURCE_CONFLICT')
+            target_rows[-1]["category"]["source_status"] = "TECHNICAL_EVIDENCE_BOUND"
+            target_rows[-1]["category"]["technical_attribute_candidates"] = deepcopy(technical["required_attributes"])
+            target_rows[-1]["category"]["final_marketplace_approval"] = False
+            target_rows[-1]["category"]["note_zh"] = "原本机采集的官方 metadata 安全投影已核对；GB 单选值不是制造批号，Ozon 技术型号由原 SKU 规则派生，不是厂家型号。尚需本页唯一终审批准发布。"
         allocations = product.get("warehouse_inventory_by_target")
         allocation = allocations.get(label) if isinstance(allocations, Mapping) else None
         if _text(target.get("platform")).upper() == "TIKTOK" and isinstance(allocation, Mapping):

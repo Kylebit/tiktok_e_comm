@@ -8541,6 +8541,18 @@ def _publication_stages_for_request_impl(data: dict) -> tuple[int, dict]:
         documents = _load_r2_documents_for_service(offer)
     except ValueError as error:
         current_r2_error = str(error)
+
+    def with_prepared_images(status, payload):
+        # Use the very same owner-verified documents already read above. The
+        # image pane must not depend on a completed marketplace category matrix
+        # or on the retired content-approval workflow to show current R2 bytes.
+        if documents is not None:
+            try:
+                from shared_platform.publication_prepared_image_review import project_prepared_images
+                payload = {**payload, 'prepared_images': project_prepared_images(documents)}
+            except (ValueError, TypeError, KeyError) as error:
+                payload = {**payload, 'prepared_images_error': str(error)}
+        return status, payload
     if active and active['product_id'] == offer and active['payload'].get('r3_marketplace_binding'):
         binding = active['payload']['r3_marketplace_binding']
         common_plan = store.get_plan(binding['common_plan_id'])
@@ -8568,10 +8580,10 @@ def _publication_stages_for_request_impl(data: dict) -> tuple[int, dict]:
             common['technical_details'] = {'retained_baseline':baseline,
                 'candidate_source':{key:value for key,value in (display or {}).items()
                     if key not in {'display','manifest','plan'}}}
-            return 200, {'ok':True, 'schema_version':'publication-stages/v1', 'offer_id':offer,
+            return with_prepared_images(200, {'ok':True, 'schema_version':'publication-stages/v1', 'offer_id':offer,
                 'common':common, 'marketplace':market, 'external_writes_performed':[],
                 'current_r2_matches_approved':documents is not None and binding['r2_identity'] == bridge.validate_r2_identity(documents),
-                'current_r2_error':current_r2_error}
+                'current_r2_error':current_r2_error})
         common_run = store.get_run(binding['common_run_id'])
         blockers = _verified_common_evidence_blockers(common_run, common_plan['payload'], store=store) if common_plan else ['COMMON plan unavailable']
         common = {'status': 'RECONCILIATION_REQUIRED' if blockers else 'VERIFIED', 'plan': common_plan,
@@ -8634,10 +8646,10 @@ def _publication_stages_for_request_impl(data: dict) -> tuple[int, dict]:
                 market['blockers'] = [str(error)]
                 market['target_results'] = pending_targets(active['targets'],
                     status='RECONCILIATION_REQUIRED', blocker='APPROVED_EVIDENCE_UNAVAILABLE')
-        return 200, {'ok': True, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
+        return with_prepared_images(200, {'ok': True, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
             'common': common, 'marketplace': market, 'external_writes_performed': [],
             'current_r2_matches_approved': documents is not None and binding['r2_identity'] == bridge.validate_r2_identity(documents),
-            'current_r2_error': current_r2_error}
+            'current_r2_error': current_r2_error})
     # A retained provider claim is authoritative even when current dashboard
     # facts are incomplete or changed. Do not compile a replacement preview
     # before presenting the original unresolved run to read-only consumers.
@@ -8646,12 +8658,12 @@ def _publication_stages_for_request_impl(data: dict) -> tuple[int, dict]:
     reference = (store.common_reconciliation_reference(offer,successor_payload=active_successor)
         if active_successor else store.common_reconciliation_reference(offer))
     if reference:
-        return 200, {'ok': True, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
+        return with_prepared_images(200, {'ok': True, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
             'common': {'status': 'RECONCILIATION_REQUIRED', 'reconciliation_reference': reference,
                 'plan': store.get_plan(reference['plan_id']), 'run': store.get_run(reference['run_id']),
                 'blockers': [current_r2_error] if current_r2_error else ['Original COMMON provider claim requires reconciliation'],
                 'execution_scope': ['miaoshou:COMMON']},
-            'marketplace': {'status': 'NOT_FROZEN'}, 'external_writes_performed': []}
+            'marketplace': {'status': 'NOT_FROZEN'}, 'external_writes_performed': []})
     # Preserve verified terminal evidence from the original immutable COMMON
     # payload when today's dashboard can no longer compile a candidate. Current
     # preparation errors are marketplace blockers, not a new COMMON write.
@@ -8663,9 +8675,9 @@ def _publication_stages_for_request_impl(data: dict) -> tuple[int, dict]:
                 'blockers': [], 'execution_scope': ['miaoshou:COMMON']}
 
     def retained_preparation_blocked(blockers):
-        return 200, {'ok': True, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
+        return with_prepared_images(200, {'ok': True, 'schema_version': 'publication-stages/v1', 'offer_id': offer,
             'common': retained_common, 'marketplace': {'status': 'BLOCKED', 'blockers': blockers},
-            'current_preparation_blocked': True, 'external_writes_performed': []}
+            'current_preparation_blocked': True, 'external_writes_performed': []})
 
     if current_r2_error:
         if retained_common:
@@ -8683,8 +8695,8 @@ def _publication_stages_for_request_impl(data: dict) -> tuple[int, dict]:
     if status != 200 and retained_common:
         return retained_preparation_blocked(common.get('blockers') or [common.get('error') or 'Current COMMON preparation is blocked'])
     if status != 200 or common['common']['status'] != 'VERIFIED':
-        return status, {**common, 'schema_version': 'publication-stages/v1', 'offer_id': offer}
-    return _preview_r3_marketplace_stage({'offer_id': offer})
+        return with_prepared_images(status, {**common, 'schema_version': 'publication-stages/v1', 'offer_id': offer})
+    return with_prepared_images(*_preview_r3_marketplace_stage({'offer_id': offer}))
 
 
 _NATIVE_FINAL_SERVICE = None

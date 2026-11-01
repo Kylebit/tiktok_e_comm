@@ -282,13 +282,15 @@
     const summary=candidate?.review_manifest;
     const commonOnly=!market.plan && !!common.plan;
     const nativeCommon=['RETAINED_TECHNICAL_BASELINE','TECHNICAL_CONDITIONS_UNKNOWN'].includes(common.status) && common.user_status;
-    const factsLabel=nativeCommon?(common.status==='RETAINED_TECHNICAL_BASELINE'?'原准备事实已冻结':'准备来源待核对'):commonOnly?(data?.product?.actual_product_approved?'当前事实已冻结':'当前事实待准备'):(data?.product?.actual_product_approved?'当前事实已批准':'当前事实待批准');
+    const factsLabel=nativeCommon?(common.status==='RETAINED_TECHNICAL_BASELINE'?'原准备事实已冻结':'准备来源待核对'):data?.product?.actual_product_approved?(data.product.actual_approval?.approval_authority==='ACTIVE_AUTOPILOT_POLICY'?'当前事实已技术冻结':'当前商品事实已确认'):'当前事实待准备';
+    const nativeFinalApproved=market.native_final_review?.schema_version==='native-sole-final-review/v1'
+      && market.native_final_review.approval_saved===true && !!market.native_final_review.decision_id;
     const selected=data?.publication_scope?.selected_labels||[];
     const preparationRange=`${selected.includes('miaoshou:COMMON')?'COMMON＋':''}${selected.filter(label=>label!=='miaoshou:COMMON').length} 个平台目标`;
     const frozenTargets=candidate?.target_labels||plan?.targets||[];
     const frozenRange=market.plan?`冻结候选范围：${frozenTargets.filter(label=>label!=='miaoshou:COMMON').length} 个平台目标`:'COMMON 准备基线';
     review.innerHTML=`<div class="review-version-row"><strong>当前审核</strong><div>${esc(data?.product?.title||'当前商品')}<small>版本 ${esc(data?.product?.revision??'未知')} · 当前准备范围：${esc(preparationRange)} · ${factsLabel}</small><small>原计划的成功或批准，不代表当前审核版本可发布。</small></div></div>`;
-    if(plan)review.innerHTML+=`<div class="review-version-row"><strong>${successor?'本地化 successor':market.plan?'平台冻结候选':'COMMON 冻结资料'}</strong><div>${esc(plan.payload?.product_facts?.title||plan.payload?.copy_package?.title||'已保存的原计划资料')}<small>冻结版本 ${esc(plan.payload?.product_revision??candidate?.product_revision??'未知')} · ${esc(frozenRange)} · ${esc(frozenTargets.join('、'))}</small><small>${successor?'NOT_APPROVED · 旧候选与历史保留，平台执行已关闭':market.approval?'该冻结候选已有最终批准':nativeCommon?'平台候选资料保留 · 当前不可终审或执行':commonOnly?'COMMON 技术准备资料 · 不增加人工批准':plan.status==='APPROVED'?'该原计划已批准':'该计划尚未批准'}</small></div></div>`;
+    if(plan)review.innerHTML+=`<div class="review-version-row"><strong>${successor?'本地化 successor':market.plan?'平台冻结候选':'COMMON 冻结资料'}</strong><div>${esc(plan.payload?.product_facts?.title||plan.payload?.copy_package?.title||'已保存的原计划资料')}<small>冻结版本 ${esc(plan.payload?.product_revision??candidate?.product_revision??'未知')} · ${esc(frozenRange)} · ${esc(frozenTargets.join('、'))}</small><small>${successor?'NOT_APPROVED · 旧候选与历史保留，平台执行已关闭':nativeFinalApproved?'该完整候选已有人工终审批准':market.approval?'该冻结候选已有最终批准':nativeCommon?'平台候选资料保留 · 以最终审核状态为准':commonOnly?'COMMON 技术准备资料 · 不增加人工批准':plan.status==='APPROVED'?'该原计划已批准':'该计划尚未批准'}</small></div></div>`;
     const technical=common.technical_admission,source=technical?.source_facts;
     const sourceLabel=nativeCommon?(common.status==='RETAINED_TECHNICAL_BASELINE'?'COMMON 完成记录已核对':'COMMON 准备来源待核对'):source?.status==='RETAINED_IDENTITY_VERIFIED'?'已核对本地持久计划与历史':source?.status==='INVALID'?'本地来源有变化 · 需核对':'本地来源尚未核实';
     const authority=technical?.authority_facts||{};

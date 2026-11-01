@@ -186,7 +186,7 @@
     panel.replaceChildren(el('h3','首轮类目与审核快照'));
     if(data.frozen_review_projection && data.frozen_first_review){
       const frozen=data.frozen_first_review;
-      panel.append(el('p',`首轮事实已批准并冻结 · revision ${frozen.approved_revision}。当前沿用已冻结类目；目标店铺实时条件仍需发布前核对。`,{role:'status','data-r1-status':'FROZEN'}));
+      panel.append(el('p',`首轮事实已冻结 · revision ${frozen.approved_revision}。冻结不代表人工终审批准；当前沿用已冻结类目，目标店铺实时条件仍需发布前核对。`,{role:'status','data-r1-status':'FROZEN'}));
       const table=el('table');table.className='review-table';
       const head=el('tr');['平台','冻结类目','来源依据'].forEach(text=>head.append(el('th',text)));table.append(head);
       for(const category of frozen.platform_categories||[]){

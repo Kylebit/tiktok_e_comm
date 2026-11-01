@@ -1165,9 +1165,11 @@ def build_marketplace_stage_payload(
     _retained_copy_shape=None,
 ):
     """Project frozen commercial facts after the caller verifies the durable COMMON receipt."""
-    if category_connection is None and any(
+    if category_connection is None and (any(
             (row.get('category') or {}).get('status') == 'EVIDENCE_BOUND'
-            for row in documents['first_review'].get('targets') or []):
+            for row in documents['first_review'].get('targets') or [])
+            or category_store is not None and
+                common_plan['payload'].get('r3_stage_binding', {}).get('native_preparation_source') is not None):
         from shared_platform.release_store import ReleaseStore
         if type(category_store) is not ReleaseStore or not category_store.path.is_file():
             raise ValueError('MARKETPLACE_BOUND_CATEGORY_SERVICE_STORE_REQUIRED')
@@ -1226,14 +1228,24 @@ def build_marketplace_stage_payload(
     )
     facts = payload['product_facts']
     categories, prices, copies, image_routes = {}, {}, {}, {}
+    from shared_platform.r3_technical_category_evidence import read_technical_categories, project_technical_category
+    technical_categories = read_technical_categories(documents=documents,
+        common_plan_id=common_plan['plan_id'], store=category_store, db=category_connection)
     for label in payload['targets']:
         frozen = route['target_facts'][label]
         category = _marketplace_category_candidate(label, frozen['category'],
             first_review=documents['first_review'], common_payload=common_plan['payload'],
             category_store=category_store, category_connection=category_connection)
+        if technical_categories is not None and label in technical_categories['targets']:
+            category = project_technical_category(label, frozen['category'], receipt=technical_categories)
         parsed_category = parse_marketplace_category_candidate(label, category)
         if 'retained_metadata_projection' in category:
             payload['r3_marketplace_binding'].setdefault('retained_category_metadata', {})[label] = deepcopy(category['retained_metadata_projection'])
+        if 'technical_metadata_projection' in category:
+            technical = category['technical_metadata_projection']
+            if technical['source']['common_run_id'] != common_run['run_id']:
+                raise ValueError('MARKETPLACE_TECHNICAL_CATEGORY_COMMON_RUN_CHANGED')
+            payload['r3_marketplace_binding'].setdefault('technical_category_metadata', {})[label] = deepcopy(technical)
         platform, site = label.split(':', 1)
         categories[label] = {'target_label': label, 'platform': platform, 'site': site, 'store': site,
             'category': parsed_category,
@@ -1456,6 +1468,26 @@ def marketplace_quality_evidence(snapshot, payload, *, category_store=None, cate
                 category_store=category_store, category_connection=category_connection)
             if projected['retained_metadata_projection'] != binding.get('retained_category_metadata', {}).get(label):
                 raise ValueError('MARKETPLACE_RETAINED_CATEGORY_PROJECTION_CHANGED')
+            route['target_facts'][label]['category'] = projected
+    from shared_platform.r3_technical_category_evidence import read_technical_categories, project_technical_category
+    technical_categories = read_technical_categories(documents=documents,
+        common_plan_id=binding['common_plan_id'], store=category_store, db=category_connection)
+    technical_labels = [label for label in payload['targets']
+        if technical_categories is not None and label in technical_categories['targets']]
+    if set(binding.get('technical_category_metadata') or {}) != set(technical_labels):
+        raise ValueError('MARKETPLACE_TECHNICAL_CATEGORY_SCOPE_CHANGED')
+    if technical_labels:
+        expected_route = build_dual_brand_publication_bridge(offer_id=identity['offer_id'],
+            first_review=documents['first_review'], generation=documents['generation_result'],
+            translation=documents['translation_result'], approved_by=documents['round1_snapshot']['approved_by'])
+        if binding['route'] != expected_route:
+            raise ValueError('MARKETPLACE_TECHNICAL_CATEGORY_FROZEN_ROUTE_CHANGED')
+        for label in technical_labels:
+            projected = project_technical_category(label, expected_route['target_facts'][label]['category'],
+                receipt=technical_categories)
+            if (projected.get('technical_metadata_projection') != binding['technical_category_metadata'][label]
+                    or projected['technical_metadata_projection']['source']['common_run_id'] != binding['common_run_id']):
+                raise ValueError('MARKETPLACE_TECHNICAL_CATEGORY_PROJECTION_CHANGED')
             route['target_facts'][label]['category'] = projected
     release = {'status': 'FACTS_PREPARED', 'plan_id': payload['plan_id'], 'snapshot_digest': digest,
                'round1_snapshot_digest': identity['round1_snapshot_digest']}

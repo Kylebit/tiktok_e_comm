@@ -85,7 +85,7 @@
       </div>
       <div class="queue-filters">
         <label>查找商品<input id="queueSearch" type="search" placeholder="Offer / SKU / 标题" autocomplete="off"></label>
-        <label>读取状态<select id="queueFilter"><option value="all">全部状态</option><option value="unread">未读取</option><option value="error">读取失败</option><option value="approved">事实已批准</option><option value="unapproved">事实待批准</option></select></label>
+        <label>读取状态<select id="queueFilter"><option value="all">全部状态</option><option value="unread">未读取</option><option value="error">读取失败</option><option value="approved">事实已锁定</option><option value="unapproved">事实待准备</option></select></label>
         <span id="queueSelectionCount" role="status">已选 0 项</span>
         <button id="selectFilteredButton" class="queue-row-action" type="button">选择筛选结果</button>
         <button id="undoQueueRemovalButton" class="queue-row-action" type="button" hidden>撤销移出</button>
@@ -291,13 +291,13 @@
           </div>
         </div>
         <p id="factsNotice" class="facts-notice">
-          当前显示的是带来源的前序采集值。只有 Kyle 完成商品事实审批后，它们才成为锁定版本；后续修改会废止旧发布计划并要求重新审批。
+          当前显示带来源的商品事实；自动技术冻结与人工终审批准分别记录。是否可以发布，以完整候选的最终审核记录为准。
         </p>
         <form id="productFactsForm" class="facts-edit-form unified-facts-form">
           <div id="productFacts" class="fact-grid skeleton-lines"></div>
           <div class="facts-edit-grid">
             <label class="facts-edit-title">
-              <span>正式英文商品标题</span>
+              <span>来源／商品事实标题</span>
               <textarea id="factsEditTitle" name="title" rows="3" maxlength="220"
                         placeholder="先生成 ToAPI 平台候选，或直接输入经核对的商品标题" required></textarea>
               <small id="factsEditTitleSource">来源：读取中</small>

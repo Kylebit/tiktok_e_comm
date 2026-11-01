@@ -1,6 +1,16 @@
 /* Selected immutable 99401680 review CSS; no legacy global/body mode. */
 /* A trusted current native-final manifest replaces only the legacy image pane. */
 .native-final-images-ready #pane-images > :not(#nativeFinalFrozenContent) { display:none !important; }
+.native-prepared-images-ready #pane-images > :not(#nativePreparedImageContent) { display:none !important; }
+.native-prepared-images-ready.original-review-active #productDetail { display:block; }
+#nativePreparedImageContent { max-width:1320px; margin:20px auto; overflow-wrap:anywhere; }
+#nativePreparedImageContent article { margin-top:24px; }
+#nativePreparedImageContent .native-prepared-image-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr)); gap:18px; align-items:start; }
+#nativePreparedImageContent figure { margin:0; padding:12px; border:1px solid #d5dfda; border-radius:12px; background:white; }
+#nativePreparedImageContent figure img { display:block; width:100%; height:auto; aspect-ratio:1; object-fit:contain; }
+#nativePreparedImageContent figcaption { margin-top:10px; font-size:14px; line-height:1.6; }
+#nativePreparedImageContent .native-image-load { display:block; color:#52685e; font-size:12px; }
+#nativePreparedImageContent .native-image-load[data-state="error"] { color:#a73927; }
 .native-final-images-ready .next-panel { display:none; }
 .native-final-images-ready.original-review-active #productDetail { display:block; }
 #nativeFinalFrozenContent { max-width:1320px; margin:20px auto; overflow-wrap:anywhere; }

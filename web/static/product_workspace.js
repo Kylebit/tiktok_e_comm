@@ -5453,11 +5453,13 @@
     const factsApproved = Boolean(
       product.actual_product_approved && product.fields_locked,
     );
+    const factsTechnicallyFrozen = factsApproved
+      && product.actual_approval?.approval_authority === "ACTIVE_AUTOPILOT_POLICY";
     const hasFactWarnings = Boolean((evidence.warnings || []).length);
     setBadge(
       $("#factsBadge"),
       factsApproved
-        ? "Kyle 已批准并锁定"
+        ? (factsTechnicallyFrozen ? "自动技术冻结" : "商品事实已确认并锁定")
         : (
           factsReady
             ? (hasFactWarnings ? "有提醒 · 可审批" : "证据完整 · 待 Kyle 核对")
@@ -5469,7 +5471,9 @@
     const evidenceWarnings = (evidence.warnings || []).map(translateBlocker);
     const factAttention = [...evidenceBlockers, ...evidenceWarnings];
     $("#factsNotice").textContent = factsApproved
-      ? "这些值已由 Kyle 批准并锁定；商业字段若要修改，必须显式废止旧审批和旧发布计划。"
+      ? (factsTechnicallyFrozen
+        ? "这些来源事实已按自动准备策略完成技术检查并冻结，不代表你已批准发布。各店标题、图片、售价与执行范围以完整候选的最终审核记录为准。"
+        : "这些商品事实已确认并锁定；事实确认与发布前的最终候选批准分别记录。商业字段若要修改，必须显式废止旧审批和旧发布计划。")
       : (
         factAttention.length
           ? `当前是前序采集值，尚未批准。发现 ${factAttention.length} 项需要留意：${factAttention.join("；")} 这些提醒不会阻止 Kyle 锁定当前 revision。`
@@ -5865,7 +5869,7 @@
         ? "候选与当前商品事实不匹配，不能采用"
         : (locked
           ? "候选待 Kyle 显式采用；采用会废止旧审批、旧发布计划和未完成运行"
-          : "AI 候选为只读预览；请直接在上方正式英文标题中修改并保存")));
+          : "AI 候选为只读预览；请直接在上方商品事实标题中修改并保存")));
     $("#titleDraftStatus").textContent =
       `${status} · 模型 ${draft.model || "未记录"} · 规则 ${draft.policy_version || "未记录"} · 输入签名 ${(draft.input_signature || "").slice(0, 16)}`;
     const shopeeDescription = String(draft.shopee_description_en || "").trim();
@@ -5894,7 +5898,7 @@
               : "采用并废止旧审批 / 发布计划"
           }</button>` : (row.master ? `
           <small class="title-candidate-guidance">
-            只读 AI 候选；上方“正式英文商品标题”是唯一编辑位置。
+            只读 AI 候选；上方“来源／商品事实标题”是事实标题的编辑位置。各店发布标题见完整候选。
           </small>` : "")}
       </article>
     `).join("") + (shopeeDescription ? `
@@ -9971,12 +9975,16 @@
       embeddedImageReviewPreview = null;
       embeddedImageReviewDirty = false;
     }
-    loadEmbeddedImageReview(offer).catch(() => {});
+    const nativeAutomaticImages = data.product?.actual_approval?.approval_authority === "ACTIVE_AUTOPILOT_POLICY"
+      && !data.r2_candidate_review;
+    // The normal native task reads its owner-verified R2 images from the stage
+    // response. Do not query the retired image-approval service for that path.
+    if (!nativeAutomaticImages) loadEmbeddedImageReview(offer).catch(() => {});
     if (data.r2_candidate_review) {
       showR2CandidateReview(data.r2_candidate_review);
     } else {
       r2CandidateReview = null;
-      loadLocalizedImageResults(offer).catch(() => {});
+      if (!nativeAutomaticImages) loadLocalizedImageResults(offer).catch(() => {});
     }
     const studioUrl = "#pane-images";
     $("#workbenchLink").href = studioUrl;

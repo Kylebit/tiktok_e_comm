@@ -49,8 +49,9 @@
    // Retain that latest state and render it once initialization is complete.
    if(!initialized)return;
    const p=value.product||{},selected=value.publication_scope?.selected_labels||[];
+  const factsStatus=p.actual_product_approved?(p.actual_approval?.approval_authority==='ACTIVE_AUTOPILOT_POLICY'?'事实已技术冻结':'商品事实已确认'):'事实待准备';
   if(offer!==String(p.offer_id)){offer=String(p.offer_id);$('#queueDisclosure').open=false;}
-  $('#currentReviewSummary').innerHTML=`<div><span>当前审核版本</span><strong>${esc(p.revision??'未知')} · ${p.actual_product_approved?'事实已批准':'事实待批准'}</strong></div><div><span>当前准备范围</span><strong>${esc(preparationRangeLabel(selected))}</strong></div><div><span>所选规格</span><strong>${(p.selected_sku_keys||[]).length} 个 SKU</strong></div><div><span>图片决定</span><strong id="reviewImageCount">读取中</strong></div><button type="button" id="inspectCurrentReview">版本与来源详情</button>`;
+  $('#currentReviewSummary').innerHTML=`<div><span>当前审核版本</span><strong>${esc(p.revision??'未知')} · ${factsStatus}</strong></div><div><span>当前准备范围</span><strong>${esc(preparationRangeLabel(selected))}</strong></div><div><span>所选规格</span><strong>${(p.selected_sku_keys||[]).length} 个 SKU</strong></div><div><span>图片决定</span><strong id="reviewImageCount">读取中</strong></div><button type="button" id="inspectCurrentReview">版本与来源详情</button>`;
   $('#inspectCurrentReview').onclick=()=>showDetails('当前审核版本与来源', {product:p,scope:value.publication_scope,blockers:value.release_v1?.blockers});
   compactSpecs();targetTable();imageCount();frozenReview();
  }
@@ -65,7 +66,7 @@
   const frozen=data?.frozen_first_review,active=Boolean(data?.frozen_review_projection&&frozen);
   const labels={
    '#productFactsPanel h2':'已冻结商品事实',
-   '#productFactsPanel .panel-heading h2 + p':'核对已批准的商品身份、规格、成本与包装事实。当前版本已锁定。',
+   '#productFactsPanel .panel-heading h2 + p':'核对已冻结的商品身份、规格、成本与包装事实。技术冻结不等于发布前的人工终审批准。',
    '.facts-edit-title > span':'已冻结来源商品标题',
    '#factsEditSellerSkuNote':'冻结快照中的 Seller SKU；当前库存与目录占用需另行核对。',
    '#embeddedImageReviewTitle':'来源图片 · 冻结参考',
@@ -77,7 +78,7 @@
   copy.hidden=masters.hidden=!active;
   $('#titleTools').hidden=active;
   if(!active)return;
-  copy.innerHTML=`<h2>已冻结商品文案</h2><p>Offer ${esc(frozen.offer_id)} · 审核版本 ${esc(frozen.approved_revision)}。以下文案来自已批准首轮，当前只读。</p>`+
+  copy.innerHTML=`<h2>已冻结商品文案</h2><p>Offer ${esc(frozen.offer_id)} · 事实版本 ${esc(frozen.approved_revision)}。以下文案来自首轮冻结资料，当前只读；是否批准发布以完整候选的最终审核记录为准。</p>`+
    (frozen.copy_review_sets||[]).map(g=>`<article><h3>${esc(g.label)}</h3><strong>${esc(g.title_en)}</strong><p>${esc(g.title_zh)}</p><p>${esc(g.description_en)}</p><p>${esc(g.description_zh)}</p><p>${esc(g.specification_name_en)} · ${esc((g.specification_values||[]).join(' / '))}</p></article>`).join('')+
    `<h3>各目标标题与描述 · ${esc(preparationRangeLabel((frozen.targets||[]).map(t=>t.target)))}</h3>`+(frozen.targets||[]).map(t=>`<details data-frozen-copy-target="${esc(t.target)}"><summary>${esc(t.target)} · ${esc(t.copy?.language||'语言待核')} · ${esc(t.copy?.title||'标题资料缺失')}</summary><p>${esc(t.copy?.description||'描述资料缺失')}</p></details>`).join('');
   const roles={cover_scene:'主图场景',installed_detail:'安装细节',scene_1:'场景 1',scene_2:'场景 2',scene_3:'场景 3',assembled_size:'组合尺寸',piece_layout_or_instructions:'片数与说明'};

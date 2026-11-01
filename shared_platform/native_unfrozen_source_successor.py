@@ -67,7 +67,10 @@ def verified_explicit_origin(db, row, release):
         record = _verify_link(db,row,original,grants[0],event,envelope,previous_release,position)
         previous_release = record['to_release']
     from shared_platform.native_frozen_source_successor import verify as verify_frozen_successor
-    previous_release=verify_frozen_successor(db,row,original,grants[0],previous_release,release)
+    from shared_platform.native_post_common_source_successor import predecessor_release,verify as verify_post_common
+    previous_release=verify_frozen_successor(db,row,original,grants[0],previous_release,
+        predecessor_release(db,task_id,release))
+    previous_release=verify_post_common(db,row,original,grants[0],previous_release,release)
     _need(previous_release == release, 'TERMINAL_SOURCE_CHANGED')
     return original
 

@@ -5575,7 +5575,29 @@ def _uk_shipping(billable_kg: float) -> float:
     return 4.29
 
 
-def _mx_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) -> dict[str, Any]:
+def _pricing_reserve_rate(percent: int | None, default_rate: float) -> float:
+    if percent is None:
+        return default_rate
+    if type(percent) is not int or not 0 < percent < 100:
+        raise ValueError("EXPLICIT_DISCOUNT_PERCENT_INVALID")
+    return percent / 100
+
+
+def _reserve_repricing_proof(target: str, original: dict[str, Any], recalculated: dict[str, Any]) -> dict[str, Any]:
+    fields = ("list_price", "sale_after_discount_local", "estimated_profit_cny",
+              "profit_margin_on_sale_pct", "minimum_profit_cny", "header_meta")
+    return {
+        "schema_version": "publication-reserve-recalculation/v1",
+        "source": "EXPLICIT_PRODUCT_REVIEW",
+        "target_label": target,
+        "original_quote": {key: deepcopy(original[key]) for key in fields},
+        "recalculated_quote": {key: deepcopy(recalculated[key]) for key in fields},
+    }
+
+
+def _mx_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float], *,
+                    discount_reserve_pct: int | None = None) -> dict[str, Any]:
+    reserve_rate = _pricing_reserve_rate(discount_reserve_pct, MX_RULE["discount_reserve_rate"])
     volumetric = _volumetric_kg(package_cm)
     billable = max(weight_kg, volumetric)
     hidden_shipping_local = _mx_hidden_shipping(billable)
@@ -5605,11 +5627,11 @@ def _mx_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
         + ad_local
         + MX_RULE["per_item_fee_local"]
     )
-    list_price_raw = sale_local / (1 - MX_RULE["discount_reserve_rate"])
+    list_price_raw = sale_local / (1 - reserve_rate)
     list_price = int(math.ceil(list_price_raw))
 
     def effective_profit_for_list_price(candidate: float) -> tuple[float, float]:
-        effective_sale = round(candidate * (1 - MX_RULE["discount_reserve_rate"]), 2)
+        effective_sale = round(candidate * (1 - reserve_rate), 2)
         effective_profit = effective_sale - (
             goods_cost_local
             + hidden_shipping_local
@@ -5629,7 +5651,7 @@ def _mx_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
     )
     effective_sale_local, effective_profit_local = effective_profit_for_list_price(list_price)
     margin_pct = round((effective_profit_local / effective_sale_local) * 100, 2) if effective_sale_local else None
-    return {
+    result = {
         "region": "MX",
         "shop": "LivelyHive",
         "currency": str(MX_RULE["currency"]),
@@ -5662,16 +5684,22 @@ def _mx_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
             "affiliate_rate": round(MX_RULE["affiliate_rate"] * 100, 2),
             "ad_rate": round(MX_RULE["ad_rate"] * 100, 2),
             "target_margin_pct": round(MX_RULE["target_margin"] * 100, 2),
-            "discount_reserve_pct": round(MX_RULE["discount_reserve_rate"] * 100, 2),
+            "discount_reserve_pct": round(reserve_rate * 100, 2),
             "fixed_fee_local": round(MX_RULE["per_item_fee_local"], 2),
         },
         "volumetric_dominates": volumetric > weight_kg,
         "status": "ok" if margin_pct is not None and margin_pct >= MX_RULE["target_margin"] * 100 - 0.5 else "warn",
-        "notes": "MX includes import tax, SFP, affiliate, ad, 30% list discount reserve, and a CNY 5 minimum estimated-profit guard.",
+        "notes": f"MX includes import tax, SFP, affiliate, ad, {reserve_rate * 100:g}% list discount reserve, and a CNY 5 minimum estimated-profit guard.",
     }
+    if reserve_rate != MX_RULE["discount_reserve_rate"]:
+        result["discount_reserve_repricing"] = _reserve_repricing_proof(
+            "tiktok:MX", _mx_pricing_row(cost_cny, weight_kg, package_cm), result)
+    return result
 
 
-def _uk_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) -> dict[str, Any]:
+def _uk_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float], *,
+                    discount_reserve_pct: int | None = None) -> dict[str, Any]:
+    reserve_rate = _pricing_reserve_rate(discount_reserve_pct, GB_RULE["discount_reserve_rate"])
     volumetric = _volumetric_kg(package_cm)
     billable = max(weight_kg, volumetric)
     shipping_local = _uk_shipping(billable)
@@ -5694,11 +5722,11 @@ def _uk_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
     profit_local = sale_local - (
         goods_cost_local + shipping_local + vat_local + commission_local + smart_promo_local + affiliate_local + ad_local
     )
-    list_price_raw = sale_local / (1 - GB_RULE["discount_reserve_rate"])
+    list_price_raw = sale_local / (1 - reserve_rate)
     list_price = int(math.ceil(list_price_raw))
 
     def effective_profit_for_list_price(candidate: float) -> tuple[float, float]:
-        effective_sale = round(candidate * (1 - GB_RULE["discount_reserve_rate"]), 2)
+        effective_sale = round(candidate * (1 - reserve_rate), 2)
         effective_profit = effective_sale - (
             goods_cost_local
             + shipping_local
@@ -5717,7 +5745,7 @@ def _uk_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
     )
     effective_sale_local, effective_profit_local = effective_profit_for_list_price(list_price)
     margin_pct = round((effective_profit_local / effective_sale_local) * 100, 2) if effective_sale_local else None
-    return {
+    result = {
         "region": "GB",
         "shop": "LivelyHive",
         "currency": str(GB_RULE["currency"]),
@@ -5749,12 +5777,16 @@ def _uk_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
             "affiliate_rate": round(GB_RULE["affiliate_rate"] * 100, 2),
             "ad_rate": round(GB_RULE["ad_rate"] * 100, 2),
             "target_margin_pct": round(GB_RULE["target_margin"] * 100, 2),
-            "discount_reserve_pct": round(GB_RULE["discount_reserve_rate"] * 100, 2),
+            "discount_reserve_pct": round(reserve_rate * 100, 2),
         },
         "volumetric_dominates": volumetric > weight_kg,
         "status": "ok" if margin_pct is not None and margin_pct >= GB_RULE["target_margin"] * 100 - 0.5 else "warn",
-        "notes": "GB includes VAT-effective deduction, commission, smart promo, ad, 25% list discount reserve, and a CNY 5 minimum estimated-profit guard.",
+        "notes": f"GB includes VAT-effective deduction, commission, smart promo, ad, {reserve_rate * 100:g}% list discount reserve, and a CNY 5 minimum estimated-profit guard.",
     }
+    if reserve_rate != GB_RULE["discount_reserve_rate"]:
+        result["discount_reserve_repricing"] = _reserve_repricing_proof(
+            "tiktok:GB", _uk_pricing_row(cost_cny, weight_kg, package_cm), result)
+    return result
 
 
 def price_review(
@@ -5763,7 +5795,11 @@ def price_review(
     package_cm: list[float],
     *,
     fx_rates: dict[str, Any] | None = None,
+    publication_discounts_by_target: dict[str, int] | None = None,
 ) -> dict[str, Any]:
+    from shared_platform.publication_discount_terms import source_terms
+    discount_terms = (source_terms({"review": {"publication_discounts_by_target": publication_discounts_by_target}})
+                      if publication_discounts_by_target is not None else None) or {}
     rates = merge_fx_rates(fx_rates)
     volumetric = _volumetric_kg(package_cm)
     billable = max(weight_kg, volumetric)
@@ -5819,8 +5855,10 @@ def price_review(
         for market in SEA_MARKETS
         if market["region"] in SEA_REGION_RULES
     ]
-    mx = _mx_pricing_row(cost_cny, weight_kg, package_cm)
-    uk = _uk_pricing_row(cost_cny, weight_kg, package_cm)
+    mx = _mx_pricing_row(cost_cny, weight_kg, package_cm,
+                         discount_reserve_pct=discount_terms.get("tiktok:MX"))
+    uk = _uk_pricing_row(cost_cny, weight_kg, package_cm,
+                         discount_reserve_pct=discount_terms.get("tiktok:GB"))
     sea_audit_rows: list[dict[str, Any]] = []
     for row in sea:
         header = row.get("header_meta") or {}
@@ -6313,7 +6351,8 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
         "review": review_payload,
         "overseas_sources": overseas_sources,
         "target_sites": SEA_MARKETS,
-        "pricing": price_review(cost, weight, dims, fx_rates=fx_rates),
+        "pricing": price_review(cost, weight, dims, fx_rates=fx_rates,
+                                publication_discounts_by_target=review.get("publication_discounts_by_target")),
         "miaoshou_draft": {
             "ready": bool(miaoshou_draft.get("ready")),
             "written_to_miaoshou": bool(miaoshou_draft.get("written_to_miaoshou")),

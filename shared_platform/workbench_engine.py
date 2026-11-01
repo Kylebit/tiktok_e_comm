@@ -328,6 +328,7 @@ class WorkbenchEngine:
 
     def explicit_new_post_task_ids(self):
         """Recover only trusted, exact-version new POST grants; never dashboards."""
+        from shared_platform.native_unfrozen_source_successor import verified_explicit_origin
         with self.transaction() as conn:
             rows=conn.execute('SELECT g.task_id,g.detail_json,e.request_digest AS current_digest,'
                 'e.scope_json AS current_scope,t.source_key AS current_key FROM workbench_events g '
@@ -338,18 +339,11 @@ class WorkbenchEngine:
             if len(rows)>32:raise ValueError('NATIVE_NEW_POST_RECOVERY_CAPACITY_EXCEEDED')
             result=[]
             for row in rows:
-                detail=json.loads(row['detail_json']);current=json.loads(row['current_scope'])
-                if (not isinstance(detail,dict) or not isinstance(detail.get('scope'),dict)
-                        or not isinstance(current,dict)):
+                if row['task_id'] in result:
                     raise ValueError('NATIVE_NEW_POST_RECOVERY_GRANT_CHANGED')
-                original=detail.get('scope') or {}
-                if (set(detail)!={'request_digest','source_key','scope','release'}
-                        or detail['release']!=self.release or row['task_id'] in result
-                        or detail['request_digest']!=row['current_digest']
-                        or detail['source_key']!=row['current_key']
-                        or original.get('offer_id')!=current.get('offer_id')
-                        or original.get('shops')!=current.get('shops')):
-                    raise ValueError('NATIVE_NEW_POST_RECOVERY_GRANT_CHANGED')
+                try:verified_explicit_origin(conn,self._row(conn,row['task_id']),self.release)
+                except ValueError as error:
+                    raise ValueError('NATIVE_NEW_POST_RECOVERY_GRANT_CHANGED:'+str(error)) from error
                 result.append(row['task_id'])
             return tuple(result)
 

@@ -865,6 +865,7 @@ def _release_pricing_review(
                 weight,
                 package_cm,
                 fx_rates=fx_rates,
+                publication_discounts_by_target=review.get("publication_discounts_by_target"),
             ),
             review.get("target_price_overrides"),
         )

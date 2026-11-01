@@ -94,16 +94,10 @@ def preparation_scope(runtime,plan):
             (plan['product_id'],reference,reference)).fetchall()
         if len(rows)!=1:raise ApprovalBlocked('NEW_TASK_V4_UNIQUE_ORIGINAL_TASK_REQUIRED')
         task=engine._project(db,engine._row(db,rows[0]['task_id']))
-        grants=db.execute("SELECT g.detail_json,e.request_digest,t.source_key FROM workbench_events g "
-            "JOIN workbench_execution e USING(task_id) JOIN workbench_tasks t USING(task_id) "
-            "WHERE g.task_id=? AND g.event_type='explicit_new_post_preparation'",(task['task_id'],)).fetchall()
-        if len(grants)!=1:raise ApprovalBlocked('NEW_TASK_V4_EXPLICIT_ORIGIN_REQUIRED')
-        grant=json.loads(grants[0]['detail_json'])
-        if (set(grant)!={'request_digest','source_key','scope','release'} or grant['release']!=release
-                or grant['request_digest']!=grants[0]['request_digest'] or grant['source_key']!=grants[0]['source_key']
-                or grant['scope'].get('offer_id')!=task['scope']['offer_id']
-                or grant['scope'].get('shops')!=task['scope']['shops']):
-            raise ApprovalBlocked('NEW_TASK_V4_EXPLICIT_ORIGIN_CHANGED')
+        from shared_platform.native_unfrozen_source_successor import verified_explicit_origin
+        try:verified_explicit_origin(db,engine._row(db,task['task_id']),release)
+        except ValueError as error:
+            raise ApprovalBlocked('NEW_TASK_V4_EXPLICIT_ORIGIN_CHANGED:'+str(error)) from error
     if (not worker.owns(task['task_id']) or task.get('version')!=release
             or task.get('template')!='publication'
             or task.get('execution_state') in {'cancelled','failed'}):

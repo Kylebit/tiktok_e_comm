@@ -53,7 +53,17 @@ def test_new_three_model_one_decision_parallel_fork_keeps_operation_actor_reuse(
                                                 {'fixture_target': label})
             assert fixture['fixture_target'] == label
             ledger.complete_reserved(operation, 'ACCEPTED')
-            references.append('owned-provider-fixture:' + label)
+            if platform=='TIKTOK':
+                # The real TikTok edge records the accepted detail/shop in its
+                # original SDK checkpoint; it does not append this ref list.
+                from modules.miaoshou.tiktok_v4_drafts import DraftWriteFact,EXPECTED_SHOP_ID_BY_TARGET
+                from shared_platform.product_publication_live_dependencies import TikTokV4DraftCheckpointStore
+                TikTokV4DraftCheckpointStore(request.checkpoint_root).record_fact(request,label,
+                    DraftWriteFact('SAVE_DRAFT','ACCEPTED',
+                        detail_id=str(71000+sorted(market['targets']).index(label)),
+                        shop_id=str(EXPECTED_SHOP_ID_BY_TARGET[label])))
+            else:
+                references.append('owned-provider-fixture:' + label)
             return {'schema_version': 'product-publication-platform-result/v1',
                     'platform': platform,
                     'targets': [{'target_label': label, 'status': 'PROCESSING',

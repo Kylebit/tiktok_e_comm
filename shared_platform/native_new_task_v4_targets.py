@@ -203,7 +203,7 @@ def _catalog_sink(active,plan,snapshot):
 
 
 def _execute(active,request):
-    from shared_platform.native_prepared_v4_targets import _file_identity,_persist_file_identity,_result,_pre_submit_failure
+    from shared_platform.native_prepared_v4_targets import _file_identity,_persist_file_identity,_provider_reference,_result,_pre_submit_failure
     from shared_platform.product_publication_runner import PublicationPlatformRequest
     from shared_platform.native_final_mutation_budget import build_native_budget_ledger
     entered=False;ledger=None
@@ -228,7 +228,8 @@ def _execute(active,request):
         from shared_platform.native_provider_continuation import continue_original_result
         value=continue_original_result(active,request,native_request,result,ledger)
         if value is None:
-            value=_result(result,request,ledger,provider_reference=','.join(dict.fromkeys(references)) or None,durable_seams=True)
+            value=_result(result,request,ledger,
+                provider_reference=_provider_reference(native_request,request.target_label,references),durable_seams=True)
         return replace(value,readback_evidence={**value.readback_evidence,
             'provider_readonly_observations':observations,'checkpoint_file_identity':mapping,
             'checkpoint_file_identity_ref':reference})

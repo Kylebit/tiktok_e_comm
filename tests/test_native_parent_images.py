@@ -23,6 +23,7 @@ R2_SOURCE_PATHS = (
     'shared_platform/publication_rounds.py',
     'modules/sourcing/new_product_workbench.py',
     'modules/sourcing/localized_image_auto_translation.py',
+    'modules/sourcing/localized_image_ocr.py',
     'skills/prepare-product-images/scripts/prepare_product_images.py',
     'skills/prepare-product-images/scripts/run_automated_image_qa.py',
 )
@@ -330,15 +331,53 @@ def test_actual_default_worker_images_produces_six_original_documents_and_comple
     monkeypatch.setattr(lingshi_client, 'LingshiClient', FixtureClient)
     monkeypatch.setattr(brand, '_download_result', result_bytes)
     regions = [{'region_id': 'text-'+'b'*20, 'source_text': 'Decor', 'bbox': [.1, .1, .4, .2]}]
-    monkeypatch.setattr(localized_image_ocr, 'detect_english_text_regions',
-        lambda raw: regions if text_mode == 'one-translatable-master' and raw == result_bytes('https://fixture.example/1.png') else [])
+    engines, scanned = [], []
+    engine = object()
+    def make_engine():
+        engines.append(engine)
+        return engine
+    monkeypatch.setattr(localized_image_ocr, 'create_ocr_engine', make_engine, raising=False)
+    def detect(raw, *, engine=None):
+        if engine is not None:
+            assert engine is engines[0]
+            scanned.append(hashlib.sha256(raw).hexdigest())
+        # The real OCR consumes decoded pixels. The retained PNG is the
+        # original producer's canonical encoding, not delivery byte encoding.
+        from modules.sourcing.localized_image_lingshi_generation import _png_bytes
+        same_pixels = _png_bytes(raw) == _png_bytes(result_bytes('https://fixture.example/1.png'))
+        return regions if text_mode == 'one-translatable-master' and same_pixels else []
+    monkeypatch.setattr(localized_image_ocr, 'detect_english_text_regions', detect)
+    original_local = NativeImageRuntime.verified_local_artifact
+    ownership_checked = []
+    def local_bytes(runtime, producer, qa, generation, row):
+        if not ownership_checked:
+            with pytest.raises(PaidRequestBlocked, match='OWNER_UNPROVEN'):
+                original_local(runtime, producer, qa, generation,
+                    {**row, 'artifact_path':str(runtime.root/'not-an-approved-asset.png')})
+            with pytest.raises(PaidRequestBlocked, match='OWNER_UNPROVEN'):
+                original_local(runtime, producer, qa, generation,
+                    {**row, 'artifact_digest':'sha256:'+'f'*64})
+            with monkeypatch.context() as closed:
+                closed.setattr(runtime.paid_context, 'entry', lambda _: None)
+                with pytest.raises(PaidRequestBlocked, match='ORIGINAL_PAID_RECEIPT_UNPROVEN'):
+                    original_local(runtime, producer, qa, generation, row)
+            ownership_checked.append(True)
+        return original_local(runtime, producer, qa, generation, row)
+    monkeypatch.setattr(NativeImageRuntime, 'verified_local_artifact', local_bytes)
     from modules.sourcing import localized_image_lingshi_generation as localized
     monkeypatch.setitem(localized.generate_localized_reference_image.__kwdefaults__, 'result_loader', result_bytes)
     original_script = v['worker'].images_adapter._script
     def closed_script(name):
         module = original_script(name)
         if name == 'prepare_product_images.py':
-            monkeypatch.setattr(module, '_download_source', result_bytes)
+            def source_bytes(url):
+                # Source-reference I/O and later localized generation retain
+                # their named edge. Text-free native master scanning must not
+                # redownload delivery URLs when its exact PNG is already local.
+                if text_mode == 'reuse-only' and url.startswith('https://fixture.example/') and url.rsplit('/',1)[-1].split('.')[0].isdigit():
+                    raise ValueError('OWNED_MASTER_DELIVERY_DOWNLOAD_UNAVAILABLE')
+                return result_bytes(url)
+            monkeypatch.setattr(module, '_download_source', source_bytes)
         return module
     monkeypatch.setattr(v['worker'].images_adapter, '_script', closed_script)
     original_r1 = (v['profile'].root / 'reports/product-preparation' / v['task']['scope']['offer_id'] / 'round1-approved-snapshot.json').read_bytes()
@@ -351,6 +390,16 @@ def test_actual_default_worker_images_produces_six_original_documents_and_comple
     directory = v['profile'].root / 'reports/product-preparation' / v['task']['scope']['offer_id']
     assert all((directory / name).is_file() for name in R2_DOCUMENTS.values())
     assert (directory / 'round1-approved-snapshot.json').read_bytes() == original_r1
+    progress = json.loads((directory/'r2-translation-scope-progress.json').read_bytes())
+    # This original fixture publishes only LivelyHive locales, while retaining
+    # both7-image master sets. Preserve that original routing predicate.
+    assert progress['status'] == 'COMPLETED' and progress['completed_count'] == progress['selected_count'] == 7
+    assert progress['total_asset_count'] == 14 and progress['skipped_count'] == 7
+    assert len(engines) == 1 and len(scanned) == 7 and ownership_checked == [True]
+    masters = json.loads((directory/'brand-image-generation.json').read_bytes())
+    assert sorted(scanned) == sorted(row['artifact_digest'].removeprefix('sha256:') for row in masters['assets'] if row['brand_id']=='livelyhive-sea')
+    assert progress['selected_review_numbers'] == ([1] if text_mode == 'one-translatable-master' else [])
+    assert 'https://' not in json.dumps(progress)
     assert [row['kind'] for row in FixtureClient.calls].count('brand') == 14
     assert all(row['kind'] in {'brand', 'qa', 'text', 'localized'} for row in FixtureClient.calls)
     translation_plan = json.loads((directory / 'brand-image-translation-plan.json').read_bytes())
@@ -367,3 +416,44 @@ def test_actual_default_worker_images_produces_six_original_documents_and_comple
     assert accounting['unknown'] == 0 and accounting['occupied'] <= 40
     assert not (directory / 'paid-requests/events.jsonl').exists()
     assert len(v['live']['fake'].calls) == 7
+
+
+def test_serial_scan_persists_partial_failure_without_url_or_paid_request(tmp_path, monkeypatch):
+    """Real OCR normalization/progress with an owned engine edge, not actor proof."""
+    from types import SimpleNamespace
+    from modules.sourcing import localized_image_ocr
+    from modules.sourcing.localized_image_lingshi_generation import _png_bytes
+    from test_publication_paid_entry import load
+    producer = load('owned_native_scan_progress', SOURCE/'skills/prepare-product-images/scripts/prepare_product_images.py')
+    raw = _png_bytes(result_bytes('https://fixture.example/1.png'))
+    rows = [{'brand_id':'livelyhive-sea','role':'owned-'+str(n),'review_number':n,
+             'artifact_digest':'sha256:'+hashlib.sha256(raw).hexdigest(),
+             'external_generation_count':1,'public_url':'https://never-read.invalid/private'} for n in (1,2)]
+    runtime = object.__new__(NativeImageRuntime)
+    runtime.reports_root = tmp_path/'reports'
+    runtime.frozen = {'offer_id':'owned-progress-product','snapshot_digest':'a'*64}
+    runtime.paid_context = SimpleNamespace(round1={'canonical_targets':['tiktok:LH_MY']})
+    checked = []
+    runtime.checked_root = lambda: checked.append(True)
+    runtime.adapter = SimpleNamespace(boundary=SimpleNamespace(_check_leaf=lambda p: None))
+    runtime.verified_local_artifact = lambda *args: raw
+    factory, calls = [], []
+    def engine(image):
+        calls.append(image.shape)
+        if len(calls)==2:
+            raise RuntimeError('owned OCR failure https://never-persist.invalid/private')
+        return [[[[0,0],[8,0],[8,8],[0,8]], 'Decor', .99]]
+    def create():
+        factory.append(True)
+        return engine
+    monkeypatch.setattr(localized_image_ocr, 'create_ocr_engine', create)
+    monkeypatch.setattr(producer, '_download_source', lambda _: pytest.fail('No delivery request permitted'))
+    with pytest.raises(RuntimeError, match='owned OCR failure'):
+        runtime.translation_scope(producer, None, {'assets':rows})
+    path = runtime.reports_root/runtime.frozen['offer_id']/'r2-translation-scope-progress.json'
+    progress = json.loads(path.read_bytes())
+    assert progress['status']=='FAILED' and progress['phase']=='FAILED'
+    assert progress['selected_count']==2 and progress['completed_count']==1
+    assert progress['selected_review_numbers']==[1] and progress['error_class']=='RuntimeError'
+    assert factory==[True] and len(calls)==2 and checked
+    assert 'https://' not in json.dumps(progress) and 'private' not in json.dumps(progress)

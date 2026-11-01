@@ -576,6 +576,46 @@ def _auto_recheck(server, document, decision):
     return phase, state
 
 
+def _auto_unresolved_preview_warnings(review, warnings):
+    """Keep commercial warnings unless exact source-title advice is resolved.
+
+    A supplier title remains a source fact. Complete, distinct localized
+    marketplace titles in the already validated R1 packet cover this advice;
+    they do not waive another warning or make an incomplete packet complete.
+    """
+    advice = '当前商品标题仍含中文或缺少英文字母；可以先锁定事实，但发布前建议采用平台标题候选'
+    if not isinstance(warnings, list) or warnings.count(advice) != 1:
+        return warnings
+    from shared_platform.release_control import _commercial_approval_warnings
+    from shared_platform.publication_r3_image_bridge import TARGET_LOCALE
+    source_title = str((review.get('product_facts') or {}).get('title') or '').strip()
+    if _commercial_approval_warnings({'title': source_title}) != [advice]:
+        return warnings
+    requested = (review.get('target_selection') or {}).get('requested') or []
+    marketplace = [label for label in requested if label != 'miaoshou:COMMON']
+    rows = review.get('targets') or []
+    labels = [row.get('target') for row in rows if isinstance(row, dict)]
+    if (not marketplace or len(set(requested)) != len(requested)
+            or len(labels) != len(rows) or len(set(labels)) != len(labels)
+            or set(labels) != set(requested)):
+        return warnings
+    for row in rows:
+        label = row['target']
+        if label == 'miaoshou:COMMON':
+            continue
+        copy = row.get('copy') or {}
+        title = copy.get('title')
+        language = str(copy.get('language') or '').lower().replace('_', '-').split('-')[0]
+        expected = TARGET_LOCALE.get(label, '').split('-')[0]
+        if (copy.get('status') != 'PROPOSED' or type(title) is not str
+                or not title.strip() or title.strip() == source_title
+                or re.search(r'[\u3400-\u9fff]', title) or not any(c.isalpha() for c in title)
+                or not expected or language not in ({expected, 'en'} if label.endswith(':MY')
+                    or label.endswith('_MY') else {expected})):
+            return warnings
+    return [warning for warning in warnings if warning != advice]
+
+
 def auto_freeze(server, data):
     """Adopt complete R1 facts under the active technical policy, never as Kyle.
 
@@ -659,7 +699,7 @@ def auto_freeze(server, data):
             preview = dashboard.get('approval_rehearsal') or dashboard.get('approval') or {}
             proposed = (preview.get('state_patch_preview') or {}).get('product_approval') or {}
             seller_sku = str((dashboard.get('product') or {}).get('seller_sku_candidate') or '').strip()
-            if (not preview.get('ready') or preview.get('warnings')
+            if (not preview.get('ready') or _auto_unresolved_preview_warnings(review, preview.get('warnings'))
                     or not re.fullmatch(r'[0-9]{1,32}', seller_sku)
                     or not proposed.get('input_fingerprint')
                     or proposed['input_fingerprint'] != document['approval_fingerprint']

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import stat
 import subprocess
@@ -82,6 +83,7 @@ def _parse_codex_final_jsonl(stdout: str) -> str:
     if not isinstance(stdout, str) or not stdout:
         raise ValueError('missing Codex JSONL events')
     thread_started = turn_started = turn_completed = False
+    ignored_config_diagnostics = 0
     final_text = None
     for line in stdout.splitlines():
         try:
@@ -102,11 +104,26 @@ def _parse_codex_final_jsonl(stdout: str) -> str:
                 raise ValueError('invalid Codex turn start')
             turn_started = True
         elif kind == 'item.completed':
+            item = event.get('item')
+            # Codex 0.162 emits this exact non-fatal, ignored legacy GUI key
+            # twice between thread and turn start. It grants no tool or OS
+            # authority. All other error items and placements remain errors.
+            if (thread_started and not turn_started and type(item) is dict
+                    and set(event)=={'type','item'} and set(item)=={'id','type','message'}
+                    and item.get('type')=='error' and type(item.get('id')) is str
+                    and re.fullmatch(r'item_[0-9]+',item['id']) and type(item.get('message')) is str
+                    and re.fullmatch(
+                        r'Codex is ignoring 1 unrecognized configuration setting\. Check for typos or deprecated settings\.\n'
+                        r'  user \([^\r\n`]+config\.toml\): `computer_use\.windows\.always_allowed_app_ids` is ignored\.',
+                        item['message']) and ignored_config_diagnostics<2):
+                ignored_config_diagnostics += 1
+                continue
             if not turn_started:
                 raise ValueError('Codex item before turn start')
-            item = event.get('item')
             if not isinstance(item, dict):
                 raise ValueError('invalid Codex completed item')
+            if item.get('type')=='error':
+                raise ValueError('Codex completed error item')
             if item.get('type') == 'agent_message':
                 if not isinstance(item.get('text'), str) or not item['text']:
                     raise ValueError('invalid Codex agent message')

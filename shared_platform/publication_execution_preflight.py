@@ -12,19 +12,53 @@ def normal_new_task(runtime):
 
 
 def inventory_readback_checks(snapshot,block):
-    """Only exact returned rows are observable; never fill omitted rows as zero."""
+    """Prove the installed prewrite route, never invent observed inventory.
+
+    R1's default stock policy plus the exact-shop pickup semantic is already
+    consumed by the real Miaoshou resolver/saved-draft matcher.  A separate
+    conversation allocation is optional, not authority we can fabricate here.
+    Both routes still discover every active warehouse before any save/publish.
+    Official inventory success remains a later exact-detail read, and an ERP
+    acceptance with no official storefront coverage remains PROCESSING.
+    """
+    from domains.product_operations.approved_publication_snapshot import (
+        _publication_stock_policy, _warehouse_inventory_by_target,
+    )
+    from modules.miaoshou.tiktok_publisher import EXPECTED_SHOP_ID_BY_TARGET, WAREHOUSE_GET_PATH
+    from modules.miaoshou.tiktok_warehouses import mainland_pickup_warehouse_semantic
     from shared_platform.native_tiktok_exact_readback import NativeTikTokExactStorefrontReadback
     contract=NativeTikTokExactStorefrontReadback.local_observation_contract()
-    inventory=snapshot['product'].get('warehouse_inventory_by_target') or {};checked=[]
-    for target in snapshot['publication_targets']:
-        if target['platform'].lower()!='tiktok':continue
-        label=target['target_label'];allocation=inventory.get(label)
-        if allocation is None:
-            block('TIKTOK_COMPLETE_WAREHOUSE_SCOPE_NOT_FROZEN',label);status='BLOCKED'
-        elif any(row['stock']==0 for row in allocation['warehouses']) and not contract['omitted_zero_quantity_proven']:
-            block('TIKTOK_ZERO_WAREHOUSE_READBACK_UNSUPPORTED',label);status='BLOCKED'
-        else:status='SUPPORTED_EXPLICIT_COMPLETE_ROWS'
-        checked.append({'target_label':label,'status':status,'reader_schema':contract['schema_version'],
+    targets=[r for r in snapshot['publication_targets'] if r['platform'].lower()=='tiktok']
+    product=snapshot['product'];policy=None;allocation_error=False
+    try:policy=_publication_stock_policy(product.get('stock_policy'))
+    except (ValueError,TypeError):pass
+    try:inventory=_warehouse_inventory_by_target(product.get('warehouse_inventory_by_target'),targets=targets)
+    except (ValueError,KeyError,TypeError):inventory=None;allocation_error=True
+    checked=[]
+    official={'tiktok:LH_PH','tiktok:LH_MY','tiktok:LH_TH','tiktok:LH_VN'}
+    for target in targets:
+        label=target['target_label'];shop=EXPECTED_SHOP_ID_BY_TARGET.get(label)
+        semantic=mainland_pickup_warehouse_semantic(label);allocation=(inventory or {}).get(label)
+        gaps=[]
+        if policy is None:gaps.append('TIKTOK_FROZEN_STOCK_POLICY_REQUIRED')
+        if not shop or not semantic:gaps.append('TIKTOK_EXACT_SHOP_WAREHOUSE_SEMANTIC')
+        if allocation_error:gaps.append('TIKTOK_EXPLICIT_WAREHOUSE_ALLOCATION_INVALID')
+        if allocation is not None:
+            if allocation['shop_id']!=shop:gaps.append('TIKTOK_WAREHOUSE_SHOP_IDENTITY_CHANGED')
+            if policy is not None and allocation['total_stock']!=policy['quantity_per_sku']:
+                gaps.append('TIKTOK_STOCK_POLICY_ALLOCATION_CONFLICT')
+        for gap in gaps:block(gap,label)
+        checked.append({'target_label':label,
+            'status':'BLOCKED' if gaps else ('SUPPORTED_EXPLICIT_COMPLETE_ROWS' if allocation is not None
+                                           else 'SUPPORTED_RUNTIME_EXACT_RESOLUTION'),
+            'shop_id':shop,'warehouse_semantic':semantic,
+            'quantity_per_sku':policy['quantity_per_sku'] if policy is not None else None,
+            'runtime_resolution_required':True,'warehouse_read_api':WAREHOUSE_GET_PATH,
+            'prewrite_authority':'MIAOSHOU_COMPLETE_ACTIVE_WAREHOUSES_AND_EXACT_SAVED_DRAFT',
+            'completion_route':'OFFICIAL_EXACT_STOREFRONT_READBACK' if label in official
+                               else 'MIAOSHOU_ACCEPTED_PROCESSING_ONLY',
+            'reader_schema':contract['schema_version'] if label in official else 'miaoshou-tiktok-v4-draft/v1',
+            'missing_zero_rows':'UNPROVEN_NOT_INFERRED','official_inventory_verified':False,
             'provider_access':'NOT_OBSERVED'})
     return checked
 

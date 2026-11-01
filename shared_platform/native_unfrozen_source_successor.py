@@ -55,16 +55,19 @@ def verified_explicit_origin(db, row, release):
           and json.loads(row['version_json']) == release, 'ORIGINAL_REQUEST_CHANGED')
     events = db.execute('SELECT id,detail_json FROM workbench_events WHERE task_id=? AND event_type=? ORDER BY id',
                         (task_id, EVENT)).fetchall()
-    if not events:
+    if not events and not db.execute('SELECT 1 FROM workbench_events WHERE task_id=? AND event_type=?',
+            (task_id,'native_frozen_predecessor_source_successor')).fetchone():
         _need(original['release'] == release, 'REGISTRATION_REQUIRED')
         return original
-    _need(1 <= len(events) <= 2, 'MULTIPLE_CHAINS_REJECTED')
+    _need(len(events) <= 2, 'MULTIPLE_CHAINS_REJECTED')
     envelopes = [json.loads(event['detail_json']) for event in events]
     _need(len({_digest(value) for value in envelopes}) == len(events), 'MULTIPLE_CHAINS_REJECTED')
     previous_release = original['release']
     for position,(event,envelope) in enumerate(zip(events,envelopes)):
         record = _verify_link(db,row,original,grants[0],event,envelope,previous_release,position)
         previous_release = record['to_release']
+    from shared_platform.native_frozen_source_successor import verify as verify_frozen_successor
+    previous_release=verify_frozen_successor(db,row,original,grants[0],previous_release,release)
     _need(previous_release == release, 'TERMINAL_SOURCE_CHANGED')
     return original
 

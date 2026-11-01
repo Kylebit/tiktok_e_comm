@@ -184,6 +184,21 @@ def _dependencies(active,platform,ledger,references,observations,candidate):
     if existing is not None:return existing
     return build_product_publication_platform_executors(platform_scope=(platform,),shopee=deps)[platform]
 
+def _provider_reference(native_request,target_label,references):
+    """Consume the original SDK checkpoint identity, never invent a marker."""
+    if native_request.platform=='TIKTOK':
+        from shared_platform.product_publication_live_dependencies import TikTokV4DraftCheckpointStore
+        events=TikTokV4DraftCheckpointStore(native_request.checkpoint_root).load(native_request)['events']
+        identities={(e['detail_id'],e['shop_id']) for e in events
+            if e['target_label']==target_label and e['outcome']=='ACCEPTED'
+            and e['detail_id'] is not None and e['shop_id'] is not None}
+        if len(identities)==1:
+            detail,shop=next(iter(identities))
+            return 'miaoshou:tiktok:'+shop+':'+detail
+        return None
+    return ','.join(dict.fromkeys(references)) if references else None
+
+
 def _result(platform_result,request,ledger,*,provider_reference=None,durable_seams=False):
     rows=platform_result.get('targets') or []
     if len(rows)!=1 or rows[0].get('target_label')!=request.target_label:
@@ -257,17 +272,7 @@ def _execute_checked(active,request,state):
         write_budget_ledger=ledger,checkpoint_root=active.runtime.supervisor.root)
     state['provider_entered']=True
     result=execute(native_request)
-    reference=None
-    if platform=='TIKTOK':
-        from shared_platform.product_publication_live_dependencies import TikTokV4DraftCheckpointStore
-        events=TikTokV4DraftCheckpointStore(active.runtime.supervisor.root).load(native_request)['events']
-        identities={(e['detail_id'],e['shop_id']) for e in events
-            if e['target_label']==request.target_label and e['outcome']=='ACCEPTED'
-            and e['detail_id'] is not None and e['shop_id'] is not None}
-        if len(identities)==1:
-            detail,shop=next(iter(identities));reference='miaoshou:tiktok:'+shop+':'+detail
-    elif references:
-        reference=','.join(dict.fromkeys(references))
+    reference=_provider_reference(native_request,request.target_label,references)
     adapter_result=_result(result,request,ledger,provider_reference=reference,durable_seams=True)
     from dataclasses import replace
     return replace(adapter_result,readback_evidence={**adapter_result.readback_evidence,

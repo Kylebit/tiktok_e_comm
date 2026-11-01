@@ -42,6 +42,15 @@ def _engine_result(engine: Any, image: np.ndarray) -> list[Any]:
     return raw
 
 
+def create_ocr_engine() -> Any:
+    """One local engine for a caller-owned serial batch; no global cache."""
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+        return RapidOCR()
+    except Exception as error:
+        raise LocalizedImageOcrError("local RapidOCR is unavailable") from error
+
+
 def detect_english_text_regions(
     image_bytes: bytes, *, engine: Any | None = None
 ) -> list[dict[str, Any]]:
@@ -64,12 +73,7 @@ def detect_english_text_regions(
     if width <= 0 or height <= 0:
         raise LocalizedImageOcrError("image dimensions are invalid")
     if engine is None:
-        try:
-            from rapidocr_onnxruntime import RapidOCR
-
-            engine = RapidOCR()
-        except Exception as error:
-            raise LocalizedImageOcrError("local RapidOCR is unavailable") from error
+        engine = create_ocr_engine()
 
     regions: list[dict[str, Any]] = []
     for raw in _engine_result(engine, image):

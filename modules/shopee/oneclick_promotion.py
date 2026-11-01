@@ -27,7 +27,9 @@ MAX_PAGES=100
 def promotion_read_policy_digest():
     return _digest({'schema':SCHEMA,'list':LIST,'detail':DETAIL,'models':MODEL,
         'ongoing_unique':True,'complete_pages':True,'writes':ADD,'request_shape':'original-project-consumer-e785e940/v1','unknown':'never_replay',
-        'existing_exact':'ZERO_WRITE_OFFICIAL_READBACK'})
+        'existing_exact':'ZERO_WRITE_OFFICIAL_READBACK',
+        'frozen_prices':'immutable_target_store_prices_with_original_decimal_contract/v1',
+        'missing_projection':'exact_retained_product_only'})
 
 def _digest(value):
     return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
@@ -152,11 +154,26 @@ def _observe(action,prerequisite,expected):
 
 def prepare_postpublish_promotion(request):
     from shared_platform.native_approved_discount_prices import retained_discount_price
+    from shared_platform.postpublish_promotions import _approved_target_discount_percent
     from modules.tiktok.oneclick_promotion import _approved_model_skus
     action=request.target_label;policy=promotion_target_policy(action)
     if policy['channel']!='shopee':_hold('shopee_promotion_target_invalid')
     approval=approved_promotion_action_policy(request.immutable_plan_payload,action)
-    expected=retained_discount_price(request.immutable_plan_payload,policy['prerequisite_target'])
+    pricing=request.immutable_plan_payload.get('pricing')
+    selected=pricing.get('selected_targets') if isinstance(pricing,Mapping) else None
+    row=selected.get(policy['prerequisite_target']) if isinstance(selected,Mapping) else None
+    if isinstance(row,Mapping) and 'store_prices' in row:
+        # Normal products carry their own frozen uniform quote. Reuse the
+        # original Decimal/currency/rounding contract, including legacy v1's
+        # frozen rate, instead of entering a different product's retained path.
+        percent=_approved_target_discount_percent(request.immutable_plan_payload,
+            policy['prerequisite_target'],expected_currency=policy['currency'])
+        if percent!=approval['discount_percent']:_hold('shopee_promotion_frozen_discount_changed')
+        price=row['store_prices'][0]
+        expected={'currency':policy['currency'],'list_price':str(_decimal(price['list_price'])),
+                  'sale_after_discount':str(_decimal(price['sale_after_discount']))}
+    else:
+        expected=retained_discount_price(request.immutable_plan_payload,policy['prerequisite_target'])
     # The B supplemental intent pins its existing shop/item as well as prices.
     # Preserve legacy 403's original path; no caller quote opens the B scope.
     if expected.get('offer_id')=='8412287877065586543':

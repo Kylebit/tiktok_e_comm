@@ -93,8 +93,9 @@ def complete_new_task(live,monkeypatch,tmp_path,*,with_warehouse=True):
 
 
 def owned_warehouse_allocations(labels):
+    from modules.miaoshou.tiktok_publisher import EXPECTED_SHOP_ID_BY_TARGET
     return {label:{'schema_version':'miaoshou-tiktok-warehouse-allocation/v1',
-        'shop_id':str(91000+index),
+        'shop_id':EXPECTED_SHOP_ID_BY_TARGET[label],
         'warehouses':[{'warehouse_id':str(92000+index*2),'warehouse_name':'Owned mainland fixture','stock':150},
             {'warehouse_id':str(92001+index*2),'warehouse_name':'Owned regional fixture','stock':50}],
         'total_stock':200,'source':'CONVERSATION_APPROVAL',

@@ -67,6 +67,7 @@ def _task_owns_snapshot(task, profile, *, offer, targets, prepared_reference, sn
             or not getattr(profile, 'data_root', None)):
         raise NativeR1ReconciliationRequired('NATIVE_R1_TASK_RELEASE_OR_REFERENCE_REQUIRED')
     database = Path(profile.data_root) / 'tasks.db'
+    source_seal = None
     try:
         approved_time = datetime.fromisoformat(approved_at.replace('Z', '+00:00'))
         if approved_time.tzinfo is None:
@@ -95,6 +96,9 @@ def _task_owns_snapshot(task, profile, *, offer, targets, prepared_reference, sn
                     or scope.get('offer_id') != offer
                     or sorted(scope.get('shops') or []) != targets):
                 raise NativeR1ReconciliationRequired('NATIVE_R1_TASK_LEDGER_CONFLICT')
+            from shared_platform.native_frozen_source_successor import verify_native_owner
+            full_row=conn.execute('SELECT * FROM workbench_execution WHERE task_id=?',(task['task_id'],)).fetchone()
+            source_seal=verify_native_owner(conn,dict(full_row),release,profile)
             owner = None
             for event in conn.execute(
                     'SELECT e.task_id,e.detail_json,e.created_at,x.scope_json FROM workbench_events e '
@@ -119,6 +123,8 @@ def _task_owns_snapshot(task, profile, *, offer, targets, prepared_reference, sn
         if isinstance(error, NativeR1ReconciliationRequired):
             raise
         raise NativeR1ReconciliationRequired('NATIVE_R1_TASK_LEDGER_UNAVAILABLE') from error
+    from shared_platform.native_frozen_source_successor import verify_native_files
+    verify_native_files(source_seal,media=False)
     prepared = (checkpoint.get('native_preparation') or {}).get('prepared_reference')
     if prepared is not None:
         if prepared != prepared_reference:
@@ -445,6 +451,8 @@ def read_images(task, profile):
     identity = validate_r2_identity(documents)
     if identity.get('round1_snapshot_digest') != frozen['snapshot_digest']:
         raise ValueError('NATIVE_R2_R1_CONFLICT')
+    from shared_platform.native_frozen_source_successor import verify_native_media
+    verify_native_media(task,profile)
     return {'native_r1': frozen, 'native_r2': identity}
 
 

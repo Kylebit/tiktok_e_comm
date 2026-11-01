@@ -1,5 +1,6 @@
 """Parent-owned R2 producer context for the exact admitted task and product ledger."""
 from argparse import Namespace
+import base64
 from contextlib import contextmanager, ExitStack
 import hashlib
 import importlib.util
@@ -368,6 +369,97 @@ class NativeImageRuntime:
             raise ValueError('R2_QA_MODEL_UNCONFIGURED')
         return value.strip()
 
+    def verified_local_artifact(self, producer, qa, generation, row):
+        """Read the original confirmed master under the existing parent pins.
+
+        Reuse the receipt/business/paid-owner verifier and QA's exact local
+        image reader. A report path or digest alone is never ownership proof.
+        """
+        self.checked_root()
+        if (generation != producer._brand_generation_summary(self.frozen['offer_id'], runtime=self)
+                or row not in generation.get('assets', [])
+                or not row.get('external_generation_count')):
+            raise PaidRequestBlocked('R2_LOCAL_MASTER_OWNER_UNPROVEN')
+        path = Path(row['checkpoint_path'])
+        if path.parent != self.checkpoint_directory(self.frozen['offer_id'], 'brand-image-checkpoints-lingshi'):
+            raise PaidRequestBlocked('R2_CONTINUATION_CHECKPOINT_ROOT_CHANGED')
+        # The phase directory may have been created after entering the outer
+        # parent hold. Pin it explicitly while checking and reading its files.
+        with self.adapter.boundary._pin([path.parent], release_parent=self.history_root):
+            self._verify_completed_assets(producer, [row], phase='brand-image-checkpoints-lingshi')
+            from modules.sourcing.image_generation_checkpoint import ImageCheckpoint
+            cp = ImageCheckpoint.from_path(path)
+            self.adapter.boundary._check_leaf(cp.output_path)
+            if row.get('artifact_path') not in (None, str(cp.output_path)):
+                raise ValueError('R2_LOCAL_MASTER_ARTIFACT_PATH_CHANGED')
+            projected = {**row, 'artifact_path': str(cp.output_path)}
+            reference, size = qa._qa_image_reference(projected, verified_local=True)
+            raw = base64.b64decode(reference.split(';base64,', 1)[1], validate=True)
+            if len(raw) != size:
+                raise ValueError('R2_LOCAL_MASTER_BYTES_CHANGED')
+            self.checked_root()
+            return raw
+
+    def translation_scope(self, producer, qa, generation):
+        """Scan original bytes serially with one engine and durable local progress.
+
+        Progress is observation only, never a skip/retry or paid authority.
+        Proven unpaid reused assets retain their original GET/digest path.
+        """
+        from modules.sourcing.localized_image_ocr import create_ocr_engine, detect_english_text_regions
+        from modules.sourcing.localized_image_auto_translation import _requires_translation
+        targets = [target for target in self.paid_context.round1['canonical_targets']
+                   if target != 'miaoshou:COMMON']
+        selected = [row for row in generation['assets'] if any(
+            producer.TARGET_LOCALE.get(target) in producer._brand_translation_locales(row['brand_id'])
+            and producer.TARGET_LOCALE.get(target) not in {'en-PH','en-GB'}
+            and ('homebloom-sea' if target.startswith('tiktok:HB_') else 'livelyhive-sea') == producer._brand_family(row['brand_id'])
+            for target in targets)]
+        path = self.reports_root/self.frozen['offer_id']/'r2-translation-scope-progress.json'
+        progress = {'schema_version':'r2-translation-scope-progress/v1',
+            'offer_id':self.frozen['offer_id'], 'snapshot_digest':self.frozen['snapshot_digest'],
+            'generation_identity_digest':producer._brand_generation_identity_digest(generation),
+            'status':'RUNNING', 'phase':'STARTED', 'selected_count':len(selected),
+            'total_asset_count':len(generation['assets']),
+            'skipped_count':len(generation['assets'])-len(selected),
+            'completed_count':0, 'selected_review_numbers':[],
+            'started_at':datetime.now(timezone.utc).isoformat()}
+        def emit(phase, **values):
+            self.checked_root()
+            self.adapter.boundary._check_leaf(path)
+            self.adapter.boundary._check_leaf(path.with_suffix('.json.tmp'))
+            progress.update(values, phase=phase, updated_at=datetime.now(timezone.utc).isoformat())
+            producer._write_json_atomic(path, progress)
+        engine = None
+        try:
+            emit('STARTED')
+            for row in selected:
+                emit('READING_ORIGINAL_BYTES', current_asset={key:row.get(key) for key in
+                    ('brand_id','role','review_number','artifact_digest')})
+                if row.get('external_generation_count'):
+                    raw = self.verified_local_artifact(producer, qa, generation, row)
+                else:
+                    # No local paid checkpoint may be invented for an explicitly
+                    # reused source. Preserve its original verified GET path.
+                    raw = producer._download_source(row['public_url'])
+                producer._verify_asset_bytes(raw, row['artifact_digest'])
+                if engine is None:
+                    emit('INITIALIZING_LOCAL_OCR')
+                    engine = create_ocr_engine()
+                emit('LOCAL_OCR')
+                regions = detect_english_text_regions(raw, engine=engine)
+                if any(_requires_translation(region['source_text']) for region in regions):
+                    progress['selected_review_numbers'].append(row['review_number'])
+                emit('ASSET_COMPLETE', completed_count=progress['completed_count']+1)
+            emit('COMPLETE', status='COMPLETED', current_asset=None)
+            return progress['selected_review_numbers']
+        except Exception as error:
+            try:
+                emit('FAILED', status='FAILED', error_class=type(error).__name__)
+            except Exception:
+                pass  # Never mask the original failure or write after a lost hold.
+            raise
+
     def checkpoint_directory(self, offer_id, phase):
         self.checked_root()
         if str(offer_id) != self.frozen['offer_id'] or phase not in {
@@ -574,25 +666,8 @@ class NativeParentImagesAdapter:
                     raise ValueError('R2_MASTER_QA_NOT_PASSED')
                 runtime._continue_phase(producer, qa, generation, 'image_translation')
                 stage = 'TRANSLATION_SCOPE_FREEZE'
-                # The existing local OCR and translation predicate select only
-                # actual translatable prose. Empty/invariant text remains reused.
-                from modules.sourcing.localized_image_ocr import detect_english_text_regions
-                from modules.sourcing.localized_image_auto_translation import _requires_translation
-                targets = [target for target in runtime.paid_context.round1['canonical_targets']
-                           if target != 'miaoshou:COMMON']
-                numbers = []
-                for row in generation['assets']:
-                    if not any(producer.TARGET_LOCALE.get(target) in producer._brand_translation_locales(row['brand_id'])
-                            and producer.TARGET_LOCALE.get(target) not in {'en-PH','en-GB'}
-                            and ('homebloom-sea' if target.startswith('tiktok:HB_') else 'livelyhive-sea') == producer._brand_family(row['brand_id'])
-                            for target in targets):
-                        continue
-                    runtime.checked_root()
-                    raw=producer._download_source(row['public_url'])
-                    producer._verify_asset_bytes(raw,row['artifact_digest'])
-                    regions=detect_english_text_regions(raw)
-                    if any(_requires_translation(region['source_text']) for region in regions):
-                        numbers.append(row['review_number'])
+                # Preserve the original OCR/predicate over exact confirmed bytes.
+                numbers = runtime.translation_scope(producer, qa, generation)
                 producer.freeze_conversation_approved_translation_scope(frozen['offer_id'],
                     generation=generation, selected_review_numbers=numbers, dimension_only_numbers=[],
                     approved_by='orbit-product-publication-default-v1', runtime=runtime)

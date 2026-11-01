@@ -307,3 +307,40 @@ def test_unresolved_system_config_root_is_not_a_verified_layer(native_case):
     native_case.monkeypatch.setenv('ProgramData', str(native_case.system/'..'/'unverified-system'))
     with pytest.raises(ValueError, match='readonly_agent_system_layer_path_unverified'):
         _plan(native_case)
+
+
+def test_exact_locally_audited_0162_bytes_keep_original_launch_guards(tmp_path, monkeypatch):
+    from shared_platform import native_readonly_invocation as isolation
+    evidence = json.loads((SOURCE/'tests/fixtures/codex_readonly_capability_0162.json').read_text(encoding='utf-8'))
+    assert evidence['features_list_exit_code'] == evidence['exec_help_exit_code'] == 0
+    assert set(evidence['effective_features']) == {'hooks', 'apps', 'plugins', 'multi_agent'}
+    assert not any(evidence['effective_features'].values())
+    assert all(evidence['invalid_typed_overrides_rejected'].values())
+    root, home, system = (tmp_path/name for name in ('source', 'home', 'system'))
+    for folder in (root, home, system):
+        folder.mkdir()
+    (home/'config.toml').write_text('[mcp_servers.owned]\nenabled=true\n', encoding='utf-8')
+    for key in ('CODEX_PROFILE', 'CODEX_CONFIG', 'CODEX_CONFIG_FILE', 'CODEX_MANAGED_CONFIG'):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv('CODEX_HOME', str(home))
+    monkeypatch.setenv('ProgramData', str(system))
+    executable = tmp_path/'owned-binary.exe'
+    executable.write_bytes(b'OWNED-IDENTITY-NOT-THE-INSTALLED-BINARY')
+    schema = root/'schema.json'
+    schema.write_text('{}', encoding='utf-8')
+    # The real installed hash/CLI readback is retained separately in evidence.
+    # Inject only its digest at this file edge; identity/config/argv checks are real.
+    monkeypatch.setattr(isolation.binary, '_digest', lambda _: evidence['binary_sha256'])
+    plan = isolation.prepare_readonly_invocation(str(executable), root)
+    argv = plan.argv(schema)
+    assert argv[-10:] == ['exec', '--sandbox', 'read-only', '--ephemeral', '--json',
+                          '--color', 'never', '--output-schema', str(schema), '-']
+    assert 'mcp_servers.owned.enabled=false' in argv
+    assert 'notify=[]' in argv and 'web_search="disabled"' in argv
+    assert plan.verify_launch(argv, root) == dict(os.environ)
+    executable.write_bytes(b'CHANGED-OWNED-BINARY')
+    with pytest.raises(ValueError, match='readonly_native_invocation_changed'):
+        plan.verify_launch(argv, root)
+    monkeypatch.setattr(isolation.binary, '_digest', lambda _: 'f'*64)
+    with pytest.raises(ValueError, match='readonly_native_binary_capability_unverified'):
+        isolation.prepare_readonly_invocation(str(executable), root)

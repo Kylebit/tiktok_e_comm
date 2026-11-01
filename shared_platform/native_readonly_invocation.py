@@ -17,11 +17,13 @@ from shared_platform.readonly_agent_config_guard import (
 )
 
 
-# Exact installed bytes: Codex 0.160.0 local feature readback accepted these
-# four names as false and the explicit MCP/notify/web-search keys. Generic
-# --disable support or a version string alone cannot admit another binary.
+# Exact audited bytes: 0.160.0 and 0.162.0-alpha.17.2 local feature readbacks
+# accepted these four names as false and the explicit MCP/notify/web-search
+# keys. The 0.162 receipt is tests/fixtures/codex_readonly_capability_0162.json.
+# Generic --disable support or a version string cannot admit another binary.
 _SUPPORTED_BINARY_SHA256 = frozenset({
     '37762753b554982eef1c109303d1be652b6397f1479e844794353a85650199c6',
+    'd13914ced6c7af174d8d638db938284231227312104b06a25e9608c632a7daec',
 })
 _FEATURES = ('hooks', 'apps', 'plugins', 'multi_agent')
 _MCP_NAME = re.compile(r'[A-Za-z0-9_-]{1,64}')

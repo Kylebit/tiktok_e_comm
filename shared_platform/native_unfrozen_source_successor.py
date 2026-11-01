@@ -1,7 +1,9 @@
-"""One local source fix for a genuine explicit task before any R1 dispatch.
+"""Bounded local source fixes for one genuine, still-unfrozen explicit task.
 
 No HTTP producer, new task, approval, frozen-input rewrite or provider receipt.
-Issuance observes zero effects; later consumers verify that recorded lineage,
+First issuance requires zero effects. A second known binary-preflight block may
+retain exactly one verified terminal read-only OPTIONS, never a capture/child.
+Later consumers verify that recorded lineage,
 not a demand that normal subsequent work remain forever zero. Same-user local
 task ledger is the existing trust boundary, as for the original explicit POST.
 """
@@ -56,8 +58,19 @@ def verified_explicit_origin(db, row, release):
     if not events:
         _need(original['release'] == release, 'REGISTRATION_REQUIRED')
         return original
-    _need(len(events) == 1, 'MULTIPLE_CHAINS_REJECTED')
-    envelope = json.loads(events[0]['detail_json'])
+    _need(1 <= len(events) <= 2, 'MULTIPLE_CHAINS_REJECTED')
+    envelopes = [json.loads(event['detail_json']) for event in events]
+    _need(len({_digest(value) for value in envelopes}) == len(events), 'MULTIPLE_CHAINS_REJECTED')
+    previous_release = original['release']
+    for position,(event,envelope) in enumerate(zip(events,envelopes)):
+        record = _verify_link(db,row,original,grants[0],event,envelope,previous_release,position)
+        previous_release = record['to_release']
+    _need(previous_release == release, 'TERMINAL_SOURCE_CHANGED')
+    return original
+
+
+def _verify_link(db,row,original,grant,event,envelope,previous_release,position):
+    task_id=row['task_id']
     _need(type(envelope) is dict and set(envelope) == {'record','record_sha256'}, 'RECORD_SHAPE_CHANGED')
     record = envelope['record']
     _need(type(record) is dict and envelope['record_sha256'] == _digest(record), 'RECORD_DIGEST_CHANGED')
@@ -68,22 +81,63 @@ def verified_explicit_origin(db, row, release):
           'RECORD_CONTRACT_CHANGED')
     _need(record['task_id'] == task_id and record['source_key'] == original['source_key']
           and record['request_digest'] == original['request_digest'] and record['scope'] == original['scope']
-          and record['from_release'] == original['release'] and record['to_release'] == release
+          and record['from_release'] == previous_release
           and record['from_release'] != record['to_release']
-          and record['original_post_event_id'] == grants[0]['id']
-          and record['original_post_sha256'] == sha256(grants[0]['detail_json'].encode()).hexdigest()
-          and record['history_sha256'] == _digest(_history(db, task_id, events[0]['id']))
+          and record['original_post_event_id'] == grant['id']
+          and record['original_post_sha256'] == sha256(grant['detail_json'].encode()).hexdigest()
+          and record['history_sha256'] == _digest(_history(db, task_id, event['id']))
           and record['checkpoint_sha256'] == sha256(record['checkpoint_raw'].encode()).hexdigest(),
           'ORIGINAL_LINEAGE_CHANGED')
     _need(record['source']['from_head'] == record['from_release']['code_version']
-          and record['source']['to_head'] == release['code_version']
-          and record['source']['manifest_digest'] == release['manifest_digest']
+          and record['source']['to_head'] == record['to_release']['code_version']
+          and record['source']['manifest_digest'] == record['to_release']['manifest_digest']
           and record['zero_evidence']['operations'] and record['zero_evidence']['release']
-          and not any(record['zero_evidence']['operations'].values())
-          and not any(record['zero_evidence']['release'].values())
           and record['zero_evidence']['files_absent'] is True, 'REGISTRATION_PROOF_CHANGED')
+    proof=record['zero_evidence']
+    if position==0:
+        _need(not any(proof['operations'].values()) and not any(proof['release'].values())
+              and 'confirmed_readonly_options' not in proof,'REGISTRATION_PROOF_CHANGED')
+    else:
+        _need(record['registration_state']=='failed' and _known_binary_block(json.loads(record['checkpoint_raw']))
+              and proof.get('confirmed_readonly_options'), 'EXACT_KNOWN_BINARY_BLOCK_REQUIRED')
+        _options_counts(proof['operations'],proof['release'])
+        intent=proof['confirmed_readonly_options']['intent']
+        _need(intent['task_id']==task_id and intent['action']=='options' and intent['status']=='SUCCEEDED'
+              and json.loads(intent['release_json'])==record['from_release']
+              and _digest(intent)==proof['confirmed_readonly_options']['intent_sha256'], 'OPTIONS_PROOF_CHANGED')
     # Current checkpoint/lease/paid state may now have advanced legitimately.
-    return original
+    return record
+
+
+def _known_binary_block(checkpoint):
+    attempt=checkpoint.get('facts_attempt') or {}
+    return (attempt.get('state')=='returned' and attempt.get('number')==2
+            and attempt.get('result')=={'status':'blocked','reason':'readonly_native_binary_capability_unverified'})
+
+
+def _options_counts(operations,release):
+    _need(operations.get('workbench_category_intents')==1
+          and all(value==0 for key,value in operations.items() if key!='workbench_category_intents')
+          and all(release.get(key)==1 for key in ('round1_category_capture_requests','round1_category_options','round1_category_worker_origins'))
+          and all(value==0 for key,value in release.items() if key not in {'round1_category_capture_requests','round1_category_options','round1_category_worker_origins'}),
+          'ONLY_TERMINAL_READONLY_OPTIONS_ALLOWED')
+
+
+def readonly_options_release(engine,db,intent,*,body=None,action='options'):
+    """Permit only the exact terminal old OPTIONS sealed in link2; no dispatch grant."""
+    value=dict(intent)
+    if json.loads(value['release_json'])==engine.release:return engine.release
+    _need(action=='options' and value['action']=='options' and value['status']=='SUCCEEDED', 'ONLY_CONFIRMED_OPTIONS_REUSABLE')
+    row=engine._row(db,value['task_id'])
+    verified_explicit_origin(db,row,engine.release)
+    events=db.execute('SELECT detail_json FROM workbench_events WHERE task_id=? AND event_type=? ORDER BY id',
+                      (value['task_id'],EVENT)).fetchall()
+    _need(len(events)==2,'CONFIRMED_OPTIONS_SOURCE_LINK_REQUIRED')
+    record=json.loads(events[-1]['detail_json'])['record']
+    sealed=record['zero_evidence']['confirmed_readonly_options']
+    _need(value==sealed['intent'] and _digest(value)==sealed['intent_sha256']
+          and (body is None or _json(body)==value['body_json']), 'OPTIONS_REUSE_BINDING_CHANGED')
+    return json.loads(value['release_json'])
 
 
 def _count(db, table, where, args):
@@ -92,7 +146,7 @@ def _count(db, table, where, args):
     return db.execute('SELECT count(*) FROM ' + table + ' WHERE ' + where, args).fetchone()[0]
 
 
-def _release_zero(store, task_id, offer):
+def _release_zero(store, task_id, offer, intent=None):
     with store._connect_readonly() as db:
         db.execute('BEGIN')
         queries = {
@@ -108,8 +162,38 @@ def _release_zero(store, task_id, offer):
             'native_final_budget_scopes': ('plan_id IN (SELECT plan_id FROM release_plans WHERE product_id=?)', (offer,)),
         }
         counts = {t: _count(db, t, *query) for t, query in queries.items()}
-    _need(not any(counts.values()), 'PREPARATION_OR_DOMAIN_EFFECT_EXISTS')
+    if intent is None:
+        _need(not any(counts.values()), 'PREPARATION_OR_DOMAIN_EFFECT_EXISTS')
     return counts
+
+
+def _seal_options(store,intent,scope,release,revision):
+    """Read original immutable domain evidence; no provider or outcome update."""
+    from shared_platform.worker_category_admission import request_id
+    body=json.loads(intent['body_json']);reference=intent['result_reference']
+    _need(intent['action']=='options' and intent['status']=='SUCCEEDED'
+          and json.loads(intent['release_json'])==release
+          and body['offer_id']==scope['offer_id'] and body['requested_targets']==scope['shops']
+          and body['product_center_revision']==revision
+          and intent['request_id']==request_id(intent['task_id'],'options',body), 'EXACT_TERMINAL_OPTIONS_REQUIRED')
+    original=store.category_capture_request(intent['request_id'],scope['offer_id'],'source-fix-readonly')
+    origin=store.category_worker_origin(intent['request_id'])
+    options=store.category_options_record(reference,scope['offer_id'])
+    progress=store.category_request_progress(intent['request_id'])
+    request=json.loads(original['request_json']) if original else {}
+    _need(original and original['status']=='SUCCEEDED' and original['observer_reference']==reference
+          and all(request.get(key)==value for key,value in body.items())
+          and request.get('_ui_request_digest')=='sha256:'+_digest(body)
+          and origin and origin['task_id']==intent['task_id'] and origin['purpose']=='OPTIONS'
+          and origin['release']==release and origin['ui_request_digest']=='sha256:'+_digest(body)
+          and progress['purpose']=='OPTIONS' and progress['attempted']==progress['completed']
+          and options['options_digest']==intent['options_digest']
+          and options['review_input']['product_center_revision']==revision
+          and options['source_region']==body['source_region']
+          and options['account_identity_digest']==body['account_identity_digest'], 'ORIGINAL_OPTIONS_READBACK_CHANGED')
+    return {'intent':intent,'intent_sha256':_digest(intent),'domain_request_sha256':_digest(original),
+            'domain_origin_sha256':_digest(origin),'domain_options_sha256':_digest(options),
+            'context':{key:body[key] for key in ('context_digest','account_identity_digest','product_center_revision','source_region')}}
 
 
 def _files_zero(engine, profile, task_id, offer):
@@ -137,7 +221,7 @@ def _files_zero(engine, profile, task_id, offer):
 
 
 def register_source_successor(engine, task_id, *, profile, release_store, expected):
-    """Trusted local engineering entry; register exactly once, remain unqueued.
+    """Trusted local entry: one initial fix and one exact compatibility successor.
 
     Caller serializes product-input writers and quiesces its owned old worker.
     No task/grant/checkpoint/scope rewrite except current version_json CAS.
@@ -168,8 +252,11 @@ def register_source_successor(engine, task_id, *, profile, release_store, expect
     try:
         db.execute('BEGIN IMMEDIATE')
         row = engine._row(db,task_id)
+        links=db.execute('SELECT id FROM workbench_events WHERE task_id=? AND event_type=?',(task_id,EVENT)).fetchall()
+        second=len(links)==1
+        _need(len(links)<2,'MULTIPLE_CHAINS_REJECTED')
         task = db.execute('SELECT source_key FROM workbench_tasks WHERE task_id=?',(task_id,)).fetchone()
-        _need(row['template']=='publication' and row['state'] in {'queued','reconciliation_required'}
+        _need(row['template']=='publication' and row['state'] in ({'failed'} if second else {'queued','reconciliation_required'})
               and row['step_index']==0 and not row['external_started']
               and all(row[k] is None for k in ('worker','lease_token','lease_until','action_json')),
               'IDLE_PREFACTS_TASK_REQUIRED')
@@ -180,14 +267,14 @@ def register_source_successor(engine, task_id, *, profile, release_store, expect
               and sha256(row['checkpoint_json'].encode()).hexdigest() == expected['checkpoint_sha256']
               and _digest(_history(db,task_id)) == expected['history_sha256'], 'EXPECTED_ORIGINAL_CHANGED')
         verified_explicit_origin(db,row,old)
-        _need(not db.execute('SELECT 1 FROM workbench_events WHERE task_id=? AND event_type=?',(task_id,EVENT)).fetchone(),
-              'ALREADY_REGISTERED')
         steps=json.loads(row['steps_json']);checkpoint=json.loads(row['checkpoint_json'])
         _need(all(step.get('state')=='pending' for step in steps)
               and set(checkpoint) <= {'native_preparation','facts_attempt'}
               and not (checkpoint.get('native_preparation') or {}).get('prepared_reference'), 'UNFROZEN_FACTS_REQUIRED')
         previous=checkpoint.get('facts_attempt')
-        if previous:
+        if second:
+            _need(_known_binary_block(checkpoint),'EXACT_KNOWN_BINARY_BLOCK_REQUIRED')
+        elif previous:
             _need(previous.get('state')=='unknown' and previous.get('number')==1
                   and previous.get('result')=={'status':'unknown','reason':'R1_PARENT_CATEGORY_REQUIRES_RECONCILIATION',
                                               'error_class':'ValueError'}, 'UNRESOLVED_ATTEMPT_NOT_PROVEN_PREFLIGHT')
@@ -195,12 +282,22 @@ def register_source_successor(engine, task_id, *, profile, release_store, expect
             'workbench_category_agent_attempts','workbench_external_tasks','workbench_receipts',
             'workbench_review_identity','workbench_publication_scope_reductions')}
         operations['workbench_domain_operations']=_count(db,'workbench_domain_operations','owner_task_id=?',(task_id,))
-        _need(not any(operations.values()), 'ORIGINAL_TASK_EFFECT_EXISTS')
+        if not second:_need(not any(operations.values()), 'ORIGINAL_TASK_EFFECT_EXISTS')
         scope=json.loads(row['scope_json']);offer=scope['offer_id']
         locks=[dict(x) for x in db.execute('SELECT resource,task_id FROM workbench_resource_locks WHERE task_id=? OR resource=?',
                                           (task_id,'product-offer:'+offer))]
         _need(all(x=={'resource':'product-offer:'+offer,'task_id':task_id} for x in locks), 'RESOURCE_OWNER_CHANGED')
-        release_counts=_release_zero(release_store,task_id,offer)
+        intent=None
+        if second:
+            intents=db.execute('SELECT * FROM workbench_category_intents WHERE task_id=?',(task_id,)).fetchall()
+            _need(len(intents)==1,'ONLY_TERMINAL_READONLY_OPTIONS_ALLOWED')
+            intent=dict(intents[0])
+        release_counts=_release_zero(release_store,task_id,offer,intent)
+        options_proof=None
+        if second:
+            _options_counts(operations,release_counts)
+            options_proof=_seal_options(release_store,intent,scope,old,
+                checkpoint['native_preparation']['product_center_revision'])
         history_digest=_files_zero(engine,profile,task_id,offer)
         grant=db.execute("SELECT id,detail_json FROM workbench_events WHERE task_id=? AND event_type='explicit_new_post_preparation'",(task_id,)).fetchone()
         record={'schema_version':SCHEMA,'task_id':task_id,'source_key':task['source_key'],
@@ -211,6 +308,7 @@ def register_source_successor(engine, task_id, *, profile, release_store, expect
             'registration_state':row['state'], 'zero_evidence':{'operations':operations,'release':release_counts,
                 'files_absent':True,'paid_history_binding_sha256':history_digest},
             'source':source,'execution_authority':False}
+        if options_proof is not None:record['zero_evidence']['confirmed_readonly_options']=options_proof
         changed=db.execute('UPDATE workbench_execution SET version_json=? WHERE task_id=? AND version_json=? '
             'AND scope_json=? AND checkpoint_json=? AND steps_json=? AND request_digest=? AND state=? '
             'AND template=\'publication\' AND step_index=0 AND external_started=0 AND worker IS NULL '

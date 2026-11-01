@@ -61,9 +61,11 @@ class CategoryIntentLedger:
             old = conn.execute('SELECT * FROM workbench_category_intents WHERE task_id=? AND action=?',
                                (task_id, action)).fetchone()
             if old:
-                if (old['request_id'] != body['request_id'] or old['body_json'] != body_json
-                        or old['release_json'] != release_json):
+                if old['request_id'] != body['request_id'] or old['body_json'] != body_json:
                     raise ValueError('category intent already binds a different request')
+                if old['release_json'] != release_json:
+                    from shared_platform.native_unfrozen_source_successor import readonly_options_release
+                    readonly_options_release(engine,conn,old,body=body,action=action)
                 return {'request_id': old['request_id'], 'status': old['status'],
                         'dispatch_once': False}
             if action == 'capture':
@@ -92,8 +94,10 @@ class CategoryIntentLedger:
             engine._require_version(task)
             row = conn.execute('SELECT * FROM workbench_category_intents WHERE request_id=? AND task_id=?',
                                (request_id, task_id)).fetchone()
-            if row is None or json.loads(row['release_json']) != engine.release:
+            if row is None:
                 raise ValueError('task-bound category intent missing or stale')
+            from shared_platform.native_unfrozen_source_successor import readonly_options_release
+            observed_release=readonly_options_release(engine,conn,row)
             intent = dict(row)
         body = json.loads(intent['body_json'])
         domain_row = domain.category_capture_request(request_id, body['offer_id'], 'worker-reconcile')
@@ -103,7 +107,7 @@ class CategoryIntentLedger:
             if (origin is None or origin.get('request_id') != request_id
                     or origin.get('task_id') != task_id
                     or origin.get('purpose') != intent['action'].upper()
-                    or origin.get('release') != engine.release
+                    or origin.get('release') != observed_release
                     or origin.get('ui_request_digest') != _digest(body)):
                 raise ValueError('domain request lacks exact trusted task origin')
             try:

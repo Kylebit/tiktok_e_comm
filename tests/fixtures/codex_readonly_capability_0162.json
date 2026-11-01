@@ -1,0 +1,35 @@
+{
+  "schema_version": "codex-native-readonly-local-capability/v1",
+  "version": "codex-cli 0.162.0-alpha.17.2",
+  "binary_sha256": "d13914ced6c7af174d8d638db938284231227312104b06a25e9608c632a7daec",
+  "observed_at_utc": "2026-11-01T06:15:17.815752+00:00",
+  "probe_receipt_sha256": "d95ccf0d308a96140745afcfafd77d020e9f8f09e841067a85d2c402ccb15574",
+  "features_list_exit_code": 0,
+  "effective_features": {
+    "hooks": false,
+    "apps": false,
+    "plugins": false,
+    "multi_agent": false
+  },
+  "accepted_config_overrides": [
+    "notify=[]",
+    "web_search=\"disabled\"",
+    "mcp_servers.<observed-name>.enabled=false"
+  ],
+  "invalid_typed_overrides_rejected": {
+    "notify": true,
+    "web_search": true,
+    "mcp_enabled": true
+  },
+  "exec_help_exit_code": 0,
+  "supported_exec_options": [
+    "--sandbox read-only",
+    "--ephemeral",
+    "--json",
+    "--color never",
+    "--output-schema"
+  ],
+  "model_calls": 0,
+  "configuration_writes": 0,
+  "limits": "Local argument/configuration capability only; not cloud-default absence or Windows sandbox isolation proof. No raw config, credentials or environment retained."
+}

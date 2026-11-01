@@ -22,14 +22,15 @@ def _digest(value):
                                     separators=(',', ':')).encode()).hexdigest()
 
 
-def _owned(tmp_path):
+def _owned(tmp_path, *, offer='4000001234', shops=None):
+    tmp_path.mkdir(parents=True,exist_ok=True)
     root = tmp_path / 'source'
     root.mkdir()
     old = owned_profile(root)
     release = lambda p: dict(code_version=p.version, environment=p.environment, manifest_digest=p.manifest_digest)
     engine = WorkbenchEngine(old.data_root/'tasks.db', release(old))
     task, created = engine.create_for_explicit_post({'template':'publication','source_key':'original-user-request',
-        'scope':{'offer_id':'4000001234','shops':['tiktok:LH_MY']}})
+        'scope':{'offer_id':offer,'shops':shops or ['tiktok:LH_MY']}})
     assert created
     history = engine.store.events(task['task_id'])
     with engine.readonly_snapshot() as db:

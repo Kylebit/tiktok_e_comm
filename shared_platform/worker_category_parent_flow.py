@@ -99,10 +99,10 @@ class ParentR1CategoryFlow:
                 raise ValueError('same-task options intent absent or stale')
             row = conn.execute('SELECT * FROM workbench_category_intents WHERE task_id=? AND action=?',
                                (task_id, 'options')).fetchone()
-            if row is None or row['release_json'] != json.dumps(
-                    self.bridge.engine.release, ensure_ascii=False, sort_keys=True,
-                    separators=(',', ':')):
+            if row is None:
                 raise ValueError('same-task options intent absent or stale')
+            from shared_platform.native_unfrozen_source_successor import readonly_options_release
+            readonly_options_release(self.bridge.engine,conn,row)
             options_body = json.loads(row['body_json'])
             options_request_id = row['request_id']
         validate(self.bridge.engine, task_id=task_id, worker_id=self.worker_id,

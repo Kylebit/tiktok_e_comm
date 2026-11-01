@@ -71,9 +71,11 @@ class CategoryAgentAttemptLedger:
             source = conn.execute('SELECT * FROM workbench_category_intents '
                                   'WHERE task_id=? AND action=?',
                                   (task_id, action)).fetchone()
-            if (source is None or source['status'] != 'SUCCEEDED'
-                    or source['release_json'] != _json(engine.release)):
+            if source is None or source['status'] != 'SUCCEEDED':
                 raise ValueError('category agent source intent not verified')
+            if source['release_json'] != _json(engine.release):
+                from shared_platform.native_unfrozen_source_successor import readonly_options_release
+                readonly_options_release(engine,conn,source,action=action)
             if stage == 'choice':
                 matches = (source['request_id'] == input_binding['options_request_id']
                            and source['result_reference'] == input_binding['options_reference']

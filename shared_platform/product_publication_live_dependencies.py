@@ -106,6 +106,7 @@ _OZON_IMPORT_PROFILE_REGISTRY = {
     (17027906, 91971): "interior-sticker",
     (17027905, 93656): "sauna-mat",
     (17027905, 92011): "toilet-paper-holder",
+    (17027907, 92404): "napkin-holder",
 }
 
 ProviderPost = Callable[[str, dict[str, object]], Mapping[str, object]]
@@ -140,6 +141,13 @@ _TIKTOK_SITE_BY_TARGET = {
 # Exact semantic aliases only.  They are read from the frozen main category;
 # product title/description are intentionally excluded from category choice.
 _TIKTOK_EXACT_CATEGORY_PROFILES = (
+    {
+        "aliases": frozenset({
+            "desktopnapkinholder", "napkinholder", "桌面餐巾纸架", "立式餐巾纸架", "餐巾纸架",
+        }),
+        "primary": "852872",
+        "fallbacks": (),
+    },
     {
         "aliases": frozenset({
             "冰箱防尘盖布带侧袋", "冰箱防尘盖布", "冰箱防尘罩",
@@ -1796,11 +1804,11 @@ def _ozon_package_cm(item: Mapping[str, object]) -> list[str]:
 
 
 class OfficialOzonFridgeMagnetProfileResolver:
-    """Resolve the exact enabled Ozon fridge-magnet profile from official facts.
+    """Resolve one explicitly supported Ozon family from official facts.
 
     Product semantics come only from the frozen main category.  The title is
     deliberately not used to guess a category.  The current account must
-    expose one enabled ``Fridge Magnet`` type and the exact required metadata
+    expose the exact enabled frozen family/type and the required metadata
     before a dispatch item can be built.
     """
 
@@ -1818,6 +1826,11 @@ class OfficialOzonFridgeMagnetProfileResolver:
     _TOILET_PAPER_HOLDER_SEMANTIC_ALIASES = frozenset(
         {"整理用具 > 纸巾架", "toilet paper holder"}
     )
+    _NAPKIN_HOLDER_CATEGORY_ID = 17027907
+    _NAPKIN_HOLDER_TYPE_ID = 92404
+    _NAPKIN_HOLDER_SEMANTIC_ALIASES = frozenset({
+        "desktop napkin holder", "napkin holder", "桌面餐巾纸架", "立式餐巾纸架", "餐巾纸架",
+    })
     _REFRIGERATOR_COVER_SEMANTIC_ALIASES = frozenset({
         "冰箱防尘盖布带侧袋", "冰箱防尘盖布", "冰箱防尘罩",
         "fridge top cover", "fridge top cover with side storage pockets", "refrigerator dust cover",
@@ -1877,6 +1890,15 @@ class OfficialOzonFridgeMagnetProfileResolver:
         category = product.get("main_category") if isinstance(product, Mapping) else None
         name = str(category.get("name") or "").strip() if isinstance(category, Mapping) else ""
         normalized = " ".join(name.casefold().split())
+        if (approved_category_id == str(OfficialOzonFridgeMagnetProfileResolver._NAPKIN_HOLDER_CATEGORY_ID)
+                or normalized in OfficialOzonFridgeMagnetProfileResolver._NAPKIN_HOLDER_SEMANTIC_ALIASES):
+            if normalized not in OfficialOzonFridgeMagnetProfileResolver._NAPKIN_HOLDER_SEMANTIC_ALIASES:
+                raise LivePublicationDependencyError("frozen Ozon desktop-napkin-holder semantic conflicts")
+            frozen_type = approved_category.get("type_id") if isinstance(approved_category, Mapping) else None
+            if ((approved_category_id and approved_category_id != "17027907")
+                    or (frozen_type is not None and str(frozen_type) != "92404")):
+                raise LivePublicationDependencyError("frozen Ozon desktop-napkin-holder type conflicts")
+            return (17027907, 92404, "Napkin Holder")
         if (approved_category_id == "53968796"
                 or normalized in OfficialOzonFridgeMagnetProfileResolver._REFRIGERATOR_COVER_SEMANTIC_ALIASES):
             if normalized not in OfficialOzonFridgeMagnetProfileResolver._REFRIGERATOR_COVER_SEMANTIC_ALIASES:
@@ -2011,7 +2033,7 @@ class OfficialOzonFridgeMagnetProfileResolver:
         walk(roots, [], True)
         if len(matches) != 1:
             raise LivePublicationDependencyError(
-                "Ozon official fridge-magnet type is missing or ambiguous"
+                "Ozon official frozen product type is missing or ambiguous"
             )
         category_path, _type_node = matches[0]
         category_name = category_path[-1]["name"]
@@ -2229,6 +2251,16 @@ def build_ozon_import_item_from_frozen_variant(
             or str(brand.get("value") or "").strip().casefold() not in {"no brand", "нет бренда"}
         ):
             raise LivePublicationDependencyError("Ozon holder dictionary profile conflicts")
+    if profile_key == (17027907, 92404):
+        if (category.get("type_id") is not None and str(category["type_id"]) != "92404"):
+            raise LivePublicationDependencyError("frozen Ozon desktop-napkin-holder type conflicts")
+        if (
+            product_type.get("dictionary_value_id") != 92404
+            or str(product_type.get("value") or "").strip() != "Napkin Holder"
+            or brand.get("dictionary_value_id") != 126745801
+            or str(brand.get("value") or "").strip().casefold() not in {"no brand", "нет бренда"}
+        ):
+            raise LivePublicationDependencyError("Ozon desktop-napkin-holder dictionary profile conflicts")
     weight_kg = Decimal(_normalize_number(parcel.get("weight_kg")))
     package_cm = [Decimal(_normalize_number(value)) for value in parcel["package_cm"]]
 

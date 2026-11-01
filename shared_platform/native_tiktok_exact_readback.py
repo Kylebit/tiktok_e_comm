@@ -227,6 +227,11 @@ class NativeTikTokExactStorefrontReadback:
 
     def readback(self,*,command,dispatch):
         label=command.get('target_label')
+        # HomeBloom SEA publishes and observes through Miaoshou only. There is
+        # no official storefront integration for these exact targets: do not
+        # load an official token, join another shop or claim verified success.
+        if label in ('tiktok:HB_PH','tiktok:HB_MY','tiktok:HB_TH','tiktok:HB_VN'):
+            return _unavailable(label)
         try:
             from modules.miaoshou.tiktok_publisher import EXPECTED_SHOP_ID_BY_TARGET
             from shared_platform.product_publication_live_dependencies import _TIKTOK_SITE_BY_TARGET

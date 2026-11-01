@@ -1,0 +1,613 @@
+{
+  "schema": "official-napkin-holder-category-replay/v1",
+  "observed_at_utc": "2026-11-01T02:12:34.299415+00:00",
+  "projection_note": "Public exact selected category paths and required metadata only; optional attribute schemas/other tree branches excluded. Synthetic replay envelopes are made by the tests. No credentials or business write response.",
+  "source_evidence": {
+    "TIKTOK_SAFE_TAXONOMY.json": "f9d382a0a735e7e15e5b3c1f68bfd521b26b63d6bd9e763fcbf2a3c7de485550",
+    "TIKTOK_NAPKIN_METADATA.json": "505a10f34e9c923b02d00bb2930b710e2a3a9e7005fab62d3df481657433211d",
+    "OZON_NAPKIN_METADATA.json": "aeb004907c8d5ea635c5b3211b1890fbc51fb057608182098e530e180c850033",
+    "OZON_NAPKIN_DICTIONARIES.json": "a9554c9e9888d76112e77c674bce735aff8d39d19d9326c50495bbe485f01ff0"
+  },
+  "canonical_semantic": "Desktop napkin holder",
+  "tiktok": {
+    "sites": {
+      "MY": {
+        "path": [
+          {
+            "id": "600001",
+            "name": "Bekalan Rumah"
+          },
+          {
+            "id": "851848",
+            "name": "Pengatur Rumah"
+          },
+          {
+            "id": "852872",
+            "name": "Bekas & Rak Penyimpanan"
+          }
+        ],
+        "nodes": [
+          {
+            "cid": 600001,
+            "name": "Bekalan Rumah",
+            "nameChinese": "家居用品",
+            "disabled": false
+          },
+          {
+            "cid": 851848,
+            "name": "Pengatur Rumah",
+            "nameChinese": "家居收纳用品",
+            "disabled": false
+          },
+          {
+            "cid": 852872,
+            "name": "Bekas & Rak Penyimpanan",
+            "nameChinese": "收纳架",
+            "disabled": false
+          }
+        ],
+        "response_sha256_canonical": "b3e10ea88acfaa1bd86a3b216a09358aa9c307815f2f3bcce0d9bcc3fc3b9a28"
+      },
+      "PH": {
+        "path": [
+          {
+            "id": "600001",
+            "name": "Home Supplies"
+          },
+          {
+            "id": "851848",
+            "name": "Home Organizers"
+          },
+          {
+            "id": "852872",
+            "name": "Storage Holders & Racks"
+          }
+        ],
+        "nodes": [
+          {
+            "cid": 600001,
+            "name": "Home Supplies",
+            "nameChinese": "家居用品",
+            "disabled": false
+          },
+          {
+            "cid": 851848,
+            "name": "Home Organizers",
+            "nameChinese": "家居收纳用品",
+            "disabled": false
+          },
+          {
+            "cid": 852872,
+            "name": "Storage Holders & Racks",
+            "nameChinese": "收纳架",
+            "disabled": false
+          }
+        ],
+        "response_sha256_canonical": "76bbfb090bdbdf3a94ab9e71bff3e8ee0ff76824dd11b03514bf195159da2035"
+      },
+      "TH": {
+        "path": [
+          {
+            "id": "600001",
+            "name": "อุปกรณ์ของใช้ในบ้าน"
+          },
+          {
+            "id": "851848",
+            "name": "อุปกรณ์จัดระเบียบภายในบ้าน"
+          },
+          {
+            "id": "852872",
+            "name": "ที่เก็บของและชั้นวาง"
+          }
+        ],
+        "nodes": [
+          {
+            "cid": 600001,
+            "name": "อุปกรณ์ของใช้ในบ้าน",
+            "nameChinese": "家居用品",
+            "disabled": false
+          },
+          {
+            "cid": 851848,
+            "name": "อุปกรณ์จัดระเบียบภายในบ้าน",
+            "nameChinese": "家居收纳用品",
+            "disabled": false
+          },
+          {
+            "cid": 852872,
+            "name": "ที่เก็บของและชั้นวาง",
+            "nameChinese": "收纳架",
+            "disabled": false
+          }
+        ],
+        "response_sha256_canonical": "fbfce940f70e9d15addb3c05699814f8a4137fe43302fc7ed35f90e1492e5c25"
+      },
+      "VN": {
+        "path": [
+          {
+            "id": "600001",
+            "name": "Đồ gia dụng"
+          },
+          {
+            "id": "851848",
+            "name": "Sắp xếp nhà cửa"
+          },
+          {
+            "id": "852872",
+            "name": "Hộp để & Giá"
+          }
+        ],
+        "nodes": [
+          {
+            "cid": 600001,
+            "name": "Đồ gia dụng",
+            "nameChinese": "家居用品",
+            "disabled": false
+          },
+          {
+            "cid": 851848,
+            "name": "Sắp xếp nhà cửa",
+            "nameChinese": "家居收纳用品",
+            "disabled": false
+          },
+          {
+            "cid": 852872,
+            "name": "Hộp để & Giá",
+            "nameChinese": "收纳架",
+            "disabled": false
+          }
+        ],
+        "response_sha256_canonical": "41426075946b72a835d2324e0d6f201e0a1955429b03e1f7fcefb31e01640c1f"
+      },
+      "MX": {
+        "path": [
+          {
+            "id": "600001",
+            "name": "Productos para el hogar"
+          },
+          {
+            "id": "851848",
+            "name": "Organizadores para el hogar"
+          },
+          {
+            "id": "852872",
+            "name": "Soportes y estanterías"
+          }
+        ],
+        "nodes": [
+          {
+            "cid": 600001,
+            "name": "Productos para el hogar",
+            "nameChinese": "家居用品",
+            "disabled": false
+          },
+          {
+            "cid": 851848,
+            "name": "Organizadores para el hogar",
+            "nameChinese": "家居收纳用品",
+            "disabled": false
+          },
+          {
+            "cid": 852872,
+            "name": "Soportes y estanterías",
+            "nameChinese": "收纳架",
+            "disabled": false
+          }
+        ],
+        "response_sha256_canonical": "7e28f64b816a621f1bb68003f3abd54f99c0f1a99805a04545d599b18a10889e"
+      },
+      "GB": {
+        "path": [
+          {
+            "id": "600001",
+            "name": "Home Supplies"
+          },
+          {
+            "id": "851848",
+            "name": "Home Organizers"
+          },
+          {
+            "id": "852872",
+            "name": "Storage Holders & Racks"
+          }
+        ],
+        "nodes": [
+          {
+            "cid": 600001,
+            "name": "Home Supplies",
+            "nameChinese": "家居用品",
+            "disabled": false
+          },
+          {
+            "cid": 851848,
+            "name": "Home Organizers",
+            "nameChinese": "家居收纳用品",
+            "disabled": false
+          },
+          {
+            "cid": 852872,
+            "name": "Storage Holders & Racks",
+            "nameChinese": "收纳架",
+            "disabled": false
+          }
+        ],
+        "response_sha256_canonical": "a51e812bae989b1f082f5ad6f09a265017deccc73d5b49bd575f4a7026947e58"
+      }
+    },
+    "shops": [
+      {
+        "target_label": "tiktok:HB_VN",
+        "shop_id": "16783702",
+        "site": "VN",
+        "category_id": "852872",
+        "metadata": {
+          "categoryConfig": {
+            "isSuppSizechart": "0",
+            "isSuppCod": true,
+            "productCertifications": [],
+            "isSupportExemptionIdentifierCode": "0",
+            "sizeChartIsSupported": "0",
+            "sizeChartIsRequired": "0",
+            "codIsSupported": "1",
+            "packageDimensionIsRequired": "0",
+            "eprIsRequired": "0",
+            "responsiblePersonIsRequired": "0",
+            "manufacturerIsRequired": "0",
+            "isSizeChartMandatory": "0"
+          },
+          "categorySaleAttrList": [],
+          "categoryProductAttrList": []
+        },
+        "response_sha256_canonical": "7c33bc127a54a697828d200e4b299739f2c16e62a650864669003c6668203d45"
+      },
+      {
+        "target_label": "tiktok:HB_PH",
+        "shop_id": "15173238",
+        "site": "PH",
+        "category_id": "852872",
+        "metadata": {
+          "categoryConfig": {
+            "isSuppSizechart": "0",
+            "isSuppCod": true,
+            "productCertifications": [],
+            "isSupportExemptionIdentifierCode": "0",
+            "sizeChartIsSupported": "0",
+            "sizeChartIsRequired": "0",
+            "codIsSupported": "1",
+            "packageDimensionIsRequired": "0",
+            "eprIsRequired": "0",
+            "responsiblePersonIsRequired": "0",
+            "manufacturerIsRequired": "0",
+            "isSizeChartMandatory": "0"
+          },
+          "categorySaleAttrList": [],
+          "categoryProductAttrList": []
+        },
+        "response_sha256_canonical": "e0114f7026d49676d7d98086ad37f558083ac3f2b00520f10cef6848f101d555"
+      },
+      {
+        "target_label": "tiktok:HB_TH",
+        "shop_id": "16770557",
+        "site": "TH",
+        "category_id": "852872",
+        "metadata": {
+          "categoryConfig": {
+            "isSuppSizechart": "0",
+            "isSuppCod": true,
+            "productCertifications": [],
+            "isSupportExemptionIdentifierCode": "0",
+            "sizeChartIsSupported": "0",
+            "sizeChartIsRequired": "0",
+            "codIsSupported": "1",
+            "packageDimensionIsRequired": "0",
+            "eprIsRequired": "0",
+            "responsiblePersonIsRequired": "0",
+            "manufacturerIsRequired": "0",
+            "isSizeChartMandatory": "0"
+          },
+          "categorySaleAttrList": [],
+          "categoryProductAttrList": []
+        },
+        "response_sha256_canonical": "0f03024397fec8d8baa4b2f708c2e34db56560e31aeee868e83c01122b3a066f"
+      },
+      {
+        "target_label": "tiktok:HB_MY",
+        "shop_id": "16770639",
+        "site": "MY",
+        "category_id": "852872",
+        "metadata": {
+          "categoryConfig": {
+            "isSuppSizechart": "0",
+            "isSuppCod": true,
+            "productCertifications": [],
+            "isSupportExemptionIdentifierCode": "0",
+            "sizeChartIsSupported": "0",
+            "sizeChartIsRequired": "0",
+            "codIsSupported": "1",
+            "packageDimensionIsRequired": "1",
+            "eprIsRequired": "0",
+            "responsiblePersonIsRequired": "0",
+            "manufacturerIsRequired": "0",
+            "isSizeChartMandatory": "0"
+          },
+          "categorySaleAttrList": [],
+          "categoryProductAttrList": []
+        },
+        "response_sha256_canonical": "0431da862faf068f989d29c45f0e1b8d88fb2d9478b8819f417e19d2241698c7"
+      },
+      {
+        "target_label": "tiktok:MX",
+        "shop_id": "16265910",
+        "site": "MX",
+        "category_id": "852872",
+        "metadata": {
+          "categoryConfig": {
+            "isSuppSizechart": "0",
+            "isSuppCod": false,
+            "productCertifications": [
+              {
+                "documentDetails": "请输入有效的保修政策。",
+                "id": "8657871150357472516",
+                "isRequired": false,
+                "name": "保修政策",
+                "sampleImageUrl": "https://p16-oec-sg.ibyteimg.com/tos-alisg-i-aphluv4xwc-sg/011900b65b814fde8d2d1b2560eb832a~tplv-aphluv4xwc-origin-jpeg.jpeg?dr=15568&t=555f072d&ps=933b5bde&shp=2c1af732&shcp=7fb670ff&idc=my2&from=739964722",
+                "isMandatory": false,
+                "requirementConditions": null
+              }
+            ],
+            "isSupportExemptionIdentifierCode": "0",
+            "sizeChartIsSupported": "0",
+            "sizeChartIsRequired": "0",
+            "codIsSupported": "0",
+            "packageDimensionIsRequired": "1",
+            "eprIsRequired": "0",
+            "responsiblePersonIsRequired": "0",
+            "manufacturerIsRequired": "0",
+            "isSizeChartMandatory": "0"
+          },
+          "categorySaleAttrList": [],
+          "categoryProductAttrList": []
+        },
+        "response_sha256_canonical": "cc9dc2041f172e92682a1895d73cf4c9a1868022ce0f4849e28a183425948994"
+      },
+      {
+        "target_label": "tiktok:LH_PH",
+        "shop_id": "7676267",
+        "site": "PH",
+        "category_id": "852872",
+        "metadata": {
+          "categoryConfig": {
+            "isSuppSizechart": "0",
+            "isSuppCod": true,
+            "productCertifications": [],
+            "isSupportExemptionIdentifierCode": "0",
+            "sizeChartIsSupported": "0",
+            "sizeChartIsRequired": "0",
+            "codIsSupported": "1",
+            "packageDimensionIsRequired": "0",
+            "eprIsRequired": "0",
+            "responsiblePersonIsRequired": "0",
+            "manufacturerIsRequired": "0",
+            "isSizeChartMandatory": "0"
+          },
+          "categorySaleAttrList": [],
+          "categoryProductAttrList": []
+        },
+        "response_sha256_canonical": "e0114f7026d49676d7d98086ad37f558083ac3f2b00520f10cef6848f101d555"
+      },
+      {
+        "target_label": "tiktok:LH_MY",
+        "shop_id": "13295169",
+        "site": "MY",
+        "category_id": "852872",
+        "metadata": {
+          "categoryConfig": {
+            "isSuppSizechart": "0",
+            "isSuppCod": true,
+            "productCertifications": [],
+            "isSupportExemptionIdentifierCode": "0",
+            "sizeChartIsSupported": "0",
+            "sizeChartIsRequired": "0",
+            "codIsSupported": "1",
+            "packageDimensionIsRequired": "1",
+            "eprIsRequired": "0",
+            "responsiblePersonIsRequired": "0",
+            "manufacturerIsRequired": "0",
+            "isSizeChartMandatory": "0"
+          },
+          "categorySaleAttrList": [],
+          "categoryProductAttrList": []
+        },
+        "response_sha256_canonical": "0431da862faf068f989d29c45f0e1b8d88fb2d9478b8819f417e19d2241698c7"
+      },
+      {
+        "target_label": "tiktok:LH_TH",
+        "shop_id": "13295228",
+        "site": "TH",
+        "category_id": "852872",
+        "metadata": {
+          "categoryConfig": {
+            "isSuppSizechart": "0",
+            "isSuppCod": true,
+            "productCertifications": [],
+            "isSupportExemptionIdentifierCode": "0",
+            "sizeChartIsSupported": "0",
+            "sizeChartIsRequired": "0",
+            "codIsSupported": "1",
+            "packageDimensionIsRequired": "0",
+            "eprIsRequired": "0",
+            "responsiblePersonIsRequired": "0",
+            "manufacturerIsRequired": "0",
+            "isSizeChartMandatory": "0"
+          },
+          "categorySaleAttrList": [],
+          "categoryProductAttrList": []
+        },
+        "response_sha256_canonical": "0f03024397fec8d8baa4b2f708c2e34db56560e31aeee868e83c01122b3a066f"
+      },
+      {
+        "target_label": "tiktok:LH_VN",
+        "shop_id": "13295291",
+        "site": "VN",
+        "category_id": "852872",
+        "metadata": {
+          "categoryConfig": {
+            "isSuppSizechart": "0",
+            "isSuppCod": true,
+            "productCertifications": [],
+            "isSupportExemptionIdentifierCode": "0",
+            "sizeChartIsSupported": "0",
+            "sizeChartIsRequired": "0",
+            "codIsSupported": "1",
+            "packageDimensionIsRequired": "0",
+            "eprIsRequired": "0",
+            "responsiblePersonIsRequired": "0",
+            "manufacturerIsRequired": "0",
+            "isSizeChartMandatory": "0"
+          },
+          "categorySaleAttrList": [],
+          "categoryProductAttrList": []
+        },
+        "response_sha256_canonical": "7c33bc127a54a697828d200e4b299739f2c16e62a650864669003c6668203d45"
+      },
+      {
+        "target_label": "tiktok:GB",
+        "shop_id": "10204699",
+        "site": "GB",
+        "category_id": "852872",
+        "metadata": {
+          "categoryConfig": {
+            "isSuppSizechart": "0",
+            "isSuppCod": false,
+            "productCertifications": [],
+            "isSupportExemptionIdentifierCode": "0",
+            "sizeChartIsSupported": "0",
+            "sizeChartIsRequired": "0",
+            "codIsSupported": "0",
+            "packageDimensionIsRequired": "0",
+            "eprIsRequired": "0",
+            "responsiblePersonIsRequired": "0",
+            "manufacturerIsRequired": "0",
+            "isSizeChartMandatory": "0"
+          },
+          "categorySaleAttrList": [],
+          "categoryProductAttrList": [
+            {
+              "attrId": "102255",
+              "name": "Batch number",
+              "attributeNameAlias": "生产批次号",
+              "attributeType": 3,
+              "isMandatory": true,
+              "isMultipleSelected": false,
+              "isCustomized": true,
+              "valueDataFormat": null,
+              "isCertificationAttr": false,
+              "requirementConditions": null,
+              "valueIdAndRequiredAttrIdsMap": null,
+              "valueIdAndRequiredCertificationIdsMap": null,
+              "values": [
+                {
+                  "id": "1000256",
+                  "name": "1",
+                  "valueNameAlias": "1"
+                }
+              ],
+              "optionalRegions": [],
+              "requiredRegions": []
+            }
+          ]
+        },
+        "response_sha256_canonical": "7bac7012b183343eb2cce1c2887b55e54c96e274e68750b72256dd0386beb987"
+      }
+    ]
+  },
+  "ozon": {
+    "category_path": [
+      {
+        "id": "17027494",
+        "name": "House & Garden"
+      },
+      {
+        "id": "17027907",
+        "name": "Cooking Accessories"
+      },
+      {
+        "id": "92404",
+        "name": "Napkin Holder"
+      }
+    ],
+    "description_category_id": 17027907,
+    "type_id": 92404,
+    "type_name": "Napkin Holder",
+    "disabled": false,
+    "attributes": [
+      {
+        "is_collection": false,
+        "group_id": 0,
+        "attribute_complex_id": 0,
+        "is_required": true,
+        "dictionary_id": 1960,
+        "group_name": "",
+        "type": "String",
+        "description": "Select the most suitable product type from the list. Types are included in the distribution of products by categories on the Ozon website. To correctly specify the type, find products similar to yours on the Ozon website and specify the same type in this field.",
+        "category_dependent": true,
+        "is_aspect": false,
+        "max_value_count": 0,
+        "name": "Type",
+        "id": 8229
+      },
+      {
+        "is_collection": false,
+        "group_id": 1,
+        "attribute_complex_id": 0,
+        "is_required": true,
+        "dictionary_id": 28732849,
+        "group_name": "General",
+        "type": "String",
+        "description": "Brand name under which the product was manufactured. If the product does not have a brand, use the \"No brand\" value.",
+        "category_dependent": true,
+        "is_aspect": false,
+        "max_value_count": 0,
+        "name": "Brand",
+        "id": 85
+      },
+      {
+        "is_collection": false,
+        "group_id": 0,
+        "attribute_complex_id": 0,
+        "is_required": true,
+        "dictionary_id": 0,
+        "group_name": "",
+        "type": "String",
+        "description": "Fill in this field with any matching values on the products you want to merge. Use different values if the products need to be separated. Merging will occur provided that the products have the same Type and Brand. and at least one variable characteristic is filled in differently for all products in the grouping",
+        "category_dependent": false,
+        "is_aspect": false,
+        "max_value_count": 0,
+        "name": "Model name (to be combined into a single product card)",
+        "id": 9048
+      }
+    ],
+    "dictionaries": {
+      "85": {
+        "result": [
+          {
+            "id": 126745801,
+            "value": "Нет бренда",
+            "info": "Товар не имеет бренда",
+            "picture": ""
+          }
+        ]
+      },
+      "8229": {
+        "result": [
+          {
+            "id": 92404,
+            "value": "Napkin Holder",
+            "info": "",
+            "picture": ""
+          }
+        ]
+      }
+    }
+  }
+}

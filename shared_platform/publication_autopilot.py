@@ -937,6 +937,61 @@ def compile_release_preview(
     return candidate
 
 
+def _r3_candidate_budget_source(snapshot, evidence, targets):
+    """Only a bound R3 preview may propose limits for its sole final review.
+
+    This is not execution authority. Approved snapshots use their original
+    compiler and persisted native decisions compare the exact saved limits.
+    """
+    if not isinstance(evidence, Mapping):
+        return None
+    source = evidence.get('marketplace_candidate_budget_source')
+    if source is None:
+        return None
+    bridge = evidence.get('publication_bridge') or {}
+    common = bridge.get('common_stage') or {}
+    if (not isinstance(source, Mapping)
+            or source.get('schema_version') != 'r3-marketplace-candidate-budget-source/v1'
+            or source.get('offer_id') != snapshot.get('offer_id')
+            or source.get('plan_id') != snapshot.get('plan_id')
+            or not str(snapshot.get('plan_id') or '').startswith('r3-marketplace:'+str(snapshot.get('offer_id'))+':')
+            or source.get('snapshot_digest') != snapshot.get('snapshot_digest')
+            or source.get('target_labels') != [r['target_label'] for r in targets]
+            or bridge.get('status') != 'MIAOSHOU_VERIFIED'
+            or (bridge.get('miaoshou_sync') or {}).get('verified') is not True
+            or not source.get('common_plan_id') or not source.get('common_run_id')
+            or common.get('plan_id') != source['common_plan_id']
+            or common.get('run_id') != source['common_run_id']):
+        raise PublicationAutopilotContractError('R3 candidate budget source conflicts')
+    frozen = source.get('frozen_candidate_facts')
+    if frozen is not None and (not isinstance(frozen, Mapping)
+            or frozen.get('plan_id') != snapshot.get('plan_id')
+            or frozen.get('offer_id') != snapshot.get('offer_id')
+            or frozen.get('target_labels') != source['target_labels']):
+        raise PublicationAutopilotContractError('R3 frozen candidate budget identity conflicts')
+    return source
+
+
+def _r3_target_mutations(snapshot, platform, labels):
+    """Finite original adapter operations; no technical retry allowance."""
+    result = {}
+    base = tuple((snapshot.get('product') or {}).get('images') or [])
+    for label in labels:
+        if platform == 'TIKTOK':
+            ops = {'claim_draft': 1, 'save_draft': 1, 'publish_target': 1}
+        elif platform == 'SHOPEE':
+            ops = {'create_publish_task': 1, 'update_description_media': 1, 'list_regional_item': 1}
+            if label.split(':', 1)[1] in {'MY', 'TH', 'VN'}:
+                ops['update_regional_copy'] = 1
+            images = tuple(_target_images(snapshot, label))
+            if images != base:
+                ops.update(upload_regional_image=len(images), update_regional_images=1)
+        else:
+            ops = {}
+        result[label] = ops
+    return result
+
+
 def _compile_release_facts(
     snapshot: Mapping[str, Any], *, policy: Mapping[str, Any] | None,
     incident_registry: Mapping[str, Any] | None, platform_scope: Sequence[str] | None,
@@ -1244,6 +1299,9 @@ def _compile_release_facts(
             )
         )
 
+    candidate_budget_source = _r3_candidate_budget_source(snapshot, durable_evidence, targets) if preview_only else None
+    frozen_material = candidate_budget_source.get('frozen_candidate_facts') if candidate_budget_source else None
+    new_scope_budget = candidate_budget_source is not None and frozen_material is None
     write_budget: dict[str, dict[str, Any]] = {}
     for platform in requested_platforms:
         count = sum(row["platform"] == platform for row in targets)
@@ -1277,6 +1335,18 @@ def _compile_release_facts(
             # mutation.  This is snapshot-derived so the frozen budget is
             # neither a legacy two-write cap nor an unnecessarily broad limit.
             required_shared = len(skus) + governed_stock_write
+        labels = [row['target_label'] for row in targets if row['platform'] == platform]
+        operations = _r3_target_mutations(snapshot, platform, labels) if new_scope_budget else None
+        per_target_maximum = budget['per_target_maximum']
+        if new_scope_budget:
+            shared_maximum = required_shared
+            per_target_maximum = max((sum(v.values()) for v in operations.values()), default=0)
+        if frozen_material is not None:
+            retained_budget = frozen_material['write_budget'][platform]
+            if retained_budget['target_labels'] != labels:
+                raise PublicationAutopilotContractError('R3 frozen budget target scope conflicts')
+            shared_maximum = retained_budget['shared_maximum']
+            per_target_maximum = retained_budget['per_target_maximum']
         if required_shared > shared_maximum:
             blockers.append(_blocker("write_budget_insufficient",
                 f"{platform} 冻结范围未缓存准备需要最多 {required_shared} 次共享请求，已批准硬上限为 {shared_maximum}；先核对已持久缓存或准备新的授权候选，不能自动扩大旧上限。"))
@@ -1285,13 +1355,34 @@ def _compile_release_facts(
                 row["target_label"] for row in targets if row["platform"] == platform
             ],
             "shared_maximum": shared_maximum,
-            "per_target_maximum": budget["per_target_maximum"],
+            "per_target_maximum": per_target_maximum,
             "required_shared_mutations_uncached": required_shared,
             "shared_budget_basis": "ACTUAL_HTTP_MUTATIONS_CACHED_UPLOADS_ZERO",
             "maximum_confirmed_writes": (
-                shared_maximum + budget["per_target_maximum"] * count
+                shared_maximum + per_target_maximum * count
             ),
         }
+        if new_scope_budget:
+            write_budget[platform]['target_mutation_operations'] = operations
+            write_budget[platform]['budget_origin'] = 'EXACT_NEW_CANDIDATE_UNCACHED_NO_RETRY'
+        elif frozen_material is not None:
+            write_budget[platform] = deepcopy(retained_budget)
+
+    companion_actions = _companion_action_review(snapshot, targets)
+    if new_scope_budget:
+        for action in companion_actions['actions']:
+            if action['action_kind'] == 'OZON_FBS_STOCK_CONVERGENCE':
+                action['write_budget'] = {'maximum_attempts': 1, 'scope': 'OZON_SHARED',
+                    'operation': 'update_stock', 'included_in_publication_shared_maximum': True}
+            if action['action_kind'] == 'POSTPUBLISH_DIRECT_DISCOUNT':
+                action['write_budget'] = {'maximum_attempts': 1, 'scope': action['action_target'],
+                    'no_automatic_retry': True, 'unknown_outcome': 'HOLD_AND_RECONCILE',
+                    'budget_ledger': 'ORIGINAL_ONECLICK_WRITE_OCCURRENCES'}
+                action['execution_adapter_available'] = action['execution_surface'] in {'tiktok_official', 'shopee_official'}
+                if not action['execution_adapter_available']:
+                    action['execution_blocker'] = 'GOVERNED_PROMOTION_TRANSPORT_UNAVAILABLE'
+    elif frozen_material is not None:
+        companion_actions = deepcopy(frozen_material['companion_actions'])
 
     candidate: dict[str, Any] = {
         "schema_version": CANDIDATE_SCHEMA,
@@ -1302,16 +1393,17 @@ def _compile_release_facts(
         "snapshot_digest": digest,
         "policy_id": governed_policy["policy_id"],
         "write_budget_scope": {
-            "kind": "EXACT_OFFER_OVERRIDE" if scoped_budgets is not None else "DEFAULT_POLICY",
-            "offer_id": offer_id if scoped_budgets is not None else None,
-        },
+            "kind": "EXACT_UNAPPROVED_R3_CANDIDATE" if new_scope_budget else ("EXACT_OFFER_OVERRIDE" if scoped_budgets is not None else "DEFAULT_POLICY"),
+            "offer_id": offer_id if scoped_budgets is not None or new_scope_budget else None,
+            **({'plan_id': snapshot['plan_id'], 'target_labels': target_labels} if new_scope_budget else {}),
+        } if frozen_material is None else deepcopy(frozen_material['write_budget_scope']),
         "target_labels": target_labels,
         "platform_scope": list(requested_platforms),
         "variant_count": len(skus),
         "review_manifest": _build_final_review_manifest(
             snapshot, targets, skus, durable_evidence
         ),
-        "companion_actions": _companion_action_review(snapshot, targets),
+        "companion_actions": companion_actions,
         "image_route_checks": {
             "all_targets_complete": bool(targets) and all(
                 row["gallery_count"] > 0

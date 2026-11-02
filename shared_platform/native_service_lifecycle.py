@@ -82,8 +82,6 @@ def installed_native_services(application, http, operations, *, install_new_task
         application._install_service_common_signing_context(config)
         old_boundary, boundary = install_service_boundary(config)
         stack.callback(restore_service_boundary, old_boundary, boundary)
-        stack.callback(close_new_worker)
-        worker = install_explicit_new_task_preparation(operations) if install_new_tasks else None
         final = NativeSoleFinalService(store,
             NativeActorServiceConfig(operations.profile.data_root / 'native-final-owner', 'Kyle'),
             new_decision_execution_enabled=True, operations=operations)
@@ -92,5 +90,10 @@ def installed_native_services(application, http, operations, *, install_new_task
         stack.callback(restore_http)
         http.native_final_review = final
         application._NATIVE_FINAL_SERVICE = final
+        # A resumed task may observe immediately inside worker.start(). Bind
+        # the complete native reader/owner first, and retire the worker before
+        # its final/common dependencies on normal or partial shutdown.
+        stack.callback(close_new_worker)
+        worker = install_explicit_new_task_preparation(operations) if install_new_tasks else None
         yield {'scope': SCOPE, 'worker': worker, 'final': final,
                'legacy_worker_enabled': False, 'historical_task_scan': False}

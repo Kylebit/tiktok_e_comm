@@ -1092,6 +1092,19 @@ def _project_generic_frozen_variant_images(payload,documents,common_plan,common_
     declared=[a for a in plans[0]['generated_assets'] if 'variant_keys' in a]
     if not declared:return
     models={r['variant_key']:r['model_sku'] for r in payload['sku_lineage']['assignment']['model_skus']}
+    single_selection=None
+    if len(models)==1 and len(declared)>1:
+        key=next(iter(models))
+        # A single Model's complete gallery may truthfully declare that every
+        # role applies to it. Applicability is not seven competing SKU heroes.
+        if any(type(a['variant_keys']) is not list or a['variant_keys']!=[key] for a in declared):
+            raise ValueError('GENERIC_FROZEN_VARIANT_ROLE_AMBIGUOUS')
+        covers=[a for a in declared if a['role']=='cover']
+        if len(covers)!=1:
+            raise ValueError('GENERIC_SINGLE_VARIANT_UNIQUE_COVER_REQUIRED')
+        single_selection={'basis':'UNIQUE_FROZEN_COVER_OF_ONE_MODEL',
+            'applicable_roles':[a['role'] for a in declared], 'hero_role':'cover'}
+        declared=covers
     by_key={};proof=[];positions=[];gallery=[r['image_url'] for r in payload['images']]
     for binding in declared:
         keys=binding['variant_keys']
@@ -1120,6 +1133,8 @@ def _project_generic_frozen_variant_images(payload,documents,common_plan,common_
         'r2_identity':validate_r2_identity(documents),'common_plan_id':common_plan['plan_id'],
         'common_payload_digest':common_plan['payload_digest'],'common_run_id':common_run['run_id'],
         'variants':proof,'product_gallery_unchanged':True,'description_routes_unchanged':True}
+    if single_selection is not None:
+        payload['r3_marketplace_binding']['variant_image_projection']['single_variant_role_selection']=single_selection
 
 
 def independent_card_gallery(snapshot, sku, structure):
@@ -1513,6 +1528,16 @@ def marketplace_quality_evidence(snapshot, payload, *, category_store=None, cate
         documents['variant_image_projection'] = deepcopy(binding['variant_image_projection'])
     preflight = build_platform_preview_preflight if snapshot.get('status') == 'NOT_APPROVED' else build_platform_preflight
     documents['platform_preflight'] = preflight(snapshot, evidence=documents)
+    # The original bound producer, not policy defaults for a historical Offer,
+    # supplies the scope for a not-yet-reviewed marketplace candidate. Existing
+    # saved candidate limits are carried verbatim and are never expanded here.
+    documents['marketplace_candidate_budget_source'] = {
+        'schema_version': 'r3-marketplace-candidate-budget-source/v1',
+        'offer_id': payload['product_id'], 'plan_id': payload['plan_id'],
+        'snapshot_digest': digest, 'target_labels': deepcopy(payload['targets']),
+        'common_plan_id': binding['common_plan_id'], 'common_run_id': binding['common_run_id'],
+        'frozen_candidate_facts': deepcopy(binding.get('reviewed_candidate_facts')),
+    }
     return documents
 
 

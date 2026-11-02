@@ -272,7 +272,9 @@ def test_partial_native_initialization_restores_every_owned_stage(monkeypatch, s
     monkeypatch.setattr(native_task_preparation,'install_explicit_new_task_preparation',install_worker)
     class FaultActor:
         def __init__(self,*a,**k):pass
-        def start(self):raise ValueError('OWNED_STARTUP_FAILURE')
+        def start(self):
+            if stage=='actor-start':raise ValueError('OWNED_STARTUP_FAILURE')
+            return self
         def close(self):closed.append('actor')
     monkeypatch.setattr(channel,'NativeSoleFinalService',FaultActor)
     from contextlib import contextmanager
@@ -286,8 +288,8 @@ def test_partial_native_initialization_restores_every_owned_stage(monkeypatch, s
         with lifetime.installed_native_services(app,http,operations):pytest.fail('Fault must not reach service')
     assert all(getattr(app,key) is value for key,value in baseline.items())
     assert not hasattr(http,'native_final_review') and not hasattr(operations,'new_task_worker')
-    if stage in {'worker-start','actor-start'}:assert 'worker' in closed
-    if stage=='actor-start':assert closed[0]=='actor' and closed[1]=='worker'
+    if stage=='worker-start':assert closed[:2]==['worker','actor']
+    if stage=='actor-start':assert closed[0]=='actor' and 'worker' not in closed
     if stage in {'worker-start','actor-start'}:assert closed[-1]==('boundary',True,True)
 
 
@@ -431,3 +433,38 @@ def test_formal_early_setup_failure_closes_listener_and_never_leaves_ready(image
     assert len(captured)==1 and captured[0].socket.fileno()==-1
     assert not Path(config['ready_path']).exists()
     if stage=='runtime':assert operations.worker.stop_event.is_set()
+
+
+def test_explicit_observer_is_started_only_after_complete_final_binding(monkeypatch):
+    from contextlib import contextmanager
+    from shared_platform import native_task_preparation,release_store
+    app=SimpleNamespace(R3_STARTUP_CONFIG=object(),_COMMON_STANDING_POLICY_READER=None,
+        _COMMON_DETAIL_OBSERVER_FACTORY=None,_COMMON_SIGNING_CONTEXT_CONFIG=None,_NATIVE_FINAL_SERVICE=None)
+    for name in ('standing_policy','detail_observer','signing_context'):
+        setattr(app,'_install_service_common_'+name,lambda _:None)
+    @contextmanager
+    def existing():yield SimpleNamespace(execute=lambda _:None)
+    monkeypatch.setattr(release_store,'default_release_store',lambda:SimpleNamespace(_connect_readonly=existing))
+    monkeypatch.setattr(technical,'_schema_installed',lambda _:True)
+    monkeypatch.setattr(final,'check_schema',lambda _:None)
+    monkeypatch.setattr(boundary,'install_service_boundary',lambda _:(None,object()))
+    monkeypatch.setattr(boundary,'restore_service_boundary',lambda *a:None)
+    sequence=[];http=SimpleNamespace();operations=SimpleNamespace(profile=SimpleNamespace(data_root=Path('E:/unused-owned')))
+    class BoundFinal:
+        def __init__(self,*a,**k):self.operations=k['operations'];self.started=False
+        def start(self):self.started=True;sequence.append('final-started');return self
+        def close(self):sequence.append('final-closed')
+    monkeypatch.setattr(channel,'NativeSoleFinalService',BoundFinal)
+    def install(runtime):
+        # Installation starts the real worker immediately. The callback must
+        # already see the service identity, not a transient legacy fallback.
+        assert type(app._NATIVE_FINAL_SERVICE) is BoundFinal
+        assert app._NATIVE_FINAL_SERVICE is http.native_final_review
+        assert app._NATIVE_FINAL_SERVICE.started and app._NATIVE_FINAL_SERVICE.operations is runtime
+        sequence.append('observer-can-start')
+        runtime.new_task_worker=SimpleNamespace(close=lambda:sequence.append('observer-closed'))
+        return runtime.new_task_worker
+    monkeypatch.setattr(native_task_preparation,'install_explicit_new_task_preparation',install)
+    with lifetime.installed_native_services(app,http,operations):
+        assert sequence==['final-started','observer-can-start']
+    assert sequence==['final-started','observer-can-start','observer-closed','final-closed']

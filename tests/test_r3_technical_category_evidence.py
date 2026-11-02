@@ -74,14 +74,38 @@ def _evidence(root, documents, *, signing_config=None):
     return result
 
 
-def _completed(live, monkeypatch, tmp_path):
+def _completed(live, monkeypatch, tmp_path, *, single_variant_gallery=False):
     import test_native_common_retained_review_graph as original
     import test_round1_sidecar_convergence as sidecar
     import test_common_native_preparation_source as preparation
     from owned_wall_sticker_gallery import wall_sticker_gallery, include_homebloom_target
     include_homebloom_target(live)
     old_images = preparation._image_proposal
-    monkeypatch.setattr(preparation, '_image_proposal', lambda: wall_sticker_gallery(old_images()))
+    if single_variant_gallery:
+        old_source = preparation.complete_source
+        def source(value):
+            old_source(value)
+            path = value['root']/'data/new_product_workbench'/f"{value['offer']}.json"
+            state = json.loads(path.read_bytes()); state['review']['category']={'name':'Desktop napkin holder'}
+            state['review']['title']='Owned desktop napkin holder'
+            path.write_bytes(supplement._bytes(state))
+        monkeypatch.setattr(preparation, 'complete_source', source)
+        def image_proposal():
+            value = old_images()
+            state = json.loads((live['root']/'data/new_product_workbench'/f"{live['offer']}.json").read_bytes())
+            key = state['review']['selected_sku_keys'][0]
+            for brand in value['brand_plans']:
+                for index, asset in enumerate(brand['generated_assets']):
+                    asset['role'] = ('cover','product_detail','scene_1','scene_2','scene_3','proportion_evidence','construction_evidence')[index]
+                    asset['variant_keys']=[key]
+                    if index in (5,6):
+                        asset['role_substitution']={'replaces':'size' if index==5 else 'instructions',
+                            'reason':'SOURCE_FACT_UNKNOWN','evidence_basis':'Owned source-visible construction only.',
+                            'unknown_facts_not_asserted':True}
+            return value
+        monkeypatch.setattr(preparation, '_image_proposal', image_proposal)
+    else:
+        monkeypatch.setattr(preparation, '_image_proposal', lambda: wall_sticker_gallery(old_images()))
     old = original._propose_market_inputs
     def propose(*args):
         old(*args)

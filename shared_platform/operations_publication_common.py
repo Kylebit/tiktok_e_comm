@@ -403,12 +403,29 @@ def observe(engine,task,profile,*,server_module=None):
     binding=action.get('receipt_binding') or {}
     if binding.get('adapter')!=ADAPTER:return None
     server=_server(profile,server_module);view=_read(server,task)
-    if _unknown(view):
+    common=view.get('common') or {}
+    from shared_platform.native_sole_final_service import NativeSoleFinalService
+    installed=getattr(server,'_NATIVE_FINAL_SERVICE',None)
+    terminal_native=(type(installed) is NativeSoleFinalService and installed._new_decision_execution_enabled
+        and installed._operations is not None and installed._operations.engine is engine
+        and installed._operations.profile is profile
+        and common.get('status') in {'VERIFIED','RETAINED_TECHNICAL_BASELINE'})
+    if _unknown(view) and not terminal_native:
         engine.observe_reconciliation(task['task_id'],None,'原 COMMON 结果需要对账，不重复提交',action_id=action['action_id'])
         return False
-    common=view.get('common') or {}
     if _verified_binding(task,common,profile)!=binding:raise ValueError('COMMON 审核期间冻结计划或任务范围已变化')
-    if common.get('status')=='READY_TO_SYNC':
+    if terminal_native:
+        # A completed COMMON must not repeat its pre-COMMON wake key for a
+        # different action. Prepare only the local inert final candidate, then
+        # bind the wake-up to its real server-owned review, never the old EDIT.
+        try:_materialize_final(server,task,view)
+        except PostCommonReadinessBlocked:return False
+        view=_read(server,task);common=view.get('common') or {}
+        if _unknown(view) or _verified_binding(task,common,profile)!=binding:return False
+        diagnostic=_post_common_readiness(server,task,view)
+        if diagnostic.get('status')!='READY' or not diagnostic.get('receipt_digest'):return False
+        evidence=diagnostic['receipt_digest']
+    elif common.get('status')=='READY_TO_SYNC':
         plan=common.get('plan') or {}
         if plan.get('status')!='APPROVED' or not plan.get('approval'):return False
         admission=_common_technical_admission(binding,plan,server=server)
@@ -433,7 +450,7 @@ def observe(engine,task,profile,*,server_module=None):
             latest_plan=latest.get('plan') or {}
             if latest_plan.get('status')!='APPROVED' or not latest_plan.get('approval'):return False
             latest_diagnostic=_common_technical_admission(binding,latest_plan,server=server)
-        elif latest.get('status')=='VERIFIED':
+        elif terminal_native or latest.get('status')=='VERIFIED':
             latest_diagnostic=_post_common_readiness(server,task,current)
         else:
             latest_diagnostic=_native_request_readiness(server,task,current)

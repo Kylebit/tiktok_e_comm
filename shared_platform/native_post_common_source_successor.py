@@ -8,6 +8,8 @@ from pathlib import Path
 import json
 import sqlite3
 import subprocess
+from functools import lru_cache
+import ast
 
 from shared_platform.native_frozen_source_successor import _json,_digest,_history,_stamp
 
@@ -19,21 +21,28 @@ def _need(ok,code):
     if not ok:raise ValueError('POST_COMMON_SOURCE_'+code)
 
 
-def _event(db,task_id):
+def _events(db,task_id):
     rows=db.execute('SELECT id,detail_json FROM workbench_events WHERE task_id=? AND event_type=? ORDER BY id',
                     (task_id,EVENT)).fetchall()
-    _need(len(rows)<=1,'MULTIPLE_SUCCESSORS_REJECTED')
-    if not rows:return None,None
-    row=rows[0];envelope=json.loads(row['detail_json'])
-    _need(type(envelope) is dict and set(envelope)=={'record','record_sha256'}
-          and envelope['record_sha256']==_digest(envelope['record']),'RECORD_DIGEST_CHANGED')
-    return row,envelope['record']
+    _need(len(rows)<=2,'MULTIPLE_SUCCESSORS_REJECTED')
+    values=[]
+    for row in rows:
+        envelope=json.loads(row['detail_json'])
+        _need(type(envelope) is dict and set(envelope)=={'record','record_sha256'}
+              and envelope['record_sha256']==_digest(envelope['record']),'RECORD_DIGEST_CHANGED')
+        values.append((row,envelope['record']))
+    return values
+
+
+def _event(db,task_id):
+    values=_events(db,task_id)
+    return values[-1] if values else (None,None)
 
 
 def predecessor_release(db,task_id,current_release):
-    """Select only the prior role; verify() must still validate the full link."""
-    _,record=_event(db,task_id)
-    return record['from_release'] if record is not None else current_release
+    """The original first-frozen role stays before the entire postCOMMON chain."""
+    values=_events(db,task_id)
+    return values[0][1]['from_release'] if values else current_release
 
 
 def _row_ready(row):
@@ -48,7 +57,69 @@ def _row_ready(row):
     return action['receipt_binding']
 
 
-def _common_ready_receipt(db,task_id,binding,retained,*,receipt_key=None,before=None):
+@lru_cache(maxsize=32)
+def _admission(store_path,run_id,digest):
+    # Only immutable bytes addressed by their signed retained digest are cached.
+    # _common still verifies the current HMAC/history/budget on every admission.
+    with sqlite3.connect(Path(store_path).resolve().as_uri()+'?mode=ro',uri=True) as db:
+        db.row_factory=sqlite3.Row;db.execute('PRAGMA query_only=ON')
+        row=db.execute('SELECT * FROM release_runs WHERE run_id=?',(run_id,)).fetchone()
+        _need(row is not None and row['technical_admission_digest']==digest,'COMMON_ADMISSION_CHANGED')
+        from shared_platform.native_common_technical_execution import _binding
+        value=_binding(row)
+        return _json(value)
+
+
+@lru_cache(maxsize=64)
+def _registered_git(root,head):
+    """Historical immutable Git blobs, never a new source's coverage assertion."""
+    def blob(name):return subprocess.check_output(['git','-C',root,'show',head+':'+name])
+    tree=ast.parse(blob('shared_platform/native_common_edit_boundary.py').decode('utf-8-sig'))
+    names=[ast.literal_eval(n.value) for n in tree.body if isinstance(n,ast.Assign)
+           and any(isinstance(t,ast.Name) and t.id=='REGISTERED_SOURCE_PATHS' for t in n.targets)]
+    _need(len(names)==1 and type(names[0]) is tuple and len(names[0])==10,'HISTORICAL_COVERAGE_CONTRACT_CHANGED')
+    _need(all(type(n) is str and not Path(n).is_absolute() and '..' not in Path(n).parts for n in names[0]),
+          'HISTORICAL_COVERAGE_CONTRACT_CHANGED')
+    return tuple((name,blob(name)) for name in names[0])
+
+
+def _source_readiness(db,task_id,accepted,retained,known):
+    prior=db.execute('SELECT id,detail_json FROM workbench_events WHERE task_id=? AND event_type=? AND id<? ORDER BY id DESC',
+                     (task_id,EVENT,accepted['id'])).fetchone()
+    _need(prior is not None,'COMMON_READY_SOURCE_UNPROVEN')
+    envelope=json.loads(prior['detail_json']);record=envelope['record']
+    _need(envelope['record_sha256']==_digest(record),'RECORD_DIGEST_CHANGED')
+    root=record['source']['root'];release=record['to_release']
+    proof={'source_event_id':prior['id'],'source_event_sha256':_digest_bytes(prior['detail_json'].encode()),
+           'root':root,'release':release}
+    blobs=_registered_git(root,release['code_version'])
+    if known is None:
+        from shared_platform.operations_runtime import RuntimeProfile,runtime_matches
+        _need(runtime_matches(RuntimeProfile(Path(root),Path(root),release['environment'],
+                    release['code_version'],release['manifest_digest'])),'ORIGINAL_COVERAGE_SOURCE_NOT_CURRENT')
+        files={name:_digest_bytes((Path(root)/name).read_bytes()) for name,_ in blobs}
+    else:
+        _need(set(known)=={*proof,'files','registered_source_digest','coverage_digest'}
+              and all(known[k]==v for k,v in proof.items()),'COMMON_READY_SOURCE_CHANGED')
+        files=known['files']
+    _need(type(files) is dict and set(files)=={name for name,_ in blobs},'COMMON_READY_SOURCE_FILES_CHANGED')
+    for name,raw in blobs:
+        lf=raw.replace(b'\r\n',b'\n')
+        _need(files[name] in {_digest_bytes(lf),_digest_bytes(lf.replace(b'\n',b'\r\n'))},
+              'COMMON_READY_SOURCE_FILES_CHANGED')
+    admission=json.loads(_admission(retained['store_path'],retained['completion']['run_id'],retained['technical_admission_digest']))
+    registered=_digest(files)
+    coverage=_digest({'schema_version':'native-service-common-path-coverage/v1',
+        'scope':'THIS_SERVICE_PREPARED_BASELINE_ONLY','registered_source_digest':registered,
+        'plan_id':admission['plan_id'],'preparation_root_id':admission['preparation_root_id'],
+        'mutation_digest':admission['mutation_sha256'],'observed_schema':'EXACT_NATIVE_TECHNICAL_SCHEMA',
+        'provider_edit_permission':'UNKNOWN','external_offer_history':'NOT_ASSERTED'})
+    proof.update(files=files,registered_source_digest=registered,coverage_digest=coverage)
+    _need(known is None or proof==known,'COMMON_READY_SOURCE_CHANGED')
+    return _digest({**admission,'coverage_digest':coverage}),proof
+
+
+def _common_ready_receipt(db,task_id,binding,retained,*,receipt_key=None,before=None,known=None):
     """Only the original, verified COMMON technical wake-up is non-final.
 
     Reproduce the original producer's two different JSON encodings. This is
@@ -59,8 +130,13 @@ def _common_ready_receipt(db,task_id,binding,retained,*,receipt_key=None,before=
     clause='task_id=?';args=[task_id]
     if receipt_key is not None:clause+=' AND receipt_key=?';args.append(receipt_key)
     receipts=db.execute('SELECT * FROM workbench_receipts WHERE '+clause,args).fetchall()
-    _need(len(receipts)<=1,'UNRECOGNIZED_ENGINE_RECEIPT')
+    _need(len(receipts)<=2,'UNRECOGNIZED_ENGINE_RECEIPT')
     if not receipts:return None
+    if receipt_key is None and len(receipts)==2:
+        proofs=[_common_ready_receipt(db,task_id,binding,retained,receipt_key=r['receipt_key'],before=before,
+                    known=next((p for p in (known if isinstance(known,list) else [])
+                                if p['receipt']['receipt_key']==r['receipt_key']),None)) for r in receipts]
+        return sorted(proofs,key=lambda p:p['accepted_event_id'])
     receipt=dict(receipts[0]);events=db.execute(
         'SELECT id,event_type,detail_json FROM workbench_events WHERE task_id=?'+
         (' AND id<?' if before is not None else '')+' ORDER BY id',
@@ -77,17 +153,23 @@ def _common_ready_receipt(db,task_id,binding,retained,*,receipt_key=None,before=
           'COMMON_READY_ORIGINAL_BINDING_CHANGED')
     status='RETAINED_TECHNICAL_BASELINE';evidence=retained['technical_admission_digest']
     key='common-ready:'+common_digest([binding,status,evidence])
+    coverage=None
+    if receipt['receipt_key']!=key:
+        evidence,coverage=_source_readiness(db,task_id,accepted,retained,(known or {}).get('readiness_source'))
+        key='common-ready:'+common_digest([binding,status,evidence])
     original={'receipt_id':key,'action_id':action['action_id']}
     _need(receipt['receipt_key']==key and receipt['digest']==_digest_bytes(receipt_json(original).encode()),
           'UNRECOGNIZED_ENGINE_RECEIPT')
-    return {'receipt':receipt,'action_event_id':pending['id'],
+    proof={'receipt':receipt,'action_event_id':pending['id'],
             'action_event_sha256':_digest_bytes(pending['detail_json'].encode()),
             'accepted_event_id':accepted['id'],
             'accepted_event_sha256':_digest_bytes(accepted['detail_json'].encode()),
             'common_status':status,'technical_admission_digest':evidence}
+    if coverage is not None:proof['readiness_source']=coverage
+    return proof
 
 
-def _ops(db,row,retained):
+def _ops(db,row,retained,known=None):
     from shared_platform.native_unfrozen_source_successor import _count
     from shared_platform.workbench_store import _json as resource_json
     task_id=row['task_id'];scope=json.loads(row['scope_json'])
@@ -102,7 +184,7 @@ def _ops(db,row,retained):
             _need(not db.execute('SELECT 1 FROM workbench_domain_locks WHERE resource=?',(resource,)).fetchone()
                   and not db.execute('SELECT 1 FROM workbench_resource_locks WHERE resource=? AND task_id<>?',
                                      (resource,task_id)).fetchone(),'COMPETING_PRODUCT_WRITER')
-    receipt=_common_ready_receipt(db,task_id,json.loads(row['action_json'])['receipt_binding'],retained)
+    receipt=_common_ready_receipt(db,task_id,json.loads(row['action_json'])['receipt_binding'],retained,known=known)
     return values,receipt
 
 
@@ -161,7 +243,7 @@ def _release_zero(store,offer,common_plan_id):
     return values
 
 
-def observe(engine,task_id,*,profile,release_store):
+def observe(engine,task_id,*,profile,release_store,retained_receipts=None):
     from shared_platform.operations_runtime import RuntimeProfile
     from shared_platform.workbench_engine import WorkbenchEngine
     from shared_platform.release_store import ReleaseStore,default_release_store
@@ -175,7 +257,7 @@ def observe(engine,task_id,*,profile,release_store):
                               'manifest_digest':profile.manifest_digest},'EXACT_NORMAL_BINDINGS_REQUIRED')
     with engine.readonly_snapshot() as db:
         row=engine._row(db,task_id);binding=_row_ready(row)
-        _need(_event(db,task_id)[1] is None,'ALREADY_REGISTERED')
+        _need(len(_events(db,task_id))<2,'ALREADY_REGISTERED')
         original=verified_explicit_origin(db,row,engine.release)
         old=db.execute('SELECT id,detail_json FROM workbench_events WHERE task_id=? AND event_type=?',
                        (task_id,first.EVENT)).fetchall()
@@ -192,7 +274,7 @@ def observe(engine,task_id,*,profile,release_store):
     with engine.readonly_snapshot() as db:
         latest=engine._row(db,task_id)
         _need(dict(latest)==dict(row) and _digest(_history(db,task_id))==history,'ORIGINAL_TASK_CHANGED_DURING_OBSERVATION')
-        ops,receipt=_ops(db,latest,retained)
+        ops,receipt=_ops(db,latest,retained,retained_receipts)
     return {'task_id':task_id,'source_key':original['source_key'],'request_digest':row['request_digest'],
         'scope':task['scope'],'from_release':engine.release,'checkpoint_raw':row['checkpoint_json'],
         'steps_raw':row['steps_json'],'action_raw':row['action_json'],'history_sha256':history,
@@ -202,9 +284,23 @@ def observe(engine,task_id,*,profile,release_store):
 
 
 def verify(db,row,original,grant,from_release,to_release):
-    """Recorded pre-final boundary remains valid during legitimate execution."""
-    event,record=_event(db,row['task_id'])
-    if record is None:return from_release
+    """At most two exact same-phase links, preserving every original record."""
+    values=_events(db,row['task_id'])
+    if not values:return from_release
+    previous=from_release;baseline=values[0][1]
+    for event,record in values:
+        _need(record['from_release']==previous,'SOURCE_LINEAGE_CHANGED')
+        _need(record['common']==baseline['common']
+              and {k:v for k,v in record['predecessors'].items() if k!='post_common'}==
+                  {k:v for k,v in baseline['predecessors'].items() if k!='post_common'},
+              'ORIGINAL_SEALED_PREDECESSORS_CHANGED')
+        previous=_verify_link(db,row,original,grant,event,record,previous,record['to_release'])
+    _need(previous==to_release,'SOURCE_LINEAGE_CHANGED')
+    return previous
+
+
+def _verify_link(db,row,original,grant,event,record,from_release,to_release):
+    """Each admission's own original history/CAS proof remains mandatory."""
     _need(set(record)=={'schema_version','task_id','source_key','request_digest','scope','from_release','to_release',
         'checkpoint_raw','steps_raw','action_raw','history_sha256','original_frozen_event_id','original_frozen_event_sha256',
         'predecessors','common','common_ready_receipt','zero_final','source','execution_authority'} and record['schema_version']==SCHEMA
@@ -227,9 +323,11 @@ def verify(db,row,original,grant,from_release,to_release):
           'REGISTRATION_WAS_NOT_PREFINAL')
     pending=json.loads(record['action_raw']);common=record['common'];r1=record['predecessors']['images']['native_r1']
     if record['common_ready_receipt'] is not None:
-        _need(_common_ready_receipt(db,row['task_id'],pending['receipt_binding'],common,
-            receipt_key=record['common_ready_receipt']['receipt']['receipt_key'],before=event['id'])==record['common_ready_receipt'],
-            'ORIGINAL_COMMON_READY_RECEIPT_CHANGED')
+        proofs=record['common_ready_receipt'] if isinstance(record['common_ready_receipt'],list) else [record['common_ready_receipt']]
+        for proof in proofs:
+            _need(_common_ready_receipt(db,row['task_id'],pending['receipt_binding'],common,
+                receipt_key=proof['receipt']['receipt_key'],before=event['id'],known=proof)==proof,
+                'ORIGINAL_COMMON_READY_RECEIPT_CHANGED')
     steps=json.loads(record['steps_raw'])
     _need(pending['kind']=='observe' and pending['receipt_binding']['adapter']=='publication-common/v1'
           and pending['receipt_binding']['plan_id']==common['plan_id']
@@ -264,10 +362,13 @@ def register(engine,task_id,*,profile,release_store,expected):
           and profile.environment=='stable' and runtime_matches(profile)
           and engine.release=={'code_version':profile.version,'environment':profile.environment,
                               'manifest_digest':profile.manifest_digest},'CURRENT_PINNED_SOURCE_REQUIRED')
-    with engine.readonly_snapshot() as db:_need(_event(db,task_id)[1] is None,'ALREADY_REGISTERED')
+    with engine.readonly_snapshot() as db:
+        _need(len(_events(db,task_id))<2
+              and json.loads(engine._row(db,task_id)['version_json'])==expected['from_release'],'ALREADY_REGISTERED')
     old=expected['from_release'];producer=RuntimeProfile(profile.root,profile.data_root,
         old['environment'],old['code_version'],old['manifest_digest'])
-    _need(observe(WorkbenchEngine(engine.store.path,old),task_id,profile=producer,release_store=release_store)==expected,
+    _need(observe(WorkbenchEngine(engine.store.path,old),task_id,profile=producer,release_store=release_store,
+                  retained_receipts=expected['common_ready_receipt'])==expected,
           'EXPECTED_ORIGINAL_OBSERVATION_CHANGED')
     git=lambda *args:subprocess.check_output(['git','-C',str(profile.root),*args],text=True).strip()
     git('merge-base','--is-ancestor',old['code_version'],profile.version)
@@ -289,7 +390,8 @@ def register(engine,task_id,*,profile,release_store,expected):
                   and _digest(_history(db,task_id))==expected['history_sha256'],'FINAL_ORIGINAL_CAS_CHANGED')
             from shared_platform.native_unfrozen_source_successor import verified_explicit_origin
             verified_explicit_origin(db,row,old)
-            _need(_ops(db,row,expected['common'])==(expected['zero_final']['operations'],expected['common_ready_receipt']),'FINAL_EFFECTS_CHANGED')
+            _need(_ops(db,row,expected['common'],expected['common_ready_receipt'])==
+                  (expected['zero_final']['operations'],expected['common_ready_receipt']),'FINAL_EFFECTS_CHANGED')
             _need(all(_stamp(p)==s for p,s in stamps.items()),'OBSERVED_GENERATION_CHANGED')
             record={**expected,'schema_version':SCHEMA,'to_release':engine.release,'execution_authority':False,
                 'source':{'root':str(profile.root),'from_head':old['code_version'],'to_head':profile.version,

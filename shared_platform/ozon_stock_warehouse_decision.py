@@ -21,6 +21,7 @@ from shared_platform.publication_stock_policy import default_publication_stock_p
 WAREHOUSE_LIST_PATH = "/v2/warehouse/list"
 DECISION_SCHEMA = "ozon-stock-warehouse-decision/v1"
 RECEIPT_SCHEMA = "ozon-stock-warehouse-readback/v1"
+SKU_DERIVATION_SCHEMA = "ozon-stock-warehouse-sku-only-derivation/v1"
 SELECTION_POLICY = "EXACT_UNIQUE_ACTIVE_OR_CREATED_NON_KGT"
 PostBound = Callable[..., Mapping[str, Any]]
 
@@ -101,6 +102,12 @@ def validate_warehouse_receipt(receipt: Mapping[str, Any], *, offer_id: str,
                                round1: Mapping[str, Any],
                                pinned: PinnedOzonCredentials) -> dict[str, Any]:
     """Reject a persisted receipt from another Offer, R1 revision or account."""
+    if isinstance(receipt, Mapping) and receipt.get('schema_version') == SKU_DERIVATION_SCHEMA:
+        expected = derive_sku_only_warehouse_receipt(receipt.get('original_receipt'),
+            old_round1=receipt.get('original_round1_snapshot'), new_round1=round1, pinned=pinned)
+        if dict(receipt) != expected or expected['offer_id'] != offer_id:
+            raise ValueError('OZON_SKU_ONLY_WAREHOUSE_DERIVATION_CHANGED')
+        return expected
     round1_digest, stock_policy = _lineage(offer_id, round1, pinned)
     if not isinstance(receipt, Mapping):
         raise ValueError("OZON_WAREHOUSE_RECEIPT_INVALID")
@@ -133,4 +140,38 @@ def validate_warehouse_receipt(receipt: Mapping[str, Any], *, offer_id: str,
     return deepcopy(dict(receipt))
 
 
-__all__ = ["resolve_warehouse_decision", "validate_warehouse_receipt"]
+def derive_sku_only_warehouse_receipt(original_receipt, *, old_round1, new_round1, pinned):
+    """Rebind the original account/stock observation locally; never repeat GET.
+
+    The original official receipt and its R1 remain literal nested evidence.
+    This is a technical identity derivation, not a fresh warehouse observation.
+    """
+    if not isinstance(old_round1, Mapping) or not isinstance(new_round1, Mapping):
+        raise ValueError('OZON_SKU_ONLY_ORIGINAL_ROUND1_REQUIRED')
+    if not isinstance(original_receipt, Mapping) or original_receipt.get('schema_version') != RECEIPT_SCHEMA:
+        raise ValueError('OZON_SKU_ONLY_ORIGINAL_RECEIPT_REQUIRED')
+    offer = new_round1.get('offer_id')
+    original = validate_warehouse_receipt(original_receipt, offer_id=offer, round1=old_round1, pinned=pinned)
+    new_digest, _ = _lineage(offer, new_round1, pinned)
+    correction = new_round1.get('sku_only_correction') or {}
+    old_facts = old_round1.get('fact_snapshot') or {}
+    new_facts = new_round1.get('fact_snapshot') or {}
+    old_sku = (old_facts.get('product_facts') or {}).get('seller_sku')
+    new_sku = (new_facts.get('product_facts') or {}).get('seller_sku')
+    from shared_platform.sku_only_publication_correction import replace_sku_identity
+    if (not re.fullmatch(r'sha256:[0-9a-f]{64}', str(correction.get('correction_digest') or ''))
+            or correction.get('original_snapshot_digest') != old_round1['snapshot_digest']
+            or old_sku == new_sku
+            or replace_sku_identity(old_facts, old_sku, new_sku) != new_facts
+            or old_round1.get('canonical_targets') != new_round1.get('canonical_targets')
+            or old_round1.get('publication_stock_policy') != new_round1.get('publication_stock_policy')):
+        raise ValueError('OZON_SKU_ONLY_WAREHOUSE_SCOPE_CHANGED')
+    receipt = {'schema_version': SKU_DERIVATION_SCHEMA, 'offer_id': offer,
+        'round1_snapshot_digest': new_digest, 'original_round1_snapshot': deepcopy(dict(old_round1)),
+        'original_receipt': original, 'correction_digest': correction['correction_digest'],
+        'decision': deepcopy(original['decision']), 'provider_reads_added': 0,
+        'observation_kind': 'RETAINED_ORIGINAL_OFFICIAL_WAREHOUSE_NO_NEW_GET'}
+    return {**receipt, 'receipt_digest': canonical_digest(receipt)}
+
+
+__all__ = ["resolve_warehouse_decision", "validate_warehouse_receipt", "derive_sku_only_warehouse_receipt"]

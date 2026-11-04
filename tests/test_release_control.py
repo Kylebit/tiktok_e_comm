@@ -474,6 +474,44 @@ def test_formal_candidate_is_generated_from_catalog_and_all_reservations(tmp_pat
     assert governance["reservation_count"] == 1
 
 
+def test_new_skus_follow_full_catalog_and_active_reservation_high_water(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO products VALUES ('0986')")
+        connection.execute("INSERT INTO shopee_products VALUES ('9456')")
+    reserved = root / "data/new_product_workbench/4000000001.json"
+    _write_json(reserved, {"offer_id": "4000000001", "review": {
+        "seller_sku": "0989", "fields_locked": True,
+    }})
+    arguments = dict(root=root, database_path=database,
+        report_store_path=root / "data/missing-orbit.db", offer_id="3828811808")
+    single = build_release_dashboard(**arguments)["product"]
+    assert single["seller_sku_candidate"] == "9457"
+    assert single["seller_sku_governance"]["suggested_sku_range"] == ["9457"]
+
+    state_path = root / "data/new_product_workbench/3828811808.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["review"]["selected_sku_keys"] = ["one", "two", "three"]
+    _write_json(state_path, state)
+    multiple = build_release_dashboard(**arguments)["product"]
+    assert multiple["seller_sku_governance"]["suggested_sku_range"] == ["9457", "9458", "9459"]
+
+    # A higher active reservation advances the namespace; never fill its holes.
+    _write_json(reserved, {"offer_id": "4000000001", "review": {
+        "seller_sku": "9458", "fields_locked": True,
+    }})
+    occupied = build_release_dashboard(**arguments)["product"]
+    assert occupied["seller_sku_candidate"] == "9459"
+    assert occupied["seller_sku_governance"]["suggested_sku_range"] == ["9459", "9460", "9461"]
+
+    # An explicitly authorized B alias retains its full identity and tail.
+    state["review"].update(seller_sku="999456", seller_sku_authority="explicit_same_store_ab_alias")
+    _write_json(state_path, state)
+    alias = build_release_dashboard(**arguments)["product"]
+    assert alias["seller_sku_candidate"] == "999456"
+    assert alias["seller_sku_governance"]["allocation_source"] == "explicit_same_store_ab_alias"
+
+
 def test_locked_product_keeps_its_approved_seller_sku(tmp_path):
     root, database = _release_fixture(tmp_path)
     state_path = (

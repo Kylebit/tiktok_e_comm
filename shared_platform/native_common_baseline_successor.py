@@ -156,6 +156,8 @@ def retained_run_ids(decision):
 
 
 def check_preimage(store,db,payload,current_response):
+    from shared_platform.sku_only_publication_correction import check_common_preimage
+    check_common_preimage(store, db, payload, current_response)
     decision=context(store,db,payload)
     if decision and _digest((current_response.get('data') or {}).get('editCommonCollectBoxDetail'))!=decision['current_detail_sha256']:
         _fail('COMMON_BASELINE_SUCCESSOR_OFFICIAL_PREIMAGE_CHANGED')

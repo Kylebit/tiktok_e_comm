@@ -442,6 +442,17 @@ def projection(document):
 def status(server, offer, reference=None, request_id=None):
     document = read_preparation(offer, reference, request_id)
     from modules.sourcing import new_product_workbench as workbench
+    if document.get('sku_only_correction') is not None:
+        from shared_platform.sku_only_publication_correction import verify_generation
+        record = verify_generation(default_release_store(), reports_root=rounds.REPORTS_ROOT, offer_id=offer)
+        state = workbench.load_state(offer)
+        snapshot = rounds.validate_round2_input(offer, state)
+        if (record is None or document['sku_only_correction']['correction_digest'] != record['correction_digest']
+                or state['product_approval']['round1_prepared_reference'] != document['reference']
+                or digest(document['packet']) != snapshot['first_review_digest']):
+            raise Round1WorkspaceError('SKU_CORRECTION_PREPARATION_CHANGED')
+        return {**projection(document), 'status': 'FROZEN', 'snapshot': snapshot,
+                'current_revision': state['_revision'], 'persisted_readback': True}
     observed = workbench.load_state(offer)
     technical = (observed.get('product_approval') or {}).get('approved_by') == rounds.AUTOPILOT_ACTOR
     decision = None

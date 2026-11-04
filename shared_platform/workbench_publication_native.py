@@ -42,7 +42,8 @@ def _scope(task):
 
 def _report_dir(profile, offer):
     from shared_platform import publication_rounds
-    expected = Path(profile.root) / 'reports/product-preparation' / offer
+    from shared_platform.sku_only_publication_correction import report_directory
+    expected = report_directory(Path(profile.root) / 'reports/product-preparation', offer)
     actual = publication_rounds.report_dir(offer)
     if actual.resolve() != expected.resolve() or actual.is_symlink():
         raise ValueError('NATIVE_REPORT_ROOT_CONFLICT')
@@ -148,6 +149,11 @@ def _task_owns_snapshot(task, profile, *, offer, targets, prepared_reference, sn
 
 def read_frozen(task, profile):
     """Return only the actual still-current domain snapshot, or no approval."""
+    if (task.get('checkpoint') or {}).get('sku_only_correction') is not None:
+        from shared_platform.sku_only_publication_correction import read_frozen as read_correction
+        from shared_platform.release_store import default_release_store
+        _server(profile)
+        return read_correction(task, profile, default_release_store())
     from shared_platform.original_prepared_continuation import configured_original_continuation
     continuation = configured_original_continuation((task.get('scope') or {}).get('offer_id'))
     if continuation is not None:
@@ -319,7 +325,7 @@ class NativeR2PreparedReviewReader:
                 or Path(reports_root).resolve() != root.resolve()
                 or snapshot.get('snapshot_digest') != frozen['snapshot_digest']):
             raise ValueError('NATIVE_R2_PREPARED_SOURCE_CONFLICT')
-        path = root / offer_id / 'first-review.json'
+        path = _report_dir(self.profile, offer_id) / 'first-review.json'
         require_local_path(path, root=root)
         if json.loads(path.read_bytes()) != current_review:
             raise ValueError('NATIVE_R2_CURRENT_REVIEW_CHANGED')

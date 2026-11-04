@@ -127,3 +127,32 @@ def test_reloaded_receipt_rejects_offer_account_policy_and_decision_drift():
     with pytest.raises(ValueError, match="OZON_WAREHOUSE_RECEIPT_IDENTITY_DRIFTED"):
         validate_warehouse_receipt(receipt, offer_id=source["offer_id"], round1=source,
                                    pinned=pinned("98765"))
+
+
+def test_sku_only_derivation_retains_original_warehouse_without_another_get():
+    from shared_platform.ozon_stock_warehouse_decision import derive_sku_only_warehouse_receipt
+    source = round1()
+    source['fact_snapshot']['product_facts'] = {
+        'seller_sku': '0990', 'purchase_cost_cny': 13, 'weight_kg': 0.3}
+    source['snapshot_digest'] = canonical_digest({k: v for k, v in source.items() if k != 'snapshot_digest'})
+    calls = []
+    original = resolve_warehouse_decision(offer_id=source['offer_id'], round1=source,
+        pinned=pinned(), post_bound=official([{'warehouse_id': 71, 'status': 'active', 'is_kgt': False}], calls))
+    retained = deepcopy(original)
+    corrected = deepcopy(source)
+    corrected['fact_snapshot']['product_facts']['seller_sku'] = '9457'
+    corrected['sku_only_correction'] = {'correction_digest': 'sha256:' + 'b' * 64,
+        'original_snapshot_digest': source['snapshot_digest']}
+    corrected['snapshot_digest'] = canonical_digest({k: v for k, v in corrected.items() if k != 'snapshot_digest'})
+    with pytest.raises(ValueError, match='OZON_WAREHOUSE_RECEIPT_IDENTITY_DRIFTED'):
+        validate_warehouse_receipt(original, offer_id=source['offer_id'], round1=corrected, pinned=pinned())
+    derived = derive_sku_only_warehouse_receipt(original, old_round1=source, new_round1=corrected, pinned=pinned())
+    assert validate_warehouse_receipt(derived, offer_id=source['offer_id'], round1=corrected, pinned=pinned()) == derived
+    assert derived['original_receipt'] == original == retained
+    assert derived['decision'] == original['decision'] and derived['provider_reads_added'] == 0
+    assert len(calls) == 1  # The original read only; derivation has no transport.
+    changed = deepcopy(corrected)
+    changed['fact_snapshot']['product_facts']['purchase_cost_cny'] = 14
+    changed['snapshot_digest'] = canonical_digest({k: v for k, v in changed.items() if k != 'snapshot_digest'})
+    with pytest.raises(ValueError, match='OZON_SKU_ONLY_WAREHOUSE_SCOPE_CHANGED'):
+        derive_sku_only_warehouse_receipt(original, old_round1=source, new_round1=changed, pinned=pinned())

@@ -5,6 +5,8 @@ append-only plus a version CAS, not an adoption, new POST or commerce grant.
 Old frozen inputs, paid entries, task key and all earlier source links remain.
 """
 from collections import Counter
+from contextlib import contextmanager, ExitStack
+from contextvars import ContextVar
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -16,6 +18,19 @@ EVENT='native_frozen_predecessor_source_successor'
 SCHEMA='native-frozen-predecessor-source-successor/v1'
 MAX_FILES=1024
 MAX_BYTES=256*1024*1024
+_OBSERVED_PRODUCER=ContextVar('native_frozen_observed_producer',default=None)
+
+
+@contextmanager
+def _retained_producer(task,profile):
+    token=_OBSERVED_PRODUCER.set((task['task_id'],str(profile.root),task['version']))
+    try:yield
+    finally:_OBSERVED_PRODUCER.reset(token)
+
+
+def observes_retained_producer(task,profile):
+    """Only the native observer's already-checked historical producer read."""
+    return _OBSERVED_PRODUCER.get()==(task['task_id'],str(profile.root),task['version'])
 
 
 def _json(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False)
@@ -75,23 +90,42 @@ def _ops_effects(db,task_id):
     return values
 
 
-def _effects(db,store,task_id,offer):
+def _effects(db,store,task_id,offer,correction=None):
     from shared_platform.native_unfrozen_source_successor import _count
     values=_ops_effects(db,task_id)
     with store._connect_readonly() as r:
+        r.execute('BEGIN')
         counts={name:_count(r,name,where,args) for name,where,args in (
             ('approved_publication_snapshots','offer_id=?',(offer,)),
             ('release_runs','plan_id IN (SELECT plan_id FROM release_plans WHERE product_id=?)',(offer,)),
             ('native_sole_final_decisions','plan_id IN (SELECT plan_id FROM release_plans WHERE product_id=?)',(offer,)),
             ('native_final_budget_scopes','plan_id IN (SELECT plan_id FROM release_plans WHERE product_id=?)',(offer,)))}
+        if correction is not None:
+            from shared_platform.sku_only_publication_correction import _known_common
+            retained=_known_common(store,r,offer_id=offer,plan_id=correction['common']['plan_id'],
+                                   run_id=correction['common']['run_id'])
+            _need(retained==correction['common'],'SKU_CORRECTION_COMMON_CHANGED')
+            # The admitted generation retains this one known successful old
+            # write. Every other run, including one for the new plan, refuses.
+            counts['release_runs']-=1
         _need(not any(counts.values()),'COMMON_CHANNEL_OR_FINAL_STARTED')
         if r.execute("SELECT 1 FROM sqlite_master WHERE name='manual_common_creations'").fetchone():
             _need(not r.execute('SELECT 1 FROM manual_common_creations WHERE offer_id=? AND attempts<>0',(offer,)).fetchone(),
                   'COMMON_CREATION_DISPATCHED')
-        plans=r.execute('SELECT plan_id,target_labels_json,approved_at FROM release_plans WHERE product_id=?',(offer,)).fetchall()
-        _need(all(json.loads(p['target_labels_json'])==['miaoshou:COMMON'] and p['approved_at'] is None for p in plans),
+        plans=r.execute('SELECT plan_id,target_labels_json,approved_at,status,payload_json FROM release_plans WHERE product_id=?',(offer,)).fetchall()
+        def local_plan(p):
+            if correction is not None:
+                if p['plan_id']==correction['common']['plan_id']:return True
+                if (p['status']=='SUPERSEDED' and p['approved_at'] is None
+                        and json.loads(p['payload_json']).get('r3_marketplace_binding',{}).get('common_plan_id')
+                            ==correction['common']['plan_id']):return True
+            return json.loads(p['target_labels_json'])==['miaoshou:COMMON'] and p['approved_at'] is None
+        _need(all(local_plan(p) for p in plans),
               'MARKETPLACE_OR_APPROVED_PLAN_EXISTS')
-    return {'operations':values,'release':counts,'local_common_plan_ids':sorted(p['plan_id'] for p in plans)}
+    result={'operations':values,'release':counts,'local_common_plan_ids':sorted(
+        p['plan_id'] for p in plans if json.loads(p['target_labels_json'])==['miaoshou:COMMON'])}
+    if correction is not None:result['retained_common']=retained
+    return result
 
 
 def _row_ready(row):
@@ -131,14 +165,20 @@ def observe(engine,task_id,*,profile,release_store):
         task=engine._project(db,row)
         source_key=db.execute('SELECT source_key FROM workbench_tasks WHERE task_id=?',(task_id,)).fetchone()[0]
         history=_history(db,task_id)
-        effects=_effects(db,release_store,task_id,task['scope']['offer_id'])
-    images=native.read_images(task,profile)
+        from shared_platform.sku_only_publication_correction import verify_generation
+        reports_root=profile.root/'reports/product-preparation';offer=task['scope']['offer_id']
+        correction=verify_generation(release_store,reports_root=reports_root,offer_id=offer,
+                                     task=task,tasks_path=engine.store.path)
+        effects=_effects(db,release_store,task_id,offer,correction)
+    with _retained_producer(task,profile):
+        images=native.read_images(task,profile)
     completed=next(x for x in task['steps'] if x['key']=='images')['checkpoint']
     _need(completed.get('native_r2')==images['native_r2'],'R2_STEP_RECEIPT_CHANGED')
     from shared_platform import publication_r3_image_bridge as bridge,round1_workspace,publication_rounds
-    offer=task['scope']['offer_id'];directory=profile.root/'reports/product-preparation'/offer
-    documents=bridge.load_r2_documents(offer,reports_root=directory.parent,
-        native_review_reader=native.NativeR2PreparedReviewReader(task,profile))
+    directory=publication_rounds.report_dir(offer,reports_root=reports_root)
+    with _retained_producer(task,profile):
+        documents=bridge.load_r2_documents(offer,reports_root=reports_root,
+            native_review_reader=native.NativeR2PreparedReviewReader(task,profile))
     preparation=round1_workspace.read_preparation(offer,images['native_r1']['prepared_reference'])
     from shared_platform.native_parent_images import NativeParentImagesAdapter
     from shared_platform.native_task_preparation import NativeR1FilesystemBoundary
@@ -146,8 +186,24 @@ def observe(engine,task_id,*,profile,release_store):
     from shared_platform.publication_paid_requests import PaidRequestContext,validate_usage_baseline
     from shared_platform.publication_autopilot import load_autopilot_policy
     policy_path=profile.root/'config/product_publication_autopilot_policy.json'
-    context=PaidRequestContext(offer_id=offer,round1=documents['round1_snapshot'],
+    paid_round1=documents['round1_snapshot']
+    original_directory=directory
+    if correction is not None:
+        # Reuse the one SKU derivation proof, retaining its original paid owner.
+        from shared_platform.sku_only_publication_correction import _check_paid_binding
+        receipt=documents['image_qa']['sku_only_derivation']
+        _need(receipt['correction_binding']['correction_digest']==correction['correction_digest'],
+              'SKU_CORRECTION_DERIVATION_CHANGED')
+        _check_paid_binding(correction,receipt['paid_history_binding'])
+        _need(Path(receipt['paid_history_binding']['history_root']).resolve()==history_root.resolve(),
+              'SKU_CORRECTION_PAID_ROOT_CHANGED')
+        paid_round1=receipt['original_documents']['round1_snapshot']
+        _need(paid_round1['snapshot_digest']==correction['old_snapshot_digest'],'SKU_CORRECTION_PAID_OWNER_CHANGED')
+        original_directory=reports_root/offer
+    context=PaidRequestContext(offer_id=offer,round1=paid_round1,
         policy=load_autopilot_policy(policy_path),reports_root=history_root/'reports/product-preparation')
+    if correction is not None:
+        _need(context.path==Path(receipt['paid_history_binding']['ledger_ref']),'SKU_CORRECTION_PAID_LEDGER_CHANGED')
     paid_rows,entries=context._load()
     _need(paid_rows and context.path.is_file(),'ORIGINAL_PAID_JOURNAL_REQUIRED')
     validate_usage_baseline(paid_rows[0]['baseline'],offer_id=offer)
@@ -161,14 +217,23 @@ def observe(engine,task_id,*,profile,release_store):
             raw=context._raw(key)
             from modules.sourcing.image_generation_checkpoint import digest as paid_digest
             _need(raw is not None and paid_digest(raw)==value.get('raw_digest'),'PAID_RECEIVED_RAW_UNPROVEN')
-    roots=sorted({directory,history_root/'reports/product-preparation'/offer,
+    roots=sorted({directory,original_directory,history_root/'reports/product-preparation'/offer,
         profile.root/'data/localized_image_packs'/offer,profile.root/'data/localized_image_reviews'/offer,
         history_root/'data/localized_image_packs'/offer,history_root/'data/localized_image_reviews'/offer,
         profile.root/'config'},key=str)
     paths={directory/name for name in bridge.R2_DOCUMENTS.values()}
-    paths|={directory/'round1-auto-decision.json',policy_path,
+    paths|={original_directory/'round1-auto-decision.json',policy_path,
             profile.root/'config/product_publication_paid_history.local.json'}
-    if preparation.get('candidate_input',{}).get('present'):paths.add(directory/'first-review-candidate-plan.json')
+    if correction is not None:
+        from shared_platform.sku_only_publication_correction import POINTER
+        paths.add(original_directory/POINTER)
+        paths|={Path(p) for p in correction['original_files']}
+        roots=sorted(set(roots)|{Path(p).parent for p in correction['original_files']},key=str)
+        if correction.get('original_warehouse_path'):paths.add(directory/'ozon-warehouse-readback.json')
+    original_preparation=(round1_workspace.read_preparation(offer,correction['original_prepared_reference'])
+                          if correction is not None else preparation)
+    if original_preparation.get('candidate_input',{}).get('present'):
+        paths.add(original_directory/'first-review-candidate-plan.json')
     media_paths=set()
     for value in (documents['generation_result'],documents['translation_result']):
         for asset in value.get('assets') or []:
@@ -191,7 +256,7 @@ def observe(engine,task_id,*,profile,release_store):
     _need(len(paths)<=MAX_FILES,'FILE_MANIFEST_EXCEEDS_BOUND')
     files=[_file(path,roots) for path in sorted(paths,key=str)]
     _need(sum(x['byte_length'] for x in files)<=MAX_BYTES,'FILE_MANIFEST_EXCEEDS_BOUND')
-    return {'task_id':task_id,'source_key':source_key,'request_digest':row['request_digest'],
+    result={'task_id':task_id,'source_key':source_key,'request_digest':row['request_digest'],
         'scope':json.loads(row['scope_json']),'from_release':engine.release,
         'checkpoint_raw':row['checkpoint_json'],'steps_raw':row['steps_json'],'registration_state':row['state'],
         'history_sha256':_digest(history),'predecessors':{'images':images,
@@ -202,6 +267,8 @@ def observe(engine,task_id,*,profile,release_store):
                 'states':dict(Counter(v['state'] for v in entries.values())),
                 'usage_facts':[{'key':k,'usage':v.get('usage'),'cost':v.get('cost')} for k,v in sorted(entries.items())]}},
         'effects':effects}
+    if correction is not None:result['predecessors']['sku_only_correction']=correction
+    return result
 
 
 def verify(db,row,original,grant,from_release,to_release):
@@ -231,6 +298,16 @@ def verify(db,row,original,grant,from_release,to_release):
           and record['source']['manifest_digest']==to_release['manifest_digest'], 'SOURCE_BINDING_CHANGED')
     _need(not any(record['effects']['operations'].values()) and not any(record['effects']['release'].values()),
           'REGISTRATION_WAS_NOT_PRECOMMON')
+    correction=record['predecessors'].get('sku_only_correction')
+    if correction is not None:
+        from shared_platform.sku_only_publication_correction import EVENT as correction_event
+        admitted=db.execute('SELECT detail_json FROM workbench_events WHERE task_id=? AND event_type=?',
+                            (row['task_id'],correction_event)).fetchall()
+        _need(len(admitted)==1 and json.loads(admitted[0]['detail_json'])==correction
+              and correction['release']==from_release and correction['scope']==record['scope']
+              and correction['task_id']==row['task_id']
+              and record['effects'].get('retained_common')==correction['common'],
+              'SKU_CORRECTION_ADMISSION_CHANGED')
     steps=json.loads(record['steps_raw']);images=record['predecessors']['images']
     _need([x['key'] for x in steps]==['facts','images','release','readback']
           and all(x['state']=='completed' for x in steps[:2]) and all(x['state']=='pending' for x in steps[2:])
@@ -327,10 +404,23 @@ def register(engine,task_id,*,profile,release_store,expected):
     from shared_platform.native_task_preparation import NativeR1FilesystemBoundary
     boundary=NativeR1FilesystemBoundary(profile)
     history_root=Path(expected['predecessors']['paid']['directory']).parents[3]
-    pin=boundary._pin(sorted({Path(f['path']).parent for f in expected['predecessors']['files']},key=str),
-                      release_parent=history_root)
-    pin.__enter__();db=None
+    parents={Path(f['path']).parent for f in expected['predecessors']['files']}
+    authority_parent=None
+    correction=expected['predecessors'].get('sku_only_correction')
+    if correction is not None:
+        authority=[Path(p) for p,d in correction['original_files'].items() if d==correction['authority_sha256']]
+        _need(len(authority)==1 and any(Path(f['path'])==authority[0]
+              and f['sha256']==correction['authority_sha256'] for f in expected['predecessors']['files']),
+              'SKU_CORRECTION_AUTHORITY_FILE_CHANGED')
+        authority_parent=authority[0].parent
+        parents.discard(authority_parent)
+    pin=ExitStack();db=None
     try:
+        pin.enter_context(boundary._pin(sorted(parents,key=str),release_parent=history_root))
+        if authority_parent is not None:
+            # Only the immutable admission's exact authority directory gets
+            # this named binding; all other parents retain the normal roots.
+            pin.enter_context(boundary._pin([authority_parent],release_parent=authority_parent))
         db=sqlite3.connect(engine.store.path.resolve().as_uri()+'?mode=rw',uri=True,timeout=3)
         db.row_factory=sqlite3.Row
         db.execute('BEGIN IMMEDIATE')

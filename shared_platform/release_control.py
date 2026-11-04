@@ -393,7 +393,9 @@ def _next_available_seller_skus(
         ),
     }
     width = max(1, int(requested_count or 1))
-    start = max(catalog_numeric, default=0) + 1
+    # One four-digit namespace across every catalog source and active reserve.
+    # Append after its high-water mark rather than filling another channel's gaps.
+    start = max(occupied_numeric, default=0) + 1
     while start + width - 1 <= 9999:
         block = tuple(range(start, start + width))
         if all(value not in occupied_numeric for value in block):
@@ -1191,10 +1193,15 @@ def build_release_dashboard(
             state_dir=states_dir,
         )
     )
-    from shared_platform.release_store import ReleaseStore
+    from shared_platform.release_store import ReleaseStore, configured_release_store_path
 
+    default_ledger = data_dir / "orbit_platform.db"
+    if (not scoped_source and database_path is None and Path(root).resolve() == Path(ROOT).resolve()
+            and os.environ.get("ORBIT_RELEASE_STORE_PATH")):
+        default_ledger = configured_release_store_path()
     ledger_path = Path(
-        release_store_path or report_store_path or data_dir / "orbit_platform.db"
+        release_store_path or report_store_path
+        or (report_store.path if report_store is not None else default_ledger)
     )
     if report_store is not None and Path(report_store.path).resolve() != ledger_path.resolve():
         raise ValueError("dashboard report Store must match report_store_path")
@@ -1223,6 +1230,12 @@ def build_release_dashboard(
     lineage_seller_sku = str(
         (lineage_plan or {}).get("seller_sku") or ""
     ).strip()
+    from shared_platform.sku_only_publication_correction import dashboard_generation
+    sku_correction, lineage_plan = dashboard_generation(release_store,
+        reports_root=project_root / 'reports/product-preparation', offer_id=clean_offer_id,
+        lineage_plan=lineage_plan)
+    if sku_correction is not None:
+        lineage_seller_sku = str((lineage_plan or {}).get('seller_sku') or '')
     if lineage_seller_sku and (
         not lineage_seller_sku.isdigit() or len(lineage_seller_sku) > 32
     ):
@@ -1283,7 +1296,10 @@ def build_release_dashboard(
         and lineage_seller_sku
         and locked_review_sku != lineage_seller_sku
     )
-    if locked_sku_drifted_from_lineage:
+    if sku_correction is not None:
+        clean_seller_sku = _clean_seller_sku(sku_correction['new_sku'])
+        seller_sku_source = 'explicit_sku_only_generation'
+    elif locked_sku_drifted_from_lineage:
         # A successor may never change the Seller SKU. Older dashboard
         # versions could lock a newly allocated catalogue candidate after the
         # predecessor was superseded. Project the immutable predecessor SKU so
@@ -1615,6 +1631,7 @@ def build_release_dashboard(
             if seller_sku_source in {
                 "legacy_explicit_candidate",
                 "explicit_same_store_ab_alias",
+                "explicit_sku_only_generation",
             }
             else list(next_seller_skus[: len(variant_keys)])
         )

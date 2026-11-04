@@ -16,7 +16,7 @@ def _input_events(engine, task_id):
 
 
 def _image_inputs(task,profile):
-    directory=Path(profile.root)/'reports/product-preparation'/task['scope']['offer_id']
+    directory=native._report_dir(profile, task['scope']['offer_id'])
     return _digest([(name,hashlib.sha256((directory/name).read_bytes()).hexdigest()) for name in
                     ('brand-image-generation.json','brand-image-translation-plan.json','localized-image-review.json') if (directory/name).is_file()])
 

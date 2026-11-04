@@ -305,6 +305,72 @@ def _receipt(context, documents, manifest):
     return {**body, 'receipt_digest': _digest(body)}
 
 
+def _checked_receipt(store, db, context, documents, manifest):
+    """Reuse the one SKU correction proof, retaining the old capture literally."""
+    if manifest.get('schema_version') != 'sku-only-category-capture-derivation/v1':
+        return _receipt(context, documents, manifest)
+    from shared_platform.publication_rounds import REPORTS_ROOT
+    from shared_platform.sku_only_publication_correction import verify_generation
+    record = verify_generation(store, reports_root=REPORTS_ROOT, offer_id=context['offer_id'])
+    qa_proof = documents['image_qa'].get('sku_only_derivation') or {}
+    if (record is None or manifest.get('correction_digest') != record['correction_digest']
+            or (qa_proof.get('correction_binding') or {}).get('correction_digest') != record['correction_digest']
+            or manifest.get('source_binding') != context):
+        _fail('SKU_CORRECTION_BINDING_CHANGED')
+    old_documents = qa_proof['original_documents']
+    common = record['common']
+    old_context = _context(store, db, old_documents, common['plan_id'], common['run_id'])
+    original_path = _path(store, context['offer_id'], common['plan_id'])
+    raw = _read(original_path)
+    if (manifest.get('original_receipt') != {'path': str(original_path), 'sha256': hashlib.sha256(raw).hexdigest()}
+            or set(manifest) != {'schema_version','source_binding','original_receipt','correction_digest'}):
+        _fail('SKU_CORRECTION_ORIGINAL_RECEIPT_CHANGED')
+    original = json.loads(raw)
+    if original != _receipt(old_context, old_documents, original['capture_manifest']):
+        _fail('SKU_CORRECTION_ORIGINAL_CAPTURE_CHANGED')
+    # Re-use exactly the original safe projections and request/response ledger.
+    # No capture-manifest source binding is rewritten to claim another GET.
+    targets = _targets(documents, _evidence(original['capture_manifest']['evidence_files']))
+    from shared_platform.sku_only_publication_correction import replace_sku_identity
+    expected_targets = replace_sku_identity(original['targets'], record['old_sku'], record['new_sku'])
+    # Attribute 9048 is the existing deterministic Seller-SKU import-profile
+    # identity, not a new manufacturer/model or category decision.
+    for attribute in expected_targets.get('ozon:RU', {}).get('required_attributes', []):
+        if attribute.get('attribute_id') == 9048 and attribute.get('value_kind') == 'EXISTING_IMPORT_PROFILE_SELLER_SKU_RULE':
+            value = attribute.get('value') or ''
+            if not value.startswith(record['old_sku'] + '-'):
+                _fail('SKU_CORRECTION_ORIGINAL_MODEL_IDENTITY_CHANGED')
+            attribute['value'] = record['new_sku'] + value[len(record['old_sku']):]
+    if targets != expected_targets:
+        _fail('SKU_CORRECTION_CATEGORY_FACTS_CHANGED')
+    body = {'schema_version': SCHEMA, 'execution_authority': False, 'final_approval': False,
+        'source': context, 'capture_manifest': deepcopy(manifest),
+        'config_bindings': deepcopy(original['config_bindings']), 'targets': targets,
+        'evidence_kind': 'SKU_ONLY_RETAINED_ORIGINAL_CAPTURE_NO_NEW_PROVIDER_READ',
+        'sku_only_correction': {'correction_digest': record['correction_digest'],
+            'original_receipt_digest': original['receipt_digest'], 'provider_reads_added': 0}}
+    return {**body, 'receipt_digest': _digest(body)}
+
+
+def prepare_sku_only_category_supplement(store, *, documents, common_plan_id, common_run_id):
+    """Root-owned local reseal after the corrected COMMON official readback."""
+    from shared_platform.publication_rounds import REPORTS_ROOT
+    from shared_platform.sku_only_publication_correction import verify_generation
+    record = verify_generation(store, reports_root=REPORTS_ROOT,
+                               offer_id=documents['first_review']['offer_id'])
+    if record is None:
+        _fail('SKU_CORRECTION_REQUIRED')
+    with store._connect_readonly() as db:
+        db.execute('BEGIN')
+        context = _context(store, db, documents, common_plan_id, common_run_id)
+    original_path = _path(store, record['offer_id'], record['common']['plan_id'])
+    manifest = {'schema_version': 'sku-only-category-capture-derivation/v1',
+        'source_binding': context, 'correction_digest': record['correction_digest'],
+        'original_receipt': {'path': str(original_path), 'sha256': hashlib.sha256(_read(original_path)).hexdigest()}}
+    return prepare_technical_category_supplement(store, documents=documents,
+        common_plan_id=common_plan_id, common_run_id=common_run_id, capture_manifest=manifest)
+
+
 def prepare_technical_category_supplement(store, *, documents, common_plan_id, common_run_id, capture_manifest):
     """Server-writer-only local producer with an explicit original input seal.
 
@@ -315,7 +381,7 @@ def prepare_technical_category_supplement(store, *, documents, common_plan_id, c
     with store._connect_readonly() as db:
         db.execute('BEGIN')
         context = _context(store, db, documents, common_plan_id, common_run_id)
-        receipt = _receipt(context, documents, capture_manifest)
+        receipt = _checked_receipt(store, db, context, documents, capture_manifest)
     path = _path(store, context['offer_id'], common_plan_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     _checked(path)
@@ -339,7 +405,7 @@ def read_technical_categories(*, documents, common_plan_id, store, db):
         return None
     supplied = json.loads(_read(path))
     context = _context(store, db, documents, common_plan_id, supplied['source']['common_run_id'])
-    expected = _receipt(context, documents, supplied['capture_manifest'])
+    expected = _checked_receipt(store, db, context, documents, supplied['capture_manifest'])
     if supplied != expected:
         _fail('SUPPLEMENT_CHANGED')
     return expected

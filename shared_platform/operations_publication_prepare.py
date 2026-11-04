@@ -50,6 +50,12 @@ def run(engine,task,token,profile,bridge=None, *, filesystem_boundary=None):
     """Return False only for an already approved R1 handled by native.run."""
     if task['current_step']!='facts':
         return False
+    from shared_platform.sku_only_publication_correction import _read_record
+    correction = _read_record(Path(profile.root) / 'reports/product-preparation', task['scope']['offer_id'])
+    if correction is not None and correction['task_id'] == task['task_id'] and not (task.get('checkpoint') or {}).get('sku_only_correction'):
+        engine.observe_reconciliation(task['task_id'], token,
+            'SKU_CORRECTION_LOCAL_PREPARATION_REQUIRED: retain the explicit correction; no facts/image/provider replay')
+        return True
     if native.read_frozen(task,profile):
         return False
     task_id=task['task_id']

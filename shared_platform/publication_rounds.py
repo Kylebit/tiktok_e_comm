@@ -93,7 +93,8 @@ def report_dir(offer_id: str, *, reports_root: Path | None = None) -> Path:
     clean = str(offer_id or "").strip()
     if not clean.isdigit():
         raise PublicationRoundContractError("offer_id must contain digits only")
-    return (REPORTS_ROOT if reports_root is None else Path(reports_root)) / clean
+    from shared_platform.sku_only_publication_correction import report_directory
+    return report_directory(REPORTS_ROOT if reports_root is None else Path(reports_root), clean)
 
 
 def canonical_targets_to_workbench_sites(targets: list[str]) -> list[str]:

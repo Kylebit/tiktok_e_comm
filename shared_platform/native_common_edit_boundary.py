@@ -30,6 +30,7 @@ REGISTERED_SOURCE_PATHS = (
     'shared_platform/agent_prepared_common_service.py',
     'shared_platform/agent_prepared_publication_adoption.py',
     'shared_platform/publication_runtime_config.py',
+    'shared_platform/sku_only_publication_correction.py',
 )
 
 

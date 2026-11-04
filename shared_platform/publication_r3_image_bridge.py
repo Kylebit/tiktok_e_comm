@@ -536,6 +536,9 @@ def _validated_r2_identity(documents: Mapping[str, Any]) -> dict[str, Any]:
 
 def validate_r2_identity(documents: Mapping[str, Any]) -> dict[str, Any]:
     try:
+        if (documents.get('image_qa') or {}).get('sku_only_derivation') is not None:
+            from shared_platform.sku_only_r2_derivation import validate_sku_only_r2_derivation
+            validate_sku_only_r2_derivation(documents)
         return _validated_r2_identity(documents)
     except (TypeError,KeyError,AttributeError) as error:
         raise ValueError("R2_DOCUMENT_CONTRACT_INVALID") from error
@@ -769,7 +772,8 @@ def _report_path(offer_id: str, name: str, *, reports_root: Path | None = None) 
         runtime_root = review_runtime_root(REPORTS_ROOT.parent.parent)
         if has_registration(offer_id, runtime_root=runtime_root):
             root = registered_project(offer_id, runtime_root=runtime_root) / 'reports/product-preparation'
-    path = root / offer_id / name
+    from shared_platform.sku_only_publication_correction import report_directory
+    path = report_directory(root, offer_id) / name
     # Before exists/read/mkdir: dangling links must not turn into a missing record.
     if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
         raise ValueError("R3_REPORT_PATH_ESCAPES_ROOT")
@@ -784,6 +788,8 @@ def load_r2_documents(offer_id: str, *, reports_root: Path | None = None,
         if type(native_review_reader) is not NativeR2PreparedReviewReader:
             raise ValueError('NATIVE_R2_PREPARED_READER_REQUIRED')
     effective_root = _report_path(offer_id, 'round1-approved-snapshot.json', reports_root=reports_root).parent.parent
+    if effective_root.name == 'sku-corrections':
+        effective_root = effective_root.parent.parent
     require_adopted_assets(offer_id, effective_root, None)
     result = {}
     for key,name in R2_DOCUMENTS.items():

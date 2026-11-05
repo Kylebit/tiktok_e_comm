@@ -5365,12 +5365,19 @@ class ReleaseStore:
             )
             return self._run_in_transaction(connection, clean_run_id)
 
-    def begin_target(self, run_id: str, target_label: str, *, regional_unsent_proof=None) -> dict[str, Any]:
+    def begin_target(self, run_id: str, target_label: str, *, regional_unsent_proof=None, native_tiktok_continuation_proof=None) -> dict[str, Any]:
         """Claim one pending target attempt before any adapter is called."""
         with self._transaction() as connection:
             row = self._target_for_update(connection, run_id, target_label)
             self._require_active_run(connection, row["run_id"])
             continuation = None
+            if native_tiktok_continuation_proof is not None:
+                from shared_platform.native_provider_continuation import _NativeTikTokContinuationProof
+                if regional_unsent_proof is not None or type(native_tiktok_continuation_proof) is not _NativeTikTokContinuationProof:
+                    raise ReleaseAuthorizationError('native original TikTok continuation proof required')
+                try:continuation=native_tiktok_continuation_proof.validate(self,connection,row)
+                except (ValueError,OSError,KeyError,TypeError,RuntimeError) as error:
+                    raise ReleaseAuthorizationError(str(error)) from error
             if regional_unsent_proof is not None:
                 from shared_platform.native_provider_continuation import _RegionalUnsentProof
                 if type(regional_unsent_proof) is not _RegionalUnsentProof:
@@ -5384,7 +5391,8 @@ class ReleaseStore:
                     f"target must be PENDING before begin; found {row['status']}"
                 )
             now = _utc_now()
-            if continuation is not None and row['status'] == TARGET_RUNNING:
+            if continuation is not None and (row['status'] == TARGET_RUNNING
+                    or continuation.get('settle_unrecorded_failure') is True):
                 # Settle the original orphan's exact unsent facts before the
                 # next bounded claim. Original attempt 1 is never reset/erased.
                 evidence_json = _canonical_json(continuation)

@@ -776,9 +776,12 @@ class _ResumableTikTokDraftTransport:
             for row in self._store.target_events(self._request, label)
             if row.get("operation") == "SAVE_DRAFT"
         ]
-        if saves and saves[-1].get("outcome") == "REJECTED":
-            from shared_platform.native_known_rejected_save_repair import _RepairLedger
-            ledger = getattr(self._request, "write_budget_ledger", None)
+        from shared_platform.native_known_rejected_save_repair import _RepairLedger
+        ledger = getattr(self._request, "write_budget_ledger", None)
+        reserved_continuation=(type(ledger) is _RepairLedger and ledger._continuation is not None
+            and ledger._continuation['mode']=='REPAIR_RESERVED')
+        if saves and (saves[-1].get("outcome") == "REJECTED" or reserved_continuation
+                      and saves[-1].get('outcome')=='UNKNOWN'):
             if type(ledger) is _RepairLedger:
                 events = self._store.target_events(self._request, label)
                 ledger.authorize_rejected_save(events, dict(identity), self._request)
@@ -847,7 +850,7 @@ class DurableTikTokV4DraftPreparer:
         receipt["external_write_count"] = (
             None
             if receipt.get("external_write_count") is None
-            else checkpoint["external_write_count"]
+            else self._request_write_count(request, checkpoint)
         )
         body = dict(receipt)
         body.pop("receipt_digest", None)
@@ -858,7 +861,18 @@ class DurableTikTokV4DraftPreparer:
     def write_count(self, request: object) -> int | None:
         """Return durable mutation certainty even if preparation raised."""
 
-        return self._store.load(request)["external_write_count"]
+        return self._request_write_count(request, self._store.load(request))
+
+    def _request_write_count(self, request, checkpoint):
+        # The checkpoint is shared by every target. An unrelated UNKNOWN must
+        # remain there without changing this one-target request's certainty.
+        labels=set(request.target_labels)
+        events=[row for row in checkpoint['events'] if row['target_label'] in labels]
+        from shared_platform.native_known_rejected_save_repair import _RepairLedger
+        ledger=getattr(request,'write_budget_ledger',None)
+        if type(ledger) is _RepairLedger:
+            events=ledger.effective_checkpoint_events(request,events)
+        return self._store._write_count(events)
 
 
 def _positive_provider_id(value: object, name: str) -> str:

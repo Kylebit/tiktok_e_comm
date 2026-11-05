@@ -146,6 +146,91 @@ def _manifest(store, documents, plan, run_id, refs, root):
         'capture_scripts':scripts}
 
 
+def test_sku_category_reuses_snapshot_while_budget_writer_waits(live, monkeypatch, tmp_path):
+    """Actual SKU/category consumers, real SQLite PENDING writer, no provider."""
+    import socket,sqlite3,threading,time
+    from shared_platform import sku_only_publication_correction as correction
+    from shared_platform import publication_rounds
+    network=[];connect_socket=socket.socket.connect
+    def deny(sock,address):
+        if address[0] in {'127.0.0.1','localhost','::1'}:return connect_socket(sock,address)
+        network.append('connect');pytest.fail('External network forbidden')
+    monkeypatch.setattr(socket.socket,'connect',deny)
+    store,common,_,_,run_id=_completed(live,monkeypatch,tmp_path)
+    documents=bridge.load_r2_documents(common['product_id']);offer=common['product_id']
+    with store._connect_readonly() as db:
+        db.execute('BEGIN')
+        baseline=correction._known_common(store,db,offer_id=offer,plan_id=common['plan_id'],run_id=run_id)
+    tasks=tmp_path/'owned-tasks.db';release={'code_version':'owned','environment':'stable','manifest_digest':'owned'}
+    scope={'offer_id':offer,'shops':['miaoshou:COMMON'],'skus':['7777']}
+    original=tmp_path/'original.txt';original.write_bytes(b'owned immutable original')
+    record={'schema_version':correction.SCHEMA,'offer_id':offer,'generation_id':'a'*32,
+        'tasks_path':str(tasks),'release_store_path':str(store.path),'task_id':'owned-current',
+        'predecessor_task_id':'owned-old','source_key':'owned-source','scope':scope,'release':release,
+        'original_files':{str(original):hashlib.sha256(original.read_bytes()).hexdigest()},'common':baseline}
+    record['correction_digest']=correction._digest(record)
+    reports=publication_rounds.REPORTS_ROOT;base=reports/offer
+    (base/'sku-corrections'/record['generation_id']).mkdir(parents=True)
+    (base/correction.POINTER).write_bytes(correction._bytes(record))
+    with sqlite3.connect(tasks) as db:
+        db.executescript('CREATE TABLE workbench_events(task_id,event_type,detail_json);'
+            'CREATE TABLE workbench_execution(task_id,scope_json,version_json,state,worker,lease_token,external_started);'
+            'CREATE TABLE workbench_tasks(task_id,source_key);')
+        db.execute('INSERT INTO workbench_events VALUES(?,?,?)',('owned-current',correction.EVENT,json.dumps(record)))
+        db.executemany('INSERT INTO workbench_execution VALUES(?,?,?,?,?,?,?)',[
+            ('owned-old','{}','{}','cancelled',None,None,0),
+            ('owned-current',json.dumps(scope),json.dumps(release),'reconciliation_required',None,None,0)])
+        db.execute('INSERT INTO workbench_tasks VALUES(?,?)',('owned-current','owned-source'))
+    with sqlite3.connect(store.path) as db:db.execute('CREATE TABLE owned_writer_receipt(value INTEGER)');db.execute('INSERT INTO owned_writer_receipt VALUES(0)')
+    outer=sqlite3.connect(store.path,timeout=2);outer.row_factory=sqlite3.Row
+    outer.execute('BEGIN');outer.execute('SELECT * FROM owned_writer_receipt').fetchall()
+    waiting=threading.Event();writer_errors=[]
+    def write():
+        try:
+            with sqlite3.connect(store.path,timeout=5) as db:
+                db.execute('BEGIN IMMEDIATE');db.execute('UPDATE owned_writer_receipt SET value=1')
+                waiting.set();db.commit()
+        except BaseException as error:writer_errors.append(error);waiting.set()
+    writer=threading.Thread(target=write);writer.start()
+    # Observe the real SQLite PENDING lock, rather than relying on a sleep.
+    try:
+        assert waiting.wait(2)
+        deadline=time.monotonic()+2;pending=False
+        while time.monotonic()<deadline:
+            try:
+                with sqlite3.connect(store.path,timeout=0) as probe:probe.execute('SELECT * FROM owned_writer_receipt').fetchall()
+            except sqlite3.OperationalError as error:
+                assert 'locked' in str(error);pending=True;break
+        assert pending and not writer_errors
+        # Bound the old nested reader's failure to 150 ms in this owned test.
+        connect=store._connect_readonly
+        def short_read():
+            db=connect();db.execute('PRAGMA busy_timeout=150');return db
+        monkeypatch.setattr(store,'_connect_readonly',short_read)
+        context={'offer_id':offer}
+        manifest={'schema_version':'sku-only-category-capture-derivation/v1',
+            'correction_digest':record['correction_digest'],'source_binding':context}
+        # After reading the valid retained proof, the independent missing QA
+        # binding must still refuse. Before the fix this instead raises BUSY.
+        with pytest.raises(ValueError,match='SKU_CORRECTION_BINDING_CHANGED'):
+            supplement._checked_receipt(store,outer,context,documents,manifest)
+        assert outer.in_transaction and writer.is_alive()
+    finally:
+        outer.rollback();outer.close();writer.join(6)
+    assert not writer.is_alive() and not writer_errors
+    with store._connect_readonly() as db:
+        assert db.execute('SELECT value FROM owned_writer_receipt').fetchone()[0]==1
+    assert correction.verify_generation(store,reports_root=reports,offer_id=offer)==record
+    with sqlite3.connect(tmp_path/'foreign.db') as foreign:
+        foreign.execute('BEGIN')
+        with pytest.raises(ValueError,match='COMMON_SOURCE_DATABASE_MISMATCH'):
+            correction.verify_generation(store,reports_root=reports,offer_id=offer,connection=foreign)
+    original.write_bytes(b'tampered')
+    with pytest.raises(ValueError,match='ORIGINAL_SOURCE_CHANGED'):
+        correction.verify_generation(store,reports_root=reports,offer_id=offer)
+    assert network==[]
+
+
 def test_actual_native_common_consumes_supplement_without_rewriting_or_republishing(live, monkeypatch, tmp_path):
     from test_b4b_release_compiler import policy, INCIDENTS
     from domains.product_operations.approved_publication_snapshot import build_publication_preview

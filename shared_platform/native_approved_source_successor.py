@@ -48,6 +48,10 @@ ALLOWED_FILES = frozenset({
     'shared_platform/native_provider_continuation.py',
     'shared_platform/release_store.py',
     'tests/test_native_provider_response_recovery.py',
+    'shared_platform/product_publication_live_dependencies.py',
+    'shared_platform/sku_only_publication_correction.py',
+    'shared_platform/r3_technical_category_evidence.py',
+    'tests/test_r3_technical_category_evidence.py',
 })
 
 

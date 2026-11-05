@@ -4,6 +4,7 @@ This local producer has no transport, image executor or marketplace approval.
 The ordinary COMMON EDIT boundary and final-review service remain the writers.
 """
 from copy import deepcopy
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -110,7 +111,7 @@ def _known_common(store, db, *, offer_id, plan_id, run_id, initial=False):
             'readback_digest': readback['evidence_digest']}
 
 
-def verify_generation(store, *, reports_root, offer_id, task=None, tasks_path=None):
+def verify_generation(store, *, reports_root, offer_id, task=None, tasks_path=None, connection=None):
     """Verify the append-only grant and the immutable original sources."""
     record = _read_record(reports_root, offer_id)
     if record is None:
@@ -147,8 +148,12 @@ def verify_generation(store, *, reports_root, offer_id, task=None, tasks_path=No
         require_local_path(path, root=path.parent)
         if sha256(path.read_bytes()).hexdigest() != expected:
             _fail('ORIGINAL_SOURCE_CHANGED')
-    with store._connect_readonly() as db:
-        db.execute('BEGIN')
+    # An existing consumer snapshot must retain its own transaction. Opening
+    # another reader while a writer waits to commit can deadlock that snapshot.
+    # _known_common validates the supplied connection's store and transaction.
+    with (store._connect_readonly() if connection is None else nullcontext(connection)) as db:
+        if connection is None:
+            db.execute('BEGIN')
         baseline = _known_common(store, db, offer_id=offer_id,
             plan_id=record['common']['plan_id'], run_id=record['common']['run_id'])
         if baseline != record['common']:

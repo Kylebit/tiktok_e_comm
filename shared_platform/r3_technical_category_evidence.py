@@ -311,7 +311,7 @@ def _checked_receipt(store, db, context, documents, manifest):
         return _receipt(context, documents, manifest)
     from shared_platform.publication_rounds import REPORTS_ROOT
     from shared_platform.sku_only_publication_correction import verify_generation
-    record = verify_generation(store, reports_root=REPORTS_ROOT, offer_id=context['offer_id'])
+    record = verify_generation(store, reports_root=REPORTS_ROOT, offer_id=context['offer_id'], connection=db)
     qa_proof = documents['image_qa'].get('sku_only_derivation') or {}
     if (record is None or manifest.get('correction_digest') != record['correction_digest']
             or (qa_proof.get('correction_binding') or {}).get('correction_digest') != record['correction_digest']

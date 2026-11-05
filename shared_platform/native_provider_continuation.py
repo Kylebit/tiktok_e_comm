@@ -19,6 +19,185 @@ from domains.channel_operations.release_executor import AdapterExecutionResult
 from shared_platform.final_review_server_admission import ApprovalBlocked
 
 
+def _tiktok_active(active):
+    from shared_platform.native_sole_final_execution import _ACTIVE,_NativeExecution
+    return (type(active) is _NativeExecution and _ACTIVE.get() is active
+        and active.platform_scope==('TIKTOK',) and active.service.store is active.store
+        and active.service._actor()['owner_sid']==active.owner_sid)
+
+
+def retained_tiktok_rows(root,identity):
+    """Original bytes only. No journal initialization, response replay or I/O."""
+    import gzip
+    from shared_platform.publication_provider_journal import ProviderResponseJournal,_checked_runtime_path,_user_identity
+    journal=ProviderResponseJournal(_checked_runtime_path(Path(root)),identity)
+    _region_need(journal.path.is_file(),'ORIGINAL_TIKTOK_JOURNAL_REQUIRED')
+    _checked_runtime_path(journal.path)
+    if os.name=='nt':
+        from shared_platform.local_operator_session import verify_owner_only
+        verify_owner_only(journal.root,_user_identity())
+    import sqlite3
+    with sqlite3.connect(journal.path.as_uri()+'?mode=ro',uri=True,timeout=5) as db:
+        db.row_factory=sqlite3.Row;db.execute('PRAGMA query_only=ON');db.execute('BEGIN')
+        rows=[dict(r) for r in db.execute('SELECT * FROM provider_response_intents ORDER BY started_at')]
+    result=[]
+    from shared_platform.native_final_mutation_budget import _json,_sha
+    for row in rows:
+        request=json.loads(row['request_identity_json'])
+        _region_need(json.loads(row['identity_json'])==identity and _sha(_json(request))==row['key']
+            and request.get('provider')=='miaoshou' and request.get('method')=='POST','ORIGINAL_TIKTOK_JOURNAL_SCOPE_CHANGED')
+        raw=row['response_body'];outcome='UNKNOWN'
+        if raw is not None:
+            raw=bytes(raw)
+            _region_need(len(raw)<=2_000_000 and hashlib.sha256(raw).hexdigest()==row['response_sha256'],'ORIGINAL_TIKTOK_RESPONSE_CHANGED')
+            if raw[:2]==b'\x1f\x8b':raw=gzip.decompress(raw)
+            _region_need(len(raw)<=2_000_000,'ORIGINAL_TIKTOK_RESPONSE_CHANGED')
+            value=json.loads(raw.decode('utf-8'))
+            if row['phase']=='RESPONSE_RETAINED' and row['http_status']==200:
+                outcome='ACCEPTED' if str(value.get('result') or '').lower()=='success' else 'REJECTED'
+        result.append({'key':row['key'],'request':request,'response_sha256':row['response_sha256'],
+            'outcome':outcome,'phase':row['phase'],'http_status':row['http_status']})
+    return result
+
+
+@dataclass(frozen=True)
+class _NativeTikTokContinuationProof:
+    active: object
+    facts_json: str
+    source_pin: tuple | None = None
+
+    def validate(self,store,db,row):
+        from shared_platform.native_final_mutation_budget import _json
+        _region_need(_tiktok_active(self.active) and self.active.store is store,'CURRENT_NATIVE_TIKTOK_ACTOR_REQUIRED')
+        expected=json.loads(self.facts_json)
+        _region_need(self.active.plan_id==expected['binding']['plan_id']
+            and self.active.decision_id==expected['binding']['decision_id'],'ORIGINAL_TIKTOK_SCOPE_CHANGED')
+        _region_need(dict(row)==expected['target'],'ORIGINAL_TIKTOK_TARGET_CHANGED')
+        current=_tiktok_continuation_facts(self.active,db,expected['binding'],row['target_label'],self.source_pin)
+        _region_need(_json(current)==self.facts_json,'ORIGINAL_TIKTOK_CONTINUATION_CHANGED')
+        self.active.service._decision(db,expected['binding']['decision_id'],owner_sid=self.active.owner_sid)
+        if expected['mode']=='RETAINED_CLAIM':
+            record=expected['base'][-1]
+            db.execute('INSERT INTO native_final_budget_outcomes VALUES(?,?,?)',
+                (expected['scope_key'],record['sequence'],'ACCEPTED'))
+        elif expected['mode']=='REPAIR_ACCEPTED' and not expected['repair']['outcomes']:
+            db.execute('INSERT INTO native_save_repair_outcomes VALUES(?,?)',(expected['grant']['grant_id'],'ACCEPTED'))
+        return {'schema_version':'native-original-tiktok-continuation/v1','mode':expected['mode'],
+            'original_attempt':row['attempts'],'original_reservations_and_grant_preserved':True,
+            'known_pre_submit_zero':False,'facts_sha256':hashlib.sha256(self.facts_json.encode()).hexdigest()}
+
+
+def _tiktok_continuation_facts(active,db,binding,label,source_pin=None):
+    from shared_platform.native_final_mutation_budget import _json,_sha
+    from shared_platform.native_prepared_v4_targets import _file_identity
+    from shared_platform import native_known_rejected_save_repair as repair
+    target=db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?',(binding['run_id'],label)).fetchone()
+    _region_need(target is not None and target['status']=='FAILED' and not target['external_id'],'ORIGINAL_TIKTOK_FAILED_REQUIRED')
+    for table in ('release_target_submissions','release_target_readbacks','release_target_repairs','release_target_retry_operations'):
+        _region_need(not db.execute('SELECT 1 FROM '+table+' WHERE run_id=? AND target_label=?',(binding['run_id'],label)).fetchone(),
+            'TIKTOK_ACCEPTED_OR_REPAIRED_NO_REPLAY')
+    scopes=db.execute("SELECT * FROM native_final_budget_scopes WHERE plan_id=? AND platform='TIKTOK'",(binding['plan_id'],)).fetchall()
+    _region_need(len(scopes)==1,'ORIGINAL_TIKTOK_SCOPE_REQUIRED');scope=scopes[0];frozen=json.loads(scope['binding_json'])
+    _region_need(_sha(scope['binding_json'])==scope['binding_sha256'] and all(frozen[k]==binding[k]
+        for k in ('plan_id','snapshot_digest','candidate_digest','decision_id')) and frozen['per_target_maximum']==3
+        and label in frozen['target_labels'],'ORIGINAL_TIKTOK_BUDGET_CHANGED')
+    base=repair._base_rows(db,scope['scope_key'],label)
+    mapping=_file_identity(run_id=binding['run_id'],plan_id=binding['plan_id'],decision_id=binding['decision_id'],snapshot_digest=binding['snapshot_digest'])
+    root=Path(active.runtime.supervisor.root)
+    cp_path=root/binding['offer_id']/str(binding['product_revision'])/mapping['file_run_id']/'tiktok-draft-checkpoint.json'
+    cp=json.loads(cp_path.read_bytes());copy=dict(cp);supplied=copy.pop('checkpoint_digest',None)
+    _region_need(supplied=='sha256:'+_sha(_json(copy)) and cp['run_id']==mapping['file_run_id']
+        and cp['offer_id']==binding['offer_id'] and cp['snapshot_digest']==binding['snapshot_digest'],'ORIGINAL_TIKTOK_CP_CHANGED')
+    events=[e for e in cp['events'] if e['target_label']==label]
+    identity=dict(run_id=mapping['file_run_id'],report_id=mapping['file_report_id'],platform='TIKTOK',
+        target_labels=[label],snapshot_digest=binding['snapshot_digest'],offer_id=binding['offer_id'],plan_id=binding['plan_id'])
+    wire=retained_tiktok_rows(root,identity)
+    _region_need(not any('/save_move_collect_task' in r['request']['path'] or r['outcome']=='UNKNOWN' for r in wire),
+        'TIKTOK_UNKNOWN_OR_PUBLISHED_REQUIRES_RECONCILIATION')
+    failures=[dict(r) for r in db.execute('SELECT * FROM release_target_failure_events WHERE run_id=? AND target_label=? ORDER BY attempt',
+        (binding['run_id'],label))]
+    _region_need([r['attempt'] for r in failures]==list(range(1,target['attempts']+1))
+        and all(_sha(r['evidence_json'])==r['evidence_digest'] for r in failures),'ORIGINAL_TIKTOK_FAILURE_HISTORY_CHANGED')
+    result={'binding':binding,'target':dict(target),'scope_key':scope['scope_key'],'base':base,'events':events,
+        'failures':failures,'wire':wire}
+    grant=db.execute('SELECT * FROM native_save_repair_grants WHERE scope_key=? AND target_label=?',(scope['scope_key'],label)).fetchone()
+    if grant is not None:
+        body=json.loads(grant['body_json'])
+        _region_need(_sha(grant['body_json'])==grant['body_sha256']==grant['grant_id'],'ORIGINAL_REPAIR_GRANT_CHANGED')
+        _region_need(target['attempts']>=2 and len(failures)==target['attempts'],'ORIGINAL_REPAIR_ATTEMPTS_CHANGED')
+        repair.validate_original(db,body,target_status='FAILED',attempt=target['attempts'],continuation=True,source_pin=source_pin)
+        repair.validate_root_addendum(body,source_pin=source_pin)
+        aux={name:[dict(r) for r in db.execute('SELECT * FROM native_save_repair_'+name+' WHERE grant_id=?',(grant['grant_id'],))]
+            for name in ('starts','reservations','dispatches','outcomes','verifications')}
+        _region_need(aux['starts']==[{'grant_id':grant['grant_id'],'target_attempt':2}]
+            and not aux['verifications'] and aux['reservations'] in ([],[
+                {'grant_id':grant['grant_id'],'operation':'save_draft','attempt_count':1}])
+            and aux['outcomes'] in ([],[{'grant_id':grant['grant_id'],'outcome':'ACCEPTED'}]),'ORIGINAL_REPAIR_START_CHANGED')
+        repair.validate_events(events[:3],body)
+        extra=[r for r in wire if '/save_' in r['request']['path'] and r['key']!=body['provider_rejection']['key']]
+        if aux['dispatches']:
+            _region_need(len(aux['reservations'])==len(aux['dispatches'])==len(extra)==1
+                and extra[0]['outcome']=='ACCEPTED' and (len(events)==4 or len(events)==5 and events[3]['outcome']=='UNKNOWN')
+                and events[-1]['operation']=='SAVE_DRAFT' and events[-1]['outcome']=='ACCEPTED',
+                'REPAIR_DISPATCH_REQUIRES_EXACT_RETAINED_ACCEPTANCE')
+            result['mode']='REPAIR_ACCEPTED'
+        else:
+            _region_need(not extra and not aux['outcomes'] and len(aux['reservations'])<=1
+                and (len(events)==3 or len(events)==4 and events[-1]['operation']=='SAVE_DRAFT' and events[-1]['outcome']=='UNKNOWN'),
+                'REPAIR_UNDISPATCHED_PREFIX_CHANGED')
+            result['mode']='REPAIR_RESERVED' if aux['reservations'] else 'REPAIR_UNRESERVED'
+        _region_need(all((e['detail_id'],e['shop_id'])==(body['detail_id'],body['shop_id']) for e in events),
+            'ORIGINAL_REPAIR_CP_IDENTITY_CHANGED')
+        result.update(grant=dict(grant),repair=aux)
+    else:
+        _region_need(target['attempts']==1 and len(failures)==1 and len(base)==2 and len(events)==2
+            and [(r['operation'],r['outcome']) for r in base]==[('create_platform_draft','ACCEPTED'),('claim_draft','UNKNOWN')]
+            and base[-1]['request_digest'] and [(e['operation'],e['outcome']) for e in events]==[
+                ('CREATE_DRAFT','ACCEPTED'),('CLAIM_TO_SHOP','ACCEPTED')],'EXACT_RETAINED_CLAIM_REQUIRED')
+        claim=[r for r in wire if r['request']['path'].endswith('/claim_to_shop')]
+        from modules.miaoshou.tiktok_v4_drafts import EXPECTED_SHOP_ID_BY_TARGET
+        _region_need(len(wire)==2 and len(claim)==1 and all(r['outcome']=='ACCEPTED' for r in wire)
+            and wire[0]['request']['path'].endswith('/claimed') and wire[1]['request']['path'].endswith('/claim_to_shop')
+            and len({(e['detail_id'],e['shop_id']) for e in events})==1 and events[0]['shop_id']==EXPECTED_SHOP_ID_BY_TARGET[label],
+            'EXACT_RETAINED_CLAIM_RESPONSE_REQUIRED')
+        result['mode']='RETAINED_CLAIM'
+    return result
+
+
+def tiktok_continuation_proofs(active,gate):
+    """Mint exact original-attempt proofs after the normal current native gate."""
+    if not _tiktok_active(active):return {}
+    from shared_platform.native_new_task_v4_targets import scope
+    from shared_platform.native_final_mutation_budget import _json
+    from shared_platform import native_known_rejected_save_repair as repair
+    plan=gate['plan'];scope(active,plan)
+    with active.store._connect_readonly() as source_db:
+        if not repair.check_schema(source_db,optional=True):return {}
+        grants=[json.loads(r[0]) for r in source_db.execute('SELECT body_json FROM native_save_repair_grants WHERE run_id=?',
+            ('release-run:'+plan['payload_digest'][:24],))]
+    # Full registered source validation occurs outside a ReleaseStore write or
+    # retained read transaction. Inside claim only its immutable pin is checked.
+    source_pins={body['target_label']:repair.retained_source_pin(active,body) for body in grants}
+    with active.store._connect_readonly() as db:
+        db.execute('BEGIN');receipt=active.service._decision(db,active.decision_id,owner_sid=active.owner_sid)
+        frozen=json.loads(db.execute('SELECT snapshot_json FROM approved_publication_snapshots WHERE plan_id=?',(plan['plan_id'],)).fetchone()[0])
+        decision=db.execute('SELECT review_json FROM native_sole_final_decisions WHERE decision_id=?',(active.decision_id,)).fetchone()
+        binding=dict(plan_id=plan['plan_id'],run_id='release-run:'+plan['payload_digest'][:24],decision_id=active.decision_id,
+            snapshot_digest=receipt['snapshot_digest'],candidate_digest=json.loads(decision['review_json'])['candidate_digest'],
+            offer_id=frozen['offer_id'],product_revision=frozen['product_revision'])
+        proofs={}
+        for target in (gate['run'] or {}).get('targets',()):
+            label=target['target_label']
+            if target['status']!='FAILED' or not label.startswith('tiktok:'):continue
+            try:
+                pin=source_pins.get(label)
+                facts=_tiktok_continuation_facts(active,db,binding,label,pin)
+            except (ValueError,OSError,KeyError,TypeError,RuntimeError):continue
+            proofs[label]=_NativeTikTokContinuationProof(active,_json(facts),pin)
+    active._tiktok_continuation_proofs=proofs
+    return proofs
+
+
 def _region_need(value,code):
     if not value:raise ValueError('NATIVE_REGIONAL_UNSENT_'+code)
 
@@ -38,12 +217,16 @@ def _regional_unsent_db_facts(db,run_id,label,binding):
     run=db.execute('SELECT plan_id FROM release_runs WHERE run_id=?',(run_id,)).fetchone()
     _region_need(target is not None and run is not None and run['plan_id']==binding['plan_id']
         and label in binding['target_labels'] and label.startswith('shopee:')
-        and target['status'] in {'FAILED','RUNNING'} and target['attempts']==1
+        and (target['attempts']==1 and target['status'] in {'FAILED','RUNNING'}
+             or target['attempts']==2 and target['status']=='FAILED' and target['error']=='database is locked')
         and not target['external_id'],'ORIGINAL_FIRST_REGIONAL_ATTEMPT_REQUIRED')
     for table in ('release_target_submissions','release_target_readbacks','release_target_repairs','release_target_retry_operations'):
         _region_need(not db.execute('SELECT 1 FROM '+table+' WHERE run_id=? AND target_label=?',(run_id,label)).fetchone(),
             'REGIONAL_RESULT_REQUIRES_RECONCILIATION')
     failures=[dict(r) for r in db.execute('SELECT * FROM release_target_failure_events WHERE run_id=? AND target_label=? ORDER BY attempt',(run_id,label))]
+    # The local SQLite failure can occur before the adapter returns typed
+    # evidence. Retain that missing attempt-2 row explicitly; do not relabel
+    # the first preparation failure as the later lock failure.
     _region_need(len(failures)==(1 if target['status']=='FAILED' else 0),'ORIGINAL_FAILURE_CARDINALITY_CHANGED')
     for event in failures:
         value=json.loads(event['evidence_json'])
@@ -158,7 +341,9 @@ class _RegionalUnsentProof:
             ref=dict(zip(('path','sha256'),self.retirement_ref))
             retirement,_=_read_regional_retirement(self.active,binding,row['run_id'],official['task_id'],ref)
         return {'schema_version':'native-regional-unsent-continuation/v1','target_label':row['target_label'],
-            'original_attempt':1,'original_status':row['status'],'known_pre_submit_zero':False,
+            'original_attempt':row['attempts'],'original_status':row['status'],'known_pre_submit_zero':False,
+            'original_target':facts['target'],
+            'settle_unrecorded_failure':row['status']=='FAILED' and row['attempts']==2,
             'regional_request_attempted':False,'shared_accepted_prefix_preserved':True,
             'scope_key':facts['scope']['scope_key'],'official':official,'file_pins':list(self.file_pins),
             'owned_retirement_ref':dict(zip(('path','sha256'),self.retirement_ref)) if retirement is not None else None,
@@ -189,7 +374,9 @@ def regional_unsent_proofs(active,gate):
     plan=gate['plan'];_,task,_,_=scope(active,plan);rid='release-run:'+plan['payload_digest'][:24]
     labels=[t['target_label'] for t in (gate['run'] or {}).get('targets',())
         if t['target_label'] in [r['channel']+':'+r['site'] for r in gate['target_rows']]
-        and t['target_label'].startswith('shopee:') and t['status'] in {'FAILED','RUNNING'} and t['attempts']==1]
+        and t['target_label'].startswith('shopee:') and (
+            t['attempts']==1 and t['status'] in {'FAILED','RUNNING'}
+            or t['attempts']==2 and t['status']=='FAILED' and t.get('error')=='database is locked')]
     if not labels:return {}
     with active.store._connect_readonly() as db:
         db.execute('BEGIN');receipt=active.service._decision(db,active.decision_id,owner_sid=active.owner_sid)

@@ -14204,6 +14204,10 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
         # Exact same-run regional absence can settle an orphaned first claim;
         # the native proof preserves the accepted Global and original attempt.
         native_regional_unsent = {}
+        native_tiktok_continuations = {}
+        if native_gate is not None and partition is not None and partition['platform']=='TIKTOK':
+            from shared_platform.native_provider_continuation import tiktok_continuation_proofs
+            native_tiktok_continuations=tiktok_continuation_proofs(native_gate,{**gate,'run':run})
         if native_gate is not None and partition is not None and partition['platform'] == 'SHOPEE':
             from shared_platform.native_provider_continuation import regional_unsent_proofs
             native_regional_unsent = regional_unsent_proofs(native_gate,{**gate,'run':run})
@@ -14319,6 +14323,9 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
         recovery_actions = [{**action,'action_kind':'NATIVE_REGIONAL_UNSENT_CONTINUATION','runnable':True,
             'reason_code':'same_run_accepted_global_and_exact_region_not_sent'}
             if action.get('target_label') in native_regional_unsent else action for action in recovery_actions]
+        recovery_actions = [{**action,'action_kind':'NATIVE_ORIGINAL_TIKTOK_CONTINUATION','runnable':True,
+            'reason_code':'same_native_grant_and_original_reservations_retained'}
+            if action.get('target_label') in native_tiktok_continuations else action for action in recovery_actions]
         recovery_actions = [{**action, 'action_kind': 'NATIVE_SHOPEE_GLOBAL_ZERO_CONTINUATION', 'runnable': True,
             'reason_code': 'original_global_resolver_zero_before_any_mutation'}
             if action.get('target_label') in native_shopee_global_zero else action for action in recovery_actions]
@@ -14500,7 +14507,8 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                 ),
                 None,
             )
-            if not current_target or (current_target.get("status") != "PENDING" and label not in native_regional_unsent and not (
+            if not current_target or (current_target.get("status") != "PENDING" and label not in native_regional_unsent
+                    and label not in native_tiktok_continuations and not (
                 current_target.get('storage_status') == 'PENDING' and (
                     (recovery_action_by_label.get(label, {}).get('action_kind') == 'NATIVE_OZON_THREE_CARD_STOCK_CONTINUATION' and current_target.get('attempts') == 1)
                     or (recovery_action_by_label.get(label, {}).get('action_kind') == 'NATIVE_OZON_TWO_CARD_PARTIAL_STOCK' and current_target.get('attempts') == 2)))):
@@ -14511,7 +14519,11 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                 continue
             result = None
             try:
-                if label in native_regional_unsent:
+                if label in native_tiktok_continuations:
+                    proof=tiktok_continuation_proofs(native_gate,fresh_gate).get(label)
+                    if proof is None:raise ReleaseStoreError('native original TikTok continuation changed')
+                    store.begin_target(run['run_id'],label,native_tiktok_continuation_proof=proof)
+                elif label in native_regional_unsent:
                     # Re-read provider/file/ledger facts after preceding regions
                     # progress, immediately before the original atomic claim.
                     try:

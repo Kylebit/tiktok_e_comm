@@ -28,7 +28,7 @@ class Response(io.BytesIO):
     def geturl(self):return 'https://example.invalid/provider'
 
 
-def test_same_run_regional_unsent_claim_retains_shared_prefix_and_rejects_unknown(tmp_path,monkeypatch):
+def _regional_unsent_claim_case(tmp_path,monkeypatch,*,second_local_lock=False):
     """Real claim transactions; synthetic actor/official-read boundary, no network."""
     import socket
     from types import SimpleNamespace
@@ -71,6 +71,9 @@ def test_same_run_regional_unsent_claim_retains_shared_prefix_and_rejects_unknow
             return {name:[dict(r) for r in db.execute('SELECT * FROM '+name)] for name in
                 ('native_final_budget_scopes','native_final_budget_reservations',
                  'native_final_budget_dispatches','native_final_budget_outcomes','release_target_failure_events')}
+    if second_local_lock:
+        with store._connect() as db:
+            db.execute("UPDATE release_target_runs SET attempts=2,error='database is locked' WHERE run_id=? AND target_label='shopee:MY'",(rid,))
     before=image();th=next(t for t in store.get_run(rid)['targets'] if t['target_label']=='shopee:TH')
     with pytest.raises(ReleaseStoreError):store.begin_target(rid,'shopee:PH')
     for label in ('shopee:MY','shopee:PH','shopee:VN'):
@@ -114,7 +117,7 @@ def test_same_run_regional_unsent_claim_retains_shared_prefix_and_rejects_unknow
                 store.begin_target(rid,label,regional_unsent_proof=proof)
             process['read_failed']=False
         claimed=store.begin_target(rid,label,regional_unsent_proof=proof)
-        assert claimed['status']=='RUNNING' and claimed['attempts']==2
+        assert claimed['status']=='RUNNING' and claimed['attempts']==(3 if second_local_lock and label=='shopee:MY' else 2)
         with pytest.raises((ValueError,ReleaseStoreError)):
             store.begin_target(rid,label,regional_unsent_proof=proof)
     after=image()
@@ -122,10 +125,18 @@ def test_same_run_regional_unsent_claim_retains_shared_prefix_and_rejects_unknow
         if table!='release_target_failure_events':assert after[table]==before[table]
     assert all(row in after['release_target_failure_events'] for row in before['release_target_failure_events'])
     added=[row for row in after['release_target_failure_events'] if row not in before['release_target_failure_events']]
-    assert len(added)==1 and added[0]['target_label']=='shopee:VN' and added[0]['attempt']==1
-    assert json.loads(added[0]['evidence_json'])['known_pre_submit_zero'] is False
+    assert {(r['target_label'],r['attempt']) for r in added}==(
+        {('shopee:VN',1),('shopee:MY',2)} if second_local_lock else {('shopee:VN',1)})
+    assert all(json.loads(r['evidence_json'])['known_pre_submit_zero'] is False for r in added)
+    if second_local_lock:
+        local=json.loads(next(r for r in added if r['target_label']=='shopee:MY')['evidence_json'])
+        assert local['settle_unrecorded_failure'] is True and local['original_target']['error']=='database is locked'
     assert next(t for t in store.get_run(rid)['targets'] if t['target_label']=='shopee:TH')==th
     assert network==[]
+
+
+def test_same_run_regional_unsent_claim_retains_shared_prefix_and_rejects_unknown(tmp_path,monkeypatch):
+    _regional_unsent_claim_case(tmp_path,monkeypatch)
 
 
 @pytest.mark.parametrize('continue_in_attempt',[False,True],ids=['failed-original-readonly','same-attempt-approved-remainder'])

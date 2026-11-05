@@ -467,7 +467,9 @@ class NativeSoleFinalService:
                 runrow=db.execute('SELECT run_id FROM release_runs WHERE plan_id=?',(row['plan_id'],)).fetchone()
                 run=self.store._run_in_transaction(db,runrow['run_id']) if runrow else None
         from shared_platform.native_sole_final_readback import eligible_shopee_failed_readback
-        if (not any(target['status']=='SUBMITTED_UNVERIFIED' for target in (run or {}).get('targets') or [])
+        from shared_platform.native_publication_cancellation import for_operations, eligible_rows
+        targets=eligible_rows((run or {}).get('targets') or [],for_operations(self._operations))
+        if (not any(target['status']=='SUBMITTED_UNVERIFIED' for target in targets)
                 and not eligible_shopee_failed_readback(self.store,decision_id)):
             raise ApprovalBlocked('NATIVE_ACCEPTED_SUBMISSION_REQUIRED_FOR_READ_ONLY_RESUME')
         with self._execution_lock:
@@ -696,8 +698,10 @@ class NativeSoleFinalService:
                     project_explicit_decision_progress(self,decision_id,'RUNNING')
                     outcome=self.resume(decision_id)
                     observations=None
+                    from shared_platform.native_publication_cancellation import for_operations, eligible_rows
                     needs_read=any(row.get('status')=='SUBMITTED_UNVERIFIED'
-                        for row in (outcome[1].get('run') or {}).get('targets') or [])
+                        for row in eligible_rows((outcome[1].get('run') or {}).get('targets') or [],
+                                                for_operations(self._operations)))
                     if needs_read:
                         with self._execution_lock:
                             self._readback_schedule[decision_id]=(time.monotonic(),1)
@@ -710,8 +714,10 @@ class NativeSoleFinalService:
                 if observations is not None:
                     code,value=outcome
                     updated=observations.get('run') or value.get('run')
-                    complete=bool(updated) and all(row.get('status')=='SUCCEEDED' and row.get('readback')
-                        for row in updated.get('targets') or [])
+                    from shared_platform.native_publication_cancellation import for_operations, eligible_rows
+                    current_targets=eligible_rows((updated or {}).get('targets') or [],for_operations(self._operations))
+                    complete=bool(current_targets) and all(row.get('status')=='SUCCEEDED' and row.get('readback')
+                        for row in current_targets)
                     outcome=(code,{**value,'run':updated,'completed':complete,
                         'readonly_observation':observations,'automatic_read_round':read_round,
                         'readback_pending':not complete,'new_human_review_required':False})
@@ -824,6 +830,9 @@ class NativeSoleFinalService:
                 run_row=db.execute('SELECT run_id FROM release_runs WHERE plan_id=?',(plan['plan_id'],)).fetchone()
                 market_run=self.store._run_in_transaction(db,run_row['run_id']) if run_row else None
                 result_rows=[]
+                from shared_platform.native_publication_cancellation import for_operations, eligible_rows, eligible_labels
+                cancellation=for_operations(self._operations)
+                eligible=set(eligible_labels(graph.targets,cancellation))
                 for target in (market_run or {}).get('targets') or []:
                     partial_stock=target.get('partial_stock_result')
                     evidence=partial_stock or target.get('readback') or target.get('submission') or target.get('failure') or {}
@@ -831,6 +840,8 @@ class NativeSoleFinalService:
                     # A durable SUCCEEDED row only exists after the original
                     # target readback validator. Submissions remain unverified.
                     result_rows.append({'target_label':target['target_label'],'status':state,
+                        'excluded_from_execution':target['target_label'] not in eligible,
+                        'cancellation_reason':'USER_CANCELLED_PLATFORM' if target['target_label'] not in eligible else None,
                         'source':'ReleaseStore:'+market_run['run_id'],
                         'request_attempted':target['attempts']>0,
                         'official_success':state=='SUCCEEDED' and bool(target.get('readback')),
@@ -839,9 +850,12 @@ class NativeSoleFinalService:
                              state=='FAILED' and target['attempts']>0
                              and not server._generic_tiktok_safe_retry_target(target)),
                         'readback':evidence})
+                current_results=eligible_rows(result_rows,cancellation)
                 uncertain=any(row['outcome_unknown'] for row in result_rows)
-                executed=bool(result_rows) and all(row['request_attempted'] or row['official_success'] for row in result_rows)
-                completed=bool(result_rows) and all(row['official_success'] for row in result_rows)
+                executed=bool(current_results) and all(row['request_attempted'] or row['official_success'] for row in current_results)
+                completed=not uncertain and bool(current_results) and all(row['official_success'] for row in current_results)
+                market['execution_cancellation']=cancellation
+                market['effective_execution_targets']=eligible_labels(graph.targets,cancellation)
                 market.update(target_results=result_rows,execution_summary={
                     'index_valid':True,'blockers':['NATIVE_MARKETPLACE_OUTCOME_UNKNOWN'] if uncertain else []},
                     final_review={'approval_recorded':bool(decision),
@@ -864,7 +878,7 @@ class NativeSoleFinalService:
                     observations=(last.get('readonly_observation') or {}).get('observations') or []
                     market['native_readback_resume_available']=(bool(decision)
                         and not market['native_execution_in_progress']
-                        and any(row['status']=='SUBMITTED_UNVERIFIED' for row in result_rows))
+                        and any(row['status']=='SUBMITTED_UNVERIFIED' for row in current_results))
                     market['native_readback_capabilities']=[{'target_label':item.get('target_label'),
                         'capability':item.get('capability'),'error':item.get('error')}
                         for item in observations if item.get('capability') or item.get('error')]
@@ -872,7 +886,8 @@ class NativeSoleFinalService:
                     'provider_edit_permission':'UNKNOWN','execution_authority':False}
                 market['blockers']=['NATIVE_MARKETPLACE_OUTCOME_UNKNOWN'] if uncertain else []
                 market.update(preview=material,targets=list(graph.targets),
-                    status=('RECONCILIATION_REQUIRED' if uncertain else 'PUBLISHED' if completed else
+                    status=('RECONCILIATION_REQUIRED' if uncertain else
+                            'PUBLISHED_WITH_CANCELLED_TARGETS' if completed and len(current_results)!=len(result_rows) else 'PUBLISHED' if completed else
                             'PROCESSING' if executed else 'NATIVE_DECISION_SAVED') if decision else 'APPROVAL_REQUIRED',
                     final_review_available=not bool(decision),
                     final_review_admission={'final_review_available':not bool(decision),'execution_authority':False},

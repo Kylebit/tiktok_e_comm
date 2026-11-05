@@ -43,6 +43,10 @@ class _NativeExecution:
         from modules.products import server,release_adapters
         if store is not self.store or _ACTIVE.get() is not self:
             raise ApprovalBlocked('NATIVE_SOLE_FINAL_EXECUTION_SCOPE_CHANGED')
+        from shared_platform.native_publication_cancellation import for_operations, eligible_labels
+        cancellation=for_operations(self.runtime._operations)
+        if self.platform_scope and cancellation and self.platform_scope[0] in cancellation['excluded_platforms']:
+            raise ApprovalBlocked('NATIVE_PLATFORM_CANCELLED_BY_USER')
         from shared_platform.native_sole_final_service import check_current_rounds
         if self.plan_id is not None:check_current_rounds(self.store,self.plan_id,operations=self.runtime._operations)
         with self.runtime.operation() as current:
@@ -86,7 +90,7 @@ class _NativeExecution:
             from shared_platform.native_prepared_v4_targets import registry_for_original
             registry=registry_for_original(self,plan,registry)
         rows=[];partition_labels=[]
-        for label in plan['targets']:
+        for label in eligible_labels(plan['targets'],cancellation):
             channel,site=label.split(':',1)
             adapter=release_adapters.ADAPTER_NAMES.get(channel)
             if adapter is None:raise ApprovalBlocked('NATIVE_SOLE_FINAL_TARGET_ADAPTER_UNKNOWN')
@@ -100,7 +104,7 @@ class _NativeExecution:
                     'publication_scope':{'selected_labels':list(plan['targets'])}},
                 'payload':payload,'plan':plan,'run':run,'predecessor_run':None,
                 'registry':registry,'target_rows':rows,'native_recheck':checked,
-                'common_completion':common_completion}
+                'common_completion':common_completion,'execution_cancellation':cancellation}
         if self.platform_scope is not None:
             value['execution_partition']={'platform':self.platform_scope[0],'target_labels':partition_labels}
         return value,None
@@ -160,6 +164,9 @@ def execute_decision(service,decision_id,*,runtime=None,promotion_targets=None):
         # The existing executor holds its original non-reentrant execution lock.
         # It creates/reuses the run inside that lock after this gate succeeds.
         if promotion_targets is not None:
+            from shared_platform.native_publication_cancellation import for_operations, eligible_labels
+            if list(promotion_targets)!=eligible_labels(promotion_targets,for_operations(runtime._operations)):
+                raise ApprovalBlocked('NATIVE_PLATFORM_CANCELLED_BY_USER')
             from shared_platform.native_companion_promotions import execute_active
             return execute_active(active,data,promotion_targets)
         operations=runtime._operations
@@ -175,7 +182,7 @@ def execute_decision(service,decision_id,*,runtime=None,promotion_targets=None):
             if gate['run'] is None:service.store.start_run(plan['plan_id'])
             from shared_platform.publication_platform_scheduler import run_native_platform_partitions
             platforms=tuple(p for p in ('TIKTOK','SHOPEE','OZON')
-                            if any(t.split(':',1)[0].upper()==p for t in plan['targets']))
+                            if any(row['channel'].upper()==p for row in gate['target_rows']))
             def invoke(platform):
                 # ContextVars intentionally do not cross worker threads. Each
                 # partition acquires its own genuine operation lease and then

@@ -4,7 +4,9 @@ No private decision store, synthetic actor, provider EDIT or formal installation
 The closed provider replies are fixtures, not a claim of production permission.
 """
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
+import threading
 
 import pytest
 
@@ -109,6 +111,35 @@ def test_two_real_nonce_submissions_serialize_to_one_decision_and_approval(live,
     def submit(value):return service.decide(nonce=value['nonce'],review_digest=value['review_digest'])
     with ThreadPoolExecutor(max_workers=2) as pool:results = list(pool.map(submit,[first,second]))
     assert results[0] == results[1] and _counts(service.store) == (2,1,1,1)
+
+
+def test_parallel_rechecks_read_approved_graph_while_another_writer_is_reserved(live, monkeypatch, tmp_path):
+    service, market, *_ = _completed(live, monkeypatch, tmp_path)
+    prepared = service.prepare(market['plan_id'])
+    approved = service.decide(nonce=prepared['nonce'],review_digest=prepared['review_digest'])
+    before = _counts(service.store)
+    observed = service._observe_market_current
+    barrier = threading.Barrier(3, timeout=20)
+    def simultaneous(plan_id):
+        value = observed(plan_id)
+        barrier.wait()
+        return value
+    monkeypatch.setattr(service,'_observe_market_current',simultaneous)
+    # In rollback mode a RESERVED writer permits all readers. A recheck that
+    # unnecessarily requests another writer instead blocks here (the PGW bug).
+    with closing(service.store._connect()) as writer:
+        assert writer.execute('PRAGMA journal_mode').fetchone()[0] == 'delete'
+        writer.execute('BEGIN IMMEDIATE')
+        try:
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = [pool.submit(service.recheck,approved['decision_id']) for _ in range(3)]
+                results = [future.result(timeout=20) for future in futures]
+        finally:
+            writer.rollback()
+    assert all(value['decision_id']==approved['decision_id']
+        and value['execution_recheck_succeeded'] is True
+        and value['execution_authority'] is False for value in results)
+    assert _counts(service.store) == before == (1,1,1,1)
 
 
 def test_original_approval_writer_failure_rolls_back_nonce_decision_and_snapshot(live, monkeypatch, tmp_path):

@@ -53,9 +53,18 @@ def verify_runtime(bound,request=request_json):
     return runtime
 
 
+def _open_write_once(path):
+    # Keep journal references canonical; only the Windows write handle uses
+    # the extended form of an already-bound absolute local drive path.
+    io_path=path
+    if os.name=='nt' and path.is_absolute() and len(path.drive)==2 and path.drive[1]==':':
+        io_path=Path('\\\\?\\'+str(path))
+    return io_path.open('xb')
+
+
 def _write_once(path,value):
     raw=json.dumps(value,ensure_ascii=False,sort_keys=True,indent=2).encode()
-    with path.open('xb') as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
+    with _open_write_once(path) as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
 
 
 def _mutation(bound,operation,body,request,*,resume_known=False,read_only=False):
@@ -81,7 +90,7 @@ def _mutation(bound,operation,body,request,*,resume_known=False,read_only=False)
     _write_once(intent,{'schema_version':'publication-entry-intent/v1',**scope,'binding':binding,'state':'UNKNOWN'})
     def capture(status,wire):
         path=directory/(key+'.http-body.private.bin')
-        with path.open('xb') as stream:stream.write(wire);stream.flush();os.fsync(stream.fileno())
+        with _open_write_once(path) as stream:stream.write(wire);stream.flush();os.fsync(stream.fileno())
         _write_once(directory/(key+'.http-response.json'),{'http_status':status,'body_path':str(path),
             'body_sha256':hashlib.sha256(wire).hexdigest(),'body_bytes':len(wire),
             'truncated':len(wire)>8*1024*1024,'intent_digest':identity})

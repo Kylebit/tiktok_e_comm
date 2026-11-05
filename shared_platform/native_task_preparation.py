@@ -212,6 +212,8 @@ class ExplicitNewTaskWorker(OperationsWorker):
                     self._task_ids.remove(task_id)
             if payload.get('template') not in {'publication', 'profit', 'delisting'}:
                 return self.engine.create(payload)
+            from shared_platform.native_publication_cancellation import future_payload
+            payload = future_payload(self.engine,payload)
             task, created = self.engine.create_for_explicit_post(payload,allow_new=len(self._task_ids)<32)
             if created: self._task_ids.add(task['task_id'])
         if created: self.wake()

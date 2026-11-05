@@ -248,6 +248,7 @@
     }
     if(common.status==='RECONCILIATION_REQUIRED')return {label:'核对原 COMMON 结果',detail:'原提交结果或证据待核对；保留原计划，停止重复写入。'};
     if(market.native_execution_in_progress)return {label:'正在执行原已批准任务',detail:'唯一终审决定已保存；逐目标记录自动更新，不重复提交。'};
+    if(market.native_final_review?.approval_saved && market.status==='PUBLISHED_WITH_CANCELLED_TARGETS')return {label:'其余目标已完成回读',detail:'Ozon 已取消后续，原导入记录保留；可查看 TikTok 与 Shopee 的逐目标结果。'};
     if(market.native_final_review?.approval_saved && market.status==='PUBLISHED')return {label:'所选平台已完成回读',detail:'原任务已完成，可查看逐目标结果与来源报告。'};
     if(market.native_final_review?.approval_saved && market.status==='PROCESSING')return {label:'等待平台结果',detail:'原任务已提交，保留已批准范围；可仅核对回读，不重新批准或重复发布。'};
     if(market.status==='RECONCILIATION_REQUIRED')return {label:'处理发布结果与对账',detail:'COMMON 已回读；部分平台结果未知，按原运行记录核对。'};
@@ -305,7 +306,8 @@
     const rows=market.platforms||[];
     if(market.native_final_review?.approval_saved && Array.isArray(market.target_results)){
       const resultLabels={SUCCEEDED:'已完成官方回读',SUBMITTED_UNVERIFIED:'已提交 · 等待官方结果',RUNNING:'正在执行 · 结果待核对',RECONCILIATION_REQUIRED:'结果未知 · 不可重发',FAILED:'结果待核对 · 不可重发',PENDING:'尚未执行'};
-      review.innerHTML+=`<table data-native-target-results><thead><tr><th>冻结目标</th><th>原任务结果</th></tr></thead><tbody>${market.target_results.map(row=>`<tr><td>${esc(row.target_label)}</td><td>${esc(resultLabels[row.status]||'结果待核对')}</td></tr>`).join('')}</tbody></table>`;
+      if(market.execution_cancellation) review.innerHTML+='<p data-native-platform-cancellation>已取消 Ozon 后续发布、图片与库存操作；保留原导入结果，不下架已有商品。当前仅继续 TikTok 与 Shopee。</p>';
+      review.innerHTML+=`<table data-native-target-results><thead><tr><th>冻结目标</th><th>原任务结果</th></tr></thead><tbody>${market.target_results.map(row=>`<tr><td>${esc(row.target_label)}</td><td>${esc(resultLabels[row.status]||'结果待核对')}${row.excluded_from_execution?'；用户已取消后续操作，保留原结果':''}</td></tr>`).join('')}</tbody></table>`;
     }
     const statusLabel=value=>({RETAINED_TECHNICAL_BASELINE:'COMMON 已完成',TECHNICAL_CONDITIONS_UNKNOWN:'COMMON 准备条件待核对',VERIFIED:'原 COMMON 已回读',RECONCILIATION_REQUIRED:'原结果待核对 · 不可重发',APPROVAL_REQUIRED:'待批准当前范围',READY_TO_SYNC:'原计划已批准 · 技术预算待核对',READY_TO_PUBLISH:'已批准 · 待执行',PUBLISHED:'平台已回读',PROCESSING:'等待回读',FAILED:'失败待处理',BLOCKED:'条件待补全'}[value]||'尚未完成');
     $('#publicationFlowLedger').innerHTML=`<table><thead><tr><th>阶段 / 平台</th><th>结果</th><th>来源</th></tr></thead><tbody><tr><td>COMMON 冻结计划</td><td>${esc(common.status==='APPROVAL_REQUIRED'?'技术接线待完成 · 不新增人工批准':common.status==='READY_TO_SYNC'?'COMMON 技术条件待核对':statusLabel(common.status))}</td><td>${esc(sourceLabel)}<details><summary>来源、执行条件与原运行详情</summary><pre>${esc(JSON.stringify({status:common.status,source_facts:source,authority_facts:authority,retained_baseline:common.retained_baseline_facts,technical_details:common.technical_details,run:common.run},null,2))}</pre></details></td></tr>${rows.map(row=>`<tr><td>${esc(row.platform)}</td><td>${esc(statusLabel(row.status))}</td><td><details><summary>原目标记录</summary><pre>${esc(JSON.stringify(row,null,2))}</pre></details></td></tr>`).join('')}</tbody></table><button type="button" id="inspectStageDetails">查看与复制完整阶段证据</button>`;

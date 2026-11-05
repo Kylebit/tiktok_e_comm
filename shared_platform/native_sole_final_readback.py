@@ -727,7 +727,8 @@ def observe_submissions(runtime, decision_id):
         run = gate['run']
         observations = []
         retry_read = False
-        for target in (run or {}).get('targets') or []:
+        from shared_platform.native_publication_cancellation import eligible_rows
+        for target in eligible_rows((run or {}).get('targets') or [],gate.get('execution_cancellation')):
             if decision_id==B_DECISION and target['target_label']==_VN and target['status']=='FAILED' and eligible_shopee_failed_readback(runtime.store,decision_id):
                 try:
                     observations.append(_observe_vn_failed(active,gate,data))

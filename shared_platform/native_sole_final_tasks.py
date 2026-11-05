@@ -88,13 +88,31 @@ def project_explicit_decision_progress(runtime,decision_id,phase):
                 stored=engine._row(connection,task['task_id'])
                 task=engine._project(connection,stored)
         targets=(market_run or {}).get('targets') or []
+        from shared_platform.native_publication_cancellation import for_operations, eligible_rows
+        cancellation=for_operations(operations)
+        current_targets=eligible_rows(targets,cancellation)
         from modules.products import server
         unknown=any(target['status'] in {'RUNNING','RECONCILIATION_REQUIRED'} or (
             target['status']=='FAILED' and target['attempts']>0
             and not server._generic_tiktok_safe_retry_target(target)) for target in targets)
-        all_verified=bool(targets) and all(row['status']=='SUCCEEDED' and row.get('readback') for row in targets)
+        all_verified=not unknown and bool(current_targets) and all(row['status']=='SUCCEEDED' and row.get('readback') for row in current_targets)
         completion_checkpoint=None
-        if all_verified:
+        if all_verified and cancellation is not None and len(current_targets)!=len(targets):
+            # This is a resolved current execution scope, not a rewritten
+            # 15-target readback. Preserve the cancelled import's raw result.
+            images=native.read_images(task,profile)
+            if (images['native_r1']!=frozen or images['native_r2']!=task['steps'][1]['checkpoint']['native_r2']
+                    or sorted(t['target_label'] for t in targets)!=sorted(review['targets'])):
+                raise ApprovalBlocked('NATIVE_CANCELLED_SCOPE_COMPLETION_CHANGED')
+            canonical=json.dumps(current_targets,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+            completion_checkpoint={**images,'release_receipt':{
+                'plan_id':row['plan_id'],'approval_id':receipt['release_approval_id'],
+                'candidate_digest':review['candidate_digest'],
+                'target_sources':[{'target_label':t['target_label'],'source':'ReleaseStore:'+run_id} for t in current_targets],
+                'provider_readback_ref':'publication-effective-scope:'+hashlib.sha256(canonical.encode()).hexdigest(),
+                'execution_cancellation':cancellation,
+                'retained_cancelled_results':[t for t in targets if t not in current_targets]}}
+        elif all_verified:
             from shared_platform import operations_publication
             completion_checkpoint=operations_publication._native_receipt(task,profile)
             from shared_platform.workbench_publication_adapter import _release_receipt
@@ -121,6 +139,8 @@ def project_explicit_decision_progress(runtime,decision_id,phase):
             checkpoint['native_final_decision']={'decision_id':decision_id,
                 'approval_id':receipt['release_approval_id'],'plan_id':row['plan_id'],
                 'phase':phase,'official_readback_complete':all_verified,'outcome_unknown':unknown,
+                'execution_cancellation':cancellation,
+                'effective_targets':[target['target_label'] for target in current_targets],
                 'target_results':[{'target_label':target['target_label'],'status':target['status'],
                                    'attempts':target['attempts']} for target in targets]}
             connection.execute('UPDATE workbench_execution SET action_json=?,checkpoint_json=? WHERE task_id=?',

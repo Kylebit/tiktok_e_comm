@@ -326,7 +326,12 @@ class NativeSoleFinalDecisionService:
             row=db.execute('SELECT plan_id FROM native_sole_final_decisions WHERE decision_id=?',(decision_id,)).fetchone()
             plan_id=row['plan_id']
         observation=self._observe_market_current(plan_id)
-        with self._transaction() as db:
+        # Recheck changes no row. A writer reservation here serializes every
+        # platform's signed READ and can expire another platform's observation.
+        # Keep one query-only snapshot; the actual target claim still rechecks
+        # the durable decision in its existing write transaction.
+        with closing(self.store._connect_readonly()) as db,db:
+            db.execute('BEGIN');check_schema(db)
             receipt=self._decision(db,decision_id,owner_sid=actor['owner_sid'])
             row=db.execute('SELECT * FROM native_sole_final_decisions WHERE decision_id=?',(decision_id,)).fetchone()
             approved=_frozen(row['review_json'])

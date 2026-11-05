@@ -28,6 +28,106 @@ class Response(io.BytesIO):
     def geturl(self):return 'https://example.invalid/provider'
 
 
+def test_same_run_regional_unsent_claim_retains_shared_prefix_and_rejects_unknown(tmp_path,monkeypatch):
+    """Real claim transactions; synthetic actor/official-read boundary, no network."""
+    import socket
+    from types import SimpleNamespace
+    from test_release_store import _approved_store
+    from shared_platform import native_provider_continuation as continuation
+    from shared_platform.native_final_mutation_budget import SCHEMA_SQL,_json,_sha
+    from shared_platform.release_store import ReleaseStoreError
+    network=[]
+    def deny(*args,**kwargs):network.append('attempt');pytest.fail('Network forbidden in regional claim contract')
+    monkeypatch.setattr(socket.socket,'connect',deny)
+    labels=['shopee:MY','shopee:PH','shopee:TH','shopee:VN']
+    store,plan,_=_approved_store(tmp_path,targets=labels);run=store.start_run(plan['plan_id']);rid=run['run_id']
+    for label in labels:store.begin_target(rid,label)
+    for label,zero in (('shopee:MY',True),('shopee:PH',False)):
+        store.record_target_failure(rid,label,error='retained original preparation',failure_evidence={
+            'schema_version':'native-scoped-v4-target-result/v1','target_label':label,'status':'FAILED',
+            'outcome_unknown':False,'reconciliation_required':False,'known_pre_submit_zero':zero,
+            'checkpoint_file_identity':{'decision_id':'original-decision','plan_id':plan['plan_id'],
+                'release_run_id':rid,'execution_snapshot_digest':'sha256:'+'a'*64}})
+    store.record_target_success(rid,'shopee:TH',external_id='existing-th-item',readback_evidence={'verified':True})
+    binding={'plan_id':plan['plan_id'],'snapshot_digest':'sha256:'+'a'*64,'platform':'SHOPEE',
+        'target_labels':labels,'shared_maximum':9,'per_target_maximum':4,
+        'payload_digest':plan['payload_digest'],'candidate_digest':'b'*64,'decision_id':'original-decision'}
+    scope=_sha(_json({k:binding[k] for k in ('plan_id','snapshot_digest','platform')}))
+    with store._connect() as db:
+        db.executescript(SCHEMA_SQL)
+        db.execute('INSERT INTO native_final_budget_scopes VALUES(?,?,?,?,?,?)',
+            (scope,plan['plan_id'],binding['snapshot_digest'],'SHOPEE',_json(binding),_sha(_json(binding))))
+        for sequence,operation in enumerate(['upload_image']*7+['create_global_item','initialize_models'],1):
+            db.execute('INSERT INTO native_final_budget_reservations VALUES(?,?,?,?,?,?,?)',
+                (scope,sequence,'shopee:PH','shared',operation,1,'UNKNOWN'))
+            db.execute('INSERT INTO native_final_budget_dispatches VALUES(?,?,?)',(scope,sequence,'c'*64))
+            db.execute('INSERT INTO native_final_budget_outcomes VALUES(?,?,?)',(scope,sequence,'ACCEPTED'))
+    owner=SimpleNamespace(store=store,plan_id=plan['plan_id'],decision_id='original-decision')
+    # Only the native actor boundary is substituted. Claim, SQLite preimage,
+    # accepted-prefix, region-unsent and preservation checks remain production.
+    monkeypatch.setattr(continuation,'_regional_active',lambda current: current is owner,raising=False)
+    def image():
+        with store._connect_readonly() as db:
+            return {name:[dict(r) for r in db.execute('SELECT * FROM '+name)] for name in
+                ('native_final_budget_scopes','native_final_budget_reservations',
+                 'native_final_budget_dispatches','native_final_budget_outcomes','release_target_failure_events')}
+    before=image();th=next(t for t in store.get_run(rid)['targets'] if t['target_label']=='shopee:TH')
+    with pytest.raises(ReleaseStoreError):store.begin_target(rid,'shopee:PH')
+    for label in ('shopee:MY','shopee:PH','shopee:VN'):
+        with store._connect_readonly() as db:
+            facts=continuation._regional_unsent_db_facts(db,rid,label,binding)
+        proof=continuation._RegionalUnsentProof(owner,_json(facts),(),_json({'official_regional_item_absent':True,
+            'official_existing_global_exact':True,'global_item_id':'existing-global','new_shared_writes':0,'task_id':'original-task'}))
+        if label=='shopee:MY':
+            monkeypatch.setattr(continuation,'_regional_active',lambda current:False)
+            with pytest.raises(ReleaseStoreError,match='CURRENT_NATIVE_ACTOR_REQUIRED'):
+                store.begin_target(rid,label,regional_unsent_proof=proof)
+            monkeypatch.setattr(continuation,'_regional_active',lambda current:current is owner)
+        if label=='shopee:PH':
+            with store._connect() as db:
+                db.execute('SAVEPOINT unknown_region')
+                db.execute('INSERT INTO native_final_budget_reservations VALUES(?,?,?,?,?,?,?)',
+                    (scope,10,label,'target','create_publish_task',1,'UNKNOWN'))
+                with pytest.raises(ValueError,match='REGIONAL_RESERVATION_REQUIRES_RECONCILIATION'):
+                    continuation._regional_unsent_db_facts(db,rid,label,binding)
+                db.execute('ROLLBACK TO unknown_region');db.execute('RELEASE unknown_region')
+        if label=='shopee:VN':
+            from dataclasses import replace
+            from subprocess import CompletedProcess,CalledProcessError
+            with pytest.raises(ReleaseStoreError,match='OWNED_RETIREMENT_PIN_REQUIRED'):
+                store.begin_target(rid,label,regional_unsent_proof=proof)
+            process={'stdout':'[{"ProcessId":23}]','read_failed':False};executors=[{'process_id':23,'creation_date':None}]
+            def process_read(args,**kwargs):
+                assert args[0]=='powershell.exe' and 'Get-CimInstance Win32_Process' in args[-1]
+                if process['read_failed']:raise CalledProcessError(1,args)
+                return CompletedProcess(args,0,process['stdout'],'')
+            monkeypatch.setattr(continuation.subprocess,'run',process_read)
+            def retired(*args):
+                continuation._assert_retired_executors(executors)
+                return {'executors':executors},()
+            monkeypatch.setattr(continuation,'_read_regional_retirement',retired)
+            proof=replace(proof,retirement_ref=('fixture-retirement.json','d'*64))
+            with pytest.raises(ReleaseStoreError,match='ORIGINAL_EXECUTOR_STILL_PRESENT'):
+                store.begin_target(rid,label,regional_unsent_proof=proof)
+            process.update(stdout='[]',read_failed=True)
+            with pytest.raises(ReleaseStoreError,match='RETIREMENT_PROCESS_READ_FAILED'):
+                store.begin_target(rid,label,regional_unsent_proof=proof)
+            process['read_failed']=False
+        claimed=store.begin_target(rid,label,regional_unsent_proof=proof)
+        assert claimed['status']=='RUNNING' and claimed['attempts']==2
+        with pytest.raises((ValueError,ReleaseStoreError)):
+            store.begin_target(rid,label,regional_unsent_proof=proof)
+    after=image()
+    for table in before:
+        if table!='release_target_failure_events':assert after[table]==before[table]
+    assert all(row in after['release_target_failure_events'] for row in before['release_target_failure_events'])
+    added=[row for row in after['release_target_failure_events'] if row not in before['release_target_failure_events']]
+    assert len(added)==1 and added[0]['target_label']=='shopee:VN' and added[0]['attempt']==1
+    assert json.loads(added[0]['evidence_json'])['known_pre_submit_zero'] is False
+    assert next(t for t in store.get_run(rid)['targets'] if t['target_label']=='shopee:TH')==th
+    assert network==[]
+
+
 @pytest.mark.parametrize('continue_in_attempt',[False,True],ids=['failed-original-readonly','same-attempt-approved-remainder'])
 def test_full_new_native_failure_recovers_original_id_and_strict_readback_without_new_write(live,monkeypatch,tmp_path,continue_in_attempt):
     service_data=tmp_path.parent/('provider-recovery-'+tmp_path.name)

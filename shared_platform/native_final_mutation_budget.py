@@ -312,7 +312,10 @@ def build_native_budget_ledger(active,*,platform,target_label,snapshot,candidate
                 or len(target)!=1 or target[0]['status']!='RUNNING'):
             raise NativeMutationBudgetHold('NATIVE_BUDGET_PLAN_OR_RUNNING_TARGET_CHANGED')
     base=_DurableLedger(store=active.store,binding=binding,target_label=target_label,recheck=recheck)
-    if adopted is not None or new_task:return base
+    if new_task:
+        from shared_platform.native_known_rejected_save_repair import for_active
+        return for_active(active,base)
+    if adopted is not None:return base
     from shared_platform.native_accepted_save_core_repair import for_active as accepted_core_for_active
     scoped=accepted_core_for_active(active,base)
     if scoped is not base:return scoped

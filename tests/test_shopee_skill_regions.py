@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from modules.shopee.skill_regions import (
     OfficialShopeeRegionRuntime,
     RegionContext,
@@ -76,6 +78,52 @@ def _frozen_copy(region):
     }
     locale, title, description = copies.get(region, ('en-PH', 'Approved regional title', 'Approved regional description'))
     return {'locale': locale, 'title': title, 'description': description}
+
+
+def test_my_english_copy_requires_exact_frozen_review_manifest() -> None:
+    from domains.product_operations import build_approved_publication_snapshot
+    from modules.shopee.skill_regions import _require_frozen_regional_copy
+    from shared_platform.publication_autopilot import _business_snapshot_digest, _canonical_digest
+    from test_approved_publication_snapshot import _approved_plan, _rebind, _category_decision
+
+    plan = _approved_plan()
+    payload = plan['payload']; payload['targets'].append('shopee:MY')
+    payload['product_facts']['categories_by_target']['shopee:MY'] = _category_decision(
+        'shopee:MY', '101944', 'Wall Stickers & Decals', '100636', 'Home & Living')
+    payload['pricing']['selected_targets']['shopee:MY'] = deepcopy(payload['pricing']['selected_targets']['shopee:PH'])
+    for price in payload['pricing']['selected_targets']['shopee:MY']['sku_prices']:
+        price['currency'] = 'MYR'
+    title = 'Wooden Tabletop Napkin Holder for Dining Tables'
+    description = 'Keep folded paper napkins together on the dining table.'
+    payload['product_facts']['content_by_target'] = {label: {
+        'locale': 'ms-MY' if label == 'shopee:MY' else 'en-PH',
+        'title': title, 'description': description} for label in payload['targets']}
+    snapshot = build_approved_publication_snapshot(_rebind(plan)).payload()
+    candidate = {'schema_version': 'publication-release-candidate/v1', 'status': 'READY_FOR_FINAL_REVIEW',
+        **{key: snapshot[key] for key in ('offer_id', 'plan_id', 'product_revision')},
+        'snapshot_digest': _business_snapshot_digest(snapshot), 'blockers': [],
+        'platform_scope': ['SHOPEE'], 'target_labels': ['shopee:MY'],
+        'write_budget': {'SHOPEE': {'target_labels': ['shopee:MY'], 'shared_maximum': 9,
+            'per_target_maximum': 4, 'maximum_confirmed_writes': 13}},
+        'review_manifest': {'copy_sets': [{'target_labels': ['shopee:MY'], 'language': 'en',
+            'title': title, 'description': description}]}}
+    def bind(value):
+        value.pop('candidate_digest', None); value['candidate_digest'] = _canonical_digest(value)
+        return value
+    bind(candidate)
+    original = deepcopy((snapshot, candidate))
+    assert _require_frozen_regional_copy(snapshot, 'shopee:MY', release_candidate=candidate) == (title, description)
+    for change in ('no_review', 'language', 'title', 'ambiguous', 'digest', 'snapshot'):
+        bad = deepcopy(candidate); body = deepcopy(snapshot)
+        if change == 'no_review': bad = None
+        elif change == 'language': bad['review_manifest']['copy_sets'][0]['language'] = 'ms'; bind(bad)
+        elif change == 'title': bad['review_manifest']['copy_sets'][0]['title'] += ' changed'; bind(bad)
+        elif change == 'ambiguous': bad['review_manifest']['copy_sets'] *= 2; bind(bad)
+        elif change == 'digest': bad['candidate_digest'] = '0' * 64
+        elif change == 'snapshot': body['product']['content_by_target']['shopee:MY']['description'] += ' changed'
+        with pytest.raises(ValueError):
+            _require_frozen_regional_copy(body, 'shopee:MY', release_candidate=bad)
+    assert (snapshot, candidate) == original
 
 
 class FakeRuntime:

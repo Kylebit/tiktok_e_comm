@@ -5365,16 +5365,33 @@ class ReleaseStore:
             )
             return self._run_in_transaction(connection, clean_run_id)
 
-    def begin_target(self, run_id: str, target_label: str) -> dict[str, Any]:
+    def begin_target(self, run_id: str, target_label: str, *, regional_unsent_proof=None) -> dict[str, Any]:
         """Claim one pending target attempt before any adapter is called."""
         with self._transaction() as connection:
             row = self._target_for_update(connection, run_id, target_label)
             self._require_active_run(connection, row["run_id"])
-            if row["status"] != TARGET_PENDING:
+            continuation = None
+            if regional_unsent_proof is not None:
+                from shared_platform.native_provider_continuation import _RegionalUnsentProof
+                if type(regional_unsent_proof) is not _RegionalUnsentProof:
+                    raise ReleaseAuthorizationError('native regional-unsent proof required')
+                try:
+                    continuation = regional_unsent_proof.validate(self,connection,row)
+                except (ValueError,OSError,KeyError,TypeError,RuntimeError) as error:
+                    raise ReleaseAuthorizationError(str(error)) from error
+            if row["status"] != TARGET_PENDING and continuation is None:
                 raise ReleaseStoreError(
                     f"target must be PENDING before begin; found {row['status']}"
                 )
             now = _utc_now()
+            if continuation is not None and row['status'] == TARGET_RUNNING:
+                # Settle the original orphan's exact unsent facts before the
+                # next bounded claim. Original attempt 1 is never reset/erased.
+                evidence_json = _canonical_json(continuation)
+                connection.execute('INSERT INTO release_target_failure_events '
+                    '(run_id,target_label,attempt,evidence_json,evidence_digest,created_at) VALUES(?,?,?,?,?,?)',
+                    (row['run_id'],row['target_label'],row['attempts'],evidence_json,
+                     hashlib.sha256(evidence_json.encode()).hexdigest(),now))
             connection.execute(
                 """
                 UPDATE release_target_runs

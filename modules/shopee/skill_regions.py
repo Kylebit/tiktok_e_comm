@@ -237,6 +237,7 @@ def dispatch_selected_regions(
     before_mutation: Callable[[str, str], object] | None = None,
     on_target_result: Callable[[str, Mapping[str, object]], object] | None = None,
     target_scope: Sequence[str] | None = None,
+    release_candidate: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Submit one independent official publish task per selected region."""
 
@@ -251,7 +252,7 @@ def dispatch_selected_regions(
         region = target.split(":", 1)[1]
         try:
             approved_models = _approved_models(snapshot, target)
-            _require_frozen_regional_copy(snapshot, target)
+            _require_frozen_regional_copy(snapshot, target, release_candidate=release_candidate)
             approved_item_sku = _expected_item_sku(snapshot)
             parcel = _parcel_envelope(snapshot)
             context = runtime.context(region)
@@ -402,6 +403,7 @@ def readback_dispatched_regions(
     before_mutation: Callable[[str, str], object] | None = None,
     on_target_result: Callable[[str, Mapping[str, object]], object] | None = None,
     target_scope: Sequence[str] | None = None,
+    release_candidate: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Verify accepted tasks from official shop facts, target by target."""
 
@@ -440,7 +442,7 @@ def readback_dispatched_regions(
         try:
             if not task_id and not existing_item_id:
                 raise ShopeeRegionContractError("publish task identity is missing")
-            _require_frozen_regional_copy(snapshot, target)
+            _require_frozen_regional_copy(snapshot, target, release_candidate=release_candidate)
             approved_models = _approved_models(snapshot, target)
             context = runtime.context(region)
             expected_tiers = _exact_global_tiers(
@@ -611,14 +613,7 @@ def readback_dispatched_regions(
                 try:
                     localized_title = expected_title
                     localized_description = expected_description
-                    if not _localized_copy_matches(
-                        localized_title,
-                        localized_description,
-                        region=region,
-                    ):
-                        raise ShopeeRegionContractError(
-                            "localized regional copy failed language validation"
-                        )
+                    _require_frozen_regional_copy(snapshot, target, release_candidate=release_candidate)
                 except Exception as error:
                     copy_repair_error_type = type(error).__name__
                     copy_repair_error_message = _safe_text(error, 180)
@@ -1473,8 +1468,33 @@ def _has_target_copy(snapshot: Mapping[str, object], target_label: str) -> bool:
     )
 
 
+def _reviewed_english_my_copy(
+    snapshot: Mapping[str, object], target_label: str,
+    release_candidate: Mapping[str, object] | None,
+) -> bool:
+    """Consume the existing frozen review, never translate or create authority."""
+    if target_label != 'shopee:MY' or not isinstance(release_candidate, Mapping):
+        return False
+    from shared_platform.publication_autopilot import validate_release_candidate_for_execution
+    try:
+        candidate = validate_release_candidate_for_execution(release_candidate, snapshot=snapshot,
+            platform_scope=('SHOPEE',), target_labels=(target_label,))
+    except ValueError as error:
+        raise ShopeeRegionContractError('MY frozen review identity conflicts') from error
+    manifest = candidate.get('review_manifest')
+    groups = manifest.get('copy_sets') if isinstance(manifest, Mapping) else None
+    if not isinstance(groups, list):
+        return False
+    rows = [row for row in groups if isinstance(row, Mapping)
+        and isinstance(row.get('target_labels'), list) and target_label in row['target_labels']]
+    content = publication_content_for_target(snapshot, target_label)
+    return (len(rows) == 1 and rows[0].get('language') == 'en'
+        and all(rows[0].get(key) == content[key] for key in ('title', 'description')))
+
+
 def _require_frozen_regional_copy(
-    snapshot: Mapping[str, object], target_label: str
+    snapshot: Mapping[str, object], target_label: str, *,
+    release_candidate: Mapping[str, object] | None = None,
 ) -> tuple[str, str]:
     """R3 consumes frozen copy; historical snapshots remain readable elsewhere."""
     region = target_label.split(":", 1)[1]
@@ -1484,9 +1504,8 @@ def _require_frozen_regional_copy(
             "prepare-product-publication and prepare-product-images before R3"
         )
     title, description = _approved_copy(snapshot, target_label)
-    if region in {"MY", "TH", "VN"} and not _localized_copy_matches(
-        title, description, region=region
-    ):
+    if (region in {"MY", "TH", "VN"} and not _localized_copy_matches(title, description, region=region)
+            and not _reviewed_english_my_copy(snapshot, target_label, release_candidate)):
         raise ShopeeRegionContractError(
             f"{target_label} frozen target copy language is invalid; "
             "return to prepare-product-publication without changing approved facts"

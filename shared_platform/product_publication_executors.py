@@ -847,6 +847,8 @@ def build_shopee_region_executor(
         except (TypeError, ValueError) as error:
             return _safe_shopee_preparation_failure(labels, error, phase='PREFLIGHT')
         regional_kwargs = {"target_scope":labels}
+        if request.release_candidate is not None:
+            regional_kwargs['release_candidate'] = request.release_candidate
         if checkpoint is not None:
             regional_kwargs["on_target_result"] = checkpoint.record
         if request.write_budget_ledger is not None:

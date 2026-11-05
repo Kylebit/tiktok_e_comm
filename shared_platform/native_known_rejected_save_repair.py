@@ -5,7 +5,9 @@ protected execution factory only read them. All provider dispatch remains on
 the original active native ledger and the original signed provider seam.
 """
 from copy import deepcopy
+import gzip
 import hashlib
+import io
 import json
 import re
 import sqlite3
@@ -20,6 +22,7 @@ DECISION = 'native-final-decision:da22e734faad76bf1de4b00ffca5dba3421682d0ce94f6
 SNAPSHOT = 'sha256:ed9fb745466e25ae91da35a21f349ccec5dd7703fc14d217e04fd4447472d1c1'
 LABELS = frozenset({'tiktok:GB','tiktok:HB_MY','tiktok:HB_TH','tiktok:LH_MY','tiktok:LH_TH','tiktok:MX'})
 REASON = '您编辑过程中产品数据发生变动，为避免覆盖其它重要修改，请重新打开弹窗编辑。'
+GENERIC_SCHEMA = 'native-known-rejected-save-compensation/v2'
 SCHEMA = '''
 CREATE TABLE native_save_repair_grants (grant_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, target_label TEXT NOT NULL, run_id TEXT NOT NULL, body_json TEXT NOT NULL, body_sha256 TEXT NOT NULL, UNIQUE(scope_key,target_label));
 CREATE TABLE native_save_repair_starts (grant_id TEXT PRIMARY KEY, target_attempt INTEGER NOT NULL CHECK(target_attempt=2), FOREIGN KEY(grant_id) REFERENCES native_save_repair_grants(grant_id));
@@ -102,12 +105,27 @@ def validate_body(body):
     keys={'schema','plan_id','run_id','decision_id','snapshot_digest','scope_key','target_label','detail_id','shop_id',
           'failure_evidence_digest','checkpoint_ref','checkpoint_events_digest','original_reservations_digest',
           'original_reservations','root_addendum_ref','extra_save_maximum','base_target_maximum','combined_target_maximum'}
-    need(type(body) is dict and set(body)==keys and body['schema']=='known-rejected-save-compensation/v1', 'SAVE_REPAIR_EXACT_GRANT_REQUIRED')
-    need((body['plan_id'],body['run_id'],body['decision_id'],body['snapshot_digest'])==(PLAN,RUN,DECISION,SNAPSHOT)
-         and body['target_label'] in LABELS, 'SAVE_REPAIR_ORIGINAL_SCOPE_REQUIRED')
+    generic = type(body) is dict and body.get('schema') == GENERIC_SCHEMA
+    if generic:keys |= {'offer_id','candidate_digest','provider_rejection'}
+    need(type(body) is dict and set(body)==keys and body['schema'] in {
+        'known-rejected-save-compensation/v1',GENERIC_SCHEMA}, 'SAVE_REPAIR_EXACT_GRANT_REQUIRED')
+    if not generic:
+        need((body['plan_id'],body['run_id'],body['decision_id'],body['snapshot_digest'])==(PLAN,RUN,DECISION,SNAPSHOT)
+             and body['target_label'] in LABELS, 'SAVE_REPAIR_ORIGINAL_SCOPE_REQUIRED')
+    else:
+        need(type(body['offer_id']) is str and body['offer_id'].isdigit()
+             and body['plan_id'].startswith('r3-marketplace:'+body['offer_id']+':')
+             and body['run_id'].startswith('release-run:') and body['decision_id'].startswith('native-final-decision:')
+             and re.fullmatch('[0-9a-f]{64}',body['candidate_digest'] or '') is not None
+             and re.fullmatch('sha256:[0-9a-f]{64}',body['snapshot_digest'] or '') is not None,
+             'SAVE_REPAIR_ORIGINAL_SCOPE_REQUIRED')
+        proof=body['provider_rejection']
+        need(type(proof) is dict and set(proof)=={'path','key','response_sha256','original_execution_digest'}
+             and type(proof['path']) is str and all(type(proof[k]) is str and re.fullmatch('[0-9a-f]{64}',proof[k])
+                 for k in ('key','response_sha256','original_execution_digest')),'SAVE_REPAIR_RETAINED_REJECTION_REQUIRED')
     from modules.miaoshou.tiktok_v4_drafts import EXPECTED_SHOP_ID_BY_TARGET
     need(type(body['detail_id']) is str and re.fullmatch('[1-9][0-9]*',body['detail_id']) is not None
-         and body['shop_id']==EXPECTED_SHOP_ID_BY_TARGET[body['target_label']], 'SAVE_REPAIR_DRAFT_SHOP_CHANGED')
+         and body['shop_id']==EXPECTED_SHOP_ID_BY_TARGET.get(body['target_label']), 'SAVE_REPAIR_DRAFT_SHOP_CHANGED')
     need((body['extra_save_maximum'],body['base_target_maximum'],body['combined_target_maximum'])==(1,3,4)
          and all(type(body[k]) is int for k in ('extra_save_maximum','base_target_maximum','combined_target_maximum')),
          'SAVE_REPAIR_FIXED_EXTRA_SAVE_REQUIRED')
@@ -137,14 +155,19 @@ def _read_reference(ref):
 def validate_root_addendum(body):
     root=json.loads(_read_reference(body['root_addendum_ref']))
     core={k:v for k,v in body.items() if k!='root_addendum_ref'}
-    need(root.get('schema')=='root-known-rejected-save-repair-addendum/v1'
-         and root.get('status')=='LIVE_ADOPTION_APPROVED'
+    generic=body['schema']==GENERIC_SCHEMA
+    need(root.get('schema')==('root-native-rejected-save-technical-addendum/v2' if generic else 'root-known-rejected-save-repair-addendum/v1')
+         and root.get('status')==('TECHNICAL_CONTINUATION_ADMITTED' if generic else 'LIVE_ADOPTION_APPROVED')
          and root.get('purpose')=='EXTRA_ONE_SAVE_ONLY_RETAIN_ORIGINAL_PRODUCT_DECISION'
-         and (root.get('plan_id'),root.get('run_id'),root.get('decision_id'),root.get('snapshot_digest'))==(PLAN,RUN,DECISION,SNAPSHOT)
+         and all(root.get(k)==body[k] for k in ('plan_id','run_id','decision_id','snapshot_digest'))
          and root.get('extra_save_maximum')==1 and type(root.get('extra_save_maximum')) is int
          and type(root.get('target_labels')) is list and len(root['target_labels'])==len(set(root['target_labels']))
-         and set(root['target_labels']).issubset(LABELS) and body['target_label'] in root['target_labels']
+         and (generic or set(root['target_labels']).issubset(LABELS)) and body['target_label'] in root['target_labels']
          and _sha(_json(core)) in root.get('grant_core_digests',[]),'SAVE_REPAIR_LIVE_ROOT_ADDENDUM_REQUIRED')
+    if generic:
+        need(root.get('authority')=='ROOT_ENGINEERING_CONTINUATION_OF_ORIGINAL_NATIVE_DECISION'
+             and root.get('offer_id')==body['offer_id'] and root.get('candidate_digest')==body['candidate_digest']
+             and root.get('new_user_approval') is False,'SAVE_REPAIR_TECHNICAL_ADDENDUM_REQUIRED')
     ref=root.get('source_pins_ref')
     need(type(ref) is dict and set(ref)=={'path','sha256'},'SAVE_REPAIR_REVIEWED_SOURCE_REQUIRED')
     pins=json.loads(_read_reference(ref));expected=pins.get('shared_platform/native_known_rejected_save_repair.py',{})
@@ -161,13 +184,72 @@ def _base_rows(db, scope, label):
         WHERE r.scope_key=? AND r.target_label=? ORDER BY r.sequence''',(scope,label))]
 
 
+def _provider_identity(body):
+    from shared_platform.native_prepared_v4_targets import _file_identity
+    mapping=_file_identity(run_id=body['run_id'],plan_id=body['plan_id'],decision_id=body['decision_id'],snapshot_digest=body['snapshot_digest'])
+    return {'run_id':mapping['file_run_id'],'report_id':mapping['file_report_id'],'platform':'TIKTOK',
+        'target_labels':[body['target_label']],'snapshot_digest':body['snapshot_digest'],
+        'offer_id':body['offer_id'],'plan_id':body['plan_id']}
+
+
+def validate_provider_rejection(body):
+    """Read the original retained wire row; UNKNOWN/accepted SAVE cannot qualify.
+
+    Pin the row, not the whole growing journal. The original budget request
+    digest and SDK wire digest encode different objects; neither is invented
+    from the other. Their original target/file scope, CP and three budget rows
+    are independently checked before the single compensation is admitted.
+    """
+    from shared_platform.publication_provider_journal import (ProviderResponseJournal,
+        _checked_runtime_path,_user_identity)
+    from modules.miaoshou.tiktok_v4_drafts import SAVE_SITE_DRAFT_PATH,SAVE_SHOP_DRAFT_PATH,_SITE_DRAFT_SITES
+    from modules.miaoshou.client import _business_rejection_details
+    identity=_provider_identity(body);proof=body['provider_rejection']
+    cp=Path(body['checkpoint_ref']['path'])
+    need(cp.name=='tiktok-draft-checkpoint.json' and cp.parent.name==identity['run_id']
+         and cp.parents[2].name==body['offer_id'],'SAVE_REPAIR_CHECKPOINT_PATH_CHANGED')
+    journal=ProviderResponseJournal(_checked_runtime_path(cp.parents[3]),identity)
+    need(Path(proof['path'])==journal.path and journal.path.is_file()
+         and _sha(_json(identity))==proof['original_execution_digest'],'SAVE_REPAIR_JOURNAL_SCOPE_CHANGED')
+    _checked_runtime_path(journal.path)
+    if __import__('os').name=='nt':
+        from shared_platform.local_operator_session import verify_owner_only
+        verify_owner_only(journal.root,_user_identity())
+    with sqlite3.connect(journal.path.as_uri()+'?mode=ro',uri=True,timeout=5) as db:
+        db.row_factory=sqlite3.Row;db.execute('PRAGMA query_only=ON');db.execute('BEGIN')
+        rows=db.execute('SELECT * FROM provider_response_intents ORDER BY started_at').fetchall()
+    saves=[]
+    for row in rows:
+        request=json.loads(row['request_identity_json'])
+        need(json.loads(row['identity_json'])==identity and row['response_body'] is not None
+             and row['phase']=='RESPONSE_RETAINED' and 'publish' not in request.get('path','').lower(),
+             'SAVE_REPAIR_UNKNOWN_OR_PUBLISH_NO_REPLAY')
+        if request.get('path') in {SAVE_SITE_DRAFT_PATH,SAVE_SHOP_DRAFT_PATH}:saves.append((row,request))
+    need(len(saves)==1,'SAVE_REPAIR_EXACT_ORIGINAL_SAVE_REQUIRED')
+    row,request=saves[0];raw=bytes(row['response_body'])
+    site=body['target_label'].rsplit('_',1)[-1]
+    need(row['key']==proof['key']==_sha(_json(request)) and request.get('provider')=='miaoshou'
+         and request.get('method')=='POST' and request['path']==(SAVE_SITE_DRAFT_PATH if site in _SITE_DRAFT_SITES else SAVE_SHOP_DRAFT_PATH)
+         and re.fullmatch('[0-9a-f]{64}',request.get('request_body_sha256') or '') is not None
+         and row['http_status']==200 and row['response_sha256']==proof['response_sha256']==hashlib.sha256(raw).hexdigest()
+         and len(raw)<=2_000_000,'SAVE_REPAIR_RETAINED_REJECTION_CHANGED')
+    headers=json.loads(row['response_headers_json'] or '{}')
+    if headers.get('Content-Encoding','').lower()=='gzip' or raw[:2]==b'\x1f\x8b':
+        with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:raw=stream.read(2_000_001)
+    need(len(raw)<=2_000_000,'SAVE_REPAIR_RETAINED_REJECTION_CHANGED')
+    result=json.loads(raw.decode('utf-8'))
+    need(type(result) is dict and str(result.get('result') or '').lower()!='success'
+         and _business_rejection_details(result)[::2]==('fail',REASON),
+         'SAVE_REPAIR_RETAINED_VERSION_REJECTION_REQUIRED')
+
+
 def validate_original(db, body, *, target_status, attempt):
     validate_body(body)
     scope=db.execute('SELECT * FROM native_final_budget_scopes WHERE scope_key=?',(body['scope_key'],)).fetchone()
     need(scope is not None,'SAVE_REPAIR_ORIGINAL_BUDGET_REQUIRED')
     binding=json.loads(scope['binding_json'])
-    need(_sha(scope['binding_json'])==scope['binding_sha256'] and binding['plan_id']==PLAN
-         and binding['snapshot_digest']==SNAPSHOT and binding['decision_id']==DECISION
+    need(_sha(scope['binding_json'])==scope['binding_sha256'] and binding['plan_id']==body['plan_id']
+         and binding['snapshot_digest']==body['snapshot_digest'] and binding['decision_id']==body['decision_id']
          and binding['platform']=='TIKTOK' and binding['per_target_maximum']==3
          and body['target_label'] in binding['target_labels'], 'SAVE_REPAIR_FROZEN_BUDGET_CHANGED')
     rows=_base_rows(db,body['scope_key'],body['target_label'])
@@ -175,15 +257,25 @@ def validate_original(db, body, *, target_status, attempt):
          and [(r['budget_scope'],r['operation'],r['attempt_count'],r['outcome']) for r in rows]==[
              ('shared','create_platform_draft',1,'ACCEPTED'),('target','claim_draft',1,'ACCEPTED'),('target','save_draft',1,'REJECTED')]
          and all(re.fullmatch('[0-9a-f]{64}',r['request_digest'] or '') for r in rows), 'SAVE_REPAIR_ORIGINAL_RESERVATIONS_CHANGED')
-    target=db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?',(RUN,body['target_label'])).fetchone()
+    if body['schema']==GENERIC_SCHEMA:
+        decision=db.execute('SELECT * FROM native_sole_final_decisions WHERE decision_id=?',(body['decision_id'],)).fetchone()
+        snapshot=db.execute('SELECT snapshot_json FROM approved_publication_snapshots WHERE plan_id=?',(body['plan_id'],)).fetchone()
+        frozen=json.loads(snapshot['snapshot_json']) if snapshot is not None else {}
+        need(decision is not None and snapshot is not None and decision['plan_id']==body['plan_id']
+             and decision['snapshot_digest']==body['snapshot_digest']
+             and json.loads(decision['review_json'])['candidate_digest']==body['candidate_digest']==binding['candidate_digest']
+             and all(frozen.get(k)==body[k] for k in ('offer_id','plan_id','snapshot_digest')),
+             'SAVE_REPAIR_CURRENT_NATIVE_APPROVAL_CHANGED')
+        validate_provider_rejection(body)
+    target=db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?',(body['run_id'],body['target_label'])).fetchone()
     need(target is not None and target['status']==target_status and target['attempts']==attempt
          and target['external_id'] is None,'SAVE_REPAIR_TARGET_NOT_EXACT_FAILED_ATTEMPT')
-    run=db.execute('SELECT plan_id FROM release_runs WHERE run_id=?',(RUN,)).fetchone()
-    need(run is not None and run['plan_id']==PLAN,'SAVE_REPAIR_RUN_CHANGED')
+    run=db.execute('SELECT plan_id FROM release_runs WHERE run_id=?',(body['run_id'],)).fetchone()
+    need(run is not None and run['plan_id']==body['plan_id'],'SAVE_REPAIR_RUN_CHANGED')
     for table in ('release_target_submissions','release_target_readbacks','release_target_repairs'):
-        need(db.execute('SELECT 1 FROM '+table+' WHERE run_id=? AND target_label=?',(RUN,body['target_label'])).fetchone() is None,
+        need(db.execute('SELECT 1 FROM '+table+' WHERE run_id=? AND target_label=?',(body['run_id'],body['target_label'])).fetchone() is None,
              'SAVE_REPAIR_SUBMITTED_OR_REPAIRED_NO_REPLAY')
-    failures=db.execute('SELECT * FROM release_target_failure_events WHERE run_id=? AND target_label=? ORDER BY attempt',(RUN,body['target_label'])).fetchall()
+    failures=db.execute('SELECT * FROM release_target_failure_events WHERE run_id=? AND target_label=? ORDER BY attempt',(body['run_id'],body['target_label'])).fetchall()
     need(len(failures)==1 and failures[0]['attempt']==1 and failures[0]['evidence_digest']==body['failure_evidence_digest'],
          'SAVE_REPAIR_ORIGINAL_FAILURE_CHANGED')
     evidence=json.loads(failures[0]['evidence_json'])
@@ -194,10 +286,10 @@ def validate_original(db, body, *, target_status, attempt):
 
 def validate_checkpoint(body, checkpoint):
     from shared_platform.native_prepared_v4_targets import _file_identity
-    expected=_file_identity(run_id=RUN,plan_id=PLAN,decision_id=DECISION,snapshot_digest=SNAPSHOT)['file_run_id']
+    expected=_file_identity(run_id=body['run_id'],plan_id=body['plan_id'],decision_id=body['decision_id'],snapshot_digest=body['snapshot_digest'])['file_run_id']
     copied=dict(checkpoint); supplied=copied.pop('checkpoint_digest',None)
     need(supplied=='sha256:'+_sha(_json(copied)) and checkpoint.get('schema_version')=='tiktok-v4-draft-checkpoint/v1'
-         and checkpoint.get('offer_id')=='4039931504' and checkpoint.get('snapshot_digest')==SNAPSHOT
+         and checkpoint.get('offer_id')==body.get('offer_id','4039931504') and checkpoint.get('snapshot_digest')==body['snapshot_digest']
          and checkpoint.get('run_id')==expected,'SAVE_REPAIR_ORIGINAL_CHECKPOINT_REQUIRED')
     events=[e for e in checkpoint['events'] if e.get('target_label')==body['target_label']]
     validate_events(events,body)
@@ -211,20 +303,28 @@ def intake_grant(db, body, checkpoint):
     """
     check_schema(db); validate_original(db,body,target_status='FAILED',attempt=1)
     validate_root_addendum(body)
+    if body['schema']==GENERIC_SCHEMA:
+        need(json.loads(_read_reference(body['checkpoint_ref']))==checkpoint,'SAVE_REPAIR_FROZEN_CHECKPOINT_CHANGED')
     validate_checkpoint(body,checkpoint)
     payload=_json(body); grant_id=_sha(payload)
     db.execute('INSERT INTO native_save_repair_grants VALUES(?,?,?,?,?,?)',
-        (grant_id,body['scope_key'],body['target_label'],RUN,payload,_sha(payload)))
+        (grant_id,body['scope_key'],body['target_label'],body['run_id'],payload,_sha(payload)))
     return grant_id
 
 
-def _protected(active):
+def _protected(active, body=None):
     from shared_platform.native_sole_final_execution import _NativeExecution,_ACTIVE
-    need(type(active) is _NativeExecution and _ACTIVE.get() is active and active.plan_id==PLAN
-         and active.decision_id==DECISION and active.service.store is active.store
+    generic=body is not None and body.get('schema')==GENERIC_SCHEMA
+    plan_id=body['plan_id'] if generic else PLAN;decision_id=body['decision_id'] if generic else DECISION
+    need(type(active) is _NativeExecution and _ACTIVE.get() is active and active.plan_id==plan_id
+         and active.decision_id==decision_id and active.service.store is active.store
          and active.service._actor()['owner_sid']==active.owner_sid,'SAVE_REPAIR_PROTECTED_ACTIVE_REQUIRED')
-    from shared_platform.native_prepared_v4_targets import _scope
-    _scope(active,active.store.get_plan(PLAN))
+    if generic:
+        from shared_platform.native_new_task_v4_targets import scope
+        scope(active,active.store.get_plan(plan_id))
+    else:
+        from shared_platform.native_prepared_v4_targets import _scope
+        _scope(active,active.store.get_plan(plan_id))
 
 
 def _activate_grant(db, body, grant_id):
@@ -233,26 +333,25 @@ def _activate_grant(db, body, grant_id):
     validate_original(db,body,target_status='FAILED',attempt=1)
     validate_root_addendum(body)
     db.execute('INSERT INTO native_save_repair_starts VALUES(?,2)',(grant_id,))
-    changed=db.execute("UPDATE release_target_runs SET status='PENDING',error=NULL,completed_at=NULL WHERE run_id=? AND target_label=? AND status='FAILED' AND attempts=1",(RUN,body['target_label']))
+    changed=db.execute("UPDATE release_target_runs SET status='PENDING',error=NULL,completed_at=NULL WHERE run_id=? AND target_label=? AND status='FAILED' AND attempts=1",(body['run_id'],body['target_label']))
     need(changed.rowcount==1,'SAVE_REPAIR_FAILED_TARGET_CAS_CHANGED')
 
 
 def activate_failed_targets(active):
     """Called only after the original current gate, under original executor lock."""
-    if getattr(active,'plan_id',None)!=PLAN or getattr(active,'decision_id',None)!=DECISION:return
-    _protected(active)
     store=active.store
     with store._connect_readonly() as db:
         if not check_schema(db,optional=True): return
-        grants=[dict(r) for r in db.execute('SELECT * FROM native_save_repair_grants WHERE run_id=?',(RUN,))]
+        grants=[dict(r) for r in db.execute('SELECT g.* FROM native_save_repair_grants g JOIN release_runs r USING(run_id) WHERE r.plan_id=?',(active.plan_id,))]
     for grant in grants:
         body=json.loads(grant['body_json'])
+        _protected(active,body)
         need(_sha(grant['body_json'])==grant['body_sha256']==grant['grant_id'],'SAVE_REPAIR_GRANT_CHANGED')
         with store._transaction() as db:
             check_schema(db)
             if db.execute('SELECT 1 FROM native_save_repair_starts WHERE grant_id=?',(grant['grant_id'],)).fetchone(): continue
-            active.service._decision(db,DECISION,owner_sid=active.owner_sid)
-            store._require_active_run(db,RUN)
+            active.service._decision(db,body['decision_id'],owner_sid=active.owner_sid)
+            store._require_active_run(db,body['run_id'])
             _activate_grant(db,body,grant['grant_id'])
     # Original begin_target will atomically claim PENDING and create attempt 2.
 
@@ -264,17 +363,15 @@ def recovery_actions(active,run,actions):
     This explicit branch preserves that evidence and does not call them a
     zero-write retry or a pristine first attempt.
     """
-    if getattr(active,'plan_id',None)!=PLAN or getattr(active,'decision_id',None)!=DECISION:return actions
-    _protected(active)
-    need(run.get('run_id')==RUN,'SAVE_REPAIR_RUN_CHANGED')
     approved=set()
     with active.store._connect_readonly() as db:
         if not check_schema(db,optional=True):return actions
         for row in db.execute('''SELECT g.* FROM native_save_repair_grants g JOIN native_save_repair_starts s USING(grant_id)
-            LEFT JOIN native_save_repair_reservations r USING(grant_id) WHERE g.run_id=? AND r.grant_id IS NULL''',(RUN,)):
+            LEFT JOIN native_save_repair_reservations r USING(grant_id) WHERE g.run_id=? AND r.grant_id IS NULL''',(run['run_id'],)):
             target=next((t for t in run['targets'] if t['target_label']==row['target_label']),None)
             if target is None or target.get('status')!='PENDING' or target.get('attempts')!=1:continue
             body=json.loads(row['body_json'])
+            _protected(active,body)
             need(_sha(row['body_json'])==row['grant_id']==row['body_sha256'],'SAVE_REPAIR_GRANT_CHANGED')
             validate_original(db,body,target_status='PENDING',attempt=1);validate_root_addendum(body)
             approved.add(row['target_label'])
@@ -284,7 +381,7 @@ def recovery_actions(active,run,actions):
 
 
 def for_active(active, base):
-    if base.platform!='TIKTOK' or base.target_label not in LABELS: return base
+    if base.platform!='TIKTOK': return base
     with base._connect(readonly=True) as db:
         if not check_schema(db,optional=True): return base
         grant=db.execute('SELECT * FROM native_save_repair_grants WHERE scope_key=? AND target_label=?',(base.scope_key,base.target_label)).fetchone()
@@ -295,7 +392,7 @@ def for_active(active, base):
         validate_root_addendum(body)
         need(db.execute('SELECT 1 FROM native_save_repair_starts WHERE grant_id=?',(grant['grant_id'],)).fetchone() is not None,
              'SAVE_REPAIR_PROTECTED_START_REQUIRED')
-    _protected(active)
+    _protected(active,body)
     return _RepairLedger(base,dict(grant),body)
 
 
@@ -325,10 +422,15 @@ class _RepairLedger:
     def authorize_rejected_save(self,events,identity,request):
         self._recheck()
         need(self._prepared is None,'SAVE_REPAIR_PREPARE_ONCE')
-        need(request.snapshot['snapshot_digest']==SNAPSHOT and request.snapshot['plan_id']==PLAN
+        need(request.snapshot['snapshot_digest']==self.body['snapshot_digest'] and request.snapshot['plan_id']==self.body['plan_id']
              and request.run_id==self._checkpoint_run() and identity=={'target_label':self.body['target_label'],
              'detail_id':self.body['detail_id'],'shop_id':self.body['shop_id']},'SAVE_REPAIR_REQUEST_IDENTITY_CHANGED')
         validate_events(list(events),self.body)
+        if self.body['schema']==GENERIC_SCHEMA:
+            original=_provider_identity(self.body)
+            need(request.report_id==original['report_id']
+                 and Path(request.checkpoint_root)==Path(self.body['checkpoint_ref']['path']).parents[3],
+                 'SAVE_REPAIR_REQUEST_JOURNAL_CHANGED')
         with self.base._connect(readonly=True) as db:
             validate_original(db,self.body,target_status='RUNNING',attempt=2)
             need(db.execute('SELECT 1 FROM native_save_repair_reservations WHERE grant_id=?',(self.grant['grant_id'],)).fetchone() is None,
@@ -337,7 +439,7 @@ class _RepairLedger:
 
     def _checkpoint_run(self):
         from shared_platform.native_prepared_v4_targets import _file_identity
-        return _file_identity(run_id=RUN,plan_id=PLAN,decision_id=DECISION,snapshot_digest=SNAPSHOT)['file_run_id']
+        return _file_identity(run_id=self.body['run_id'],plan_id=self.body['plan_id'],decision_id=self.body['decision_id'],snapshot_digest=self.body['snapshot_digest'])['file_run_id']
 
     def bind_prepared_save(self,identity,prepared):
         need(self._prepared is None,'SAVE_REPAIR_PREPARE_ONCE')
@@ -407,7 +509,8 @@ class _RepairLedger:
     def retain_post_save_match(self,target,draft,matched):
         need(matched is True and target.get('target_label')==self.body['target_label']
              and str(target.get('detail_id'))==self.body['detail_id'] and str(target.get('shop_id'))==self.body['shop_id']
-             and len(target.get('expected_images') or [])==8,'SAVE_REPAIR_POST_SAVE_EXACT_READ_REQUIRED')
+             and (len(target.get('expected_images') or [])>0 if self.body['schema']==GENERIC_SCHEMA
+                  else len(target.get('expected_images') or [])==8),'SAVE_REPAIR_POST_SAVE_EXACT_READ_REQUIRED')
         self._recheck()
         with self.base._connect() as db:
             db.execute('BEGIN IMMEDIATE');self._recheck(db)

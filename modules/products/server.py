@@ -14201,11 +14201,18 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
         target_rows = gate["target_rows"]
         assert run is not None
         run = store.get_run(run["run_id"]) or run
+        # Exact same-run regional absence can settle an orphaned first claim;
+        # the native proof preserves the accepted Global and original attempt.
+        native_regional_unsent = {}
+        if native_gate is not None and partition is not None and partition['platform'] == 'SHOPEE':
+            from shared_platform.native_provider_continuation import regional_unsent_proofs
+            native_regional_unsent = regional_unsent_proofs(native_gate,{**gate,'run':run})
         interrupted = [
             str(row.get("target_label") or "")
             for row in (run.get("targets") or ())
             if row.get("status") == "RUNNING"
             and (partition_labels is None or row.get("target_label") in partition_labels)
+            and row.get('target_label') not in native_regional_unsent
         ]
         if interrupted:
             return _release_reconciliation_required(
@@ -14229,7 +14236,7 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
             except NativeMutationBudgetHold as error:
                 native_tiktok_locale_hold = str(error)
             run = store.get_run(run["run_id"]) or run
-        if native_gate is not None and partition is None:
+        if native_gate is not None and (partition is None or partition['platform']=='TIKTOK'):
             from shared_platform.native_known_rejected_save_repair import activate_failed_targets
             activate_failed_targets(native_gate)
             run = store.get_run(run["run_id"]) or run
@@ -14309,6 +14316,9 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
         )
         if partition_labels is not None:
             recovery_actions = [a for a in recovery_actions if a.get("target_label") in partition_labels]
+        recovery_actions = [{**action,'action_kind':'NATIVE_REGIONAL_UNSENT_CONTINUATION','runnable':True,
+            'reason_code':'same_run_accepted_global_and_exact_region_not_sent'}
+            if action.get('target_label') in native_regional_unsent else action for action in recovery_actions]
         recovery_actions = [{**action, 'action_kind': 'NATIVE_SHOPEE_GLOBAL_ZERO_CONTINUATION', 'runnable': True,
             'reason_code': 'original_global_resolver_zero_before_any_mutation'}
             if action.get('target_label') in native_shopee_global_zero else action for action in recovery_actions]
@@ -14330,7 +14340,7 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
         if native_shopee_regional_hold:
             recovery_actions = [{**action, 'runnable': False, 'reason_code': native_shopee_regional_hold}
                 if str(action.get('target_label') or '').startswith('shopee:') else action for action in recovery_actions]
-        if native_gate is not None and partition is None:
+        if native_gate is not None and (partition is None or partition['platform']=='TIKTOK'):
             from shared_platform.native_known_rejected_save_repair import recovery_actions as repair_recovery_actions
             recovery_actions = repair_recovery_actions(native_gate, run, recovery_actions)
         if native_gate is not None and partition is None:
@@ -14490,7 +14500,7 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                 ),
                 None,
             )
-            if not current_target or (current_target.get("status") != "PENDING" and not (
+            if not current_target or (current_target.get("status") != "PENDING" and label not in native_regional_unsent and not (
                 current_target.get('storage_status') == 'PENDING' and (
                     (recovery_action_by_label.get(label, {}).get('action_kind') == 'NATIVE_OZON_THREE_CARD_STOCK_CONTINUATION' and current_target.get('attempts') == 1)
                     or (recovery_action_by_label.get(label, {}).get('action_kind') == 'NATIVE_OZON_TWO_CARD_PARTIAL_STOCK' and current_target.get('attempts') == 2)))):
@@ -14501,7 +14511,18 @@ def _publish_selected_release(data: dict, *, native_gate=None) -> tuple[int, dic
                 continue
             result = None
             try:
-                store.begin_target(run["run_id"], label)
+                if label in native_regional_unsent:
+                    # Re-read provider/file/ledger facts after preceding regions
+                    # progress, immediately before the original atomic claim.
+                    try:
+                        current_proofs = regional_unsent_proofs(native_gate,fresh_gate)
+                    except (ValueError,OSError,KeyError,TypeError,RuntimeError) as error:
+                        raise ReleaseAuthorizationError(str(error)) from error
+                    proof = current_proofs.get(label)
+                    if proof is None:raise ReleaseStoreError('native regional-unsent proof changed')
+                    store.begin_target(run['run_id'],label,regional_unsent_proof=proof)
+                else:
+                    store.begin_target(run["run_id"], label)
                 request = AdapterExecutionRequest(
                     plan_id=plan_id,
                     confirmation_token=token,

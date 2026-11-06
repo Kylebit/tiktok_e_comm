@@ -44,6 +44,7 @@ ALLOWED_FILES = frozenset({
     'modules/products/server.py',
     'shared_platform/native_final_mutation_budget.py',
     'shared_platform/native_known_rejected_save_repair.py',
+    'shared_platform/native_accepted_save_core_repair.py',
     'tests/test_native_known_rejected_save_repair.py',
     'shared_platform/native_provider_continuation.py',
     'shared_platform/release_store.py',
@@ -52,6 +53,8 @@ ALLOWED_FILES = frozenset({
     'shared_platform/sku_only_publication_correction.py',
     'shared_platform/r3_technical_category_evidence.py',
     'tests/test_r3_technical_category_evidence.py',
+    'shared_platform/workbench_engine.py',
+    'tests/test_workbench_final_review_evidence.py',
 })
 
 
@@ -220,6 +223,11 @@ def _business(store, db, *, initial=True, anchor=None):
             'scope_key':[r['scope_key'] for r in scopes]}
     # OneClick child rows are keyed by job, including promotion UNKNOWN locks.
     keys['job_id'] = _related_jobs(db,plan_ids)
+    keys['grant_id'] = []
+    for table in ('native_save_repair_grants','native_accepted_core_grants'):
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone():
+            keys['grant_id'] += [r[0] for r in db.execute('SELECT grant_id FROM '+table+
+                ' WHERE scope_key IN ('+','.join('?'*len(keys['scope_key']))+')',keys['scope_key'])]
     sealed = _related_rows(db,keys)
     return {'decision_id':decision_id,'plan_id':plan_id,'candidate_digest':anchor['candidate_digest'],
             'snapshot_digest':anchor['snapshot_digest'],'run_id':run_id,'accepted_external_id':anchor['accepted_external_id'],

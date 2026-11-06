@@ -80,6 +80,8 @@ class _NativeTikTokContinuationProof:
             record=expected['base'][-1]
             db.execute('INSERT INTO native_final_budget_outcomes VALUES(?,?,?)',
                 (expected['scope_key'],record['sequence'],'ACCEPTED'))
+        elif expected['mode']=='CORE_UNDISPATCHED':
+            db.execute('INSERT INTO native_accepted_core_starts VALUES(?,2)',(expected['grant']['grant_id'],))
         elif expected['mode']=='REPAIR_ACCEPTED' and not expected['repair']['outcomes']:
             db.execute('INSERT INTO native_save_repair_outcomes VALUES(?,?)',(expected['grant']['grant_id'],'ACCEPTED'))
         return {'schema_version':'native-original-tiktok-continuation/v1','mode':expected['mode'],
@@ -91,6 +93,9 @@ def _tiktok_continuation_facts(active,db,binding,label,source_pin=None):
     from shared_platform.native_final_mutation_budget import _json,_sha
     from shared_platform.native_prepared_v4_targets import _file_identity
     from shared_platform import native_known_rejected_save_repair as repair
+    from shared_platform.native_accepted_save_core_repair import generic_proof
+    core=generic_proof(active,db,binding,label)
+    if core is not None:return core
     target=db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?',(binding['run_id'],label)).fetchone()
     _region_need(target is not None and target['status']=='FAILED' and not target['external_id'],'ORIGINAL_TIKTOK_FAILED_REQUIRED')
     for table in ('release_target_submissions','release_target_readbacks','release_target_repairs','release_target_retry_operations'):

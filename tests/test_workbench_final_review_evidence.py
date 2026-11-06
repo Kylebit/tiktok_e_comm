@@ -199,3 +199,120 @@ def test_reader_rejects_invalid_image_and_missing_task(tmp_path):
     other.write_bytes(b'invalid')
     with pytest.raises(ValueError):
         read_final_review_task_evidence(other, task)
+
+
+def test_runtime_snapshot_serializes_capture_without_holding_consumer_lock(tmp_path, monkeypatch):
+    """A real same-engine commit must not split the two authenticated reads."""
+    from pathlib import Path
+    from threading import Event, Thread
+
+    engine, task, _ = ready(tmp_path)
+    with engine.readonly_snapshot() as db:
+        original_checkpoint = engine._row(db, task)['checkpoint_json']
+    original_open = Path.open
+    first_read, continue_read, consumer_open, finish_consumer = (Event() for _ in range(4))
+    writer_attempted, writer_committed = Event(), Event()
+    observed, errors = {}, []
+
+    class PausedImage:
+        def __init__(self, stream):
+            self.stream = stream
+            self.first = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def fileno(self):
+            return self.stream.fileno()
+
+        def seek(self, *args):
+            return self.stream.seek(*args)
+
+        def read(self, *args):
+            value = self.stream.read(*args)
+            if self.first:
+                self.first = False
+                first_read.set()
+                assert continue_read.wait(5)
+            return value
+
+    def paused_open(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        if path == engine.store.path and args == ('rb',):
+            return PausedImage(stream)
+        return stream
+
+    def read_snapshot():
+        try:
+            with engine.readonly_snapshot() as db:
+                observed['checkpoint'] = engine._row(db, task)['checkpoint_json']
+                consumer_open.set()
+                assert finish_consumer.wait(5)
+        except BaseException as error:
+            errors.append(error)
+
+    def write_checkpoint():
+        try:
+            writer_attempted.set()
+            with engine.transaction() as db:
+                db.execute('UPDATE workbench_execution SET checkpoint_json=? WHERE task_id=?',
+                           (_json({'concurrent': 'new'}), task))
+            writer_committed.set()
+        except BaseException as error:
+            errors.append(error)
+
+    monkeypatch.setattr(Path, 'open', paused_open)
+    reader_thread = Thread(target=read_snapshot)
+    writer_thread = Thread(target=write_checkpoint)
+    reader_thread.start()
+    try:
+        assert first_read.wait(5)
+        writer_thread.start()
+        assert writer_attempted.wait(5)
+        # Old code commits here and rejects the changed second raw read. With
+        # coordination the writer waits only for capture, not the consumer.
+        writer_committed.wait(.2)
+        continue_read.set()
+        assert consumer_open.wait(2), [repr(error) for error in errors]
+        assert writer_committed.wait(2), 'snapshot consumer retained the transaction lock'
+        assert observed['checkpoint'] == original_checkpoint
+    finally:
+        continue_read.set()
+        finish_consumer.set()
+        reader_thread.join(5)
+        if writer_thread.ident is not None:
+            writer_thread.join(5)
+    assert not reader_thread.is_alive() and not writer_thread.is_alive()
+    assert not errors
+    monkeypatch.setattr(Path, 'open', original_open)
+    with engine.readonly_snapshot() as db:
+        assert engine._row(db, task)['checkpoint_json'] == _json({'concurrent': 'new'})
+
+    # A writer outside this engine is deliberately not trusted/serialized.
+    # Preserve the original byte/stat drift rejection and sidecar rejection.
+    class ExternalChange(PausedImage):
+        def read(self, *args):
+            value = self.stream.read(*args)
+            if self.first:
+                self.first = False
+                with sqlite3.connect(engine.store.path) as db:
+                    db.execute('UPDATE workbench_execution SET checkpoint_json=? WHERE task_id=?',
+                               (_json({'concurrent': 'old'}), task))
+            return value
+
+    def changed_open(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        return ExternalChange(stream) if path == engine.store.path and args == ('rb',) else stream
+
+    monkeypatch.setattr(Path, 'open', changed_open)
+    with pytest.raises(ReceiptSnapshotUnavailable, match='changed during snapshot'):
+        with engine.readonly_snapshot():
+            pytest.fail('external drift reached snapshot consumer')
+    monkeypatch.setattr(Path, 'open', original_open)
+    engine.store.path.with_name(engine.store.path.name + '-wal').write_bytes(b'active')
+    with pytest.raises(ReceiptSnapshotUnavailable, match='journal-backed'):
+        with engine.readonly_snapshot():
+            pytest.fail('sidecar-backed source reached snapshot consumer')

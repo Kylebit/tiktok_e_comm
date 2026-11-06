@@ -350,3 +350,137 @@ def test_retained_completion_reuses_original_slots_and_preserves_other_unknown(t
     from test_native_provider_response_recovery import _regional_unsent_claim_case
     _regional_unsent_claim_case(tmp_path/'regional',monkeypatch,second_local_lock=True)
     test_generic_native_known_rejection_gets_one_fresh_save_without_resetting_base_or_unknown(tmp_path/'actual-sdk')
+
+
+def test_accepted_save_keeps_original_prewire_slot_and_one_corrective_save(tmp_path,monkeypatch):
+    """Original seq12 is reserved but unentered; current draft needs one SAVE."""
+    from contextlib import contextmanager
+    from shared_platform import native_accepted_save_core_repair as core,native_provider_continuation as continuation
+    from modules.miaoshou.tiktok_publisher import PUBLISH_PATH
+    case=_owned_initial_repair(tmp_path/'prior');source_base=case.base
+    store=ReleaseStore(tmp_path/'current.db')
+    with source_base._connect(readonly=True) as source,sqlite3.connect(store.path) as db:
+        for name,sql in source.execute("SELECT name,sql FROM sqlite_master WHERE type='table'"):db.execute(sql)
+        for name, in source.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+            if name.startswith('native_save_repair_'):continue
+            for row in source.execute('SELECT * FROM '+name):
+                value=dict(row)
+                if name=='native_final_budget_outcomes' and value['sequence']==3:value['outcome']='ACCEPTED'
+                if name=='release_target_runs':value.update(status='FAILED',attempts=1)
+                db.execute('INSERT INTO '+name+' VALUES('+','.join('?' for _ in value)+')',tuple(value.values()))
+        db.execute('INSERT INTO native_final_budget_reservations VALUES(?,?,?,?,?,?,?)',
+            (case.body['scope_key'],12,case.label,'target','publish_target',1,'UNKNOWN'))
+        for row in source.execute("SELECT sql FROM sqlite_master WHERE type='trigger'"):db.execute(row[0])
+        db.executescript(core.SCHEMA)
+    base=_DurableLedger(store=store,binding=source_base.binding,target_label=case.label)
+    identity=case.provider_identity;root=tmp_path/'runtime';events=deepcopy(case.events)
+    events[-1]={**case.identity,'operation':'SAVE_DRAFT','outcome':'ACCEPTED'}
+    cp={'schema_version':'tiktok-v4-draft-checkpoint/v1','offer_id':case.body['offer_id'],
+        'run_id':identity['run_id'],'snapshot_digest':case.body['snapshot_digest'],'events':events}
+    cp['checkpoint_digest']='sha256:'+_sha(_json(cp))
+    cp_path=root/case.body['offer_id']/'1'/identity['run_id']/'tiktok-draft-checkpoint.json'
+    _pin(cp_path,cp);cp_ref=_pin(tmp_path/'frozen-cp.json',cp)
+    journal=ProviderResponseJournal(root,identity);journal.initialize()
+    requests=[]
+    for endpoint in ('/open/v1/product/common_collect_box/common_collect_box/claimed',
+                     '/open/v1/product/collect_box/tiktok/collect_box/claim_to_shop',SAVE_SITE_DRAFT_PATH):
+        req={'provider':'miaoshou','method':'POST','path':endpoint,
+            'account':{'app_id':'owned-fixture'},'request_body_sha256':_sha(endpoint)};requests.append(req)
+        key,_=journal.claim(req);journal.retain(key,200,_json({'result':'success','data':{}}).encode(),{})
+    body={k:case.body[k] for k in ('offer_id','candidate_digest','plan_id','run_id','decision_id','snapshot_digest',
+        'scope_key','target_label','detail_id','shop_id')}
+    with base._connect(readonly=True) as db:
+        rows=repair._base_rows(db,body['scope_key'],case.label)
+        failures=[r[0] for r in db.execute('SELECT evidence_digest FROM release_target_failure_events')]
+    body.update(schema='native-accepted-save-prewire-grant/v1',sequence=12,
+        original_reservations_digest=_sha(_json(rows)),failure_evidence_digests=failures,
+        checkpoint_events_digest=_sha(_json(events)),checkpoint_ref=cp_ref,canonical_checkpoint_path=str(cp_path),
+        zero_dispatch_ref=_pin(tmp_path/'prewire.json',{
+            'status':'ORIGINAL_NATIVE_PUBLISH_NOT_DISPATCHED_KEEP_RESERVATION_UNKNOWN',
+            'offer_id':body['offer_id'],'target_label':case.label,'original_run_id':body['run_id'],
+            'proof':{'retained_journal_rows':[{**{k:r[k] for k in ('key','phase','http_status','response_sha256')},
+                'path':r['request']['path']} for r in continuation.retained_tiktok_rows(root,identity)],
+                'reservation':{'scope_key':body['scope_key'],'sequence':12,'target_label':case.label,
+                'operation':'publish_target','dispatch':None,'outcome_record':None}}}))
+    pins=_pin(tmp_path/'core-source.json',{'shared_platform/native_accepted_save_core_repair.py':
+        {'after_sha256':hashlib.sha256(Path(core.__file__).read_bytes()).hexdigest()}})
+    body['root_addendum_ref']=_pin(tmp_path/'core-root.json',{
+        'schema':'root-native-accepted-save-prewire-addendum/v1','status':'TECHNICAL_CONTINUATION_ADMITTED',
+        'authority':'ROOT_ENGINEERING_CONTINUATION_OF_ORIGINAL_NATIVE_DECISION','new_user_approval':False,
+        **{k:body[k] for k in ('offer_id','candidate_digest','plan_id','run_id','decision_id','snapshot_digest')},
+        'target_labels':[case.label],'base_target_maximum':3,'extra_save_maximum':1,
+        'combined_target_maximum':4,'new_publish_reservations':0,
+        'grant_core_digests':[_sha(_json(body))],'source_pins_ref':pins})
+    with base._connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        # Already dispatched or ambiguous historical publish cannot enter.
+        db.execute('SAVEPOINT dispatched')
+        db.execute('INSERT INTO native_final_budget_dispatches VALUES(?,?,?)',(body['scope_key'],12,'f'*64))
+        with pytest.raises(NativeMutationBudgetHold,match='EXACT_UNDISPATCHED_SLOT'):
+            core.intake_generic(db,body,cp)
+        db.execute('ROLLBACK TO dispatched');db.execute('RELEASE dispatched')
+        # Missing native dispatch alone is insufficient when a provider
+        # publish intent exists. Even an explicit technical addendum refuses.
+        unknown_root=tmp_path/'unknown-wire';unknown_journal=ProviderResponseJournal(unknown_root,identity)
+        unknown_journal.initialize()
+        for req in requests:
+            key,_=unknown_journal.claim(req)
+            unknown_journal.retain(key,200,_json({'result':'success','data':{}}).encode(),{})
+        unknown_journal.claim({'provider':'miaoshou','method':'POST','path':PUBLISH_PATH,
+            'account':{'app_id':'owned-fixture'},'request_body_sha256':'a'*64})
+        ambiguous=deepcopy(body)
+        ambiguous['canonical_checkpoint_path']=str(unknown_root/body['offer_id']/'1'/identity['run_id']/'tiktok-draft-checkpoint.json')
+        authority=json.loads(Path(body['root_addendum_ref']['path']).read_bytes())
+        authority['grant_core_digests']=[_sha(_json({k:v for k,v in ambiguous.items() if k!='root_addendum_ref'}))]
+        ambiguous['root_addendum_ref']=_pin(tmp_path/'unknown-root.json',authority)
+        with pytest.raises(NativeMutationBudgetHold,match='UNKNOWN_OR_PUBLISH_JOURNAL_NO_REPLAY'):
+            core.intake_generic(db,ambiguous,cp)
+        gid=core.intake_generic(db,body,cp)
+    def decision(db,did,**kwargs):assert did==body['decision_id']
+    active=SimpleNamespace(store=store,plan_id=body['plan_id'],decision_id=body['decision_id'],owner_sid='owned',
+        runtime=SimpleNamespace(supervisor=SimpleNamespace(root=root)),service=SimpleNamespace(_decision=decision))
+    monkeypatch.setattr(continuation,'_tiktok_active',lambda current:current is active,raising=False)
+    binding={k:body[k] for k in ('offer_id','plan_id','run_id','decision_id','snapshot_digest','candidate_digest')};binding['product_revision']=1
+    with base._connect(readonly=True) as db:
+        facts=continuation._tiktok_continuation_facts(active,db,binding,case.label)
+        grant=dict(db.execute('SELECT * FROM native_accepted_core_grants').fetchone())
+        original_budget={name:[tuple(r) for r in db.execute('SELECT * FROM '+name)] for name in
+            ('native_final_budget_reservations','native_final_budget_dispatches','native_final_budget_outcomes')}
+    assert facts['mode']=='CORE_UNDISPATCHED'
+    @contextmanager
+    def transaction():
+        with base._connect() as db:db.execute('BEGIN IMMEDIATE');yield db;db.commit()
+    monkeypatch.setattr(store,'_transaction',transaction)
+    monkeypatch.setattr(store,'_require_active_run',lambda *args:None)
+    claimed=store.begin_target(body['run_id'],case.label,
+        native_tiktok_continuation_proof=continuation._NativeTikTokContinuationProof(active,_json(facts)))
+    assert claimed['attempts']==2
+    target={**case.identity,'expected_images':['frozen-image-'+str(i) for i in range(7)]}
+    frozen=deepcopy(target);ledger=core._CoreLedger(active,base,grant,body,target);calls=[]
+    held=ledger.reserve_target(case.label,'publish_target')
+    assert held['sequence']==12
+    with pytest.raises(NativeMutationBudgetHold,match='FRESH_EXACT_POST_SAVE_READ'):
+        ledger.dispatch_reserved('publish_target',lambda *args:calls.append('publish'),
+            PUBLISH_PATH,{'detailIds':[int(body['detail_id'])],'shopIds':[body['shop_id']]})
+    prepared={'path':SAVE_SITE_DRAFT_PATH,'body':{'detailId':body['detail_id'],'site':'VN',
+        'ossMd5':'CURRENT-JIT-MD5','siteCollectItemInfo':{'imgUrls':target['expected_images'],'price':'frozen','warehouse':'frozen'}}}
+    ledger.bind_prepared(target,{'oss_md5':'CURRENT-JIT-MD5'},prepared)
+    ledger.reserve_target(case.label,'save_draft')
+    ledger.dispatch_reserved('save_draft',lambda *args:calls.append('SAVE'),prepared['path'],prepared['body'])
+    ledger.complete_reserved('save_draft','ACCEPTED')
+    ledger.retain_match(target,{'official_frozen_match':True},True)
+    ledger.dispatch_reserved('publish_target',lambda *args:calls.append('publish'),
+        PUBLISH_PATH,{'detailIds':[int(body['detail_id'])],'shopIds':[body['shop_id']]})
+    ledger.complete_reserved('publish_target','ACCEPTED')
+    assert calls==['SAVE','publish'] and target==frozen and json.loads(cp_path.read_bytes())==cp
+    with pytest.raises(NativeMutationBudgetHold):ledger.reserve_target(case.label,'save_draft')
+    with pytest.raises(NativeMutationBudgetHold):ledger.reserve_target(case.label,'publish_target')
+    with base._connect(readonly=True) as db:
+        assert [tuple(r) for r in db.execute('SELECT * FROM native_final_budget_reservations')]==original_budget['native_final_budget_reservations']
+        assert db.execute('SELECT count(*) FROM native_final_budget_dispatches WHERE sequence=12').fetchone()[0]==1
+        assert db.execute('SELECT outcome FROM native_final_budget_outcomes WHERE sequence=12').fetchone()[0]=='ACCEPTED'
+        assert db.execute('SELECT count(*) FROM native_accepted_core_reservations').fetchone()[0]==1
+        assert db.execute('SELECT count(*) FROM native_save_repair_reservations').fetchone()[0]==0
+        assert repair._base_rows(db,body['scope_key'],case.other)[-1]['outcome']=='UNKNOWN'
+    snapshot=ledger.snapshot()
+    assert snapshot['limits']['per_target_maximum']==3 and snapshot['attempts']['per_target'][case.label]==4

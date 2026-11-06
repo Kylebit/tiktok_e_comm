@@ -45,6 +45,145 @@ for table in ('grants','starts','reservations','dispatches','outcomes','verifica
 def need(value,code):
     if not value:raise NativeMutationBudgetHold('ACCEPTED_CORE_'+code)
 
+
+GENERIC_SCHEMA='native-accepted-save-prewire-grant/v1'
+
+
+def generic_root(body):
+    root=json.loads(_read_reference(body['root_addendum_ref']))
+    need(root.get('schema')=='root-native-accepted-save-prewire-addendum/v1'
+        and root.get('status')=='TECHNICAL_CONTINUATION_ADMITTED'
+        and root.get('authority')=='ROOT_ENGINEERING_CONTINUATION_OF_ORIGINAL_NATIVE_DECISION'
+        and root.get('new_user_approval') is False and root.get('target_labels')==[body['target_label']]
+        and all(root.get(k)==body[k] for k in ('offer_id','plan_id','run_id','decision_id','snapshot_digest','candidate_digest'))
+        and (root.get('base_target_maximum'),root.get('extra_save_maximum'),root.get('combined_target_maximum'),
+             root.get('new_publish_reservations'))==(3,1,4,0)
+        and all(type(root.get(k)) is int for k in ('base_target_maximum','extra_save_maximum','combined_target_maximum','new_publish_reservations'))
+        and _sha(_json({k:v for k,v in body.items() if k!='root_addendum_ref'})) in root.get('grant_core_digests',[]),
+        'NATIVE_PREWIRE_ROOT_REQUIRED')
+    pins=json.loads(_read_reference(root['source_pins_ref']));app=Path(__file__).resolve().parents[1]
+    need('shared_platform/native_accepted_save_core_repair.py' in pins,'NATIVE_SOURCE_PIN_REQUIRED')
+    for name,value in pins.items():
+        path=app/name
+        need(path.resolve().is_relative_to(app) and hashlib.sha256(path.read_bytes()).hexdigest()==value['after_sha256'],
+            'NATIVE_REVIEWED_SOURCE_CHANGED')
+    return root
+
+
+def generic_checkpoint(body,current):
+    from shared_platform.native_known_rejected_save_repair import _provider_identity
+    original=json.loads(_read_reference(body['checkpoint_ref']))
+    need(original.get('run_id')==_provider_identity(body)['run_id'],'NATIVE_CHECKPOINT_RUN_CHANGED')
+    for value in (original,current):
+        need(value.get('checkpoint_digest')=='sha256:'+_sha(_json({k:v for k,v in value.items() if k!='checkpoint_digest'})),
+            'NATIVE_CHECKPOINT_DIGEST_CHANGED')
+        need(all(value.get(k)==original.get(k) for k in ('run_id','offer_id','snapshot_digest'))
+            and value['offer_id']==body['offer_id'] and value['snapshot_digest']==body['snapshot_digest'],
+            'NATIVE_CHECKPOINT_SCOPE_CHANGED')
+    events=[e for e in original['events'] if e['target_label']==body['target_label']]
+    need([(e['operation'],e['outcome']) for e in events]==[
+        ('CREATE_DRAFT','ACCEPTED'),('CLAIM_TO_SHOP','ACCEPTED'),('SAVE_DRAFT','ACCEPTED')]
+        and _sha(_json(events))==body['checkpoint_events_digest']
+        and all((e['detail_id'],e['shop_id'])==(body['detail_id'],body['shop_id']) for e in events)
+        and [e for e in current['events'] if e['target_label']==body['target_label']]==events,
+        'NATIVE_ACCEPTED_CHECKPOINT_CHANGED')
+
+
+def generic_state(db,body,*,status,attempt):
+    from shared_platform.native_known_rejected_save_repair import _provider_identity
+    from shared_platform.native_provider_continuation import retained_tiktok_rows
+    from modules.miaoshou.tiktok_v4_drafts import EXPECTED_SHOP_ID_BY_TARGET,SAVE_SITE_DRAFT_PATH,SAVE_SHOP_DRAFT_PATH
+    keys={'schema','offer_id','candidate_digest','plan_id','run_id','decision_id','snapshot_digest','scope_key',
+        'target_label','detail_id','shop_id','sequence','original_reservations_digest','failure_evidence_digests',
+        'checkpoint_events_digest','checkpoint_ref','canonical_checkpoint_path','zero_dispatch_ref','root_addendum_ref'}
+    need(set(body)==keys and body['schema']==GENERIC_SCHEMA and body['shop_id']==EXPECTED_SHOP_ID_BY_TARGET.get(body['target_label'])
+        and re.fullmatch('[1-9][0-9]*',body['detail_id']) and attempt in (1,2),'NATIVE_EXACT_BODY_REQUIRED')
+    row=db.execute('SELECT * FROM native_final_budget_scopes WHERE scope_key=?',(body['scope_key'],)).fetchone()
+    need(row is not None and _sha(row['binding_json'])==row['binding_sha256'],'NATIVE_ORIGINAL_BUDGET_REQUIRED')
+    binding=json.loads(row['binding_json'])
+    need(all(binding[k]==body[k] for k in ('plan_id','decision_id','snapshot_digest','candidate_digest'))
+        and binding['platform']=='TIKTOK' and binding['per_target_maximum']==3 and body['target_label'] in binding['target_labels'],
+        'NATIVE_FROZEN_CAP3_CHANGED')
+    decision=db.execute('SELECT * FROM native_sole_final_decisions WHERE decision_id=?',(body['decision_id'],)).fetchone()
+    frozen=db.execute('SELECT snapshot_json FROM approved_publication_snapshots WHERE plan_id=?',(body['plan_id'],)).fetchone()
+    need(decision is not None and frozen is not None and decision['plan_id']==body['plan_id']
+        and decision['snapshot_digest']==body['snapshot_digest']
+        and json.loads(decision['review_json'])['candidate_digest']==body['candidate_digest']
+        and all(json.loads(frozen[0]).get(k)==body[k] for k in ('offer_id','plan_id','snapshot_digest')),
+        'NATIVE_APPROVAL_CHANGED')
+    target=db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?',(body['run_id'],body['target_label'])).fetchone()
+    run=db.execute('SELECT plan_id FROM release_runs WHERE run_id=?',(body['run_id'],)).fetchone()
+    need(run is not None and run['plan_id']==body['plan_id'] and target is not None
+        and (target['status'],target['attempts'],target['external_id'])==(status,attempt,None),'NATIVE_ORIGINAL_ATTEMPT_CHANGED')
+    for name in ('submissions','readbacks','repairs','retry_operations'):
+        need(not db.execute('SELECT 1 FROM release_target_'+name+' WHERE run_id=? AND target_label=?',
+            (body['run_id'],body['target_label'])).fetchone(),'NATIVE_EXTERNAL_OUTCOME_NO_REPLAY')
+    rows=_base_rows(db,body['scope_key'],body['target_label'])
+    need(len(rows)==4 and _sha(_json(rows))==body['original_reservations_digest'] and [(r['budget_scope'],r['operation'],r['outcome']) for r in rows]==[
+        ('shared','create_platform_draft','ACCEPTED'),('target','claim_draft','ACCEPTED'),
+        ('target','save_draft','ACCEPTED'),('target','publish_target','UNKNOWN')]
+        and all(r['attempt_count']==1 for r in rows) and all(re.fullmatch('[0-9a-f]{64}',r['request_digest'] or '') for r in rows[:3])
+        and rows[-1]['sequence']==body['sequence'] and rows[-1]['request_digest'] is None,'NATIVE_EXACT_UNDISPATCHED_SLOT_REQUIRED')
+    failures=[dict(r) for r in db.execute('SELECT * FROM release_target_failure_events WHERE run_id=? AND target_label=? ORDER BY attempt',
+        (body['run_id'],body['target_label']))]
+    need(len(failures)==1 and failures[0]['attempt']==1
+        and [r['evidence_digest'] for r in failures]==body['failure_evidence_digests']
+        and all(_sha(r['evidence_json'])==r['evidence_digest'] for r in failures),'NATIVE_ORIGINAL_FAILURE_CHANGED')
+    proof=json.loads(_read_reference(body['zero_dispatch_ref']));slot=proof.get('proof',{}).get('reservation',{})
+    need(proof.get('status')=='ORIGINAL_NATIVE_PUBLISH_NOT_DISPATCHED_KEEP_RESERVATION_UNKNOWN'
+        and (proof.get('offer_id'),proof.get('target_label'),proof.get('original_run_id'))==(
+            body['offer_id'],body['target_label'],body['run_id'])
+        and all(slot.get(k)==body[k] for k in ('scope_key','sequence','target_label'))
+        and slot.get('operation')=='publish_target' and slot.get('dispatch') is None and slot.get('outcome_record') is None,
+        'NATIVE_ORIGINAL_PREWIRE_PROOF_REQUIRED')
+    identity=_provider_identity(body);path=Path(body['canonical_checkpoint_path'])
+    need(path.name=='tiktok-draft-checkpoint.json' and path.parent.name==identity['run_id']
+        and path.parents[2].name==body['offer_id'],'NATIVE_CHECKPOINT_PATH_CHANGED')
+    wire=retained_tiktok_rows(path.parents[3],identity)
+    retained=proof.get('proof',{}).get('retained_journal_rows',[])
+    need(len(retained)==3 and len(wire)>=3 and all(
+        all(current.get(k)==old.get(k) for k in ('key','phase','http_status','response_sha256'))
+        and current['request']['path']==old.get('path') for current,old in zip(wire[:3],retained)),
+        'NATIVE_ORIGINAL_JOURNAL_CHANGED')
+    need(len(wire) in (3,4) and [r['request']['path'].rsplit('/',1)[-1] for r in wire[:2]]==['claimed','claim_to_shop']
+        and wire[2]['request']['path'] in {SAVE_SITE_DRAFT_PATH,SAVE_SHOP_DRAFT_PATH}
+        and all(r['outcome']=='ACCEPTED' for r in wire)
+        and all(re.fullmatch('[0-9a-f]{64}',r['request'].get('request_body_sha256') or '') for r in wire)
+        and (len(wire)==3 or wire[-1]['request']['path']==wire[2]['request']['path']),
+        'NATIVE_UNKNOWN_OR_PUBLISH_JOURNAL_NO_REPLAY')
+    if len(wire)==4:
+        held=db.execute('SELECT 1 FROM native_accepted_core_dispatches d JOIN native_accepted_core_grants g USING(grant_id) WHERE g.scope_key=? AND g.target_label=?',
+            (body['scope_key'],body['target_label'])).fetchone()
+        need(held is not None,'NATIVE_UNACCOUNTED_SAVE_NO_REPLAY')
+    return dict(target)
+
+
+def intake_generic(db,body,current):
+    """Explicit root maintenance only; existing public DDL must precede this."""
+    check_schema(db);generic_root(body);generic_state(db,body,status='FAILED',attempt=1);generic_checkpoint(body,current)
+    raw=_json(body);gid=_sha(raw)
+    db.execute('INSERT INTO native_accepted_core_grants VALUES(?,?,?,?)',(gid,body['scope_key'],body['target_label'],raw))
+    return gid
+
+
+def generic_proof(active,db,binding,label):
+    if not check_schema(db,optional=True):return None
+    row=db.execute('SELECT * FROM native_accepted_core_grants WHERE scope_key IN '
+        '(SELECT scope_key FROM native_final_budget_scopes WHERE plan_id=?) AND target_label=?',(binding['plan_id'],label)).fetchone()
+    if row is None:return None
+    body=json.loads(row['body_json'])
+    if body.get('schema')!=GENERIC_SCHEMA:return None
+    need(_sha(row['body_json'])==row['grant_id'] and all(body[k]==binding[k] for k in
+        ('offer_id','plan_id','run_id','decision_id','snapshot_digest','candidate_digest')),'NATIVE_GRANT_CHANGED')
+    generic_root(body);target=generic_state(db,body,status='FAILED',attempt=1)
+    generic_checkpoint(body,json.loads(Path(body['canonical_checkpoint_path']).read_bytes()))
+    need(Path(body['canonical_checkpoint_path']).parents[3].resolve()==Path(active.runtime.supervisor.root).resolve(),
+        'NATIVE_SELECTED_RUNTIME_CHANGED')
+    for name in ('starts','reservations','dispatches','outcomes','verifications'):
+        need(not db.execute('SELECT 1 FROM native_accepted_core_'+name+' WHERE grant_id=?',(row['grant_id'],)).fetchone(),
+            'NATIVE_CORE_GRANT_SPENT_OR_UNKNOWN')
+    return {'mode':'CORE_UNDISPATCHED','binding':binding,'target':target,'grant':dict(row)}
+
 def role(label):
     need(label in ORIGINAL,'EXACT_TEN_ONLY')
     return FOUR if label in ORIGINAL_FOUR else SIX
@@ -240,6 +379,33 @@ def recovery_actions(active,run,actions):
     return [{**a,'runnable':True,'action_kind':'EXACT_TEN_ACCEPTED_CORE_REPAIR','reason_code':'fixed_role_and_single_new_corrective_save'} if a['target_label'] in eligible else a for a in actions]
 
 def for_active(active,base):
+    if type(base) is _DurableLedger and base.platform=='TIKTOK':
+        proof=(getattr(active,'_tiktok_continuation_proofs',{}) or {}).get(base.target_label)
+        if proof is not None:
+            from shared_platform.native_provider_continuation import _NativeTikTokContinuationProof,_tiktok_active
+            need(type(proof) is _NativeTikTokContinuationProof and proof.active is active and _tiktok_active(active),
+                'NATIVE_PROTECTED_PROOF_REQUIRED')
+            facts=json.loads(proof.facts_json)
+            if facts['mode']=='CORE_UNDISPATCHED':
+                from shared_platform.native_new_task_v4_targets import scope
+                scope(active,active.store.get_plan(active.plan_id))
+                grant=facts['grant'];body=json.loads(grant['body_json'])
+                generic_root(body)
+                with base._connect(readonly=True) as db:
+                    generic_state(db,body,status='RUNNING',attempt=2)
+                    start=db.execute('SELECT target_attempt FROM native_accepted_core_starts WHERE grant_id=?',(grant['grant_id'],)).fetchone()
+                    need(start is not None and start[0]==2,'NATIVE_PROTECTED_START_REQUIRED')
+                    snapshot=json.loads(db.execute('SELECT snapshot_json FROM approved_publication_snapshots WHERE plan_id=?',
+                        (body['plan_id'],)).fetchone()[0])
+                from modules.miaoshou.tiktok_v4_drafts import _collectbox_context
+                from domains.channel_operations.tiktok_v4_execution import project_tiktok_v4_execution_plan
+                from domains.channel_operations.tiktok_publisher import _validate_snapshot
+                identity={k:body[k] for k in ('target_label','detail_id','shop_id')}
+                plan=project_tiktok_v4_execution_plan(snapshot,collectbox_contexts={base.target_label:_collectbox_context(snapshot,identity=identity)},
+                    category_resolver=None,target_scope=(base.target_label,))
+                need(not plan['blocked_targets'] and len(plan['targets'])==1,'NATIVE_FROZEN_COMMAND_REQUIRED')
+                target=_validate_snapshot(plan['targets'][0]['publisher_snapshot'])['targets'][0]
+                return _CoreLedger(active,base,grant,body,target)
     from shared_platform.native_tiktok_core_save_before_publish import for_active as successor_for_active
     successor=successor_for_active(active,base)
     if successor is not None:return successor
@@ -260,9 +426,22 @@ class _CoreLedger:
     def __init__(self,active,base,grant,body,target,*,successor=None):
         self.active=active;self.base=base;self.grant=grant;self.body=body;self.target=target
         self.successor=successor
+        self.generic=body.get('schema')==GENERIC_SCHEMA
         self.prepared=None;self.fresh_match=False;self.reserved=False
     def __getattr__(self,key):return getattr(self.base,key)
     def _check(self,db=None):
+        if self.generic:
+            from shared_platform.native_provider_continuation import _tiktok_active
+            need(_tiktok_active(self.active) and self.active.plan_id==self.body['plan_id']
+                and self.active.decision_id==self.body['decision_id'] and self.active.store is self.base.store,
+                'NATIVE_CURRENT_ACTOR_REQUIRED')
+            generic_root(self.body)
+            generic_checkpoint(self.body,json.loads(Path(self.body['canonical_checkpoint_path']).read_bytes()))
+            if self.base._recheck:self.base._recheck(db)
+            if db is None:
+                with self.base._connect(readonly=True) as current:self._persisted(current)
+            else:self._persisted(db)
+            return
         if self.successor is not None:
             from shared_platform.native_tiktok_core_save_before_publish import runtime_check
             return runtime_check(self,db)
@@ -272,12 +451,21 @@ class _CoreLedger:
             with self.base._connect(readonly=True) as current:self._persisted(current)
         else:self._persisted(db)
     def _persisted(self,db):
+        if self.generic:
+            check_schema(db);generic_state(db,self.body,status='RUNNING',attempt=2)
+            row=db.execute('SELECT * FROM native_accepted_core_grants WHERE grant_id=?',(self.grant['grant_id'],)).fetchone()
+            need(row is not None and dict(row)==self.grant and _sha(row['body_json'])==row['grant_id'],
+                'NATIVE_PERSISTED_GRANT_CHANGED')
+            return
         pending=self.base._pending.get('publish_target')
         allowed=pending['sequence'] if role(self.body['target_label'])==SIX and pending is not None else None
         check_schema(db);validate_original(db,self.body,status='RUNNING',attempt=ROLE_LIMITS[role(self.body['target_label'])]['after_attempt'],allowed_pending_publish=allowed)
         row=db.execute('SELECT body_json FROM native_accepted_core_grants WHERE grant_id=?',(self.grant['grant_id'],)).fetchone()
         need(row and row['body_json']==_json(self.body),'GRANT_CHANGED')
-    def _target(self,target):need(target==self.target and len(target['expected_images'])==8 and len(set(target['expected_images']))==8,'FROZEN_TARGET_CHANGED')
+    def _target(self,target):
+        size=len(target['expected_images'])
+        need(target==self.target and (size>0 if self.generic else size==8)
+            and len(set(target['expected_images']))==size,'FROZEN_TARGET_CHANGED')
     def reserve_shared(self,*args,**kwargs):raise NativeMutationBudgetHold('ACCEPTED_CORE_NO_RECREATE')
     def bind_prepared(self,target,draft,prepared):
         from modules.miaoshou.tiktok_v4_drafts import SAVE_SITE_DRAFT_PATH,SAVE_SHOP_DRAFT_PATH
@@ -303,13 +491,15 @@ class _CoreLedger:
     def reserve_target(self,label,operation,*,count=1):
         need(label==self.body['target_label'] and type(count) is int and count==1,'TARGET_OR_COUNT_CHANGED');self._check()
         if operation=='publish_target':
-            if role(label)==SIX:
+            if not self.generic and role(label)==SIX:
                 # Six accepted corrective attempts have never reserved publish.
                 # Use their one remaining original cap3 slot exactly once.
                 return self.base.reserve_target(label,operation,count=count)
             # Only rehydrate the exact old slot in memory. The base dispatch
             # still commits its unique dispatch row before its one wire call.
-            with self.base._connect(readonly=True) as db:validate_original(db,self.body,status='RUNNING',attempt=2)
+            with self.base._connect(readonly=True) as db:
+                if self.generic:generic_state(db,self.body,status='RUNNING',attempt=2)
+                else:validate_original(db,self.body,status='RUNNING',attempt=2)
             record={'sequence':self.body['sequence'],'scope':'target','target_label':label,'operation':operation,'attempt_count':1,'outcome':'UNKNOWN'}
             self.base._pending[operation]=record;return dict(record)
         need(operation=='save_draft' and self.prepared is not None and not self.fresh_match,'ONE_EXTRA_SAVE_ONLY')

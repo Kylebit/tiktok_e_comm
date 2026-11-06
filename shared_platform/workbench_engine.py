@@ -10,6 +10,7 @@ import json
 import time
 import uuid
 from contextlib import contextmanager
+from threading import RLock
 from urllib.parse import quote
 
 from shared_platform.workbench_store import WorkbenchStore, _json, _now
@@ -153,20 +154,22 @@ class WorkbenchEngine:
         if not self.release.get("code_version"):
             raise ValueError("release identity requires code_version")
         self.clock = clock
+        self._receipt_capture_lock = RLock()
 
     @contextmanager
     def transaction(self):
-        conn = self.store._connect()
-        try:
-            conn.executescript(SCHEMA)
-            conn.execute("BEGIN IMMEDIATE")
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        with self._receipt_capture_lock:
+            conn = self.store._connect()
+            try:
+                conn.executescript(SCHEMA)
+                conn.execute("BEGIN IMMEDIATE")
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def _event(self, conn, task_id, event, detail):
         self.store._event(conn, task_id, event, detail)
@@ -598,7 +601,12 @@ class WorkbenchEngine:
         import sqlite3
         if not hasattr(sqlite3.Connection, 'deserialize'):
             raise ReceiptSnapshotUnavailable('SQLite deserialize is unavailable')
-        image = _receipt_database_image(self.store.path)
+        # Parallel native partitions share this engine. Their legitimate Task
+        # commits must not split the two authenticated raw-image reads. Release
+        # this local lock before yielding the independent in-memory snapshot;
+        # external writers, content drift and sidecars still fail closed.
+        with self._receipt_capture_lock:
+            image = _receipt_database_image(self.store.path)
         conn = sqlite3.connect(':memory:')
         conn.row_factory = sqlite3.Row
         try:

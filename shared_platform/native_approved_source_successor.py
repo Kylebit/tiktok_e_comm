@@ -55,6 +55,8 @@ ALLOWED_FILES = frozenset({
     'tests/test_r3_technical_category_evidence.py',
     'shared_platform/workbench_engine.py',
     'tests/test_workbench_final_review_evidence.py',
+    'shared_platform/native_companion_promotions.py',
+    'tests/test_native_promotion_auth_reprepare.py',
 })
 
 

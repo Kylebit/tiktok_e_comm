@@ -260,7 +260,9 @@ def before_start(db,job,labels,store,now):
     for row in prior:
         value=json.loads(row['event_json'])
         if _hash(value)!=row['event_digest']:raise ApprovalBlocked('NATIVE_PROMOTION_BATCH_EVENT_CHANGED')
-        if tuple(value['targets'])==tuple(labels):return True # No UNKNOWN/intent reset.
+        if tuple(value['targets'])==tuple(labels):
+            _resume_auth_preparation(db,job,labels,store,now)
+            return True # No batch, UNKNOWN, intent or write-budget reset.
         if set(value['targets'])&set(labels):
             raise ApprovalBlocked('NATIVE_PROMOTION_PREVIOUS_ACTION_REQUIRES_RECONCILIATION')
     rows=db.execute('SELECT * FROM oneclick_release_targets WHERE job_id=? AND active_for_batch=1',
@@ -276,6 +278,75 @@ def before_start(db,job,labels,store,now):
         raise ApprovalBlocked('NATIVE_PROMOTION_PRIOR_OUTCOME_REQUIRES_RECONCILIATION')
     store._event(db,job['job_id'],None,STARTED,{'targets':list(labels)},now)
     return False
+
+def _resume_auth_preparation(db,job,labels,store,now):
+    """Reprepare only the original SH auth failure that occurs before any GET.
+
+    This runs under the genuine original native scope and OneClick transaction.
+    It changes preparation eligibility only; all identity, attempt, budget,
+    write-intent, outcome and occurrence fields retain their original values.
+    """
+    scope=_held()
+    if scope is None or tuple(labels)!=scope['targets'] or scope['job_id']!=job['job_id']:
+        raise ApprovalBlocked('NATIVE_PROMOTION_AUTH_PREPARATION_SCOPE_REQUIRED')
+    rows=db.execute('SELECT * FROM oneclick_release_targets WHERE job_id=? AND active_for_batch=1',
+                    (job['job_id'],)).fetchall()
+    auth_digest=hashlib.sha256(b'SHOPEE_EXISTING_EXACT_AUTH_UNAVAILABLE').hexdigest()
+    def original_auth_failure(row):
+        if not row['target_label'].startswith('promotion:shopee:') or row['reason_code']!='adapter_prepare_contract_error':
+            return False
+        try:detail=json.loads(row['reason_detail'] or '{}')
+        except (ValueError,TypeError):return False
+        return (type(detail) is dict and detail.get('code')=='adapter_prepare_contract_error'
+                and detail.get('summary_code')=='release_contract_invalid' and detail.get('detail_digest')==auth_digest)
+    if not any(original_auth_failure(row) for row in rows):return
+    nulls=('command_json','command_digest','proof_json','proof_digest','shared_resource_json',
+           'shared_resource_digest','shared_resource_context_json','shared_resource_context_digest',
+           'pending_write_intent_json','pending_write_intent_digest','dispatch_stage',
+           'dispatch_stage_evidence_digest','result_json')
+    if (job['status']!='BLOCKED' or job['systemic_reason_json'] is not None
+            or set(row['target_label'] for row in rows)!=set(labels)
+            or any(not original_auth_failure(row) or row['status']!='BLOCKED_CAPABILITY'
+                   or row['reason_category']!='SYSTEMIC_CONTRACT' or row['reason_scope']!='TARGET'
+                   or row['dispatch_count']!=0 or row['manual_after_submit']!=0
+                   or any(row[field] is not None for field in nulls)
+                   or row['cumulative_external_writes_json']!='[]'
+                   or row['cumulative_external_writes_digest']!=_hash([])
+                   or any(row[field]!=0 for field in ('cumulative_external_write_count',
+                       'cumulative_external_write_lower_bound','cumulative_external_write_upper_bound'))
+                   for row in rows)):
+        raise ApprovalBlocked('NATIVE_PROMOTION_AUTH_PREPARATION_EXACT_ZERO_DISPATCH_REQUIRED')
+    for row in rows:
+        for table in ('oneclick_release_outcomes','oneclick_release_write_occurrences'):
+            if db.execute('SELECT 1 FROM '+table+' WHERE job_id=? AND target_label=? LIMIT 1',
+                          (job['job_id'],row['target_label'])).fetchone():
+                raise ApprovalBlocked('NATIVE_PROMOTION_AUTH_PREPARATION_PRIOR_WRITE_EVIDENCE')
+    # Current original mapping/expiry is checked locally; the normal adapter
+    # still performs its full official activity/SKU/price preparation afterwards.
+    from modules.shopee.auth import token_path
+    from modules.shopee.oneclick_promotion import _identity
+    from shared_platform.native_canonical_provider_edges import _existing_shopee_context
+    auth_path=token_path().resolve(strict=True);auth_pin=hashlib.sha256(auth_path.read_bytes()).hexdigest()
+    for row in rows:
+        proof=transaction_prerequisite(db,job['job_id'],row['target_label'])
+        region,shop_id,_=_identity(proof)
+        context=_existing_shopee_context(region)
+        if context.shop_id!=shop_id:
+            raise ApprovalBlocked('NATIVE_PROMOTION_AUTH_PREPARATION_SHOP_CHANGED')
+    if hashlib.sha256(auth_path.read_bytes()).hexdigest()!=auth_pin:
+        raise ApprovalBlocked('NATIVE_PROMOTION_AUTH_PREPARATION_CREDENTIAL_CHANGED')
+    for row in rows:
+        store._event(db,job['job_id'],row['target_label'],'NATIVE_PROMOTION_AUTH_PREPARATION_RESUMED',
+            {'schema_version':'native-promotion-auth-preparation-resume/v1',
+             'decision_id':scope['active'].decision_id,'plan_id':scope['plan_id'],'run_id':scope['run_id'],
+             'targets':list(labels),'original_preparation':dict(row),
+             'original_preparation_digest':_hash(dict(row)),'current_auth_source_digest':auth_pin,
+             'official_prerequisite':scope['proofs'][row['target_label']],
+             'dispatch_count':0,'write_budget_changed':False,'new_batch':False},now)
+        db.execute("UPDATE oneclick_release_targets SET status='PENDING',completed_at=NULL,updated_at=? "
+                   'WHERE job_id=? AND target_label=?',(now,job['job_id'],row['target_label']))
+    db.execute("UPDATE oneclick_release_jobs SET status='PREPARING',completed_at=NULL,updated_at=? WHERE job_id=?",
+               (now,job['job_id']))
 
 def check_access(path,job_id):
     with sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True) as db:

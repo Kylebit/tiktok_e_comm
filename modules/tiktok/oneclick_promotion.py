@@ -83,6 +83,7 @@ class TikTokPromotionTransport:
     put_activity_products: Callable[
         [str, Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]
     ]
+    resolve_shop: Callable[[str], Mapping[str, Any]] | None = None
 
 
 _transport_factory: Callable[[], TikTokPromotionTransport] | None = None
@@ -155,16 +156,17 @@ def prepare_postpublish_promotion(request: object) -> Mapping[str, Any]:
             category="CONTENT",
         )
     expected_skus = _approved_model_skus(plan)
-    shop_id, shop_name = _configured_shop(
-        target_policy["prerequisite_target"]
-    )
+    control_id, _ = _configured_shop(target_policy["prerequisite_target"])
+    binding = plan.get("r3_marketplace_binding")
+    if isinstance(binding, Mapping):
+        metadata = binding.get("technical_category_metadata")
+        frozen = metadata.get(target_policy["prerequisite_target"]) if isinstance(metadata, Mapping) else None
+        if (not isinstance(frozen, Mapping) or str(frozen.get("shop_id") or "") != control_id
+                or frozen.get("site") != target_policy["region"]):
+            raise TikTokPromotionBlocked("promotion_frozen_control_shop_changed",
+                "Configured control shop differs from the original frozen target", category="SYSTEMIC_CONTRACT")
     transport = _resolve_transport()
-    shop = _unique_shop(
-        transport.list_shops(),
-        shop_id=shop_id,
-        shop_name=shop_name,
-        region=target_policy["region"],
-    )
+    shop_id, shop_name, shop = _bound_shop(transport, target)
     shop_cipher = _text(
         shop.get("cipher") or shop.get("shop_cipher"),
         "shop cipher",
@@ -236,6 +238,7 @@ def prepare_postpublish_promotion(request: object) -> Mapping[str, Any]:
             "idempotency key",
         ),
         "shop_cipher": shop_cipher,
+        "control_shop_id": control_id,
         "activity_id": activity_id,
         "product_id": product_id,
         "discount_percent": approval["discount_percent"],
@@ -268,6 +271,7 @@ def prepare_postpublish_promotion(request: object) -> Mapping[str, Any]:
                 "shop_cipher": shop_cipher,
             }
         ),
+        "control_shop_id": control_id,
         "begin_time": activity["begin_time"],
         "end_time": activity["end_time"],
         "discount_percent": approval["discount_percent"],
@@ -320,6 +324,7 @@ def dispatch_postpublish_promotion(request: object) -> Mapping[str, Any]:
     )
     _validate_command_and_proof(command, proof, target)
     transport = _resolve_transport()
+    _recheck_bound_shop(transport, target, command, proof)
     activity = _activity_detail(
         transport.get_activity(
             command["activity_id"],
@@ -367,6 +372,9 @@ def dispatch_postpublish_promotion(request: object) -> Mapping[str, Any]:
         raise TikTokPromotionPreDispatchError(
             "durable promotion write recorder is unavailable"
         )
+    # Re-read both providers immediately before the original durable write
+    # boundary. A changed roster/cipher cannot use a previously prepared shop.
+    _recheck_bound_shop(transport, target, command, proof)
     progress(
         request,
         (TIKTOK_PROMOTION_WRITE_CLASS,),
@@ -527,11 +535,43 @@ def _resolve_transport() -> TikTokPromotionTransport:
     return transport
 
 
-def _default_transport() -> TikTokPromotionTransport:
-    from core import auth
-    from core.api_client import _do_request_once
+def _bound_shop(transport, target):
+    policy = promotion_target_policy(target)
+    internal, name = _configured_shop(policy["prerequisite_target"])
+    if transport.resolve_shop is None:
+        # Preserve the explicit injected transport seam. Production always
+        # supplies the current two-provider resolver below, never this branch.
+        shop = _unique_shop(transport.list_shops(), shop_id=internal,
+                            shop_name=name, region=policy["region"])
+    else:
+        shop = _mapping(transport.resolve_shop(policy["prerequisite_target"]), "current official shop")
+        if (str(shop.get("name") or shop.get("shop_name") or "") != name
+                or str(shop.get("region") or shop.get("region_code") or "").upper() != policy["region"]):
+            raise TikTokPromotionBlocked("official_shop_identity_changed", "Current shop differs from the frozen target")
+    return _text(str(shop.get("id") or shop.get("shop_id") or ""), "official shop id"), name, shop
 
-    token = auth.access_token()
+
+def _recheck_bound_shop(transport, target, command, proof):
+    if transport.resolve_shop is None:
+        return  # Explicit legacy test/injected transport contract is unchanged.
+    control, _ = _configured_shop(promotion_target_policy(target)["prerequisite_target"])
+    if control != command.get("control_shop_id") or control != proof.get("control_shop_id"):
+        raise TikTokPromotionPreDispatchError("frozen promotion control shop changed before write")
+    shop_id, name, shop = _bound_shop(transport, target)
+    cipher = _text(shop.get("cipher") or shop.get("shop_cipher"), "shop cipher")
+    fresh = _digest({"shop_id": shop_id, "shop_name": name,
+                     "region": promotion_target_policy(target)["region"], "shop_cipher": cipher})
+    if fresh != proof.get("shop_identity_digest") or cipher != command["shop_cipher"]:
+        raise TikTokPromotionPreDispatchError("official promotion shop identity changed before write")
+
+
+def _default_transport() -> TikTokPromotionTransport:
+    from shared_platform.native_tiktok_exact_readback import (
+        NativeTikTokExactStorefrontReadback, MIAOSHOU_SHOPS, _official_identity,
+    )
+    # Same existing-token pin/expiry guard and single-attempt SDK as the
+    # canonical readback. No implicit refresh or saved identity mapping.
+    shop_post, official = NativeTikTokExactStorefrontReadback()._calls()
 
     def call(
         method: str,
@@ -539,18 +579,16 @@ def _default_transport() -> TikTokPromotionTransport:
         query: Mapping[str, Any] | None = None,
         body: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
-        value = _do_request_once(
-            method,
-            path,
-            token,
-            dict(query or {}),
-            dict(body) if body is not None else None,
-            False,
-            False,
-        )
+        value = official(method, path, dict(query or {}), dict(body) if body is not None else None)
         if not isinstance(value, Mapping):
             raise RuntimeError("TikTok response is not a mapping")
         return value
+
+    def resolve_shop(target):
+        internal, _ = _configured_shop(target)
+        region = target.split("_", 1)[-1]
+        current = shop_post(MIAOSHOU_SHOPS, {"platform": "TIKTOK", "site": region, "pageNo": 1, "pageSize": 100})
+        return _official_identity(current, call("GET", SHOP_LIST_PATH), internal_id=internal, region=region)
 
     return TikTokPromotionTransport(
         list_shops=lambda: call("GET", SHOP_LIST_PATH),
@@ -573,6 +611,7 @@ def _default_transport() -> TikTokPromotionTransport:
             query,
             body,
         ),
+        resolve_shop=resolve_shop,
     )
 
 

@@ -36,10 +36,21 @@ def _official_identity(miaoshou,official,*,internal_id,region):
     if (not isinstance(miaoshou,Mapping) or miaoshou.get('result')!='success'
             or not isinstance(rows,list) or any(not isinstance(row,Mapping) for row in rows)):
         raise ValueError('MIAOSHOU_EXACT_SHOP_LIST_UNAVAILABLE')
+    if isinstance(data,Mapping) and (len(rows)>=100 or any(data.get(k) is not None
+            and int(data[k])!=len(rows) for k in ('total','totalCount'))):
+        raise ValueError('MIAOSHOU_SHOP_LIST_PARTIAL')
     exact=[r for r in rows if str(r.get('shopId') or r.get('id') or '')==internal_id
         and str(r.get('site') or r.get('region') or '').upper()==region]
     if len(exact)!=1:raise ValueError('MIAOSHOU_SHOP_IDENTITY_NOT_UNIQUE')
     row=exact[0];name=_miaoshou_shop_name(row)
+    def all_present(source,keys,expected,code,*,upper=False):
+        for key in keys:
+            value=source.get(key)
+            if value is None or value=='':continue
+            value=str(value).upper() if upper else str(value)
+            if value!=expected:raise ValueError(code)
+    all_present(row,('shopId','id'),internal_id,'MIAOSHOU_INTERNAL_SHOP_ID_CONFLICT')
+    all_present(row,('site','region'),region,'MIAOSHOU_SHOP_REGION_CONFLICT',upper=True)
     if not name or str(row.get('platform') or 'TIKTOK').upper()!='TIKTOK':
         raise ValueError('MIAOSHOU_SHOP_IDENTITY_UNAVAILABLE')
     if sum(str(r.get('site') or r.get('region') or '').upper()==region
@@ -54,10 +65,14 @@ def _official_identity(miaoshou,official,*,internal_id,region):
     if len(joined)!=1:raise ValueError('OFFICIAL_SHOP_JOIN_NOT_UNIQUE')
     shop_id=str(joined[0].get('id') or joined[0].get('shop_id') or '')
     if not shop_id:raise ValueError('OFFICIAL_SHOP_ID_UNAVAILABLE')
-    # If the ERP also exposes an official id, it must agree with the join.
-    explicit=row.get('platformShopId') or row.get('tiktokShopId')
-    if explicit is not None and str(explicit)!=shop_id:
-        raise ValueError('OFFICIAL_SHOP_JOIN_CONFLICT')
+    # Check every present alias; a correct primary alias cannot hide a second
+    # explicit conflicting id in either provider's current row.
+    all_present(row,('platformShopId','tiktokShopId'),shop_id,'OFFICIAL_SHOP_JOIN_CONFLICT')
+    all_present(joined[0],('id','shop_id'),shop_id,'OFFICIAL_SHOP_ID_CONFLICT')
+    all_present(joined[0],('name','shop_name'),name,'OFFICIAL_SHOP_NAME_CONFLICT')
+    all_present(joined[0],('region','region_code'),region,'OFFICIAL_SHOP_REGION_CONFLICT',upper=True)
+    cipher=str(joined[0].get('cipher') or joined[0].get('shop_cipher') or '')
+    all_present(joined[0],('cipher','shop_cipher'),cipher,'OFFICIAL_SHOP_CIPHER_CONFLICT')
     return _unique_shop(official,shop_id=shop_id,shop_name=name,region=region)
 
 def _sales_attributes_match(attrs, specification, target_label):

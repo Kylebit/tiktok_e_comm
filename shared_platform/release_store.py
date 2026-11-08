@@ -5825,6 +5825,37 @@ class ReleaseStore:
             self._refresh_run_status(connection,B_RUN,now=now)
             return self._run_in_transaction(connection,B_RUN)
 
+    def _record_native_tiktok_failed_readback(self,proof):
+        """Append a genuine full READ proof for the same accepted PUBLISH only."""
+        from shared_platform.native_sole_final_execution import _ACTIVE,_NativeExecution
+        from shared_platform.native_sole_final_readback import (
+            _TikTokFailedReadback,_TIKTOK_FAILED_SCOPE,_tiktok_failed_facts,
+            _tiktok_failed_source,_tiktok_failed_verified_evidence)
+        active=_ACTIVE.get();trusted=_TIKTOK_FAILED_SCOPE.get() or {}
+        if (type(active) is not _NativeExecution or active.store is not self or type(proof) is not _TikTokFailedReadback
+                or trusted.get('active') is not active or trusted.get('proof') is not proof):
+            raise ReleaseAuthorizationError('native TikTok original readback consumer is required')
+        facts=json.loads(proof.facts_json);source=json.loads(proof.source_json);evidence=json.loads(proof.evidence_json)
+        target=facts['target']
+        with self._transaction() as db:
+            current=_tiktok_failed_facts(db,active,target)
+            if (current!=facts or _tiktok_failed_source(active,current)!=source
+                    or evidence!=_tiktok_failed_verified_evidence(current,source,evidence.get('official_responses'))):
+                raise ReleaseAuthorizationError('native TikTok original readback CAS changed')
+            self._require_active_run(db,target['run_id'])
+            raw=_canonical_json(evidence);now=_utc_now()
+            # The existing canonical companion contract consumes external_id
+            # as the official product ID. Shop/control identities remain bound
+            # separately in the complete immutable official proof above.
+            external=evidence['official_catalog_rows'][0]['identity']['product_id']
+            db.execute('INSERT INTO release_target_readbacks(run_id,target_label,evidence_json,evidence_digest,verified_at) VALUES(?,?,?,?,?)',
+                (target['run_id'],target['target_label'],raw,hashlib.sha256(raw.encode()).hexdigest(),now))
+            changed=db.execute("UPDATE release_target_runs SET status='SUCCEEDED',external_id=?,error=NULL,updated_at=?,completed_at=? WHERE run_id=? AND target_label=? AND status='FAILED' AND attempts=? AND idempotency_key=?",
+                (external,now,now,target['run_id'],target['target_label'],target['attempts'],target['idempotency_key']))
+            if changed.rowcount!=1:raise ReleaseStoreError('native TikTok original readback target CAS changed')
+            self._refresh_run_status(db,target['run_id'],now=now)
+        return self.get_run(target['run_id'])
+
     def _record_native_submission_readback(self, proof):
         """Close one accepted target after service-owned zero-write official READ.
 

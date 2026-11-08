@@ -24,6 +24,16 @@ class _SubmissionReadback:
     evidence_json: str
 
 
+@dataclass(frozen=True)
+class _TikTokFailedReadback:
+    facts_json: str
+    source_json: str
+    evidence_json: str
+
+
+_TIKTOK_FAILED_SCOPE=ContextVar('native_tiktok_failed_publish_readback',default=None)
+
+
 _VN_SCOPE=ContextVar('b0431_vn_get_only_readback',default=None)
 _VN='shopee:VN'
 _VN_FAILURE='18b7a18ffaecefcb24e290661d12913fe360249a4ceadd69f080f43be91c92df'
@@ -426,6 +436,183 @@ def _observe_vn_failed(active,gate,data):
     return {'target_label':_VN,'verified':True,'source':'official_shopee_shop_api','external_writes_performed':[]}
 
 
+def _tiktok_failed_facts(db,active,target):
+    """Original failed-after-accepted-publish rows, in one existing snapshot."""
+    from shared_platform.release_store import _plan_from_row,_validated_publication_snapshot_row
+    label=target['target_label'];need=_provider_need
+    need(label in {'tiktok:LH_PH','tiktok:LH_MY','tiktok:LH_TH','tiktok:LH_VN'},'TIKTOK_ORIGINAL_LH_TARGET_REQUIRED')
+    row=db.execute('SELECT * FROM release_target_runs WHERE run_id=? AND target_label=?',(target['run_id'],label)).fetchone()
+    run=db.execute('SELECT plan_id FROM release_runs WHERE run_id=?',(target['run_id'],)).fetchone()
+    need(row is not None and run is not None and run['plan_id']==active.plan_id
+        and row['status']=='FAILED' and row['attempts']>0 and row['external_id'] is None,'TIKTOK_ORIGINAL_FAILED_ATTEMPT_REQUIRED')
+    for name in ('submissions','readbacks','retry_operations'):
+        need(not db.execute('SELECT 1 FROM release_target_'+name+' WHERE run_id=? AND target_label=?',
+            (target['run_id'],label)).fetchone(),'TIKTOK_EXISTING_EXTERNAL_RESULT_NO_REPLACEMENT')
+    failure=db.execute('SELECT * FROM release_target_failure_events WHERE run_id=? AND target_label=? AND attempt=?',
+        (target['run_id'],label,row['attempts'])).fetchone()
+    need(failure is not None and hashlib.sha256(failure['evidence_json'].encode()).hexdigest()==failure['evidence_digest'],
+        'TIKTOK_ORIGINAL_FAILURE_DIGEST_REQUIRED')
+    evidence=json.loads(failure['evidence_json']);canonical=evidence.get('canonical_platform_result') or {}
+    results=canonical.get('targets') or [];dispatch=results[0].get('evidence') or {} if len(results)==1 else {}
+    need(evidence.get('schema_version')=='native-scoped-v4-target-result/v1' and evidence.get('target_label')==label
+        and evidence.get('status')=='FAILED' and evidence.get('verified') is False and evidence.get('outcome_unknown') is False
+        and evidence.get('known_pre_submit_zero') is False and evidence.get('external_writes_performed')==[label]
+        and canonical.get('platform')=='TIKTOK' and canonical.get('dispatch_attempted') is True
+        and len(results)==1 and results[0].get('target_label')==label and dispatch.get('stage')=='PUBLISH'
+        and dispatch.get('provider_code')=='success' and dispatch.get('request_attempted') is True
+        and dispatch.get('outcome_unknown') is False and dispatch.get('external_write_count')==1,
+        'TIKTOK_RETAINED_ACCEPTED_PUBLISH_REQUIRED')
+    plan=_plan_from_row(db.execute('SELECT * FROM release_plans WHERE plan_id=?',(active.plan_id,)).fetchone())
+    snapshot=_validated_publication_snapshot_row(db.execute('SELECT * FROM approved_publication_snapshots WHERE plan_id=?',
+        (active.plan_id,)).fetchone(),plan=plan)
+    receipt=active.service._decision(db,active.decision_id,owner_sid=active.owner_sid)
+    need(receipt['snapshot_digest']==snapshot['snapshot_digest'],'TIKTOK_ORIGINAL_DECISION_CHANGED')
+    scopes=[dict(r) for r in db.execute("SELECT * FROM native_final_budget_scopes WHERE plan_id=? AND platform='TIKTOK'",(active.plan_id,))]
+    need(len(scopes)==1,'TIKTOK_ORIGINAL_BUDGET_REQUIRED');scope=scopes[0];binding=json.loads(scope['binding_json'])
+    need(hashlib.sha256(scope['binding_json'].encode()).hexdigest()==scope['binding_sha256']
+        and all(binding.get(k)==v for k,v in {'plan_id':active.plan_id,'decision_id':active.decision_id,
+            'snapshot_digest':snapshot['snapshot_digest'],'payload_digest':plan['payload_digest'],'platform':'TIKTOK'}.items())
+        and label in binding['target_labels'],'TIKTOK_ORIGINAL_BUDGET_BINDING_CHANGED')
+    ledger=[dict(r) for r in db.execute('''SELECT r.*,d.request_digest,o.outcome FROM native_final_budget_reservations r
+        LEFT JOIN native_final_budget_dispatches d USING(scope_key,sequence)
+        LEFT JOIN native_final_budget_outcomes o USING(scope_key,sequence)
+        WHERE r.scope_key=? AND (r.target_label=? OR r.budget_scope='shared') ORDER BY r.sequence''',(scope['scope_key'],label))]
+    publishes=[r for r in ledger if r['target_label']==label and r['operation']=='publish_target']
+    need(len(publishes)==1 and publishes[0]['budget_scope']=='target' and publishes[0]['attempt_count']==1
+        and publishes[0]['outcome']=='ACCEPTED' and bool(publishes[0]['request_digest']),
+        'TIKTOK_UNKNOWN_OR_REPEATED_PUBLISH_NO_REPLAY')
+    return {'target':dict(row),'failure':dict(failure),'plan':plan,'snapshot':snapshot,'scope':scope,'ledger':ledger}
+
+
+def _tiktok_failed_source(active,facts):
+    """Read the same current file scope; no journal initialization or replay."""
+    from shared_platform.native_prepared_v4_targets import provider_request_for_readonly_recovery,_file_identity
+    from shared_platform.publication_provider_journal import _scope
+    from shared_platform.native_provider_continuation import retained_tiktok_rows
+    from shared_platform.product_publication_live_dependencies import TikTokV4DraftCheckpointStore,_TIKTOK_SITE_BY_TARGET
+    from modules.miaoshou.tiktok_publisher import EXPECTED_SHOP_ID_BY_TARGET,PUBLISH_PATH
+    from shared_platform.native_final_mutation_budget import _request_sha
+    target=facts['target'];label=target['target_label'];snapshot=facts['snapshot'];need=_provider_need
+    request=provider_request_for_readonly_recovery(active,facts['plan'],target,snapshot);root,identity=_scope(request)
+    store=TikTokV4DraftCheckpointStore(root);path=store._path(request)
+    need(path.is_file(),'TIKTOK_ORIGINAL_CHECKPOINT_REQUIRED');raw=path.read_bytes();checkpoint=store._verified(json.loads(raw),request)
+    own=[e for e in checkpoint['events'] if e['target_label']==label]
+    pairs={(e.get('detail_id'),e.get('shop_id')) for e in own}
+    need(own and len(pairs)==1,'TIKTOK_ORIGINAL_CONTROL_IDENTITY_REQUIRED');detail,shop=next(iter(pairs))
+    need(type(detail) is str and detail.isdecimal() and int(detail)>0 and shop==EXPECTED_SHOP_ID_BY_TARGET[label],
+        'TIKTOK_ORIGINAL_CONTROL_SHOP_CHANGED')
+    original=next(t for t in snapshot['publication_targets'] if t['target_label']==label)
+    need(original['store']==original['site']==label.split(':')[1] and original['platform']=='tiktok'
+        and _TIKTOK_SITE_BY_TARGET[label] in {'PH','MY','TH','VN'},'TIKTOK_FROZEN_STORE_COUNTRY_CHANGED')
+    mapping=_file_identity(run_id=target['run_id'],plan_id=active.plan_id,decision_id=active.decision_id,snapshot_digest=snapshot['snapshot_digest'])
+    need(json.loads(facts['failure']['evidence_json']).get('checkpoint_file_identity')==mapping,'TIKTOK_ORIGINAL_FILE_MAPPING_CHANGED')
+    body={'detailIds':[int(detail)],'shopIds':[shop]}
+    rows=retained_tiktok_rows(root,identity);publishes=[r for r in rows if r['request']['path']==PUBLISH_PATH]
+    need(len(publishes)==1 and publishes[0]['phase']=='RESPONSE_RETAINED' and publishes[0]['http_status']==200
+        and publishes[0]['outcome']=='ACCEPTED' and publishes[0]['request']['request_body_sha256']==hashlib.sha256(
+            json.dumps(body,ensure_ascii=False,separators=(',',':')).encode()).hexdigest(),
+        'TIKTOK_ORIGINAL_ACCEPTED_PUBLISH_JOURNAL_REQUIRED')
+    reserved=next(r for r in facts['ledger'] if r['target_label']==label and r['operation']=='publish_target')
+    need(reserved['request_digest']==_request_sha('publish_target',(PUBLISH_PATH,body),{}),'TIKTOK_ORIGINAL_PUBLISH_WIRE_CHANGED')
+    return {'identity':identity,'checkpoint_path':str(path),'checkpoint_sha256':hashlib.sha256(raw).hexdigest(),
+        'detail_id':detail,'shop_id':shop,'region':_TIKTOK_SITE_BY_TARGET[label],'publish':publishes[0]}
+
+
+def _tiktok_failed_command(facts,source):
+    from domains.channel_operations.tiktok_v4_execution import _resolved_category,_target_command
+    snapshot=facts['snapshot'];label=facts['target']['target_label']
+    original=next(t for t in snapshot['publication_targets'] if t['target_label']==label)
+    category,digest=_resolved_category(snapshot['categories_by_target'][label],target=original,
+        product=snapshot['product'],skus=snapshot['skus'],resolver=None)
+    return _target_command(snapshot,target=original,control={k:source[k] for k in ('detail_id','shop_id')},
+        category=category,category_evidence_digest=digest)
+
+
+def _tiktok_failed_verified_evidence(facts,source,responses):
+    """Pure replay through the actual complete frozen matcher, including CAS."""
+    from shared_platform.native_tiktok_exact_readback import NativeTikTokExactStorefrontReadback,_official_identity,MIAOSHOU_SHOPS,SHOP_PATH
+    command=_tiktok_failed_command(facts,source);label=command['target_label'];need=_provider_need
+    need(type(responses) is list and len(responses)==4,'TIKTOK_EXACT_OFFICIAL_READ_SET_REQUIRED')
+    need(responses[0]['path']==MIAOSHOU_SHOPS and responses[1]['path']==SHOP_PATH,'TIKTOK_ORIGINAL_SHOP_READS_REQUIRED')
+    erp,official=(responses[i]['response'] for i in (0,1))
+    need(official.get('code')==0,'TIKTOK_OFFICIAL_AUTHORIZATION_READ_REQUIRED')
+    shop=_official_identity(erp,official,internal_id=source['shop_id'],region=source['region'])
+    data=erp['data'];rows=(data.get('list') or data.get('rows') or data.get('shopList')) if isinstance(data,dict) else data
+    total=data.get('totalCount',data.get('total')) if isinstance(data,dict) else None
+    need(len(rows)<100 and (total is None or type(total) is int and total==len(rows))
+        and (not isinstance(data,dict) or data.get('hasNextPage') in (None,False)),
+        'TIKTOK_ERP_SHOP_IDENTITY_ENUMERATION_PARTIAL')
+    control=[r for r in rows if str(r.get('shopId') or r.get('id') or '')==source['shop_id']
+        and str(r.get('site') or r.get('region') or '').upper()==source['region']]
+    official_id=str(shop.get('id') or shop.get('shop_id') or '')
+    need(len(control)==1 and all(str(control[0][k])==official_id for k in ('platformShopId','tiktokShopId')
+        if control[0].get(k) is not None and str(control[0][k])!=''),'TIKTOK_ALL_PRESENT_OFFICIAL_IDS_MUST_AGREE')
+    position=0
+    def replay(method,path,query,body):
+        nonlocal position
+        need(position<len(responses),'TIKTOK_OFFICIAL_READ_SET_CHANGED');row=responses[position];position+=1
+        need((row['method'],row['path'],row['query'],row['body'])==(method,path,query,body),'TIKTOK_OFFICIAL_REQUEST_SCOPE_CHANGED')
+        return row['response']
+    inventory=json.loads(facts['failure']['evidence_json']).get('provider_readonly_observations',{}).get('tiktok_prewrite_inventory',{})
+    reader=NativeTikTokExactStorefrontReadback(shop_post=lambda path,body:replay('POST',path,None,body),
+        official_call=lambda method,path,_token,query,body:replay(method,path,query,body),
+        token_loader=lambda:('immutable-official-read-set',lambda:None),inventory_bindings=inventory)
+    matched=reader.readback(command=command,dispatch={})
+    need(position==4 and matched.get('exact') is True and matched.get('status')=='VERIFIED'
+        and matched.get('official_catalog_rows'),'TIKTOK_COMPLETE_FROZEN_OFFICIAL_MATCH_REQUIRED')
+    binding=matched['official_catalog_rows'][0]['shop_binding']
+    canonical={'schema_version':'product-publication-platform-result/v1','platform':'TIKTOK',
+        'status':'PUBLISHED','readback_completed':True,'dispatch_attempted':False,'external_write_count':0,
+        'targets':[{'target_label':label,'status':'PUBLISHED','evidence':{'target_label':label,'stage':'READBACK',
+            'verified':True,'outcome_unknown':False,'provider_identity_bound':True,
+            'provider_code':'tiktok_official_readback_verified','external_write_count':0,
+            'official_catalog_rows':matched['official_catalog_rows']}}]}
+    return {'schema_version':'native-scoped-v4-target-result/v1','source':'official_tiktok_shop_api',
+        'native_failed_readback_schema':'native-tiktok-original-failed-readback/v1',
+        'status':'PUBLISHED','outcome_unknown':False,'reconciliation_required':False,'request_attempted':False,
+        'verified':True,'target_label':label,'external_writes_performed':[],'historical_failure_preserved':True,
+        'canonical_platform_result':canonical,
+        'original_failure_digest':facts['failure']['evidence_digest'],'snapshot_digest':facts['snapshot']['snapshot_digest'],
+        'command_digest':command['command_digest'],'mapping':binding,'mapping_digest':_ozon_sha(binding),
+        'checks':{'complete_frozen_match':True,'original_control_shop':True,'current_unique_two_provider_identity':True,
+            'all_present_explicit_ids_agree':True},'official_responses':responses,'official_catalog_rows':matched['official_catalog_rows']}
+
+
+def _observe_tiktok_failed(active,gate,data,target):
+    from shared_platform.native_new_task_v4_targets import scope
+    from shared_platform.native_tiktok_exact_readback import NativeTikTokExactStorefrontReadback,MIAOSHOU_SHOPS,SHOP_PATH,SEARCH,DETAIL
+    scope(active,gate['plan'])
+    with active.store._connect_readonly() as db:
+        db.execute('BEGIN');facts=_tiktok_failed_facts(db,active,target)
+    source=_tiktok_failed_source(active,facts);responses=[]
+    # The existing reader owns its ordinary SDK/token guard. Only capture its
+    # four real READs; no publisher, refresh, repair or saved-JSON input exists.
+    inventory=json.loads(facts['failure']['evidence_json']).get('provider_readonly_observations',{}).get('tiktok_prewrite_inventory',{})
+    shop_post,official=NativeTikTokExactStorefrontReadback()._calls()
+    def capture(method,path,query,body,invoke):
+        from shared_platform.native_sole_final_execution import _ACTIVE
+        _provider_need(_ACTIVE.get() is active and active.service._actor()['owner_sid']==active.owner_sid,'TIKTOK_CURRENT_ACTOR_CHANGED')
+        _provider_need(len(responses)<4 and (path in {MIAOSHOU_SHOPS,SHOP_PATH,SEARCH} or path.startswith(DETAIL.split('{')[0])),
+            'TIKTOK_READ_ONLY_ENDPOINT_REQUIRED')
+        value=invoke();responses.append({'method':method,'path':path,'query':query,'body':body,'response':value});return value
+    reader=NativeTikTokExactStorefrontReadback(
+        shop_post=lambda path,body:capture('POST',path,None,body,lambda:shop_post(path,body)),
+        official_call=lambda method,path,_token,query,body:capture(method,path,query,body,lambda:official(method,path,query,body)),
+        token_loader=lambda:('existing-sdk-token-guard',lambda:None),inventory_bindings=inventory)
+    reader.readback(command=_tiktok_failed_command(facts,source),dispatch={})
+    evidence=_tiktok_failed_verified_evidence(facts,source,responses)
+    refreshed,changed=active.gate(data,store=active.store)
+    _provider_need(changed is None,'TIKTOK_CURRENT_SOURCE_CHANGED_AFTER_READ');scope(active,refreshed['plan'])
+    _provider_need(_tiktok_failed_source(active,facts)==source,'TIKTOK_ORIGINAL_SOURCE_CHANGED_AFTER_READ')
+    proof=_TikTokFailedReadback(json.dumps(facts,ensure_ascii=False,sort_keys=True,separators=(',',':')),
+        json.dumps(source,ensure_ascii=False,sort_keys=True,separators=(',',':')),
+        json.dumps(evidence,ensure_ascii=False,sort_keys=True,separators=(',',':')))
+    token=_TIKTOK_FAILED_SCOPE.set({'active':active,'proof':proof})
+    try:active.store._record_native_tiktok_failed_readback(proof)
+    finally:_TIKTOK_FAILED_SCOPE.reset(token)
+    return {'target_label':target['target_label'],**evidence}
+
+
 def _official_observation(payload, target):
     from modules.products import release_adapters as adapters
     channel, site = target['target_label'].split(':', 1)
@@ -701,7 +888,7 @@ def _ozon_official_observation(active, gate, target):
             'error_type':type(error).__name__,'external_writes_performed':[]}
 
 
-def observe_submissions(runtime, decision_id):
+def observe_submissions(runtime, decision_id, *, target_labels=None):
     """Current decision recheck -> exact submission READ -> original store CAS."""
     from shared_platform.native_sole_final_execution import _NativeExecution, _ACTIVE
     from shared_platform.native_approved_discount_prices import B_DECISION
@@ -728,7 +915,19 @@ def observe_submissions(runtime, decision_id):
         observations = []
         retry_read = False
         from shared_platform.native_publication_cancellation import eligible_rows
-        for target in eligible_rows((run or {}).get('targets') or [],gate.get('execution_cancellation')):
+        targets=eligible_rows((run or {}).get('targets') or [],gate.get('execution_cancellation'))
+        if target_labels is not None:
+            _provider_need(type(target_labels) is tuple and bool(target_labels) and len(set(target_labels))==len(target_labels)
+                and set(target_labels)<={row['target_label'] for row in targets},'EXACT_SELECTED_READBACK_TARGETS_REQUIRED')
+            targets=[row for row in targets if row['target_label'] in target_labels]
+        for target in targets:
+            if target['status']=='FAILED' and target['target_label'].startswith('tiktok:LH_'):
+                try:observations.append(_observe_tiktok_failed(active,gate,data,target))
+                except (ValueError,OSError,KeyError,TypeError,RuntimeError,sqlite3.Error) as error:
+                    observations.append({'target_label':target['target_label'],'verified':False,
+                        'capability':'TIKTOK_ORIGINAL_PUBLISH_READONLY_HOLD','error_type':type(error).__name__,
+                        'error':str(error),'external_writes_performed':[]})
+                continue
             if decision_id==B_DECISION and target['target_label']==_VN and target['status']=='FAILED' and eligible_shopee_failed_readback(runtime.store,decision_id):
                 try:
                     observations.append(_observe_vn_failed(active,gate,data))

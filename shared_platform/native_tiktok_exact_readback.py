@@ -13,6 +13,82 @@ SHOP_PATH='/authorization/202309/shops'
 MIAOSHOU_SHOPS='/open/v1/product/shop/shop/get_shop_list'
 SEARCH='/product/202309/products/search'
 DETAIL='/product/202309/products/{product_id}'
+INVENTORY='/product/202309/inventory/search'
+
+def _inventory_view(detail,response,command,inventory_binding):
+    """Available quantities only: explicit rows or authoritative conservation.
+
+    Inventory Search defines total_available_quantity as the sum across ALL
+    warehouses. Only when returned nonnegative rows exhaust that total can
+    omitted warehouse quantities be proved zero. Committed is kept separate.
+    """
+    from copy import deepcopy
+    def need(value):
+        if not value:raise ValueError('OFFICIAL_AVAILABLE_INVENTORY_UNPROVEN')
+    need(isinstance(response,Mapping) and response.get('code')==0)
+    data=response.get('data');need(isinstance(data,Mapping))
+    products=data.get('inventory');need(isinstance(products,list) and len(products)==1)
+    need(not data.get('next_page_token') and data.get('has_more') in (None,False)
+        and data.get('total_count') in (None,1))
+    product=products[0];need(isinstance(product,Mapping)
+        and str(product.get('product_id') or '')==str(detail.get('id') or detail.get('product_id') or ''))
+    product_id=str(product['product_id'])
+    need(all(str(product[key])==product_id for key in ('product_id','id') if product.get(key) not in (None,''))
+        and all(str(detail[key])==product_id for key in ('product_id','id') if detail.get(key) not in (None,'')))
+    rows=product.get('skus');actual=detail.get('skus');need(isinstance(rows,list) and isinstance(actual,list))
+    wanted={row['model_sku'] for row in command['skus']}
+    need(all(isinstance(row,Mapping) for row in rows+actual))
+    by_model={str(row.get('seller_sku') or ''):row for row in rows}
+    need(len(by_model)==len(rows)==len(actual)==len(wanted) and set(by_model)==wanted)
+    view=deepcopy(detail);proof=[];seen_ids=set()
+    for original,row in zip(actual,view['skus']):
+        model=str(row.get('seller_sku') or '');need(model in by_model);official=by_model[model]
+        sku_id=str(row.get('id') or row.get('sku_id') or '')
+        need(sku_id.isdecimal() and int(sku_id)>0 and sku_id not in seen_ids
+            and str(official.get('id') or '')==sku_id);seen_ids.add(sku_id)
+        need(all(str(official[key])==sku_id for key in ('id','sku_id') if official.get(key) not in (None,''))
+            and all(str(row[key])==sku_id for key in ('id','sku_id') if row.get(key) not in (None,'')))
+        total=official.get('total_available_quantity');need(type(total) is int and total>=0)
+        committed=official.get('total_committed_quantity')
+        need(committed is None or type(committed) is int and committed>=0)
+        warehouses=official.get('warehouse_inventory');need(isinstance(warehouses,list) and bool(warehouses))
+        observed={};reserved={}
+        for warehouse in warehouses:
+            need(isinstance(warehouse,Mapping));key=str(warehouse.get('warehouse_id') or '')
+            quantity=warehouse.get('available_quantity');held=warehouse.get('committed_quantity')
+            need(bool(key) and key not in observed and type(quantity) is int and quantity>=0
+                and (held is None or type(held) is int and held>=0))
+            observed[key]=quantity;reserved[key]=held
+        # A positive remainder has unknown location; it cannot be assigned to
+        # a frozen warehouse or silently discarded. Missing total never means0.
+        need(sum(observed.values())==total)
+        need(committed is None or sum(q for q in reserved.values() if q is not None)<=committed)
+        stock=command['publisher_snapshot']['targets'][0].get('expected_warehouse_inventory')
+        if isinstance(stock,Mapping) and isinstance(stock.get('warehouses'),list):
+            frozen={str(w['warehouse_id']):w['stock'] for w in stock['warehouses']}
+        elif isinstance(inventory_binding,Mapping) and isinstance(inventory_binding.get(model),Mapping):
+            frozen=dict(inventory_binding[model])
+        else:raise ValueError('ORIGINAL_WAREHOUSE_BINDING_REQUIRED')
+        need(bool(frozen) and all(type(q) is int and q>=0 for q in frozen.values()))
+        need(all(key in frozen or quantity==0 for key,quantity in observed.items()))
+        quantities={key:(observed[key] if key in observed else 0) for key in frozen}
+        need(quantities==frozen)
+        returned=original.get('inventory');need(isinstance(returned,list))
+        seen=set()
+        for item in returned:
+            need(isinstance(item,Mapping));key=str(item.get('warehouse_id') or '');q=item.get('quantity')
+            need(bool(key) and key not in seen and type(q) is int and q>=0
+                and q==(observed[key] if key in observed else 0));seen.add(key)
+        need(sum(item['quantity'] for item in returned)==total)
+        row['inventory']=[{'warehouse_id':key,'quantity':q} for key,q in quantities.items()]
+        proof.append({'seller_sku':model,'official_sku_id':sku_id,'total_available_quantity':total,
+            'total_committed_quantity':committed,'observed_available_quantities':observed,
+            'observed_committed_quantities':reserved,
+            'derived_zero_warehouse_ids':sorted(set(frozen)-set(observed)),
+            'derivation':'AUTHORITATIVE_ALL_WAREHOUSE_TOTAL_MINUS_NONNEGATIVE_EXPLICIT_ROWS',
+            'available_quantities':quantities})
+    return view,{'source':'official_inventory_search','missing_row_default_zero':False,
+        'committed_treated_as_available':False,'skus':proof}
 
 def _unavailable(label):
     return {'target_label':label,'authority':'UNAVAILABLE','status':'UNAVAILABLE','exact':False}
@@ -212,11 +288,12 @@ class NativeTikTokExactStorefrontReadback:
             'inventory_scope':'EXACT_RETURNED_DETAIL_ROWS',
             'omitted_zero_quantity_proven':False,'provider_access':'NOT_OBSERVED'}
 
-    def __init__(self,*,shop_post=None,official_call=None,token_loader=None,inventory_bindings=None,evidence=None,required_product_attributes=None):
+    def __init__(self,*,shop_post=None,official_call=None,token_loader=None,inventory_bindings=None,evidence=None,required_product_attributes=None,media_equivalence=None,inventory_search=False):
         self._shop_post=shop_post;self._official_call=official_call;self._token_loader=token_loader
         self._inventory_bindings=inventory_bindings if inventory_bindings is not None else {}
         self._evidence=evidence
         self._required_product_attributes=required_product_attributes or {}
+        self._media_equivalence=media_equivalence;self._inventory_search=inventory_search
 
     def _calls(self):
         from core import auth
@@ -283,7 +360,20 @@ class NativeTikTokExactStorefrontReadback:
             if result.get('code')!=0 or not isinstance(result.get('data'),Mapping):
                 raise ValueError('OFFICIAL_PRODUCT_DETAIL_UNAVAILABLE')
             required=self._required_product_attributes.get(label,())
-            matched=_detail_matches(result['data'],command,product_id,self._inventory_bindings.get(label),required)
+            working=result['data'];extra={}
+            if self._inventory_search:
+                skus=working.get('skus')
+                if not isinstance(skus,list) or any(not isinstance(row,Mapping) for row in skus):
+                    raise ValueError('OFFICIAL_INVENTORY_SKU_IDS_REQUIRED')
+                ids=[str(row.get('id') or row.get('sku_id') or '') for row in skus]
+                if not ids or len(ids)!=len(set(ids)) or any(not value.isdecimal() or int(value)<=0 for value in ids):
+                    raise ValueError('OFFICIAL_INVENTORY_SKU_IDS_REQUIRED')
+                observed=official('POST',INVENTORY,{'shop_cipher':cipher},{'sku_ids':ids})
+                working,extra['inventory_evidence']=_inventory_view(working,observed,command,self._inventory_bindings.get(label))
+            if self._media_equivalence is not None:
+                from shared_platform.native_tiktok_media_equivalence import normalized_media
+                working,extra['media_equivalence']=normalized_media(self._media_equivalence,working,command,shop)
+            matched=_detail_matches(working,command,product_id,self._inventory_bindings.get(label),required)
             catalog_rows=_official_catalog_rows(result['data'],command,shop,region) if matched is True else None
             if self._evidence is not None:
                 self._evidence[label]={'source':'official_tiktok_shop_api','shop_id':str(shop.get('id') or shop.get('shop_id')),
@@ -294,6 +384,6 @@ class NativeTikTokExactStorefrontReadback:
                     'catalog_write':False,'auth_refresh':False}
             return {'target_label':label,'authority':'OFFICIAL_STOREFRONT',
                 'status':'VERIFIED' if matched is True else ('UNVERIFIED' if matched is None else 'MISMATCH'),
-                'exact':matched is True,**({'official_catalog_rows':catalog_rows} if catalog_rows else {})}
+                'exact':matched is True,**extra,**({'official_catalog_rows':catalog_rows} if catalog_rows else {})}
         except (OSError,ValueError,KeyError,TypeError,RuntimeError):
             return _unavailable(label)

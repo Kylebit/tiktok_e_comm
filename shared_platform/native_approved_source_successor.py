@@ -59,6 +59,7 @@ ALLOWED_FILES = frozenset({
     'tests/test_native_promotion_auth_reprepare.py',
     'modules/tiktok/oneclick_promotion.py',
     'shared_platform/native_tiktok_exact_readback.py',
+    'shared_platform/native_tiktok_media_equivalence.py',
     'tests/test_native_tiktok_promotion_identity.py',
     'tests/test_native_tiktok_failed_readback.py',
 })

@@ -528,11 +528,19 @@ def _tiktok_failed_command(facts,source):
         category=category,category_evidence_digest=digest)
 
 
-def _tiktok_failed_verified_evidence(facts,source,responses):
+def _tiktok_failed_verified_evidence(facts,source,responses,media_equivalence=None):
     """Pure replay through the actual complete frozen matcher, including CAS."""
     from shared_platform.native_tiktok_exact_readback import NativeTikTokExactStorefrontReadback,_official_identity,MIAOSHOU_SHOPS,SHOP_PATH
     command=_tiktok_failed_command(facts,source);label=command['target_label'];need=_provider_need
-    need(type(responses) is list and len(responses)==4,'TIKTOK_EXACT_OFFICIAL_READ_SET_REQUIRED')
+    need(type(responses) is list and len(responses)==5,'TIKTOK_EXACT_OFFICIAL_READ_SET_REQUIRED')
+    if media_equivalence is None:
+        # Only the current protected store CAS can recover the transient typed
+        # proof. No persisted JSON, public flag or stored success is authority.
+        trusted=_TIKTOK_FAILED_SCOPE.get() or {}
+        if trusted.get('proof') is not None:media_equivalence=trusted.get('media_equivalence')
+    if media_equivalence is not None:
+        from shared_platform.native_tiktok_media_equivalence import recheck_media
+        recheck_media(media_equivalence,facts,source,responses)
     need(responses[0]['path']==MIAOSHOU_SHOPS and responses[1]['path']==SHOP_PATH,'TIKTOK_ORIGINAL_SHOP_READS_REQUIRED')
     erp,official=(responses[i]['response'] for i in (0,1))
     need(official.get('code')==0,'TIKTOK_OFFICIAL_AUTHORIZATION_READ_REQUIRED')
@@ -556,9 +564,10 @@ def _tiktok_failed_verified_evidence(facts,source,responses):
     inventory=json.loads(facts['failure']['evidence_json']).get('provider_readonly_observations',{}).get('tiktok_prewrite_inventory',{})
     reader=NativeTikTokExactStorefrontReadback(shop_post=lambda path,body:replay('POST',path,None,body),
         official_call=lambda method,path,_token,query,body:replay(method,path,query,body),
-        token_loader=lambda:('immutable-official-read-set',lambda:None),inventory_bindings=inventory)
+        token_loader=lambda:('immutable-official-read-set',lambda:None),inventory_bindings=inventory,
+        media_equivalence=media_equivalence,inventory_search=True)
     matched=reader.readback(command=command,dispatch={})
-    need(position==4 and matched.get('exact') is True and matched.get('status')=='VERIFIED'
+    need(position==5 and matched.get('exact') is True and matched.get('status')=='VERIFIED'
         and matched.get('official_catalog_rows'),'TIKTOK_COMPLETE_FROZEN_OFFICIAL_MATCH_REQUIRED')
     binding=matched['official_catalog_rows'][0]['shop_binding']
     canonical={'schema_version':'product-publication-platform-result/v1','platform':'TIKTOK',
@@ -575,39 +584,47 @@ def _tiktok_failed_verified_evidence(facts,source,responses):
         'original_failure_digest':facts['failure']['evidence_digest'],'snapshot_digest':facts['snapshot']['snapshot_digest'],
         'command_digest':command['command_digest'],'mapping':binding,'mapping_digest':_ozon_sha(binding),
         'checks':{'complete_frozen_match':True,'original_control_shop':True,'current_unique_two_provider_identity':True,
-            'all_present_explicit_ids_agree':True},'official_responses':responses,'official_catalog_rows':matched['official_catalog_rows']}
+            'all_present_explicit_ids_agree':True},'official_responses':responses,'official_catalog_rows':matched['official_catalog_rows'],
+        'inventory_evidence':matched['inventory_evidence'],
+        **({'media_equivalence':matched['media_equivalence']} if media_equivalence is not None else {})}
 
 
-def _observe_tiktok_failed(active,gate,data,target):
+def _observe_tiktok_failed(active,gate,data,target,media_equivalence_ref=None,media_cache=None):
     from shared_platform.native_new_task_v4_targets import scope
-    from shared_platform.native_tiktok_exact_readback import NativeTikTokExactStorefrontReadback,MIAOSHOU_SHOPS,SHOP_PATH,SEARCH,DETAIL
+    from shared_platform.native_tiktok_exact_readback import NativeTikTokExactStorefrontReadback,MIAOSHOU_SHOPS,SHOP_PATH,SEARCH,DETAIL,INVENTORY
     scope(active,gate['plan'])
     with active.store._connect_readonly() as db:
         db.execute('BEGIN');facts=_tiktok_failed_facts(db,active,target)
     source=_tiktok_failed_source(active,facts);responses=[]
     # The existing reader owns its ordinary SDK/token guard. Only capture its
-    # four real READs; no publisher, refresh, repair or saved-JSON input exists.
+    # five real READs; no publisher, refresh or repair exists. A media ref may
+    # only prove representations against this freshly captured SDK response.
     inventory=json.loads(facts['failure']['evidence_json']).get('provider_readonly_observations',{}).get('tiktok_prewrite_inventory',{})
     shop_post,official=NativeTikTokExactStorefrontReadback()._calls()
     def capture(method,path,query,body,invoke):
         from shared_platform.native_sole_final_execution import _ACTIVE
         _provider_need(_ACTIVE.get() is active and active.service._actor()['owner_sid']==active.owner_sid,'TIKTOK_CURRENT_ACTOR_CHANGED')
-        _provider_need(len(responses)<4 and (path in {MIAOSHOU_SHOPS,SHOP_PATH,SEARCH} or path.startswith(DETAIL.split('{')[0])),
+        _provider_need(len(responses)<5 and (path in {MIAOSHOU_SHOPS,SHOP_PATH,SEARCH,INVENTORY} or path.startswith(DETAIL.split('{')[0])),
             'TIKTOK_READ_ONLY_ENDPOINT_REQUIRED')
         value=invoke();responses.append({'method':method,'path':path,'query':query,'body':body,'response':value});return value
     reader=NativeTikTokExactStorefrontReadback(
         shop_post=lambda path,body:capture('POST',path,None,body,lambda:shop_post(path,body)),
         official_call=lambda method,path,_token,query,body:capture(method,path,query,body,lambda:official(method,path,query,body)),
-        token_loader=lambda:('existing-sdk-token-guard',lambda:None),inventory_bindings=inventory)
+        token_loader=lambda:('existing-sdk-token-guard',lambda:None),inventory_bindings=inventory,inventory_search=True)
     reader.readback(command=_tiktok_failed_command(facts,source),dispatch={})
-    evidence=_tiktok_failed_verified_evidence(facts,source,responses)
+    media=None
+    if media_equivalence_ref is not None:
+        _provider_need(len(responses)==5,'TIKTOK_CURRENT_COMPLETE_SDK_READ_SET_REQUIRED')
+        from shared_platform.native_tiktok_media_equivalence import verify_media_ref
+        media=verify_media_ref(media_equivalence_ref,facts,source,responses,cache=media_cache if media_cache is not None else {})
+    evidence=_tiktok_failed_verified_evidence(facts,source,responses,media)
     refreshed,changed=active.gate(data,store=active.store)
     _provider_need(changed is None,'TIKTOK_CURRENT_SOURCE_CHANGED_AFTER_READ');scope(active,refreshed['plan'])
     _provider_need(_tiktok_failed_source(active,facts)==source,'TIKTOK_ORIGINAL_SOURCE_CHANGED_AFTER_READ')
     proof=_TikTokFailedReadback(json.dumps(facts,ensure_ascii=False,sort_keys=True,separators=(',',':')),
         json.dumps(source,ensure_ascii=False,sort_keys=True,separators=(',',':')),
         json.dumps(evidence,ensure_ascii=False,sort_keys=True,separators=(',',':')))
-    token=_TIKTOK_FAILED_SCOPE.set({'active':active,'proof':proof})
+    token=_TIKTOK_FAILED_SCOPE.set({'active':active,'proof':proof,'media_equivalence':media})
     try:active.store._record_native_tiktok_failed_readback(proof)
     finally:_TIKTOK_FAILED_SCOPE.reset(token)
     return {'target_label':target['target_label'],**evidence}
@@ -888,7 +905,7 @@ def _ozon_official_observation(active, gate, target):
             'error_type':type(error).__name__,'external_writes_performed':[]}
 
 
-def observe_submissions(runtime, decision_id, *, target_labels=None):
+def observe_submissions(runtime, decision_id, *, target_labels=None, media_equivalence_ref=None):
     """Current decision recheck -> exact submission READ -> original store CAS."""
     from shared_platform.native_sole_final_execution import _NativeExecution, _ACTIVE
     from shared_platform.native_approved_discount_prices import B_DECISION
@@ -920,9 +937,10 @@ def observe_submissions(runtime, decision_id, *, target_labels=None):
             _provider_need(type(target_labels) is tuple and bool(target_labels) and len(set(target_labels))==len(target_labels)
                 and set(target_labels)<={row['target_label'] for row in targets},'EXACT_SELECTED_READBACK_TARGETS_REQUIRED')
             targets=[row for row in targets if row['target_label'] in target_labels]
+        media_cache={}  # one encode per unique pinned asset in this call only
         for target in targets:
             if target['status']=='FAILED' and target['target_label'].startswith('tiktok:LH_'):
-                try:observations.append(_observe_tiktok_failed(active,gate,data,target))
+                try:observations.append(_observe_tiktok_failed(active,gate,data,target,media_equivalence_ref,media_cache))
                 except (ValueError,OSError,KeyError,TypeError,RuntimeError,sqlite3.Error) as error:
                     observations.append({'target_label':target['target_label'],'verified':False,
                         'capability':'TIKTOK_ORIGINAL_PUBLISH_READONLY_HOLD','error_type':type(error).__name__,

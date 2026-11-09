@@ -13,6 +13,93 @@ from shared_platform import native_sole_final_execution as execution
 from shared_platform import native_sole_final_readback as readback
 
 
+def test_exact_media_accepts_only_downloaded_identical_cdn_alternates(tmp_path,monkeypatch):
+    from PIL import Image,JpegImagePlugin
+    from shared_platform import native_tiktok_media_equivalence as media
+    from shared_platform.product_description_media import miaoshou_rich_description
+    def forbidden(*args,**kwargs):pytest.fail('local media proof cannot use network or database')
+    monkeypatch.setattr(socket.socket,'connect',forbidden)
+    monkeypatch.setattr(sqlite3,'connect',forbidden)
+    def ref(path):return {'path':str(path.resolve()),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+    def save(path,value):path.write_text(json.dumps(value),encoding='utf-8');return ref(path)
+    label='tiktok:LH_PH';assets=[];ordered=[];approved=[]
+    for index in range(7):
+        source=tmp_path/f'source-{index}.png';Image.new('RGB',(8,8),(index*20,40,80)).save(source)
+        jpeg=tmp_path/f'cdn-{index}.jpg'
+        with Image.open(source) as image:image.save(jpeg,format='JPEG',quality=87,subsampling=2,optimize=False)
+        alternate=tmp_path/f'alternate-{index}.jpg';alternate.write_bytes(jpeg.read_bytes())
+        uri=f'tos-test-object/image-{index}';url=f'https://cdn.example.invalid/{uri}~gallery.jpeg?idc=my'
+        def receipt(path,address,image):return save(path,{'url':address,'local_path':str(image.resolve()),
+            'byte_sha256':ref(image)['sha256'],'mime':'image/jpeg','dimensions':[8,8]})
+        with Image.open(jpeg) as image:parameters={'qtables':image.quantization,'sampling':JpegImagePlugin.get_sampling(image),'progressive':False}
+        source_url=f'https://source.example.invalid/{index}.png'
+        assets.append({'source_url':source_url,'source_ref':ref(source),'cdn_url':url,'cdn_ref':ref(jpeg),
+            'cdn_response_ref':receipt(tmp_path/f'get-{index}.json',url,jpeg),'parameters':parameters,
+            'alternate_cdn_refs':[{'cdn_url':url+'2','cdn_ref':ref(alternate),
+                'cdn_response_ref':receipt(tmp_path/f'alt-get-{index}.json',url+'2',alternate)}]})
+        ordered.append({'position':index+1,'asset_index':index,'official_uri':uri})
+        approved.append({'public_url':source_url,'artifact_path':str(source.resolve()),'artifact_digest':'sha256:'+ref(source)['sha256']})
+    facts={'target':{'target_label':label},'snapshot':{'offer_id':'synthetic','snapshot_digest':'frozen','product_revision':1,
+        'product':{'images':[asset['source_url'] for asset in assets]}},'plan':{'plan_id':'plan','payload_digest':'payload','payload':{'r3_marketplace_binding':{
+            'r2_identity':{'offer_id':'synthetic','identity_digest':'r2','artifact_digests':[row['artifact_digest'] for row in approved]},
+            'documents':{'generation_result':{'assets':approved},'translation_result':{'assets':[]}}}}},
+        'scope':{'binding_json':json.dumps({'candidate_digest':'candidate'})}}
+    source={'identity':{'original':'frozen'},'shop_id':'1','region':'PH'}
+    detail={'id':'301','main_images':[{'uri':row['official_uri'],'urls':[asset['cdn_url']]} for row,asset in zip(ordered,assets)],
+        'description':miaoshou_rich_description('Frozen text',[f"https://cdn.example.invalid/{row['official_uri']}~description.webp" for row in ordered])}
+    detail_ref=save(tmp_path/'detail.json',{'identity':{'target_label':label,'miaoshou_shop_id':'1','official_shop_id':'911',
+        'official_shop_region':'PH','cipher_sha256':hashlib.sha256(b'original-cipher').hexdigest()},'exact_product_id':'301','response':{'code':0,'data':detail}})
+    document={'schema_version':'native-tiktok-deterministic-media-equivalence/v1','binding':media._context(facts),'codec':media._codec(),
+        'assets':assets,'targets':{label:{'execution_identity_sha256':media._sha(source['identity']),'control_shop_id':'1','region':'PH',
+            'official_shop_id':'911','official_product_id':'301','official_detail_ref':detail_ref,'ordered':ordered}}}
+    responses=[{'response':{'result':'success','data':{'list':[{'shopId':'1','shopName':'Original Store','site':'PH'}]}}},
+        {'response':{'code':0,'data':{'shops':[{'id':'911','name':'Original Store','region':'PH','cipher':'original-cipher'}]}}},
+        {'response':{}},{'response':{'data':deepcopy(detail)}},{'response':{}}]
+    legacy=deepcopy(document)
+    for asset in legacy['assets']:asset.pop('alternate_cdn_refs')
+    legacy_ref=save(tmp_path/'legacy.json',legacy)
+    legacy_proof=media.verify_media_ref(legacy_ref,facts,source,responses,cache={})
+    for image in responses[3]['response']['data']['main_images']:image['urls'][0]+='2'
+    with pytest.raises(ValueError,match='CURRENT_GALLERY_URI_OR_ORDER_CHANGED'):media.recheck_media(legacy_proof,facts,source,responses)
+    media_ref=save(tmp_path/'dual.json',document)
+    saves=[];original_save=Image.Image.save
+    def count_save(image,*args,**kwargs):
+        if kwargs.get('format')=='JPEG':saves.append(True)
+        return original_save(image,*args,**kwargs)
+    monkeypatch.setattr(Image.Image,'save',count_save)
+    proof=media.verify_media_ref(media_ref,facts,source,responses,cache={})
+    assert len(saves)==7  # Alternate evidence never causes another encoding.
+    media.recheck_media(proof,facts,source,responses)
+    responses[3]['response']['data']=deepcopy(detail);media.recheck_media(proof,facts,source,responses)
+    assert len(saves)==7
+    responses[3]['response']['data']['main_images'][0]['urls'][0]+='3'
+    with pytest.raises(ValueError,match='CURRENT_GALLERY_URI_OR_ORDER_CHANGED'):media.recheck_media(proof,facts,source,responses)
+    responses[3]['response']['data']=deepcopy(detail)
+    responses[3]['response']['data']['main_images'][0]['uri']='tos-test-object/wrong'
+    with pytest.raises(ValueError,match='CURRENT_GALLERY_URI_OR_ORDER_CHANGED'):media.recheck_media(proof,facts,source,responses)
+    responses[3]['response']['data']=deepcopy(detail)
+    alternate_path=tmp_path/'alternate-0.jpg';alternate_bytes=alternate_path.read_bytes();alternate_path.write_bytes(alternate_bytes+b'changed')
+    with pytest.raises(ValueError,match='REF_BYTES_CHANGED'):media.recheck_media(proof,facts,source,responses)
+    # Even honest new SHA/receipt pins cannot admit different JPEG bytes.
+    bad=deepcopy(document);alternate=bad['assets'][0]['alternate_cdn_refs'][0];alternate['cdn_ref']=ref(alternate_path)
+    alternate['cdn_response_ref']=receipt(tmp_path/'bad-get.json',alternate['cdn_url'],alternate_path)
+    with pytest.raises(ValueError,match='ALTERNATE_CDN_BYTES_NOT_EXACT'):
+        media.verify_media_ref(save(tmp_path/'bad.json',bad),facts,source,responses,cache={})
+    alternate_path.write_bytes(alternate_bytes)
+    bad=deepcopy(document);alternate=bad['assets'][0]['alternate_cdn_refs'][0]
+    alternate['cdn_url']=alternate['cdn_url'].replace('image-0','different-object')
+    alternate['cdn_response_ref']=receipt(tmp_path/'wrong-uri-get.json',alternate['cdn_url'],alternate_path)
+    with pytest.raises(ValueError,match='ALTERNATE_CDN_OBJECT_URI_CHANGED'):
+        media.verify_media_ref(save(tmp_path/'wrong-uri.json',bad),facts,source,responses,cache={})
+    bad=deepcopy(document);alternate=bad['assets'][0]['alternate_cdn_refs'][0]
+    alternate['cdn_response_ref']=receipt(tmp_path/'wrong-url-get.json',alternate['cdn_url']+'unexpected',alternate_path)
+    with pytest.raises(ValueError,match='ALTERNATE_CDN_COLLECTION_REF_CHANGED'):
+        media.verify_media_ref(save(tmp_path/'wrong-url.json',bad),facts,source,responses,cache={})
+    bad=deepcopy(document);bad['assets'][0]['alternate_cdn_refs']*=2
+    with pytest.raises(ValueError,match='UNIQUE_CDN_URLS_REQUIRED'):
+        media.verify_media_ref(save(tmp_path/'duplicate.json',bad),facts,source,responses,cache={})
+
+
 def test_real_failed_publish_readback_requires_full_match_and_preserves_originals(live,monkeypatch,tmp_path):
     from shared_platform.native_final_mutation_budget import build_native_budget_ledger
     from shared_platform.native_prepared_v4_targets import provider_request_for_readonly_recovery,_file_identity

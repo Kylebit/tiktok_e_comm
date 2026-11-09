@@ -50,6 +50,33 @@ def _object_uri(url):
     _need(bool(value) and '%' not in value and '..' not in value.split('/'),'OBJECT_URI_INVALID')
     return value
 
+def _cdn_alternates(asset):
+    rows=asset.get('alternate_cdn_refs',[])
+    _need(type(rows) is list and len(rows)<=8,'FINITE_ALTERNATE_CDN_REFS_REQUIRED')
+    _need(all(type(row) is dict and set(row)=={'cdn_url','cdn_ref','cdn_response_ref'} for row in rows),
+        'ALTERNATE_CDN_FIELDS_INVALID')
+    urls=[asset['cdn_url']]+[row['cdn_url'] for row in rows]
+    _need(all(type(url) is str and url for url in urls) and len(set(urls))==len(urls),
+        'UNIQUE_CDN_URLS_REQUIRED')
+    return rows
+
+def _verify_cdn_alternates(asset,uri,pins):
+    rows=_cdn_alternates(asset)
+    if not rows:return
+    from PIL import Image
+    main=_read(asset['cdn_ref'],image=True)
+    with Image.open(BytesIO(main)) as image:dimensions=list(image.size)
+    _need(_object_uri(asset['cdn_url'])==uri,'ALTERNATE_CDN_OBJECT_URI_CHANGED')
+    for row in rows:
+        raw=_read(row['cdn_ref'],image=True);receipt=json.loads(_read(row['cdn_response_ref']))
+        _need(receipt['url']==row['cdn_url'] and Path(receipt['local_path']).resolve()==Path(row['cdn_ref']['path']).resolve()
+            and receipt['byte_sha256']==row['cdn_ref']['sha256'] and receipt['mime']=='image/jpeg'
+            and receipt.get('dimensions')==dimensions,'ALTERNATE_CDN_COLLECTION_REF_CHANGED')
+        _need(_object_uri(row['cdn_url'])==uri,'ALTERNATE_CDN_OBJECT_URI_CHANGED')
+        _need(raw==main,'ALTERNATE_CDN_BYTES_NOT_EXACT')
+        for key in ('cdn_ref','cdn_response_ref'):
+            item=row[key];pins.append((item['path'],item['sha256']))
+
 def _media(detail,ordered,assets):
     from shared_platform.product_description_media import html_image_urls
     images=detail.get('main_images') or detail.get('images')
@@ -57,7 +84,10 @@ def _media(detail,ordered,assets):
     for image,row in zip(images,ordered):
         urls=image.get('urls') or image.get('url_list')
         asset=assets[row['asset_index']]
-        _need(type(urls) is list and urls and urls[0]==asset['cdn_url']
+        # These finite alternatives have already passed exact receipt/bytes
+        # verification; opaque proof rechecks every file pin before each use.
+        allowed=[asset['cdn_url']]+[item['cdn_url'] for item in _cdn_alternates(asset)]
+        _need(type(urls) is list and urls and urls[0] in allowed
             and image.get('uri')==row['official_uri'] and _object_uri(urls[0])==row['official_uri'],
             'CURRENT_GALLERY_URI_OR_ORDER_CHANGED')
     description=html_image_urls(detail['description'])
@@ -140,6 +170,7 @@ def verify_media_ref(ref,facts,source,responses,*,cache):
             and receipt['byte_sha256']==asset['cdn_ref']['sha256'] and receipt['mime']=='image/jpeg','CDN_COLLECTION_REF_CHANGED')
         _need(index not in seen,'DUPLICATED_POSITION_ASSET');seen.add(index)
         _encode_once(asset,cache)
+        _verify_cdn_alternates(asset,row['official_uri'],pins)
     _need(target['execution_identity_sha256']==_sha(source['identity']) and target['control_shop_id']==source['shop_id']
         and target['region']==source['region'],'ORIGINAL_EXECUTION_IDENTITY_CHANGED')
     pinned=json.loads(_read(target['official_detail_ref']));pins.append(tuple(target['official_detail_ref'][k] for k in ('path','sha256')))

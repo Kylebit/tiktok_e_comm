@@ -14,17 +14,17 @@ import json
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
+from shared_platform.seller_sku_allocation import canonical_seller_sku as _allocation_sku
+
 
 IDENTITY_FIELDS = ("sku_id", "shop_cipher")
 IGNORED_COMPARISON_FIELDS: frozenset[str] = frozenset()
 
 
 def canonical_seller_sku(value: object) -> str:
-    """Return the four-digit cross-region Seller SKU key, or an empty string."""
-    raw = str(value or "").strip()
-    if not re.fullmatch(r"\d+", raw):
-        return ""
-    return raw[-4:].zfill(4)
+    """Resolve known country aliases; preserve numeric special/B identities."""
+    raw = _allocation_sku(value)
+    return raw if re.fullmatch(r"[0-9]+", raw) else ""
 
 
 @dataclass(frozen=True)
@@ -224,7 +224,8 @@ def preview_catalog_update(
         _next_contiguous_skus(
             occupied,
             max(requested_sku_count, 1),
-            start_after=max((int(value) for value in catalog_occupied), default=0),
+            start_after=max((int(value) for value in catalog_occupied
+                             if re.fullmatch(r"[0-8][0-9]{3}", value)), default=0),
         )
         if requested_sku_count > 0
         else ()
@@ -332,7 +333,7 @@ def _next_contiguous_skus(
 ) -> tuple[str, ...]:
     numeric = {int(value) for value in occupied if re.fullmatch(r"\d{4}", value)}
     start = max(1, start_after + 1)
-    while start + requested_count - 1 <= 9999:
+    while start + requested_count - 1 <= 8999:
         candidate = range(start, start + requested_count)
         if all(value not in numeric for value in candidate):
             return tuple(f"{value:04d}" for value in candidate)

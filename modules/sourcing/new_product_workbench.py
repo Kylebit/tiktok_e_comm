@@ -6656,17 +6656,24 @@ def _next_seller_sku(requested_count: int = 1) -> str:
     verified TikTok claim had expanded into variant numbers. The allocator is
     still read-only, but now treats those local facts as occupied too.
     """
-    db_path = ROOT / "data" / "shop.db"
+    from core.db import db_path as configured_catalog_path
+    db_path = (
+        configured_catalog_path() if os.environ.get("ORBIT_CATALOG_DATABASE")
+        else ROOT / "data" / "shop.db"
+    )
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        values: list[int] = []
+        values: list[str] = []
         for (raw,) in conn.execute(
             "select seller_sku from products "
             "where seller_sku is not null and length(seller_sku) > 0"
         ):
-            digits = "".join(ch for ch in str(raw) if ch.isdigit())
-            if digits:
-                values.append(int(digits[-4:]))
+            values.append(str(raw).strip())
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shopee_products'").fetchone():
+            values.extend(str(raw).strip() for (raw,) in conn.execute(
+                "SELECT seller_sku FROM shopee_products "
+                "WHERE seller_sku IS NOT NULL AND TRIM(seller_sku) != ''"
+            ))
     finally:
         conn.close()
     if not values:
@@ -6697,18 +6704,21 @@ def _next_seller_sku(requested_count: int = 1) -> str:
             if isinstance(value, dict):
                 claims[offer_id] = value
     reserved = {
-        int(fact.seller_sku)
+        fact.seller_sku
         for fact in reservations_from_documents(states, claims)
-        if fact.seller_sku.isdigit()
     }
-    occupied = {*values, *reserved}
-    width = max(1, int(requested_count or 1))
-    start = max(values) + 1
-    while start + width - 1 <= 9999:
-        candidate = range(start, start + width)
-        if all(number not in occupied for number in candidate):
-            return f"{start:04d}"
-        start += 1
+    from shared_platform.release_store import ReleaseStore, configured_release_store_path
+    from shared_platform.seller_sku_allocation import next_available_seller_skus
+
+    ledger_path = configured_release_store_path(
+        os.environ.get("ORBIT_RELEASE_STORE_PATH") or ROOT / "data" / "orbit_platform.db"
+    )
+    # The reservation's own ACTIVE status is authoritative even when its plan
+    # is SUPERSEDED. These existing methods never initialize or modify a DB.
+    reserved.update(ReleaseStore(ledger_path).active_reserved_sku_keys())
+    proposed = next_available_seller_skus(values, reserved, requested_count=requested_count)
+    if proposed:
+        return proposed[0]
     raise RuntimeError("没有足够的连续 Seller SKU 编号可供分配")
 
 

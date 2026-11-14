@@ -508,7 +508,18 @@ class NewProductWorkbenchTests(unittest.TestCase):
                 "modules.sourcing.new_product_workbench.STATE_DIR",
                 state_dir,
             ):
-                self.assertEqual(_next_seller_sku(2), "0952")
+                with patch.dict("os.environ", {"ORBIT_CATALOG_DATABASE": ""}):
+                    self.assertEqual(_next_seller_sku(2), "0952")
+
+                explicit_catalog = root / "explicit-catalog.db"
+                with sqlite3.connect(explicit_catalog) as connection:
+                    connection.execute("CREATE TABLE products (seller_sku TEXT)")
+                    connection.execute("INSERT INTO products VALUES ('0991')")
+                connection.close()
+                with patch.dict("os.environ", {
+                    "ORBIT_CATALOG_DATABASE": str(explicit_catalog),
+                }):
+                    self.assertEqual(_next_seller_sku(2), "0992")
 
     def test_miaoshou_editable_weight_rounds_up_without_understating(self):
         self.assertEqual(_miaoshou_editable_weight_kg(0.08), 0.08)

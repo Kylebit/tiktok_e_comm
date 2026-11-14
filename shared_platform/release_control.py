@@ -55,6 +55,10 @@ from modules.sourcing.new_product_workbench import (
 )
 from shared_platform.report_store import ReportRunStore
 from shared_platform.weekly_profit_runner import build_weekly_profit_preview
+from shared_platform.seller_sku_allocation import (
+    canonical_seller_sku as _allocation_canonical_seller_sku,
+    next_available_seller_skus,
+)
 
 
 DEFAULT_OFFER_ID = "3828811808"
@@ -355,8 +359,7 @@ def _local_seller_sku_reservations(
 
 
 def _canonical_seller_sku(value: object) -> str:
-    raw = str(value or "").strip()
-    return raw[-4:].zfill(4) if raw.isdigit() else raw
+    return _allocation_canonical_seller_sku(value)
 
 
 def _seller_sku_matches(candidate: str, occupied: object) -> bool:
@@ -374,34 +377,10 @@ def _next_available_seller_skus(
     requested_count: int,
     additional_occupied_skus: object = (),
 ) -> tuple[str, ...]:
-    catalog_numeric = {
-        int(_canonical_seller_sku(value))
-        for value in catalog_skus
-        if _canonical_seller_sku(value).isdigit()
-    }
-    occupied_numeric = {
-        *catalog_numeric,
-        *(
-            int(_canonical_seller_sku(value))
-            for value in reserved_skus
-            if _canonical_seller_sku(value).isdigit()
-        ),
-        *(
-            int(_canonical_seller_sku(value))
-            for value in additional_occupied_skus
-            if _canonical_seller_sku(value).isdigit()
-        ),
-    }
-    width = max(1, int(requested_count or 1))
-    # One four-digit namespace across every catalog source and active reserve.
-    # Append after its high-water mark rather than filling another channel's gaps.
-    start = max(occupied_numeric, default=0) + 1
-    while start + width - 1 <= 9999:
-        block = tuple(range(start, start + width))
-        if all(value not in occupied_numeric for value in block):
-            return tuple(f"{value:04d}" for value in block)
-        start += 1
-    return ()
+    return next_available_seller_skus(
+        catalog_skus, reserved_skus, requested_count=requested_count,
+        additional_occupied_skus=additional_occupied_skus,
+    )
 
 
 def _content_copy(review: Mapping[str, Any], collect_box: Mapping[str, Any]) -> dict[str, str]:

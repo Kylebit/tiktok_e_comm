@@ -477,32 +477,53 @@ def test_formal_candidate_is_generated_from_catalog_and_all_reservations(tmp_pat
 def test_new_skus_follow_full_catalog_and_active_reservation_high_water(tmp_path):
     root, database = _release_fixture(tmp_path)
     with sqlite3.connect(database) as connection:
-        connection.execute("INSERT INTO products VALUES ('0986')")
+        connection.execute("INSERT INTO products VALUES ('0989')")
         connection.execute("INSERT INTO shopee_products VALUES ('9456')")
+        connection.execute("INSERT INTO products VALUES ('9457')")
+        connection.execute("INSERT INTO products VALUES ('9458')")
     reserved = root / "data/new_product_workbench/4000000001.json"
     _write_json(reserved, {"offer_id": "4000000001", "review": {
-        "seller_sku": "0989", "fields_locked": True,
+        "seller_sku": "0990", "fields_locked": True,
     }})
     arguments = dict(root=root, database_path=database,
         report_store_path=root / "data/missing-orbit.db", offer_id="3828811808")
     single = build_release_dashboard(**arguments)["product"]
-    assert single["seller_sku_candidate"] == "9457"
-    assert single["seller_sku_governance"]["suggested_sku_range"] == ["9457"]
+    # Historical special 9456 and the mistaken 9457/9458 stay occupied, but
+    # must not advance the normal sequence. 0990 remains actively reserved.
+    assert single["seller_sku_candidate"] == "0991"
+    assert single["seller_sku_governance"]["suggested_sku_range"] == ["0991"]
 
     state_path = root / "data/new_product_workbench/3828811808.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["review"]["selected_sku_keys"] = ["one", "two", "three"]
     _write_json(state_path, state)
     multiple = build_release_dashboard(**arguments)["product"]
-    assert multiple["seller_sku_governance"]["suggested_sku_range"] == ["9457", "9458", "9459"]
+    assert multiple["seller_sku_governance"]["suggested_sku_range"] == ["0991", "0992", "0993"]
 
     # A higher active reservation advances the namespace; never fill its holes.
     _write_json(reserved, {"offer_id": "4000000001", "review": {
-        "seller_sku": "9458", "fields_locked": True,
+        "seller_sku": "1002", "fields_locked": True,
     }})
     occupied = build_release_dashboard(**arguments)["product"]
-    assert occupied["seller_sku_candidate"] == "9459"
-    assert occupied["seller_sku_governance"]["suggested_sku_range"] == ["9459", "9460", "9461"]
+    assert occupied["seller_sku_candidate"] == "1003"
+    assert occupied["seller_sku_governance"]["suggested_sku_range"] == ["1003", "1004", "1005"]
+
+    from shared_platform.release_control import (
+        _canonical_seller_sku, _next_available_seller_skus, _seller_sku_matches,
+    )
+    assert _next_available_seller_skus(("0999", "9456"), (), requested_count=1) == ("1000",)
+    assert _next_available_seller_skus(("8999",), (), requested_count=1) == ()
+    assert _canonical_seller_sku("990989") == "0989"
+    assert _canonical_seller_sku("1234567890123456789") == "1234567890123456789"
+    assert _canonical_seller_sku("2000431") == "2000431"
+    assert _seller_sku_matches("9456", ("9456", "999456"))
+    from domains.product_operations.catalog_update_preview import preview_catalog_update
+    raw_rows = [{"sku_id": value, "shop_cipher": "test-only", "seller_sku": value}
+                for value in ("0989", "9456", "9457", "9458", "2000431")]
+    preview = preview_catalog_update(raw_rows, raw_rows,
+        workbench_states={"old410": {"review": {"seller_sku": "0990", "fields_locked": True}}},
+        source_revision="incident-9456-0990", complete_snapshot=True)
+    assert preview.next_seller_skus == ("0991",)
 
     # An explicitly authorized B alias retains its full identity and tail.
     state["review"].update(seller_sku="999456", seller_sku_authority="explicit_same_store_ab_alias")
